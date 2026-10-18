@@ -15,7 +15,7 @@ import type { Ruling } from "../../models/ruling.js";
 import { loadRulingsSafe, writeRulingUnlocked } from "../../core/ruling-loader.js";
 import type { CommandResult } from "../types.js";
 import { CliValidationError, parsePriority, parseWaitingOn } from "../helpers.js";
-import { sanitizeDisplayText, MAX_PROSE_LENGTH } from "../../core/display-text.js";
+import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "../../core/display-text.js";
 import { catalogOnlyFlags, handleCatalogResolve, type CatalogResolveInput } from "./resolve-catalog.js";
 
 export type ConflictTarget =
@@ -110,9 +110,19 @@ function loadCatalogConflictSources(root: string): { catalogs: CatalogConflictSo
  * wrote from someone's branch (ids, paths, group names, payloads, and the
  * parse errors that quote them), so each one is sanitized whole. No length cap
  * on a record line: a truncated payload would misstate what the resolve takes.
+ * ISS-1304: the entity renderer, list, show and resolve use it too.
  */
-function catalogDisplayLine(line: string): string {
+function displayLine(line: string): string {
   return sanitizeDisplayText(line, Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * ISS-1304: an md output whose lines carry file-supplied text. Each element is
+ * sanitized BEFORE the join, so a LF inside a field becomes "?" and cannot
+ * forge a heading or a row, while the newlines between elements stay.
+ */
+function displayLines(lines: readonly string[]): string {
+  return lines.map(displayLine).join("\n");
 }
 
 function catalogWarningsSection(warnings: readonly string[]): string[] {
@@ -129,7 +139,9 @@ const DAMAGE_WARNING_TYPES = new Set(["schema_error", "parse_error"]);
 function diagnosticsSection(warnings: readonly LoadWarning[]): string[] {
   const damaged = warnings.filter((w) => DAMAGE_WARNING_TYPES.has(w.type));
   if (damaged.length === 0) return [];
-  const paths = damaged.map((w) => w.file);
+  // ISS-1304: a damaged file's name comes off disk and lands in a command the
+  // operator is told to run, so it is escaped reversibly, not replaced.
+  const paths = damaged.map((w) => sanitizeDisplayPath(w.file));
   return [
     "",
     `${damaged.length} file(s) failed to load and may contain merge damage: ${paths.join(", ")}. ` +
@@ -193,14 +205,18 @@ export async function handleConflictsList(
   }
 
   if (!report.hasConflicts) {
+    // ISS-1304: a second layer. Every input here is already sanitized (the
+    // filenames by sanitizeDisplayPath, the arrangement and ruling warnings by
+    // their loaders, the catalog warnings by their own section); the pass keeps
+    // a future raw line from reaching the terminal.
     return {
-      output: [
+      output: displayLines([
         "No conflicts found.",
         ...diagnosticsSection(warnings),
         ...arrangementWarningsSection(arrangementScan.warnings),
         ...rulingWarningsSection(rulingScan.warnings),
         ...catalogWarningsSection(catalogScan.warnings),
-      ].join("\n"),
+      ]),
     };
   }
 
@@ -228,7 +244,7 @@ export async function handleConflictsList(
   lines.push(...arrangementWarningsSection(arrangementScan.warnings));
   lines.push(...rulingWarningsSection(rulingScan.warnings));
   lines.push(...catalogWarningsSection(catalogScan.warnings));
-  return { output: lines.join("\n") };
+  return { output: displayLines(lines) };
 }
 
 function isDeletedSnapshot(obj: Record<string, unknown>): boolean {
@@ -274,7 +290,7 @@ function renderConflicts(displayId: string, conflicts: Array<Record<string, unkn
     lines.push(`- Theirs: ${JSON.stringify(c.theirs)}`);
     lines.push("");
   }
-  return lines.join("\n");
+  return displayLines(lines);
 }
 
 /**
@@ -308,7 +324,7 @@ function renderCatalogConflicts(label: string, conflicts: Array<Record<string, u
     }
     lines.push(...renderConflicts(label, [c]).split("\n").slice(2));
   }
-  return lines.map(catalogDisplayLine).join("\n");
+  return displayLines(lines);
 }
 
 async function showCatalogConflicts(root: string, type: CatalogConflictType, format: "md" | "json"): Promise<CommandResult> {
@@ -326,7 +342,7 @@ async function showCatalogConflicts(root: string, type: CatalogConflictType, for
       output:
         format === "json"
           ? JSON.stringify({ ok: true, data: { id: label, conflicts: [] } }, null, 2)
-          : `${label} has no conflicts.`,
+          : displayLine(`${label} has no conflicts.`),
     };
   }
   if (format === "json") {
@@ -360,14 +376,14 @@ export async function handleConflictsShow(
     // message instead of a flat not-found that could mislead.
     const message = notFoundMessage(id, arrangementScan.warnings, rulingScan.warnings);
     return {
-      output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+      output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : displayLine(message),
       exitCode: 1,
     };
   }
   if (target.kind === "ambiguous") {
     const message = `Ref "${id}" is ambiguous (matches: ${target.matches.join(", ")})`;
     return {
-      output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+      output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : displayLine(message),
       exitCode: 1,
     };
   }
@@ -397,7 +413,7 @@ export async function handleConflictsShow(
       output:
         format === "json"
           ? JSON.stringify({ ok: true, data: { id: label, conflicts: [] } }, null, 2)
-          : `${label} has no conflicts.`,
+          : displayLine(`${label} has no conflicts.`),
     };
   }
 
@@ -534,7 +550,7 @@ export async function handleResolve(
       const message = notFoundMessage(id, arrangementScan.warnings, rulingScan.warnings);
       output = format === "json"
         ? JSON.stringify({ ok: false, error: message }, null, 2)
-        : message;
+        : displayLine(message);
       exitCode = 1;
       return;
     }
@@ -542,7 +558,7 @@ export async function handleResolve(
       const message = `Ref "${id}" is ambiguous (matches: ${target.matches.join(", ")})`;
       output = format === "json"
         ? JSON.stringify({ ok: false, error: message }, null, 2)
-        : message;
+        : displayLine(message);
       exitCode = 1;
       return;
     }
@@ -612,7 +628,7 @@ export async function handleResolve(
       } else {
         lines.push("All conflicts resolved.");
       }
-      output = lines.join("\n");
+      output = displayLines(lines);
     }
   });
 

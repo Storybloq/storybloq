@@ -488,3 +488,141 @@ describe("T-481 T9 and T14: conflict resolution and the new fields", () => {
     });
   }
 });
+
+describe("ISS-1304: conflicts show, list and resolve print no file-supplied control bytes", () => {
+  // The sanitizer's own class (src/core/display-text.ts), minus the structural
+  // LF between output lines.
+  const UNSAFE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\p{Default_Ignorable_Code_Point}\p{Surrogate}]/u;
+  // ESC/OSC/BEL, C1 CSI, line separator, zero-width space, soft hyphen, an
+  // astral tag character and a lone surrogate.
+  const H = "\u001b]0;owned\u0007\u009b31m\u2028​­\u{E0041}\ud800";
+  const canonical = "t-1111111111111111";
+  const other = "t-2222222222222222";
+
+  it("T1: a field-level record's fieldPath, group and payload are sanitized; the JSON keeps them", async () => {
+    const dir = makeProject();
+    const records = [
+      { fieldPath: `/title${H}`, field: "title", kind: "field", base: "a", ours: `o${H}`, theirs: "t" },
+      { fieldPath: "/description", field: "description", kind: "coupled", group: `verification${H}`, base: "a", ours: "b", theirs: "c" },
+    ];
+    writeTicketFile(dir, "T-001", { _conflicts: records });
+    const md = await handleConflictsShow("T-001", dir, "md");
+    expect(md.output).not.toMatch(UNSAFE);
+    expect(md.output).toContain("owned");
+    expect(md.output).toContain("(group: verification");
+    const json = JSON.parse((await handleConflictsShow("T-001", dir, "json")).output) as { data: { conflicts: Json[] } };
+    expect(json.data.conflicts[0]!.fieldPath).toBe(`/title${H}`);
+    expect(json.data.conflicts[1]!.group).toBe(`verification${H}`);
+  });
+
+  it("T2: a LF inside a fieldPath cannot forge a line: the exact rendering", async () => {
+    const dir = makeProject();
+    writeTicketFile(dir, "T-001", {
+      _conflicts: [{ fieldPath: "/ti\nAAA", field: "title", kind: "field", base: "a", ours: "b", theirs: "c" }],
+    });
+    const md = await handleConflictsShow("T-001", dir, "md");
+    expect(md.output.split("\n")).toEqual([
+      "## Conflicts for T-001",
+      "",
+      "### /ti?AAA [field]",
+      '- Base:   "a"',
+      '- Ours:   "b"',
+      '- Theirs: "c"',
+      "",
+    ]);
+  });
+
+  it("T3: a hostile displayId is sanitized in the heading and in the no-conflicts line", async () => {
+    const dir = makeProject();
+    writeTicketFile(dir, canonical, { displayId: `T-9${H}`, _conflicts: [titleConflict()] });
+    const shown = await handleConflictsShow(canonical, dir, "md");
+    expect(shown.output).toContain("## Conflicts for T-9");
+    expect(shown.output).not.toMatch(UNSAFE);
+    writeTicketFile(dir, canonical, { displayId: `T-9${H}`, _conflicts: [] });
+    const empty = await handleConflictsShow(canonical, dir, "md");
+    expect(empty.output).toContain("has no conflicts.");
+    expect(empty.output).not.toMatch(UNSAFE);
+  });
+
+  it("T4: conflicts list sanitizes the row's display id; the JSON is unchanged", async () => {
+    const dir = makeProject();
+    writeTicketFile(dir, canonical, { displayId: `T-9${H}`, _conflicts: [titleConflict()] });
+    const md = await handleConflictsList(dir, "md");
+    expect(md.output).toContain("| ticket | T-9");
+    expect(md.output).not.toMatch(UNSAFE);
+    const json = JSON.parse((await handleConflictsList(dir, "json")).output) as { data: { items: Json[] } };
+    expect(json.data.items).toContainEqual(expect.objectContaining({ type: "ticket", id: canonical }));
+  });
+
+  const badName = "T-1\u001b]0;x\u0007\u2028​.json";
+
+  it("T5: a damaged file's name is escaped reversibly beside a real conflict", async () => {
+    const dir = makeProject();
+    writeTicketFile(dir, "T-001", { _conflicts: [titleConflict()] });
+    writeFileSync(join(dir, ".story", "tickets", badName), "{ invalid json", "utf-8");
+    const md = await handleConflictsList(dir, "md");
+    expect(md.output).toContain("failed to load");
+    expect(md.output).not.toMatch(UNSAFE);
+    expect(md.output).toContain("T-1\\u001b]0;x\\u0007\\u2028\\u200b.json");
+    expect(md.output).toMatch(/git checkout --theirs -- \S*T-1\\u001b\]0;x\\u0007\\u2028\\u200b\.json/);
+  });
+
+  it("T6: the same name is escaped when nothing else is conflicted", async () => {
+    const dir = makeProject();
+    writeFileSync(join(dir, ".story", "tickets", badName), "{ invalid json", "utf-8");
+    const md = await handleConflictsList(dir, "md");
+    expect(md.output).toContain("No conflicts found.");
+    expect(md.output).not.toMatch(UNSAFE);
+    expect(md.output).toContain("T-1\\u001b]0;x\\u0007\\u2028\\u200b.json");
+  });
+
+  it("T7: resolve's success lines are sanitized; the JSON is unchanged", async () => {
+    const dir = makeProject();
+    writeTicketFile(dir, canonical, { displayId: `T-9${H}`, _conflicts: [titleConflict()] });
+    const md = await handleResolve(canonical, dir, { use: "ours" });
+    expect(md.exitCode ?? 0).toBe(0);
+    expect(md.output).toContain("Resolved 1 conflict(s) on T-9");
+    expect(md.output).not.toMatch(UNSAFE);
+    writeTicketFile(dir, canonical, { displayId: `T-9${H}`, _conflicts: [titleConflict()] });
+    const json = await handleResolve(canonical, dir, { use: "ours", format: "json" });
+    expect((JSON.parse(json.output) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it("T8: an ambiguous hostile display id is sanitized in show and resolve; the JSON error keeps it", async () => {
+    const dir = makeProject();
+    writeTicketFile(dir, canonical, { displayId: `T-7${H}`, _conflicts: [titleConflict()] });
+    writeTicketFile(dir, other, { displayId: `T-7${H}`, _conflicts: [titleConflict()] });
+    const shown = await handleConflictsShow(`T-7${H}`, dir, "md");
+    expect(shown.exitCode).toBe(1);
+    expect(shown.output).toContain("is ambiguous");
+    expect(shown.output).not.toMatch(UNSAFE);
+    const resolved = await handleResolve(`T-7${H}`, dir, { use: "ours" });
+    expect(resolved.exitCode).toBe(1);
+    expect(resolved.output).toContain("is ambiguous");
+    expect(resolved.output).not.toMatch(UNSAFE);
+    const json = await handleConflictsShow(`T-7${H}`, dir, "json");
+    expect((JSON.parse(json.output) as { error: string }).error).toContain(`T-7${H}`);
+  });
+
+  it("T9: a not-found hostile id is sanitized in show and resolve", async () => {
+    const dir = makeProject();
+    const shown = await handleConflictsShow(`X${H}`, dir, "md");
+    expect(shown.exitCode).toBe(1);
+    expect(shown.output).toContain("not found");
+    expect(shown.output).not.toMatch(UNSAFE);
+    const resolved = await handleResolve(`X${H}`, dir, { use: "ours" });
+    expect(resolved.exitCode).toBe(1);
+    expect(resolved.output).toContain("not found");
+    expect(resolved.output).not.toMatch(UNSAFE);
+  });
+
+  it("T10: a long payload line is printed in full, never truncated", async () => {
+    const dir = makeProject();
+    const long = "x".repeat(400);
+    writeTicketFile(dir, "T-001", {
+      _conflicts: [{ fieldPath: "/title", field: "title", kind: "field", base: "a", ours: long, theirs: "c" }],
+    });
+    const md = await handleConflictsShow("T-001", dir, "md");
+    expect(md.output.split("\n")).toContain(`- Ours:   "${long}"`);
+  });
+});

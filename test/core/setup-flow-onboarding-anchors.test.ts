@@ -86,12 +86,28 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     expect(flow).not.toContain("without reading the review schema");
     // T4a: the re-ask names the probe and status lines, the fixed line, the blank line and nothing after.
     expect(flow).toContain("ask the same question again: the same probe and status lines, the two fixed lines, one blank line, then the four lines, nothing after them.");
-    // A3: one storybloq command per shell call on the CLI fallback.
-    expect(flow).toContain("and note that a client restart may be needed. Run one storybloq command per shell call, never through an interpreter script, a loop or a here-document, and check the result with `storybloq ticket list` or `storybloq phase list`, not a script.");
+    // T-538: one engine call writes the setup; the per-item create calls and their CLI fallback are gone.
+    expect(flow).toContain("Never create, update or wire items with individual calls, never run `storybloq init`, and never write those files yourself.");
+    expect(flow).toContain("**Apply it** in one shell call of its own: `storybloq setup-apply <<'STORYBLOQ_SETUP'`, then the JSON, then a line `STORYBLOQ_SETUP`");
+    for (const gone of ["storybloq_ticket_create", "storybloq_phase_create", "Pass 1:", "storybloq config set-overrides", "Verify after write"]) expect(flow).not.toContain(gone);
   });
 
-  it("marks the pending tooling line verbatim", () => {
-    expect(flow).toContain('- one line per pending stage, and per component when the project has several, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)", or with a component "Verification tooling to establish: <stage> (<component>): <proposed command> (pending: <reason>)".');
+  it("routes each setup-apply exit code and the resume case (T-538)", () => {
+    for (const line of [
+      "   - `3`: interrupted. Run `storybloq setup-apply --resume --setup <id>`; a resume never duplicates anything.",
+      "Send all the answers in one call, `storybloq setup-apply --setup <id> --resolve '<json>'`",
+      "add `\"reviewRevision\": \"<its digest12>\"` to that answer; after the owner's skip no review is needed.",
+      "An `enable refused` stop: relay its text verbatim.",
+      "Exit 5 never comes from setup-apply.",
+      "Ask nothing: run `storybloq setup-apply --resume --setup <id>` and continue at 1e step 3.",
+      "each checkpoint as `Checkpoint (<kind>, owner <label>): <title>`",
+    ]) expect(flow).toContain(line);
+  });
+
+  it("copies the engine's report lines verbatim (T-538)", () => {
+    expect(flow).toContain("Copy the report lines into the message verbatim, never retyped, merged or shortened");
+    expect(flow).toContain("**Last check before sending the completion message.** Every `Pending:` line of the report is in the message itself, one per line.");
+    expect(flow).not.toContain("Verification tooling to establish:");
   });
 
   it("lets a mode file's fixed closing lines override SKILL.md's prose rule for Codex", () => {

@@ -1,0 +1,232 @@
+/**
+ * T-538 check set 7 (plan v5 8c, core): the evaluation rules for the setup
+ * engine. Check sets 1 to 6 keep their implementations under their versions.
+ *
+ * Rule 1: every engine line the agent shows (`Setup applied:`, `Setup
+ * stopped:`, `Ambiguity:`) was printed by a setup-apply call in the same or
+ * an earlier turn; a narration line is never proof on its own.
+ * Rule 2: the persisted records, read independently of any output: every
+ * payload key exists once with its payload title (unless an amendment names
+ * it), and no ticket or issue without a setup key appeared beyond the
+ * fixture's own.
+ * Rule 3: the payload the engine was given is the approved package the owner
+ * saw: its tickets and checkpoints equal the package's marked Plan section.
+ * Rule 4: one approval allows the initial apply plus explicit resumes and
+ * resolutions. No setup-apply runs before the owner's approval, the payload
+ * is sent once, and a resolution answers an owner turn after the ambiguity.
+ * Rule 5: no individual create call (init, phase, ticket, issue, note) runs
+ * during setup; the engine is the only writer.
+ */
+import { heredocStdin } from "./onboarding-eval-checkset6.js";
+import { parseSetupMeta } from "../src/core/setup-meta.js";
+import type { DriveTurn } from "./onboarding-eval-drive.js";
+import type { EvalCall } from "./onboarding-eval-lib.js";
+
+export interface Cs7Call {
+  /** The tool's name as the client reported it. */
+  readonly name: string;
+  /** The shell command, or null for a non-shell tool. */
+  readonly command: string | null;
+  readonly input: unknown;
+  readonly output: string;
+}
+
+export interface Cs7Turn {
+  readonly owner: string;
+  readonly calls: readonly Cs7Call[];
+  readonly text: string;
+}
+
+/** The ledger after the run, as rule 2 reads it. */
+export interface Cs7Ledger {
+  readonly tickets: readonly object[];
+  readonly issues: readonly object[];
+}
+
+export interface Cs7Options {
+  readonly ledger: Cs7Ledger;
+  /** Ticket and issue ids the fixture's ledger held before the run. */
+  readonly baselineIds: readonly string[];
+  /** The owner's approval, exactly as the owner script sends it. */
+  readonly approval: string;
+}
+
+const START_MARKER = /^Plan, revision ([0-9a-f]{12}):$/;
+const END_MARKER = /^End of plan, revision ([0-9a-f]{12})$/;
+const ENGINE_LINE = /^(Setup applied:|Setup stopped:|Ambiguity:)/;
+const CLI_SETUP_APPLY = /^storybloq setup-apply\b/;
+const CREATE_TOOLS = new Set(["storybloq_init", "storybloq_phase_create", "storybloq_ticket_create", "storybloq_issue_create", "storybloq_note_create"]);
+const CLI_CREATE = /(^|[;&|]\s*)storybloq (init|phase create|ticket create|issue create|note create)\b/m;
+
+const linesOf = (text: string): string[] => text.replace(/\r\n/g, "\n").split("\n").map((l) => l.replace(/\r$/, ""));
+const isMcp = (name: string, tool: string) => name === tool || name.endsWith(`__${tool}`);
+
+interface ApplyCall {
+  readonly turn: number;
+  readonly kind: "payload" | "resume" | "resolve" | "other";
+  /** The payload as sent, for the initial apply. */
+  readonly payload?: unknown;
+  readonly output: string;
+}
+
+function applyCallOf(call: Cs7Call, turn: number): ApplyCall | null {
+  if (call.command !== null && CLI_SETUP_APPLY.test(call.command)) {
+    const head = call.command.split("\n")[0]!;
+    if (/\s--resolve\b/.test(head)) return { turn, kind: "resolve", output: call.output };
+    if (/\s--resume\b/.test(head)) return { turn, kind: "resume", output: call.output };
+    const stdin = heredocStdin(call.command);
+    if (stdin === null) return { turn, kind: "other", output: call.output };
+    try {
+      return { turn, kind: "payload", payload: JSON.parse(stdin) as unknown, output: call.output };
+    } catch {
+      return { turn, kind: "other", output: call.output };
+    }
+  }
+  if (isMcp(call.name, "storybloq_setup_apply")) {
+    const input = (call.input ?? {}) as { payload?: unknown; resume?: unknown; resolutions?: unknown };
+    if (input.resolutions !== undefined) return { turn, kind: "resolve", output: call.output };
+    if (input.resume === true) return { turn, kind: "resume", output: call.output };
+    if (input.payload !== undefined) return { turn, kind: "payload", payload: input.payload, output: call.output };
+    return { turn, kind: "other", output: call.output };
+  }
+  return null;
+}
+
+/** The marked Plan section of the last package shown before `before`, or null. */
+function approvedPlan(turns: readonly Cs7Turn[], before: number): string[] | null {
+  for (let t = before - 1; t >= 0; t--) {
+    const ls = linesOf(turns[t]!.text);
+    const s = ls.findIndex((l) => START_MARKER.test(l));
+    const e = ls.findIndex((l) => END_MARKER.test(l));
+    if (s >= 0 && e > s) return ls.slice(s + 1, e);
+  }
+  return null;
+}
+
+const sorted = (xs: readonly string[]) => [...xs].sort();
+const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && sorted(a).every((x, i) => x === sorted(b)[i]);
+
+interface PayloadShape {
+  readonly ownerLabel?: string;
+  readonly tickets?: ReadonlyArray<{ key: string; title: string }>;
+  readonly checkpoints?: ReadonlyArray<{ key: string; title: string; kind: string }>;
+  readonly issues?: ReadonlyArray<{ key: string; title: string }>;
+}
+
+function rule3(plan: readonly string[], payload: PayloadShape): string[] {
+  const failures: string[] = [];
+  const planTickets = plan.flatMap((l) => (/^Ticket: (.+)$/.exec(l)?.[1] !== undefined ? [/^Ticket: (.+)$/.exec(l)![1]!] : []));
+  const planCheckpoints = plan.flatMap((l) => {
+    const m = /^Checkpoint \(([^,]+), owner ([^)]+)\): (.+)$/.exec(l);
+    return m ? [`${m[1]}|${m[2]}|${m[3]}`] : [];
+  });
+  const tickets = (payload.tickets ?? []).map((t) => t.title);
+  const checkpoints = (payload.checkpoints ?? []).map((c) => `${c.kind}|${payload.ownerLabel ?? ""}|${c.title}`);
+  if (!same(planTickets, tickets)) failures.push(`rule 3: the payload's tickets (${sorted(tickets).join(", ") || "none"}) differ from the approved Plan's (${sorted(planTickets).join(", ") || "none"})`);
+  if (!same(planCheckpoints, checkpoints)) failures.push(`rule 3: the payload's checkpoints (${sorted(checkpoints).join(", ") || "none"}) differ from the approved Plan's (${sorted(planCheckpoints).join(", ") || "none"})`);
+  return failures;
+}
+
+function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, baseline: ReadonlySet<string>, amended: ReadonlySet<string>): string[] {
+  const failures: string[] = [];
+  const keyed = new Map<string, Array<{ id: string; title: string }>>();
+  const unkeyed: string[] = [];
+  for (const [kind, items] of [["ticket", ledger.tickets], ["issue", ledger.issues]] as const) {
+    for (const item of items) {
+      const it = item as { id: string; title: string };
+      const meta = parseSetupMeta(kind, item);
+      if (meta.kind === "item" && meta.meta.setupId === payload.setupId) {
+        if (meta.meta.supersededBy !== undefined) continue;
+        keyed.set(meta.meta.key, [...(keyed.get(meta.meta.key) ?? []), it]);
+      } else if (!baseline.has(it.id)) {
+        unkeyed.push(it.id);
+      }
+    }
+  }
+  for (const item of [...(payload.tickets ?? []), ...(payload.checkpoints ?? []), ...(payload.issues ?? [])]) {
+    const found = keyed.get(item.key) ?? [];
+    if (found.length !== 1) failures.push(`rule 2: payload key ${item.key} has ${found.length} records in the ledger; expected exactly one`);
+    else if (found[0]!.title !== item.title && !amended.has(item.key)) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is titled "${found[0]!.title}", the payload "${item.title}"`);
+  }
+  if (unkeyed.length > 0) failures.push(`rule 2: records without a setup key appeared during setup: ${unkeyed.join(", ")}`);
+  return failures;
+}
+
+export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { failures: string[] } {
+  const failures: string[] = [];
+  const applies: ApplyCall[] = [];
+  const approvalAt = turns.findIndex((t) => t.owner.trim() === opts.approval);
+
+  turns.forEach((turn, t) => {
+    for (const call of turn.calls) {
+      const apply = applyCallOf(call, t);
+      if (apply) applies.push(apply);
+      const named = [...CREATE_TOOLS].find((tool) => isMcp(call.name, tool));
+      if (named !== undefined) failures.push(`rule 5: turn ${t + 1} called ${named}; the setup engine is the only writer`);
+      else if (call.command !== null && CLI_CREATE.test(call.command)) failures.push(`rule 5: turn ${t + 1} ran ${CLI_CREATE.exec(call.command)![0].trim()}; the setup engine is the only writer`);
+    }
+    // Rule 1: engine lines in the agent's text were printed by a setup-apply call up to this turn.
+    const printed = new Set(applies.flatMap((a) => linesOf(a.output)));
+    for (const line of linesOf(turn.text).map((l) => l.trim())) {
+      if (ENGINE_LINE.test(line) && !printed.has(line)) failures.push(`rule 1: turn ${t + 1} shows "${line}", which no setup-apply call printed`);
+    }
+  });
+
+  // Rule 4.
+  const early = applies.filter((a) => approvalAt < 0 || a.turn < approvalAt);
+  if (early.length > 0) failures.push(`rule 4: ${early.length} setup-apply call(s) ran before the owner's approval`);
+  const payloads = applies.filter((a) => a.kind === "payload");
+  if (payloads.length !== 1) failures.push(`rule 4: the approved payload was sent ${payloads.length} times; one approval allows one initial apply`);
+  for (const a of applies.filter((x) => x.kind === "other")) failures.push(`rule 4: turn ${a.turn + 1} ran setup-apply with neither a payload, --resume nor --resolve`);
+  for (const a of applies.filter((x) => x.kind === "resolve")) {
+    const stop = applies.find((x) => x.turn < a.turn && x.output.split("\n").some((l) => l.startsWith("Ambiguity:")));
+    if (!stop) failures.push(`rule 4: turn ${a.turn + 1} sent a resolution with no earlier ambiguity for the owner to answer`);
+  }
+
+  const first = payloads[0];
+  if (first && approvalAt >= 0) {
+    const payload = (first.payload ?? {}) as PayloadShape & { setupId?: string; amendments?: ReadonlyArray<{ target: string }> };
+    const plan = approvedPlan(turns, approvalAt);
+    if (plan === null) failures.push("rule 3: no package with a marked Plan section came before the approval");
+    else failures.push(...rule3(plan, payload));
+    // A key an ambiguity named before a resolution may keep the owner's edits; its target names the key first.
+    const amended = new Set<string>();
+    for (const a of applies) {
+      if (!applies.some((x) => x.kind === "resolve" && x.turn >= a.turn && x !== a)) continue;
+      for (const l of a.output.split("\n")) {
+        const m = /^Ambiguity: [^·]+ · (\S+)/.exec(l);
+        if (m) amended.add(m[1]!);
+      }
+    }
+    failures.push(...rule2(payload, opts.ledger, new Set(opts.baselineIds), amended));
+  }
+  return { failures };
+}
+
+const SHELLS = new Set(["sh", "bash", "zsh", "/bin/sh", "/bin/bash", "/bin/zsh"]);
+
+function shellCommandOf(call: EvalCall): string | null {
+  if (call.name !== "Bash" && call.name !== "shell" && call.name !== "exec_command") return null;
+  const c = (call.input as { command?: unknown; cmd?: unknown } | null)?.command ?? (call.input as { cmd?: unknown } | null)?.cmd;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    const argv = c.map(String);
+    if (argv.length === 3 && SHELLS.has(argv[0]!) && (argv[1] === "-c" || argv[1] === "-lc")) return argv[2]!;
+    return argv.join(" ");
+  }
+  return null;
+}
+
+/** The run's main-agent turns as check set 7 reads them; nested calls are never the agent's. */
+export function cs7TurnsFrom(turns: readonly DriveTurn[], allCalls: readonly EvalCall[]): Cs7Turn[] {
+  return turns.map((t) => ({
+    owner: t.prompt,
+    text: t.stopText,
+    calls: allCalls.slice(t.callRange[0], t.callRange[1]).filter((c) => c.nested !== true).map((c): Cs7Call => ({
+      name: c.name,
+      command: shellCommandOf(c),
+      input: c.input,
+      output: c.result ?? "",
+    })),
+  }));
+}

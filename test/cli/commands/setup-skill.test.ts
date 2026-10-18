@@ -786,13 +786,14 @@ describe("setup-skill", () => {
     const execute = flowSection(content, "1e");
     if (!pkg.includes('nothing in 1e runs until the user explicitly chooses "Approve setup"')) problems.push("no wait for an explicit approval");
     if (!execute.includes('Everything below runs only after approval as defined in 1d.')) problems.push("execution not gated on approval");
-    if (!/\*\*Pass 1:\*\* Call `storybloq_ticket_create` for each ticket WITHOUT `blockedBy`/.test(execute)) problems.push("pass 1 does not create without blockedBy");
-    if (!execute.includes("Keep the id each call returns")) problems.push("pass 1 does not keep the returned ids");
-    if (!/\*\*Pass 2:\*\* Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned/.test(execute)) problems.push("pass 2 does not wire dependencies from the returned ids");
-    if (!execute.includes("Validate: no cycles, no self-references")) problems.push("no dependency validation");
-    const pass1 = execute.indexOf("**Pass 1:**");
-    const pass2 = execute.indexOf("**Pass 2:**");
-    if (pass1 < 0 || pass2 < 0 || pass2 < pass1) problems.push("pass 2 does not follow pass 1");
+    // T-538: one engine call writes the approved setup; individual create calls are gone.
+    if (!execute.includes("One engine call writes the whole approved setup")) problems.push("execution is not one engine call");
+    if (!execute.includes("Never create, update or wire items with individual calls")) problems.push("individual create calls not forbidden");
+    if (!execute.includes("**compare it to the package** before sending")) problems.push("payload not compared to the package");
+    if (!execute.includes("every dependency one `blockedBy` or `gates` entry")) problems.push("dependencies not carried by the payload");
+    const compare = execute.indexOf("**compare it to the package**");
+    const apply = execute.indexOf("storybloq setup-apply <<'STORYBLOQ_SETUP'");
+    if (compare < 0 || apply < 0 || apply < compare) problems.push("the apply does not follow the comparison");
     return problems;
   };
 
@@ -917,25 +918,24 @@ describe("setup-skill", () => {
     const review = content.indexOf("**Independent review, by default.**");
     const question = content.indexOf('question: "How should I proceed with this setup?"');
     const wait = content.indexOf('nothing in 1e runs until the user explicitly chooses "Approve setup"');
-    const init = content.indexOf("Call `storybloq_init`");
-    const firstPhase = content.indexOf("Call `storybloq_phase_create`");
+    const apply = content.indexOf("storybloq setup-apply <<'STORYBLOQ_SETUP'");
     const governance = content.indexOf("**CLAUDE.md generation**");
-    const gitInit = content.indexOf("run `git init`");
-    for (const at of [review, question, wait, init, firstPhase, governance, gitInit]) expect(at).toBeGreaterThanOrEqual(0);
+    for (const at of [review, question, wait, apply, governance]) expect(at).toBeGreaterThanOrEqual(0);
     expect(review).toBeLessThan(question);
     expect(question).toBeLessThan(wait);
-    for (const write of [init, firstPhase, governance, gitInit]) expect(wait).toBeLessThan(write);
+    for (const write of [apply, governance]) expect(wait).toBeLessThan(write);
   });
 
-  it("setup-flow.md execution: two-pass creation with dependency wiring, gated on an explicit approval", async () => {
+  it("setup-flow.md execution: one engine call carrying the dependencies, gated on an explicit approval", async () => {
     expect(executionProblems(await readSetupFlow())).toEqual([]);
   });
 
-  it("the execution contract catches a removed dependency pass and a removed wait for approval", async () => {
+  it("the execution contract catches a removed engine rule and a removed wait for approval", async () => {
     const content = await readSetupFlow();
     const mutants: [string, string, RegExp][] = [
-      ["pass 2 removed", "**Pass 2:** Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned.", /pass 2 does not wire/],
-      ["cycle check removed", "Validate: no cycles, no self-references.", /no dependency validation/],
+      ["individual-call ban removed", "Never create, update or wire items with individual calls", /individual create calls not forbidden/],
+      ["comparison removed", "**compare it to the package** before sending", /payload not compared/],
+      ["dependency carriage removed", "every dependency one `blockedBy` or `gates` entry", /dependencies not carried/],
       ["wait removed", ' Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup".', /no wait for an explicit approval/],
       ["gate removed", 'Everything below runs only after approval as defined in 1d.', /execution not gated/],
     ];
@@ -945,44 +945,36 @@ describe("setup-skill", () => {
     }
   });
 
-  it("setup-flow.md execution: init only when .story/ is absent, scaffold reused without force, readiness by capability, phases after p0", async () => {
+  it("setup-flow.md execution: no init and no individual creates; the engine is discoverable before .story/ exists (T-538)", async () => {
     const content = await readSetupFlow();
     const execute = flowSection(content, "1e");
-    expect(execute).toContain("**Initialise only when `.story/` is absent.**");
-    expect(execute).toContain("init is never forced over them");
-    expect(execute).toContain("`p0`");
-    expect(execute).toContain("**Readiness by capability.**");
-    for (const tool of ["`storybloq_phase_create`", "`storybloq_ticket_create`", "`storybloq_ticket_update`", "`storybloq_issue_create`", "`storybloq_snapshot`"]) {
-      expect(execute).toContain(tool);
+    expect(execute).toContain("never run `storybloq init`");
+    expect(execute).toContain("`p0` first");
+    expect(execute).toContain("`storybloq_setup_apply` with `payload`; it is callable before `.story/` exists");
+    for (const tool of ["`storybloq_phase_create`", "`storybloq_ticket_create`", "`storybloq_ticket_update`", "`storybloq_issue_create`", "`storybloq_snapshot`", "Call `storybloq_init`"]) {
+      expect(execute).not.toContain(tool);
     }
-    expect(execute).toContain("fall back to the CLI");
-    expect(execute).toContain("stop with a concrete blocker");
     expect(content).not.toMatch(/only 2 tools|exactly two tools/);
-    expect(execute).toContain('the first goes `after: "p0"` without `atStart`; only on an empty roadmap does the first use `atStart: true`');
-    expect(execute).not.toContain("the first with `atStart: true` (after `p0`");
+    for (const code of ["`0`", "`2`", "`3`", "`4`", "`7`"]) expect(execute).toContain(`   - ${code}:`);
+    expect(execute).toContain("Exit 5 never comes from setup-apply.");
   });
 
-  it("setup-flow.md execution: all four stages written explicitly; BUILD and VERIFY only for Full pipeline with established commands", async () => {
+  it("setup-flow.md execution: the payload carries every stage's status; the engine writes them explicitly; nothing runs during setup", async () => {
     const execute = flowSection(await readSetupFlow(), "1e");
-    expect(execute).toContain("config set-overrides");
-    expect(execute).toContain("all four stages, `WRITE_TESTS`, `TEST`, `BUILD` and `VERIFY`, are always written with an explicit `\"enabled\"` value");
-    expect(execute).toContain("a reused scaffold may already carry overrides");
-    expect(execute).toContain("write `WRITE_TESTS` and `TEST` with that same command");
-    expect(execute).toContain('write both with `"enabled": false` and record the proposed command as pending');
-    expect(execute).toContain("Never leave them to the defaults");
-    expect(execute).toContain("`\"enabled\": true` only for Full pipeline, and only with commands established from the manifests");
-    expect(execute).toContain("Tests only, Minimal, pending tooling, and project types VERIFY does not apply to");
+    expect(execute).toContain("The engine writes every recipe stage, with an explicit `enabled`, from these and the level.");
+    expect(execute).toContain('"level": "full|tests-only|minimal"');
+    expect(execute).toContain('"status": "established|pending"');
     expect(execute).toContain("never execute an install, test, build or dev server during setup");
     expect(execute).toContain("never gets `npm test`");
+    expect(execute).not.toContain("config set-overrides");
     expect(execute).not.toContain("no overrides needed");
-    expect(execute).not.toContain("enable them with their commands only when established");
   });
 
   it("setup-flow.md keeps the preserved invariants of execution and post-setup", async () => {
     const content = await readSetupFlow();
     const execute = flowSection(content, "1e");
     expect(execute).toContain("Sanitization");
-    expect(execute).toContain("**Verify after write.**");
+    expect(execute).not.toContain("**Verify after write.**");
     expect(execute).toContain("`review-contract-template.md`");
     expect(execute).toContain("TDD for business logic");
     const post = flowSection(content, "1f");
@@ -990,9 +982,10 @@ describe("setup-skill", () => {
     expect(post).toContain("/story auto");
     expect(post).toContain("$story");
     expect(post).toContain("$story auto");
-    expect(post).toContain("Verification tooling to establish:");
-    expect(post).toContain("coverage map");
-    expect(post).toContain("the review outcome or the recorded skip");
+    // T-538: the engine prints the report; the agent copies it verbatim.
+    expect(post).toContain("Copy the report lines into the message verbatim");
+    expect(post).toContain("every `Pending:` line");
+    expect(post).toContain("`storybloq setup-report --setup <id>`");
   });
 
   it("setup-flow.md names no vendor as a default", async () => {

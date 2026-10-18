@@ -197,8 +197,9 @@ Call these in order:
 Using the retained status payload, check in order (`setup-flow.md` sits beside this file; if it is missing, tell the user to run `storybloq setup --client all`):
 
 1. **Integrity guard** -- a non-empty top-level `warnings` array (JSON), or a response starting "Warning:" that contains "item(s) skipped due to data integrity issues" (Markdown), means this is NOT an empty scaffold. Tell the user to run `storybloq validate`. Continue Step 2/3 normally.
-2. **Scaffold detection (JSON)** -- `data.isEmptyScaffold` is `true`, with or without code: read `setup-flow.md` and follow the AI-Assisted Setup Flow as an interrupted scaffold. After setup completes, restart Step 2 from the top.
-3. **Legacy Markdown payload** (mode A, older server) -- the output contains "## Getting Started" AND shows `Tickets: 0/0 complete` + `Handovers: 0`: route exactly as in 2.
+2. **Setup in progress** -- `data.setupInProgress` is non-empty: resume it first, per `setup-flow.md` 1a.
+3. **Scaffold detection (JSON)** -- `data.isEmptyScaffold` is `true`, with or without code: read `setup-flow.md` and follow the AI-Assisted Setup Flow as an interrupted scaffold. After setup completes, restart Step 2 from the top.
+4. **Legacy Markdown payload** (mode A, older server) -- the output contains "## Getting Started" AND shows `Tickets: 0/0 complete` + `Handovers: 0`: route exactly as in 3.
 
 ## Step 3: Present Summary
 

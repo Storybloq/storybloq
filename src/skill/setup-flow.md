@@ -33,6 +33,7 @@ Read the folder once and classify it:
 - **`brief-only`** -- documents (Markdown, text, PDF, design exports) and no code.
 - **`existing`** -- code, with or without a manifest or git history.
 - **`interrupted`** -- a `.story/` scaffold with `isEmptyScaffold: true` (the Step 2b case). It can also hold code or documents; read those as for the other classes.
+- **`setup in progress`** -- an approved setup was cut off: status lists it in `setupInProgress` (or a line `Setup <id> is in progress`), a command refuses with `Setup <id> is bootstrapping this project`, or the folder holds `.story/.setup-bootstrap.json` (its `setupId`) and no `.story/config.json`. Ask nothing: run `storybloq setup-apply --resume --setup <id>` and continue at 1e step 3. With two or more listed, ask the owner which to resume.
 
 There is no manifest or git requirement and no minimum length. Relevant material is manifests, documents, source roots and design files. Skip caches, build outputs, vendored dependencies, lockfile internals and review databases unless the user points at them.
 
@@ -98,7 +99,7 @@ A retry runs `storybloq setup-review gate --setup <id>`, then the review again. 
 - Tickets are coherent, demonstrable slices. Foundation work names the capabilities it enables.
 - `blockedBy` reflects real prerequisites only, never automatic chaining from phase order.
 - Several entities, or an API with its UI, are sizing signals: split a ticket only when one slice cannot be implemented and verified as a unit. Decompose the core differentiator instead of leaving it as one ticket.
-- For an existing codebase, capture verified completed work as completed tickets only when the evidence from 1b supports it.
+- For an existing codebase, verified completed work gets no ticket: it is a coverage row (1e) resting on the evidence from 1b.
 
 **Every implementation ticket's description** follows one template:
 
@@ -122,7 +123,7 @@ Every label carries content. Where one does not apply, write `none` (for example
 
 Each checkpoint is an ordinary ticket titled `Checkpoint: <what the owner reviews>`. Its description holds `Question:` for a decision, or `Criteria:` for a demonstration or acceptance, and names the artifact the owner reviews. The ticket is `blockedBy` the work that produces what it reviews, and only the follow-on work that the owner's decision actually affects is `blockedBy` the checkpoint; unrelated work stays unblocked. Stage-1 limitation: nothing enforces the gate yet, so a checkpoint ticket can be closed like any other ticket. Say so in the package.
 
-**Independent review, by default.** Only the CLI runs the reviewer. Write the review packet: four sections in this order, each non-empty (`none` when there is nothing): `## Source requirements` (one `R<n>: <requirement> (source: <file>, <section>)` per line), `## Owner answers and decisions`, `## Existing-state evidence`, and `## Plan` (milestones; each ticket as `Ticket: <title>`, its template lines and `Blocked by: <titles or none>`; checkpoints; the coverage map). Run `storybloq setup-review run --setup <id> <<'STORYBLOQ_PACKET'`, then the packet, then a line `STORYBLOQ_PACKET`.
+**Independent review, by default.** Only the CLI runs the reviewer. Write the review packet: four sections in this order, each non-empty (`none` when there is nothing): `## Source requirements` (one `R<n>: <requirement> (source: <file>, <section>)` per line), `## Owner answers and decisions`, `## Existing-state evidence`, and `## Plan` (milestones; each ticket as `Ticket: <title>`, its template lines and `Blocked by: <titles or none>`; each checkpoint as `Checkpoint (<kind>, owner <label>): <title>`, kind `decision` for a review that asks a `Question:` and `acceptance` for one with `Criteria:`, label the owner's name or role; the coverage map). Run `storybloq setup-review run --setup <id> <<'STORYBLOQ_PACKET'`, then the packet, then a line `STORYBLOQ_PACKET`.
 
 The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Incorporate the findings; a second round runs on the revised packet, and the CLI allows two per cycle. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
 
@@ -182,79 +183,68 @@ Inspect details
 
 #### 1e. Execute on Approval
 
-Everything below runs only after approval as defined in 1d.
+Everything below runs only after approval as defined in 1d. One engine call writes the whole approved setup: the project, phases, tickets, checkpoints, dependencies, issues, config, governance files, git, the setup note, the initial handover and the snapshot. Never create, update or wire items with individual calls, never run `storybloq init`, and never write those files yourself.
 
-1. **Initialise only when `.story/` is absent.** Call `storybloq_init` with name, type and language. For an `interrupted` scaffold, skip init: its config and phases are reused as they are, and init is never forced over them. An owner's instruction about the config is applied as given, never widened or narrowed. Scaffold metadata (name, type, language) is always preserved. The recipe stages are a separate item in the package (quality level) and are written only as approved there. If the owner forbids any config change, the package says which defaults then stay enabled (`WRITE_TESTS` and `TEST` with `npm test`) and asks the owner to decide about them before approval. A default `p0` "Setup" phase (which a fresh init also writes) stays first, and setup phases go after it. If the scaffold is no longer empty (tickets, issues, handovers or non-default phases appeared), stop and name what you found.
+For an `interrupted` scaffold nothing changes: the engine keeps its config and phases, `p0` first, and records them before it writes.
 
-2. **Readiness by capability.** The creation tools are `storybloq_phase_create`, `storybloq_ticket_create`, `storybloq_ticket_update`, `storybloq_issue_create` and `storybloq_snapshot`. After init (or at once for a reused scaffold), check which are callable. For any that are not, call the client's tool discovery/search tool (`ToolSearch`, `tool_search`, or equivalent) by exact name, with a small result limit. In Codex, use the `limit` field for that result limit. Some clients cache the pre-init tool list and only refresh when asked. If a tool is still missing, fall back to the CLI via `Bash` (`storybloq phase create ...`, `storybloq ticket create ...`, `storybloq ticket update ...`, `storybloq issue create ...`, `storybloq snapshot`) and note that a client restart may be needed. Run one storybloq command per shell call, never through an interpreter script, a loop or a here-document, and check the result with `storybloq ticket list` or `storybloq phase list`, not a script. If the CLI is unavailable too, stop with a concrete blocker naming the missing tools and the restart step.
+1. **Build the payload** (below) from the approved package and **compare it to the package** before sending: every `Ticket:` in the Plan is one ticket with that title, every checkpoint line one checkpoint with that kind and owner label, every dependency one `blockedBy` or `gates` entry, and nothing the package does not show.
+2. **Apply it** in one shell call of its own: `storybloq setup-apply <<'STORYBLOQ_SETUP'`, then the JSON, then a line `STORYBLOQ_SETUP` (over MCP, `storybloq_setup_apply` with `payload`; it is callable before `.story/` exists, and when it is not listed, call the client's tool discovery/search tool by that exact name with a small result limit. In Codex, use the `limit` field for that result limit). Copy its output to the owner verbatim; never summarise it.
+3. **Act on the exit code** (MCP prints it first, as `[exit N]`):
+   - `0`: done; go to 1f.
+   - `2`: refused, nothing written. Correct a payload that misstates the package and send it again; otherwise tell the owner what was refused and stop.
+   - `3`: interrupted. Run `storybloq setup-apply --resume --setup <id>`; a resume never duplicates anything.
+   - `4`: an edit or a clash only the owner can decide. Each `Ambiguity:` line is one question with its resolutions as the answers. Send all the answers in one call, `storybloq setup-apply --setup <id> --resolve '<json>'`: a JSON array of `{"target": "<the line's target>", "resolution": "<the answer>", "ownerWords": "<the owner's words>"}`. `stop` ends the run with nothing written. A material answer (`accept-current`, `accept-removal`, `keep-current`, `replace`, `drop-checkpoints`, `adopt <id>`) changes the approved plan: review it as an adjustment (1d), show the owner the result, and add `"reviewRevision": "<its digest12>"` to that answer; after the owner's skip no review is needed.
+   - A `pointer edit owed` stop: show the owner the approved change (the `.proposed` file it names against the current file), make it with your ordinary edit tool once the owner has seen it, then resume. An `enable refused` stop: relay its text verbatim.
+   - `7`: another writer holds the project lock; send the same call again when it finishes.
 
-3. **Configure the recipe stages** for the approved quality level. Construct one JSON object and apply it via Bash:
-   ```
-   storybloq config set-overrides --json '<JSON>'
-   ```
-   The default recipe enables `WRITE_TESTS` and `TEST` with `npm test`, an override only replaces what it names, and a reused scaffold may already carry overrides. So all four stages, `WRITE_TESTS`, `TEST`, `BUILD` and `VERIFY`, are always written with an explicit `"enabled"` value.
+   Exit 5 never comes from setup-apply.
 
-   **When a test command is established.** Classify every component first (the root counts as one): its test command is either established or pending. It is established only when both hold. Nothing is established by running it: never execute an install, test, build or dev server during setup.
+**The payload**, one JSON object: `{"version": 1, "setupId", "review", "ownerLabel", "project", "quality", "governance", "git", "phases", "tickets", "checkpoints", "issues", "coverage"}`. `setupId` is the gate's `SS-` id. Every phase, ticket, checkpoint and issue has its own `key` (`K1` upwards), and references use keys, never ids.
 
-   1. **A command**, taken in this order of precedence:
-      - an explicit repository command: a `test` script in `package.json`, a `test` target in a `Makefile`, or a test command documented in the README or CLAUDE.md;
-      - otherwise exactly one configured runner: a runner configuration section or file, such as pytest in `pyproject.toml`, `pytest.ini`, `setup.cfg` or `tox.ini`, or a jest or vitest config;
-      - otherwise exactly one runner convention row below.
+- `review`: `{"reviewer": "<codex|claude|none>", "outcome": "approved|round-limit|skipped", "lines": [<the package's review lines, verbatim>]}`; `ownerLabel`: the owner's name or role; `project`: `{"name", "type", "language"}`.
+- `phases`, in milestone order: `{"key", "id": "<lowercase-slug>", "name", "label", "description"}`.
+- `tickets`: `{"key", "title", "type": "task|feature|chore", "phase": "<phase key>", "description": "<the template lines>", "blockedBy": [<keys>]}`.
+- `checkpoints`: `{"key", "title", "kind": "decision|acceptance", "question"|"criteria", "evidenceRefs": [], "description", "phase", "blockedBy": [<what it reviews>], "gates": [<the work it holds back>]}`.
+- `issues` (imported GitHub issues): `{"key", "title", "body", "labels", "source": <number or null>}`.
+- `coverage`: `{"requirement": "R<n>", "text", "source", "keys": [<keys>]}`, plus `"deferral": "<why>"` for a deferred or already-built requirement.
+- `quality`: `{"level": "full|tests-only|minimal", "verifyApplies": <bool>, "components": [{"id", "workdir": "<. or dir>", "test", "build", "verify"}]}`, each stage `{"command", "status": "established|pending", "reason"}` (`verify`: `{"startCommand", "readinessUrl", "status", "reason"}`), `reason` only when pending, or `null`. The engine writes every recipe stage, with an explicit `enabled`, from these and the level.
+- `governance`: `{"canonicalFactsPath": "<CLAUDE.md or AGENTS.md>", "files": [{"path", "content"}]}`, only the approved files that do not exist yet; the engine never overwrites one.
+- `git`: `{"init": <true when the package initialises git>, "gitignore": [<the approved entries, at least .story/snapshots/, .story/sessions/ and .story/status.json>]}`.
 
-      When two sources at the same level disagree, the command is pending with the reason "conflicting test command evidence". A higher level wins over a lower one. A Django project whose Makefile runs `pytest` uses `pytest`, not `python manage.py test`.
-   2. **Test sources the runner collects:** at least one test file exists that the runner would collect. Use the repository's collection configuration first, such as pytest `testpaths` and `python_files`, jest `testMatch` or vitest `include`. The patterns in the table are defaults, used only when nothing is configured.
+**Classify every component** (the root counts as one) for `quality.components`: its test command is either established or pending. It is established only when both hold. Nothing is established by running it: never execute an install, test, build or dev server during setup.
 
-   | Runner convention | Applies when | Default test sources | Command |
-   |---|---|---|---|
-   | npm script | `package.json` has a `test` script | files that script's runner collects (vitest `**/*.{test,spec}.*`, jest `**/*.{test,spec}.*` and `__tests__`) | `npm test` |
-   | pytest | pytest configuration or a pytest dependency | `test_*.py` / `*_test.py` under the component | `pytest` |
-   | Django | `manage.py` present | `tests.py` or `tests/` in an app | `python manage.py test` |
-   | Go | `go.mod` | `*_test.go` | `go test ./...` |
-   | Rust | `Cargo.toml` | `tests/*.rs`, or `#[test]` inside `src` | `cargo test` |
-   | Flutter | `pubspec.yaml` with `flutter_test` | `test/**/*_test.dart` | `flutter test` |
+1. **A command**, taken in this order of precedence:
+   - an explicit repository command: a `test` script in `package.json`, a `test` target in a `Makefile`, or a test command documented in the README or CLAUDE.md;
+   - otherwise exactly one configured runner: a runner configuration section or file, such as pytest in `pyproject.toml`, `pytest.ini`, `setup.cfg` or `tox.ini`, or a jest or vitest config;
+   - otherwise exactly one runner convention row below.
 
-   **Then build one test command from the established components only.** With one, it is that component's command, run from the root, or `cd <dir> && <command>` for a component in a subdirectory. With several, write one plain sequence of `cd` steps and test commands joined only by `&&`, for example `cd backend && pytest` or `cd frontend && npm test && cd ../backend && pytest`. Use no subshell `( ... )`, no `;`, `||` or `|`, and no other command. **Then apply the approved quality level:** Full pipeline and Tests only write `WRITE_TESTS` and `TEST` with that same command, Full pipeline enabling both and Tests only enabling `TEST` and writing `WRITE_TESTS` with `"enabled": false`; Minimal writes both with `"enabled": false`, even when a command is established. When no component is established, write both with `"enabled": false` and record the proposed command as pending. Never leave them to the defaults.
+   When two sources at the same level disagree, the command is pending with the reason "conflicting test command evidence". A higher level wins over a lower one. A Django project whose Makefile runs `pytest` uses `pytest`, not `python manage.py test`.
+2. **Test sources the runner collects:** at least one test file exists that the runner would collect. Use the repository's collection configuration first, such as pytest `testpaths` and `python_files`, jest `testMatch` or vitest `include`. The patterns in the table are defaults, used only when nothing is configured.
 
-   **Every pending component gets its pending lines** (1f), one per test stage the quality level uses, whether or not the stages are enabled for the others.
+| Runner convention | Applies when | Default test sources | Command |
+|---|---|---|---|
+| npm script | `package.json` has a `test` script | files that script's runner collects (vitest `**/*.{test,spec}.*`, jest `**/*.{test,spec}.*` and `__tests__`) | `npm test` |
+| pytest | pytest configuration or a pytest dependency | `test_*.py` / `*_test.py` under the component | `pytest` |
+| Django | `manage.py` present | `tests.py` or `tests/` in an app | `python manage.py test` |
+| Go | `go.mod` | `*_test.go` | `go test ./...` |
+| Rust | `Cargo.toml` | `tests/*.rs`, or `#[test]` inside `src` | `cargo test` |
+| Flutter | `pubspec.yaml` with `flutter_test` | `test/**/*_test.dart` | `flutter test` |
 
-   **`BUILD` and `VERIFY`:** `"enabled": true` only for Full pipeline, and only with commands established from the manifests (VERIFY also needs an applicable project type, below). Everything else writes them with `"enabled": false`: Tests only, Minimal, pending tooling, and project types VERIFY does not apply to. Record a pending proposal as pending.
+**`BUILD` and `VERIFY`** are established only from the manifests, never by running anything.
 
-   Full pipeline with an established test command, for example:
-   ```json
-   { "stages": {
-     "WRITE_TESTS": { "enabled": true, "command": "<established>", "onExhaustion": "plan" },
-     "TEST": { "enabled": true, "command": "<established>" },
-     "BUILD": { "enabled": true, "command": "<established>" },
-     "VERIFY": { "enabled": true, "startCommand": "<established>", "readinessUrl": "<established>" }
-   }}
-   ```
+For `BUILD` and `VERIFY`, the candidates to look for (read from the manifest or build file, never values to write unchecked):
 
-   For `BUILD` and `VERIFY`, the candidates to look for (read from the manifest or build file, never values to write unchecked):
+| Stack | Dev server | Readiness URL | Build |
+|-------|------------|---------------|-------|
+| Node (`package.json` scripts) | `npm run dev` | `http://localhost:3000` | `npm run build` |
+| Vite / SvelteKit | `npm run dev` | `http://localhost:5173` | `npm run build` |
+| Python | per framework | `http://localhost:8000` | -- |
+| Django | `python manage.py runserver` | `http://localhost:8000` | -- |
+| Go | `go run .` | `http://localhost:8080` | -- |
+| Rust | -- | -- | `cargo build` |
+| Flutter | -- | -- | `flutter build` |
 
-   | Stack | Dev server | Readiness URL | Build |
-   |-------|------------|---------------|-------|
-   | Node (`package.json` scripts) | `npm run dev` | `http://localhost:3000` | `npm run build` |
-   | Vite / SvelteKit | `npm run dev` | `http://localhost:5173` | `npm run build` |
-   | Python | per framework | `http://localhost:8000` | -- |
-   | Django | `python manage.py runserver` | `http://localhost:8000` | -- |
-   | Go | `go run .` | `http://localhost:8080` | -- |
-   | Rust | -- | -- | `cargo build` |
-   | Flutter | -- | -- | `flutter build` |
-
-   A Python project with no `package.json` never gets `npm test`. Skip VERIFY for static sites, CLIs, libraries, packages, mobile-only apps and projects with no custom server.
-
-4. Call `storybloq_phase_create` for each phase. When `p0` exists (a fresh init writes it, and a reused scaffold keeps it), the first goes `after: "p0"` without `atStart`; only on an empty roadmap does the first use `atStart: true`. Each later phase goes `after:` the id the previous call returned.
-5. **Pass 1:** Call `storybloq_ticket_create` for each ticket WITHOUT `blockedBy` (ticket IDs don't exist until after creation). Keep the id each call returns.
-6. Call `storybloq_issue_create` for each imported GitHub issue.
-7. **Pass 2:** Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned. Validate: no cycles, no self-references.
-8. Call `storybloq_ticket_update` to mark already-complete tickets as `complete` (only those with code evidence).
-9. Write the approved governance files (below), then git (below).
-10. Call `storybloq_snapshot` to save the initial baseline.
-
-**Narrate every MCP call as it happens**, one line each, never a bulk summary:
-- `-> storybloq · phase "foundation" created`
-- `-> storybloq · ticket T-003 "Account sign-in" created (phase: foundation)`
-- `-> storybloq · T-015 wired: blocked by T-010, T-014`
+A Python project with no `package.json` never gets `npm test`. `verifyApplies` is false for static sites, CLIs, libraries, packages, mobile-only apps and projects with no custom server.
 
 **CLAUDE.md generation** (when approved in the package):
 
@@ -266,8 +256,6 @@ Everything below runs only after approval as defined in 1d.
 
 **Sanitization:** Never copy secrets, tokens, credentials, API keys, connection strings, customer-identifying data, or internal-only endpoints into generated files.
 
-**Verify after write.** After each `Write`, `Read` the file back and record its byte count. If the read fails, the write did not land -- the summary must say so ("CLAUDE.md write failed -- please create manually") rather than claim success. If it succeeds, include the size ("CLAUDE.md created (2,814 chars)"). A hallucinated "created" is indistinguishable from a real one without this step.
-
 **RULES.md generation** (when approved) captures domain rules (e.g., "all monetary calculations use fixed-point arithmetic, not floats"), API constraints, data integrity rules (soft deletes, audit trails, idempotency) and testing requirements for core business logic.
 
 **TDD recommendation:** Add it when the material shows business rules or workflows, multiple organisations, AI evaluation needs, or a sensitive domain. It is tied to those facts, not to judgement:
@@ -278,7 +266,7 @@ Everything below runs only after approval as defined in 1d.
   AI evaluation harnesses). Tests define the contract before implementation.
 ```
 
-Same sanitization and read-back rules as CLAUDE.md.
+Same sanitization rules as CLAUDE.md.
 
 **REVIEW.md generation:** REVIEW.md is the project's review contract. Verification backends read it and ordinary coding sessions do not. `storybloq init` does not write it: a contract nobody agreed to is worse than no contract, so it is part of the package and the user edits or rejects it before it lands. `storybloq validate` warns when review backends are configured and REVIEW.md is absent or unparseable.
 
@@ -286,32 +274,20 @@ Same sanitization and read-back rules as CLAUDE.md.
 
 **The Outside line.** The template ships three lens ids on it. Entries there take a subject OUT of the contract, which means a finding on that subject is never capped and keeps the severity its reviewer gave it -- Outside is the loud side, not a way to silence anything. If the user asked to set exclusions, say that in one sentence, then write what they name as one plain comma-separated line under the heading. Never bullet the entries: the parser reads every line under that heading as entries and does not strip a `- ` prefix, so a bulleted entry matches nothing. An empty line is the widest coverage and the quietest gate, and `storybloq validate` warns about one.
 
-Same sanitization and read-back rules as CLAUDE.md -- a REVIEW.md reported as created but never written is worse than none, because the warning that would have caught it stops firing.
-
-**Git (autonomous mode depends on it).** Run `git rev-parse --show-toplevel` via `Bash`. If it errors and the package included git initialisation, run `git init` and narrate `-> git · repository initialized at <path>`. Then create or append to `.gitignore` any missing entries:
-```
-.story/snapshots/
-.story/sessions/
-.story/status.json
-```
+Same sanitization rules as CLAUDE.md.
 
 #### 1f. Post-Setup
 
-**Summary.** Confirm what was created with concrete, verified counts: do not say "CLAUDE.md created" unless the read-back confirmed it, and do not give a ticket count unless every create call returned success; the counts must equal what is on disk. Example: "Created 5 phases, 18 tickets, 3 issues, CLAUDE.md (2,814 chars), RULES.md (1,206 chars). Git repo initialized." Then:
-
-- the review status line of the approved package, in its exact form (1c2);
-- one line per pending stage, and per component when the project has several, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)", or with a component "Verification tooling to establish: <stage> (<component>): <proposed command> (pending: <reason>)".
-
-**Initial handover and setup note.** Write an initial handover that records the product brief and its acceptance conditions, the coverage map, the answers from 1c, the conflicts and how they were ruled, the approved quality level with its established and pending commands, the review outcome or the recorded skip, and the checkpoint tickets with the stage-1 limitation. Also create a setup note (`storybloq_note_create`, tag `setup`) holding the coverage map and the pending verification tooling. The handover is the source of truth for setup decisions; CLAUDE.md is the project description.
+**Summary.** A finished `setup-apply` prints the setup report, then `Setup applied: <id>` (a call on an existing project adds `Git:` lines for the files it wrote). Copy the report lines into the message verbatim, never retyped, merged or shortened: the created counts, the quality level and stages, every `Pending:` line, the governance files, the review lines and the first story. The engine already wrote the setup note and the initial handover. `storybloq setup-report --setup <id>` prints the live report later, `--historical` the frozen one.
 
 Present a brief completion message and tell the user how to start:
 
 "Your project is set up -- [X] phases, [Y] tickets, AGENTS.md/CLAUDE.md, and RULES.md created. Type **`/story`** in Claude Code or **`$story`** in Codex at the start of any session to load context and see what to work on. Or use **`/story auto`** / **`$story auto`** to work through the tickets autonomously."
 
-Keep that prose to 2-3 sentences; the pending lines are not prose: they are never shortened, merged, bulleted or left to the note or handover instead. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work.
+Keep that prose to 2-3 sentences; the report lines are not prose: they are never shortened, merged, bulleted or left to the note or handover instead. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work.
 
 **Hooks note (Claude Code).** When `storybloq setup` registered hooks, the session now carries context-pressure awareness (T-499): a SessionStart hook captures the auto-compact setting for the process, a synchronous UserPromptSubmit hook samples the transcript tail on every prompt and injects one line only when pressure is imperative or compact-needed, and the Stop hook samples at every turn end. Nothing to configure; `storybloq session intel` shows the current numbers. Machine-wide opt-out: `~/.claude/storybloq/config.json` `{"sessionIntel": {"enabled": false}}`, then re-run `storybloq setup` or any CLI command to remove the hooks.
 
 **Design evaluation hint** (show only for a web, mobile or desktop app): add one line after the completion message: "Tip: Run `/story design` anytime to evaluate your frontend against [detected platform] best practices and generate improvement issues." Use the actual command that invoked this flow (e.g., `/story design` for standalone, `/story:go design` for plugin).
 
-**Last check before sending the completion message.** Every stage, and every component, whose command you recorded as pending has its own line in the message itself, `WRITE_TESTS` and `TEST` on separate lines. The same line in the note or handover does not count.
+**Last check before sending the completion message.** Every `Pending:` line of the report is in the message itself, one per line. The same line in the note or handover does not count.

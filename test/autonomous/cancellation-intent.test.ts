@@ -314,8 +314,10 @@ async function teardownChildren(): Promise<void> {
       spawned.child.kill("SIGKILL");
     }
     const settled = await Promise.race([spawned.done.then(() => true), sleep(2_000).then(() => false)]);
-    if ((pgid !== undefined && groupAlive(pgid)) || !settled) survivors.push(String(pgid ?? spawned.child.pid));
-    else if (pgid !== undefined) retained.pgids.delete(pgid);
+    // A group confirmed gone leaves the emergency set whatever `done` did.
+    const alive = pgid !== undefined && groupAlive(pgid);
+    if (pgid !== undefined && !alive) retained.pgids.delete(pgid);
+    if (alive || !settled) survivors.push(String(pgid ?? spawned.child.pid));
   }
   if (survivors.length > 0) throw new Error(`teardown left children alive: ${survivors.join(", ")}`);
   for (const dir of childTmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -1054,6 +1056,20 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     };
     children.push(stuck);
     await expect(teardownChildren()).rejects.toThrow("teardown left children alive");
+    expect(retained.pgids.has(pgid), `group ${pgid} still retained`).toBe(false);
+  }, 40_000);
+
+  it.skipIf(process.platform === "win32")("a group confirmed gone leaves the emergency set even when its own completion never settles", async () => {
+    const spawned = spawnTsx([fixture("tsx-marker.ts"), join(sessDir, "finished")]);
+    await spawned.done;
+    expect(spawned.pgid).toBeDefined();
+    const pgid = spawned.pgid as number;
+    expect(groupAlive(pgid)).toBe(false);
+    expect(retained.pgids.has(pgid)).toBe(true);
+    // The same gone group, recorded with a completion that never settles.
+    children.splice(children.indexOf(spawned), 1);
+    children.push({ ...spawned, done: new Promise<Completion>(() => {}) });
+    await expect(teardownChildren()).rejects.toThrow(`teardown left children alive: ${pgid}`);
     expect(retained.pgids.has(pgid), `group ${pgid} still retained`).toBe(false);
   }, 40_000);
 

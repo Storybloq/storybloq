@@ -11,7 +11,7 @@
  * file, so no handler reads the real ones.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -252,6 +252,19 @@ describe("immutable evidence mode", () => {
     expect(parseEvidenceMode({})).toEqual({ kind: "legacy" });
   });
 
+  it("attach refuses a ticket that already carries a mode, nothing written", async () => {
+    const dir = await project(5);
+    const work = await newTicket(dir);
+    const path = ticketFile(dir, work);
+    await writeFile(path, JSON.stringify({ ...(await ticketOnDisk(dir, work)), checkpointEvidenceMode: "immutable" }, null, 2) + "\n");
+    const before = await readFile(path, "utf-8");
+    for (const evidenceMode of [undefined, "immutable" as const]) {
+      await expect(attachCheckpoint(dir, work, { owner: "owner", content: DECISION, actor: ACTOR, ...(evidenceMode ? { evidenceMode } : {}) }))
+        .rejects.toThrow(/already carries checkpointEvidenceMode/);
+    }
+    expect(await readFile(path, "utf-8")).toBe(before);
+  });
+
   it("a checkpoint created without a mode at schema 5 stays legacy", async () => {
     const dir = await project(5);
     const cp = await newCheckpoint(dir);
@@ -376,6 +389,18 @@ describe("checkpoint evidence", () => {
     expect(existsSync(join(dir, "docs", "checkpoints"))).toBe(false);
   });
 
+  it("a link inside the project to a file outside it is refused", async () => {
+    const dir = await project(5);
+    const cp = await immutableAcceptance(dir);
+    const outside = await mkdtemp(join(tmpdir(), "t538-s1-outside-"));
+    dirs.push(outside);
+    const target = join(outside, "secret.txt");
+    await writeFile(target, "secret\n");
+    await symlink(target, join(dir, "demo.txt"));
+    await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: join(dir, "demo.txt"), actor: ACTOR })).rejects.toThrow(/inside the project/);
+    expect(existsSync(join(dir, "docs", "checkpoints"))).toBe(false);
+  });
+
   it("is refused on a legacy checkpoint, naming checkpoint change", async () => {
     const dir = await project(5);
     const cp = await newCheckpoint(dir, { content: ACCEPTANCE });
@@ -455,6 +480,15 @@ describe("checkpoint enable --immutable-evidence", () => {
     await enableCheckpoints(dir, READY, { immutableEvidence: true });
     expect(await enableCheckpoints(dir, READY)).toEqual({ status: "already", team: false });
     expect((await configOf(dir)).schemaVersion).toBe(5);
+  });
+
+  it("a plain enable on a schema-5 project whose enable step is unfinished finishes it at 5", async () => {
+    const dir = await project(5);
+    expect((await configOf(dir)).checkpointEnable).toBeUndefined();
+    expect(await enableCheckpoints(dir, READY)).toEqual({ status: "enabled", team: false });
+    const config = await configOf(dir);
+    expect(config.schemaVersion).toBe(5);
+    expect((config.checkpointEnable as Record<string, unknown>).step).toBe("complete");
   });
 
   it("a plain enable still stamps 4, never 5", async () => {

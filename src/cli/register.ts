@@ -6624,7 +6624,8 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
                   .option("summary", { type: "string", demandOption: true, describe: "One or two sentences: what this can do" })
                   .option("contract", { type: "string", demandOption: true, describe: "What it guarantees, in the terms a caller needs" })
                   .option("example", { type: "string", describe: "One concrete invocation or call site" })
-                  .option("status", { type: "string", choices: ["current", "review"], describe: "Stored status flag (default: current)" }),
+                  .option("status", { type: "string", choices: ["current", "review"], describe: "Stored status flag (default: current)" })
+                  .option("skip-check", { type: "boolean", describe: "Write a --cli or --mcp-tool name storybloq reference does not list (capability check still reports it)" }),
                 {
                   entry: { ...LITERAL_DROP_BLANK, describe: "Repo-relative entry point, file or directory (repeatable, at least one; a comma is legal in a path, so repeat the flag)" },
                   cli: { ...SPLIT_LIST, describe: "CLI command name this is reachable through (repeatable)" },
@@ -6662,7 +6663,8 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
                   .option("summary", { type: "string", describe: "One or two sentences: what this can do" })
                   .option("contract", { type: "string", describe: "What it guarantees" })
                   .option("example", { type: "string", describe: "One concrete invocation or call site" })
-                  .option("status", { type: "string", choices: ["current", "review"], describe: "Stored status flag" }),
+                  .option("status", { type: "string", choices: ["current", "review"], describe: "Stored status flag" })
+                  .option("skip-check", { type: "boolean", describe: "Write a --cli or --mcp-tool name storybloq reference does not list (capability check still reports it)" }),
                 {
                   entry: { ...LITERAL_DROP_BLANK, describe: "Entry points, REPLACING the current list (repeatable; a comma is legal in a path, so repeat the flag)" },
                   cli: { ...SPLIT_LIST, describe: "CLI commands, replacing the current list (repeatable)" },
@@ -6791,6 +6793,7 @@ function capabilityWriteInput(argv: Record<string, unknown>): CapabilityWriteInp
     items: argv.item as string[] | undefined,
     terms: argv.term as string[] | undefined,
     status: argv.status as string | undefined,
+    skipCheck: argv["skip-check"] as boolean | undefined,
   };
 }
 

@@ -31,6 +31,10 @@ import {
   matchDisclosure,
   isStampable,
   resolveHead,
+  referenceSurfaceNames,
+  unknownSurfaces,
+  unknownSurfaceDetail,
+  nearestSurfaceNames,
   type CapabilityCheckReport,
   type CapabilityCheckEntry,
   type CapabilityMatchResult,
@@ -87,6 +91,8 @@ export interface CapabilityWriteInput {
   readonly items?: readonly string[];
   readonly terms?: readonly string[];
   readonly status?: string;
+  /** ISS-1301: write a cli or mcp name the compiled reference does not list. */
+  readonly skipCheck?: boolean;
 }
 
 /**
@@ -153,6 +159,25 @@ async function refusing(run: () => Promise<CommandResult>): Promise<CommandResul
  */
 function pendingFirst<T extends { cap: Capability }>(rows: readonly T[]): T[] {
   return [...rows.filter((r) => hasPendingNote(r.cap)), ...rows.filter((r) => !hasPendingNote(r.cap))];
+}
+
+/**
+ * ISS-1301: the supplied cli and mcp names, against the rule `capability
+ * check` applies. Input-only, so it runs before the transaction and a refusal
+ * can never write. `update` passes only the lists it was given: a stale stored
+ * name must not block an unrelated edit, and `check` keeps reporting it.
+ */
+function surfaceRefusal(input: CapabilityWriteInput, format: OutputFormat): CommandResult | null {
+  if (input.skipCheck === true) return null;
+  const known = referenceSurfaceNames();
+  const unknown = unknownSurfaces({ cli: input.cli, mcp: input.mcp }, known);
+  if (unknown.length === 0) return null;
+  const lines = unknown.map(({ kind, name }) => {
+    const near = nearestSurfaceNames(kind, name, known);
+    return near.length > 0 ? `${unknownSurfaceDetail(kind, name)} (did you mean: ${near.join(", ")})` : unknownSurfaceDetail(kind, name);
+  });
+  lines.push("Surfaces are exact `storybloq reference` names. To write a name this CLI's reference does not list yet, pass --skip-check (MCP: skipCheck); `capability check` still reports it.");
+  return { output: formatError("invalid_input", lines.join("\n"), format), exitCode: ExitCode.USER_ERROR, errorCode: "invalid_input" };
 }
 
 /**
@@ -574,6 +599,8 @@ export async function handleCapabilityAdd(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
+  const surfaces = surfaceRefusal(input, format);
+  if (surfaces !== null) return surfaces;
   const checkedAt = await freshCheckpoint(root);
   const candidate = defined({
     id: input.id,
@@ -627,6 +654,8 @@ export async function handleCapabilityUpdate(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
+  const surfaces = surfaceRefusal(input, format);
+  if (surfaces !== null) return surfaces;
   return refusing(async () => {
     const doc = await capabilityCatalog.mutate(root, (current) => {
       const index = current.capabilities.findIndex((c) => c.id === input.id);

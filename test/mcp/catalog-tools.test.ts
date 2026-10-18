@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { initProject } from "../../src/core/init.js";
+import { toolSchema } from "./tool-schema-helpers.js";
 
 /**
  * ISS-1286 through the registered MCP tools: a catalog refusal is an error
@@ -19,11 +20,15 @@ interface RegisteredTool {
   handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
 }
 
+/**
+ * Arguments pass through the tool's declared (strict) schema before the
+ * handler, as the SDK does, so a parameter missing from the schema fails here.
+ */
 function captureTools(root: string): Map<string, RegisteredTool> {
   const tools = new Map<string, RegisteredTool>();
   const server = {
     registerTool: (name: string, config: RegisteredTool["config"], handler: RegisteredTool["handler"]) =>
-      tools.set(name, { config, handler }),
+      tools.set(name, { config, handler: (args) => handler(toolSchema(config.inputSchema).parse(args) as Record<string, unknown>) }),
   } as unknown as Parameters<typeof registerAllTools>[0];
   registerAllTools(server, root);
   return tools;
@@ -164,5 +169,26 @@ describe("catalog refusals through the registered MCP tools (ISS-1286)", () => {
     const upd = await tools.get("storybloq_capability_update")!.handler({ id: "cap-thing", summary: "Rewritten." });
     expect(upd.isError).toBeFalsy();
     expect(JSON.parse(readFileSync(catalogPath(root), "utf-8")).capabilities[0].summary).toBe("Rewritten.");
+  });
+});
+
+describe("capability surfaces through the registered MCP tools (ISS-1301)", () => {
+  it("an unknown surface is an error and leaves the inventory unchanged", async () => {
+    const root = await newProject();
+    const tools = captureTools(root);
+    await compactInventory(tools, root);
+    const before = durableBytes(root);
+    const res = await tools.get("storybloq_capability_update")!.handler({ id: "cap-thing", mcp: ["ruling_list"] });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("no such MCP tool in storybloq reference: ruling_list");
+    expect(durableBytes(root)).toEqual(before);
+  });
+
+  it("skipCheck writes an unlisted name through MCP", async () => {
+    const root = await newProject();
+    const tools = captureTools(root);
+    const res = await tools.get("storybloq_capability_add")!.handler({ ...CAP, cli: ["ruling"], skipCheck: true });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(readFileSync(catalogPath(root), "utf-8")).capabilities[0].surfaces.cli).toEqual(["ruling"]);
   });
 });

@@ -1622,6 +1622,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       items: z.array(z.string()).optional().describe("Ticket or issue IDs that built this"),
       terms: z.array(z.string()).optional().describe("Glossary term IDs"),
       status: z.enum(CAPABILITY_STATUSES).optional().describe("Stored flag (default: current)"),
+      skipCheck: z.boolean().optional().describe("Accept cli/mcp names the reference lacks"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCapabilityAdd(args, format, root)));
 
@@ -1644,6 +1645,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       items: z.array(z.string()).optional(),
       terms: z.array(z.string()).optional(),
       status: z.enum(CAPABILITY_STATUSES).optional(),
+      skipCheck: z.boolean().optional().describe("Accept cli/mcp names the reference lacks"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCapabilityUpdate(args, format, root)));
 

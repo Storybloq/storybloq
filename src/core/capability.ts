@@ -564,17 +564,65 @@ function checkReferences(entry: Capability, index: ReferenceIndex): CapabilityCh
     }
     out.push(result("capability_unknown_term", "structural", `unknown glossary term: ${id}`));
   }
-  for (const name of entry.surfaces.cli ?? []) {
-    if (!index.cliNames.has(name)) {
-      out.push(result("capability_unknown_surface", "structural", `no such CLI command in storybloq reference: ${sanitizeDisplayText(name)}`));
-    }
-  }
-  for (const name of entry.surfaces.mcp ?? []) {
-    if (!index.mcpNames.has(name)) {
-      out.push(result("capability_unknown_surface", "structural", `no such MCP tool in storybloq reference: ${sanitizeDisplayText(name)}`));
-    }
+  for (const { kind, name } of unknownSurfaces(entry.surfaces, index)) {
+    out.push(result("capability_unknown_surface", "structural", unknownSurfaceDetail(kind, name)));
   }
   return out;
+}
+
+// --- surfaces (ISS-1301) ---
+//
+// One rule for `capability check` and for the add and update writers, so a
+// name a write accepts is never one the next check rejects.
+
+export type SurfaceKind = "cli" | "mcp";
+
+export interface SurfaceNames {
+  readonly cliNames: ReadonlySet<string>;
+  readonly mcpNames: ReadonlySet<string>;
+}
+
+/** The names `storybloq reference` lists, from the registry compiled into this CLI. */
+export function referenceSurfaceNames(): SurfaceNames {
+  return { cliNames: new Set(COMMANDS.map((c) => c.name)), mcpNames: new Set(MCP_TOOLS.map((t) => t.name)) };
+}
+
+export function unknownSurfaces(
+  surfaces: { readonly cli?: readonly string[]; readonly mcp?: readonly string[] },
+  known: SurfaceNames,
+): Array<{ kind: SurfaceKind; name: string }> {
+  return [
+    ...(surfaces.cli ?? []).filter((n) => !known.cliNames.has(n)).map((name) => ({ kind: "cli" as const, name })),
+    ...(surfaces.mcp ?? []).filter((n) => !known.mcpNames.has(n)).map((name) => ({ kind: "mcp" as const, name })),
+  ];
+}
+
+export function unknownSurfaceDetail(kind: SurfaceKind, name: string): string {
+  return kind === "cli"
+    ? `no such CLI command in storybloq reference: ${sanitizeDisplayText(name)}`
+    : `no such MCP tool in storybloq reference: ${sanitizeDisplayText(name)}`;
+}
+
+/**
+ * Up to five reference names close to an unknown one, deterministic: for an
+ * MCP name the `storybloq_` form, then names in the same group (first word:
+ * `ruling` finds `ruling list`), then names that contain it.
+ */
+export function nearestSurfaceNames(kind: SurfaceKind, name: string, known: SurfaceNames): string[] {
+  const key = name.trim().toLowerCase();
+  if (key.length === 0) return [];
+  const names = [...(kind === "cli" ? known.cliNames : known.mcpNames)].sort();
+  const bare = (n: string): string => (kind === "mcp" ? n.toLowerCase().replace(/^storybloq_/, "") : n.toLowerCase());
+  const group = (n: string): string => bare(n).split(kind === "mcp" ? "_" : " ")[0]!;
+  const want = group(key);
+  const out: string[] = [];
+  const push = (n: string): void => {
+    if (!out.includes(n)) out.push(n);
+  };
+  if (kind === "mcp" && names.includes(`storybloq_${key}`)) push(`storybloq_${key}`);
+  for (const n of names) if (group(n) === want) push(n);
+  for (const n of names) if (n.toLowerCase().includes(key)) push(n);
+  return out.slice(0, 5);
 }
 
 /**

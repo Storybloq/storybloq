@@ -12,6 +12,7 @@ import {
   handleCapabilityCheck,
   capabilityCatalog,
 } from "../../../src/cli/commands/capability.js";
+import { nearestSurfaceNames } from "../../../src/core/capability.js";
 import { handleExport } from "../../../src/cli/commands/export.js";
 import { handleValidateWithSourceRefs } from "../../../src/cli/commands/validate.js";
 import { CliValidationError } from "../../../src/cli/helpers.js";
@@ -195,12 +196,12 @@ describe("capability update", () => {
 
   it("leaves omitted fields alone and REPLACES supplied lists", async () => {
     const root = await newRepo({ "src/core/thing.ts": "a\n", "src/core/other.ts": "b\n" });
-    await handleCapabilityAdd({ ...BASE, cli: ["one", "two"], items: ["T-001"] }, "md", root);
-    await handleCapabilityUpdate({ id: "cap-thing", cli: ["three"] }, "md", root);
+    await handleCapabilityAdd({ ...BASE, cli: ["status", "recap"], items: ["T-001"] }, "md", root);
+    await handleCapabilityUpdate({ id: "cap-thing", cli: ["handover latest"] }, "md", root);
     const entry = stored(root)[0]!;
     // Replacement rather than a union: merging would make a wrong surface
     // impossible to remove through the CLI.
-    expect(entry.surfaces.cli).toEqual(["three"]);
+    expect(entry.surfaces.cli).toEqual(["handover latest"]);
     expect(entry.items).toEqual(["T-001"]);
     expect(entry.name).toBe("The thing");
   });
@@ -755,6 +756,7 @@ describe("catalog text reaches every sink inert, and legitimate content survives
     mcp: [`mcp${H}`],
     app: [`app${H}`],
     files: [`files/f${H}.ts`],
+    skipCheck: true,
   };
   const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
 
@@ -930,5 +932,75 @@ describe("capability refused writes leave the ledger byte-identical (ISS-1286)",
     const before = storyBytes(root);
     await expect(handleCapabilityUpdate({ id: "cap-thing", contract: "" }, "md", root)).rejects.toBeInstanceOf(CliValidationError);
     expect(storyBytes(root)).toEqual(before);
+  });
+});
+
+/**
+ * ISS-1301: add and update apply the surface rule `capability check` applies,
+ * at write time, so a write never stores a name the next check rejects.
+ */
+describe("capability add and update refuse an unknown surface (ISS-1301)", () => {
+  it("add refuses a bare group name with the check's text and the names it meant, and writes nothing", async () => {
+    const root = await newRepo();
+    const before = storyBytes(root);
+    const res = await handleCapabilityAdd({ ...BASE, cli: ["ruling"] }, "md", root);
+    expect(res.errorCode).toBe("invalid_input");
+    expect(res.output).toContain("no such CLI command in storybloq reference: ruling");
+    expect(res.output).toContain("ruling list");
+    expect(res.output).toContain("--skip-check");
+    expect(existsSync(catalogPath(root))).toBe(false);
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("update refuses an unknown MCP name, suggests the storybloq_ form, and leaves the inventory untouched", async () => {
+    const root = await newRepo();
+    await handleCapabilityAdd(BASE, "md", root);
+    editCatalog(root, () => {}, 0);
+    const before = storyBytes(root);
+    const res = await handleCapabilityUpdate({ id: "cap-thing", mcp: ["ruling_list"] }, "md", root);
+    expect(res.errorCode).toBe("invalid_input");
+    expect(res.output).toContain("no such MCP tool in storybloq reference: ruling_list");
+    expect(res.output).toContain("storybloq_ruling_list");
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("accepts exact reference names on add and on update", async () => {
+    const root = await newRepo();
+    const res = await handleCapabilityAdd({ ...BASE, cli: ["ruling list"], mcp: ["storybloq_ruling_list"] }, "md", root);
+    expect(res.exitCode ?? ExitCode.OK).toBe(ExitCode.OK);
+    const upd = await handleCapabilityUpdate({ id: "cap-thing", cli: ["ruling get"] }, "md", root);
+    expect(upd.exitCode ?? ExitCode.OK).toBe(ExitCode.OK);
+    expect(stored(root)[0]!.surfaces.cli).toEqual(["ruling get"]);
+  });
+
+  it("skipCheck writes the name, and capability check then reports it with the identical text", async () => {
+    const root = await newRepo();
+    const res = await handleCapabilityAdd({ ...BASE, cli: ["ruling"], skipCheck: true }, "md", root);
+    expect(res.exitCode ?? ExitCode.OK).toBe(ExitCode.OK);
+    expect(stored(root)[0]!.surfaces.cli).toEqual(["ruling"]);
+    const check = await handleCapabilityCheck({}, "md", root, ctxFor(root));
+    expect(check.output).toContain("no such CLI command in storybloq reference: ruling");
+  });
+
+  it("update of an unrelated field is not blocked by a stale stored surface", async () => {
+    const root = await newRepo();
+    await handleCapabilityAdd({ ...BASE, cli: ["ruling"], skipCheck: true }, "md", root);
+    const res = await handleCapabilityUpdate({ id: "cap-thing", summary: "Rewritten." }, "md", root);
+    expect(res.exitCode ?? ExitCode.OK).toBe(ExitCode.OK);
+    expect(stored(root)[0]!.summary).toBe("Rewritten.");
+    expect(stored(root)[0]!.surfaces.cli).toEqual(["ruling"]);
+  });
+});
+
+describe("nearestSurfaceNames (ISS-1301)", () => {
+  const known = { cliNames: new Set(["ruling list", "ruling get", "status", "ticket list"]), mcpNames: new Set(["storybloq_ruling_list", "storybloq_status"]) };
+  it("finds the group for a bare first word, sorted", () => {
+    expect(nearestSurfaceNames("cli", "ruling", known)).toEqual(["ruling get", "ruling list"]);
+  });
+  it("puts the storybloq_ form first for an MCP name", () => {
+    expect(nearestSurfaceNames("mcp", "status", known)[0]).toBe("storybloq_status");
+  });
+  it("is empty when nothing is close", () => {
+    expect(nearestSurfaceNames("cli", "zzz", known)).toEqual([]);
   });
 });

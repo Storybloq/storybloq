@@ -116,6 +116,33 @@ test("Mac phase rail selects and toggles phases without losing search or type, r
   view.dispose();
   dom.window.close();
 });
+test("an active Unphased filter keeps its toggle after the last unphased item gains a phase", async (t) => {
+  const calls: any[] = [];
+  let unphasedLeft = true;
+  const { d, view, dom } = await setup(async (_name, args) => {
+    calls.push(args);
+    return result({ ...data, hasUnphased: unphasedLeft });
+  });
+  t.after(() => {
+    view.dispose();
+    dom.window.close();
+  });
+  view.receive(result());
+  const toggle = () =>
+    d.querySelector('[data-phase="unphased"]') as HTMLButtonElement | null;
+  toggle()!.click();
+  await tick();
+  assert.equal(calls.at(-1).phase, "unphased");
+  unphasedLeft = false;
+  await view.refresh();
+  assert.equal(calls.at(-1).phase, "unphased");
+  assert.ok(toggle(), "the active filter stays visible and clearable");
+  assert.equal(toggle()!.getAttribute("aria-pressed"), "true");
+  toggle()!.click();
+  await tick();
+  assert.equal(calls.at(-1).phase, "all");
+  assert.equal(toggle(), null);
+});
 test("attention and muted text remain readable on normal and changed Fabric cards in both themes", async () => {
   const html = await readFile("src/app.html", "utf8");
   const luminance = (hex: string) => {

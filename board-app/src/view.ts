@@ -161,7 +161,8 @@ export function mountBoard(
   function renderPhases(board: Overview) {
     const phases = [
       ...board.phases,
-      ...(board.hasUnphased
+      // An active Unphased filter stays visible so it can still be cleared.
+      ...(board.hasUnphased || query.phase === "unphased"
         ? [
             {
               key: "unphased",

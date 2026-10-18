@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,8 +11,9 @@ import { toolSchema } from "./tool-schema-helpers.js";
 /**
  * ISS-1286 through the registered MCP tools: a catalog refusal is an error
  * result, and it leaves the catalog and every durable ledger file unchanged.
- * MCP liveness telemetry under `.story/sessions` is a documented exception:
- * every MCP call may touch it, so the comparison leaves that directory out.
+ * MCP liveness telemetry is a documented exception: every MCP call touches
+ * the active session's `telemetry/lastMcpCall`, so the comparison leaves out
+ * exactly that file. Session state itself is compared like any other file.
  */
 
 interface RegisteredTool {
@@ -56,13 +57,19 @@ async function newProject(): Promise<string> {
   return root;
 }
 
-/** Every durable byte under `.story/`: everything except the session telemetry directory. */
+/** `.story/sessions/<id>/telemetry/lastMcpCall`: the one file an MCP call may touch. */
+function isLivenessTouch(rel: string): boolean {
+  const parts = rel.split(/[\\/]/);
+  return parts.length === 5 && parts[0] === ".story" && parts[1] === "sessions" && parts[3] === "telemetry" && parts[4] === "lastMcpCall";
+}
+
+/** Every durable byte under `.story/`, session state included; only the liveness touch is left out. */
 function durableBytes(root: string): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (rel: string): void => {
     for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
       const next = join(rel, entry.name);
-      if (next === join(".story", "sessions")) continue;
+      if (isLivenessTouch(next)) continue;
       if (entry.isDirectory()) walk(next);
       else out[next] = readFileSync(join(root, next), "utf-8");
     }
@@ -106,7 +113,8 @@ function writeLiveSession(root: string, sessionId: string): void {
     completedTickets: [],
     finalizeCheckpoint: null,
     git: { branch: null, mergeBase: null },
-    lease: { workspaceId: "test-ws", lastHeartbeat: now, expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString() },
+    // This workspace's id, so the MCP liveness touch finds the session.
+    lease: { workspaceId: realpathSync(root), lastHeartbeat: now, expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString() },
     ownerTask: { client: "claude", id: "owner-task-1", boundAt: now },
     contextPressure: { level: "low", guideCallCount: 0, ticketsCompleted: 0, compactionCount: 0, eventsLogBytes: 0 },
     pendingProjectMutation: null,
@@ -150,13 +158,19 @@ describe("catalog refusals through the registered MCP tools (ISS-1286)", () => {
 
   it("with an active session, a refusal leaves the catalog and ledger files unchanged while telemetry may move", async () => {
     const root = await newProject();
-    writeLiveSession(root, "11111111-1111-4111-8111-111111111111");
+    const SESSION = "11111111-1111-4111-8111-111111111111";
+    writeLiveSession(root, SESSION);
     const tools = captureTools(root);
     await compactInventory(tools, root);
     const before = durableBytes(root);
+    expect(Object.keys(before)).toContain(join(".story", "sessions", SESSION, "state.json"));
     const catalogBefore = readFileSync(catalogPath(root), "utf-8");
+    // The refused call's own touch recreates this, which proves the session is live.
+    const touch = join(root, ".story", "sessions", SESSION, "telemetry", "lastMcpCall");
+    rmSync(touch, { force: true });
     const res = await tools.get("storybloq_capability_update")!.handler({ id: "cap-nope", summary: "x" });
     expect(res.isError).toBe(true);
+    expect(existsSync(touch)).toBe(true);
     expect(readFileSync(catalogPath(root), "utf-8")).toBe(catalogBefore);
     expect(durableBytes(root)).toEqual(before);
   });

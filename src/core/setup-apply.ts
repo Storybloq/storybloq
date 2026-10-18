@@ -62,11 +62,13 @@ import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipU
 import { hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
 import { parseSetupMeta, type VerificationSpec } from "./setup-meta.js";
 import { ESTABLISHMENT_CREATION_AUTHORITY } from "./setup-verification-guard.js";
+import { initialRecord } from "./setup-verification-record.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
   parseSetupPayload,
   plannedStatus,
   renderSetupPayload,
+  usesEstablishment,
   SetupPayloadError,
   validateSetupPayload,
   type SetupPayload,
@@ -194,9 +196,11 @@ export const ownedDigest = {
     return digestOf(planned?.status === undefined ? owned : { ...owned, status: t.status, completedDate: t.completedDate ?? null });
   },
   issue: (i: Issue) => digestOf({ title: i.title, impact: i.impact, components: i.components, setup: (i as Issue & { setup?: unknown }).setup ?? null }),
+  /** The verification record (T-538 S3a-2) is owned only where a setup wrote one; a config without it hashes as before. */
   config: (c: Config) => {
     const stages = (c as Config & { recipeOverrides?: { stages?: unknown } }).recipeOverrides?.stages ?? null;
-    return digestOf({ project: c.project, type: c.type, language: c.language, stages });
+    const record = Object.hasOwn(c, "setupVerification") ? { setupVerification: (c as Config & { setupVerification?: unknown }).setupVerification } : {};
+    return digestOf({ project: c.project, type: c.type, language: c.language, stages, ...record });
   },
   edges: (ids: readonly string[]) => digestOf([...ids].sort()),
   bytes: (content: string) => sha256(content),
@@ -895,7 +899,9 @@ function plannedConfig(p: SetupPayload, config: Config): Config {
     const own = scaffold?.[f];
     return [f, typeof own === "string" && own.trim() !== "" && own !== INIT_PLACEHOLDER[f] ? own : proposedFact(p, f)];
   }));
-  return { ...config, ...facts, recipeOverrides: { ...overrides, stages: { ...stagesOf(config), ...stages } } } as Config;
+  // A setup that establishes a test stage writes its verification record with the stages (T-538 S3a-2).
+  const record = usesEstablishment(p) ? { setupVerification: initialRecord(p) } : {};
+  return { ...config, ...facts, recipeOverrides: { ...overrides, stages: { ...stagesOf(config), ...stages } }, ...record } as Config;
 }
 
 /**

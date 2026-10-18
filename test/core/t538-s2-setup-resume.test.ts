@@ -397,6 +397,28 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect((await progressPayload(b, "archived")).amendments).toEqual([]);
   });
 
+  it("a setup edge that would close a cycle with an edge the owner added stops at exit 4 with nothing written (review r1 #4)", async () => {
+    const root = await stoppedAt("step:item:K5");
+    await handleTicketUpdate("T-001", { blockedBy: ["T-002"] }, "json", root);
+    const result = await setupResume(root, SID);
+    expect(result.exitCode).toBe(4);
+    expect(result.lines).toContainEqual(expect.stringMatching(/^Ambiguity: dependency cycle · K3 · observed T-002 -> T-001 -> T-002; /));
+    expect((await loadProject(root)).state.ticketByID("T-002")!.blockedBy).toEqual([]);
+    expect((await progressPayload(root, "active")).receipts.some((r) => r.step === "wire:K3")).toBe(false);
+  });
+
+  it("restore-edge that would close a cycle stops at exit 4 with nothing written (review r1 #4)", async () => {
+    const root = await stoppedAt("step:wire:K3");
+    await handleTicketUpdate("T-002", { blockedBy: ["T-001"] }, "json", root);
+    await handleTicketUpdate("T-003", { blockedBy: ["T-002"] }, "json", root);
+    const before = await progressPayload(root, "active");
+    const result = await resolve1(root, "T-002 -> T-003", "restore-edge");
+    expect(result.exitCode).toBe(4);
+    expect(result.lines).toContainEqual(expect.stringMatching(/^Ambiguity: dependency cycle · T-002 -> T-003 · observed T-002 -> T-003 -> T-002; /));
+    expect((await loadProject(root)).state.ticketByID("T-002")!.blockedBy).toEqual(["T-001"]);
+    expect(await progressPayload(root, "active")).toEqual(before);
+  });
+
   it("keep <id> supersedes the other item's key and leaves its content as it was", async () => {
     const root = await stoppedAt("step:config");
     const dup = JSON.parse(await readFile(join(root, ".story", "tickets", "T-001.json"), "utf-8")) as Record<string, unknown>;

@@ -759,9 +759,41 @@ async function stepWire(ctx: StepContext, key: string, blockerKeys: readonly str
   const setupEdges = blockers.map((b) => b!.id);
   // A union: an edge the owner added is kept, never removed.
   const blockedBy = [...item.blockedBy, ...setupEdges.filter((id) => !item.blockedBy.includes(id))];
+  // The prospective graph, checked in the same hold before the write and its receipt.
+  const cycle = edgeCycle((id) => state.ticketByID(id)?.blockedBy ?? [], item.id, blockedBy);
+  if (cycle) throw cycleStop(key, cycle);
   const op = await prepareTicketWrite({ ...item, blockedBy } as Ticket, ctx.root);
   await commit(ctx, [op], { step: `wire:${key}`, target: `ticket:${item.id}`, ownedPre: ownedDigest.edges([]), ownedPost: ownedDigest.edges(setupEdges), edges: setupEdges.map((b): [string, string] => [item.id, b]) });
   ctx.out.push(`-> storybloq · ${item.displayId ?? item.id} wired: blocked by ${blockers.map((b) => b!.displayId ?? b!.id).join(", ")}`);
+}
+
+/**
+ * The blockedBy cycle `id` would close once its edges are `blockedBy`, as a
+ * path from `id` back to it, or null (review r1 #4). Only `id`'s edges change,
+ * so any new cycle runs through it.
+ */
+function edgeCycle(blockedByOf: (id: string) => readonly string[], id: string, blockedBy: readonly string[]): string[] | null {
+  const next = (t: string) => (t === id ? blockedBy : blockedByOf(t));
+  const seen = new Set<string>();
+  const walk = (t: string, path: string[]): string[] | null => {
+    if (t === id) return path;
+    if (seen.has(t)) return null;
+    seen.add(t);
+    for (const b of next(t)) {
+      const found = walk(b, [...path, b]);
+      if (found) return found;
+    }
+    return null;
+  };
+  for (const b of blockedBy) {
+    const found = walk(b, [id, b]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function cycleStop(target: string, cycle: readonly string[]): SetupStop {
+  return ambiguity({ class: "dependency cycle", target, observed: cycle.join(" -> "), expected: "no item that blocks itself; remove one of these edges, then resume", resolutions: ["stop"] });
 }
 
 function activationInput(p: SetupPayload) {
@@ -1821,7 +1853,10 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
         const step = `wire:${f.ref.key}`;
         if (r.resolution === "restore-edge") {
           const t = ticket(f.ref.item!);
-          tickets.set(t.id, { ...t, blockedBy: [...t.blockedBy, f.ref.blocker!] } as Ticket);
+          const blockedBy = [...t.blockedBy, f.ref.blocker!];
+          const cycle = edgeCycle((id) => ticket(id)?.blockedBy ?? [], t.id, blockedBy);
+          if (cycle) throw cycleStop(r.target, cycle);
+          tickets.set(t.id, { ...t, blockedBy } as Ticket);
           break;
         }
         const last = [...receipts].reverse().find((x) => x.step === step) ?? lastReceipt(p, step)!;

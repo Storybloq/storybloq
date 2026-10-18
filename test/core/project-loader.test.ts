@@ -7,6 +7,7 @@ import {
   rm,
   symlink,
   readdir,
+  realpath,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -908,6 +909,46 @@ describe("guardPath", () => {
     await expect(
       guardPath(join(testRoot, "..", "outside.json"), wrapDir),
     ).rejects.toThrow(ProjectLoaderError);
+  });
+
+  // ISS-1297: a missing parent is resolved from its nearest existing ancestor,
+  // so a root reached through a symlink is not an escape, and a missing tail
+  // below a symlink that points outside is.
+  describe("with a missing parent (ISS-1297)", () => {
+    let base: string;
+    beforeEach(async () => {
+      base = await realpath(await mkdtemp(join(tmpdir(), "iss1297-guard-")));
+    });
+    afterEach(async () => {
+      await rm(base, { recursive: true, force: true });
+    });
+    const linkedProject = async () => {
+      testRoot = await createTestProject();
+      const link = join(base, "link");
+      await symlink(testRoot, link);
+      return join(link, ".story");
+    };
+
+    it("resolves a missing parent under a symlinked root", async () => {
+      const wrapDir = await linkedProject();
+      await rm(join(wrapDir, "tickets"), { recursive: true, force: true });
+      await expect(guardPath(join(wrapDir, "tickets", "T-001.json"), wrapDir)).resolves.toBeUndefined();
+    });
+
+    it("resolves a missing two-level tail under a symlinked root", async () => {
+      const wrapDir = await linkedProject();
+      await expect(guardPath(join(wrapDir, "a", "b", "f.json"), wrapDir)).resolves.toBeUndefined();
+    });
+
+    it("refuses a missing tail below a symlink that points outside", async () => {
+      testRoot = await createTestProject();
+      // A real root, so only the symlink below `.story` can make it an escape.
+      const wrapDir = join(await realpath(testRoot), ".story");
+      const outside = join(base, "outside");
+      await mkdir(outside);
+      await symlink(outside, join(wrapDir, "x"));
+      await expect(guardPath(join(wrapDir, "x", "missing", "f.json"), wrapDir)).rejects.toThrow("resolves outside project root");
+    });
   });
 });
 

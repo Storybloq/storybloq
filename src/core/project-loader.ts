@@ -402,6 +402,18 @@ export const prepareTicketWriteSeams: { readPrior: (path: string) => Promise<str
   readPrior: (path) => readIfExists(path),
 };
 
+/**
+ * Test seams (ISS-1297): what runs between the containment check and the
+ * mkdir of a ticket or issue directory, and the mkdir itself.
+ */
+export const entityDirSeams: {
+  afterGuard: (dir: string) => Promise<void>;
+  mkdir: (dir: string, options: { recursive: true }) => Promise<unknown>;
+} = {
+  afterGuard: async () => {},
+  mkdir,
+};
+
 /** Test seam (T-486 Codex F1): how `prepareIssueWrite` reads the record a write replaces. */
 export const prepareIssueWriteSeams: { readPrior: (path: string) => Promise<string | null> } = {
   readPrior: (path) => readIfExists(path),

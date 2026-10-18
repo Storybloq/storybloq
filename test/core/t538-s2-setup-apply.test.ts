@@ -253,6 +253,16 @@ describe("an empty scaffold", () => {
     expect(result.lines.filter((l) => l.startsWith("Kept current:"))).toEqual(['Kept current: project "scaffold" (proposed "demo"), type "cargo" (proposed "npm"), language "rust" (proposed "typescript")']);
   });
 
+  it("init's default type is unstated and an explicit language is kept: generic and go end as the package's type and go", async () => {
+    const root = await folder();
+    await initProject(root, { name: "demo", language: "go" });
+    expect((await loadProject(root)).state.config.type).toBe("generic");
+    const result = await setupApply(root, payload());
+    const { config } = (await loadProject(root)).state;
+    expect([config.type, config.language]).toEqual(["npm", "go"]);
+    expect(result.lines.filter((l) => l.startsWith("Kept current:"))).toEqual(['Kept current: language "go" (proposed "typescript")']);
+  });
+
   it("fills init's placeholder type and language from the package, and a fresh folder has no kept-current line", async () => {
     const root = await folder();
     await initProject(root, { name: "demo" });

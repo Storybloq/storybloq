@@ -804,7 +804,12 @@ function activationInput(p: SetupPayload) {
 
 const PROJECT_FACTS = ["project", "type", "language"] as const;
 type ProjectFact = (typeof PROJECT_FACTS)[number];
-/** init's values for a fact nobody stated; a scaffold holding one takes the package's value. */
+/**
+ * The defaults init writes when nobody stated a type or language
+ * (src/core/init.ts, `options.type ?? "generic"` and `options.language ??
+ * "unknown"`). Exactly these two values count as unstated, so a scaffold
+ * holding one takes the package's value; any other non-empty value is kept.
+ */
 const INIT_PLACEHOLDER: Partial<Record<ProjectFact, string>> = { type: "generic", language: "unknown" };
 const proposedFact = (p: SetupPayload, f: ProjectFact): string => (f === "project" ? p.project.name : p.project[f]);
 const stagesOf = (c: Config): Record<string, unknown> => ((c as Config & { recipeOverrides?: { stages?: Record<string, unknown> } }).recipeOverrides?.stages) ?? {};

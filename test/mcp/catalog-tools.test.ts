@@ -223,6 +223,25 @@ describe("clear through the registered MCP tools (ISS-1287)", () => {
     expect("example" in JSON.parse(readFileSync(catalogPath(root), "utf-8")).capabilities[0]).toBe(false);
   });
 
+  it("an empty clear list is an error on both update tools and changes no catalog or ledger file (ISS-1400)", async () => {
+    const root = await newProject();
+    const tools = captureTools(root);
+    await tools.get("storybloq_capability_add")!.handler({ ...CAP, example: "storybloq thing" });
+    const added = await tools.get("storybloq_term_add")!.handler({ id: "term-pen", term: "pen", definition: "The session model.", distinction: "Not hands." });
+    expect(added.isError).toBeFalsy();
+    for (const [tool, id, fields] of [
+      ["storybloq_capability_update", "cap-thing", "example"],
+      ["storybloq_term_update", "term-pen", "distinction, addedBy"],
+    ] as const) {
+      const before = durableBytes(root);
+      const res = await tools.get(tool)!.handler({ id, clear: [] });
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain(`--clear needs a field to clear: ${fields}.`);
+      // The liveness touch is exempt, as everywhere in this file.
+      expect(durableBytes(root)).toEqual(before);
+    }
+  });
+
   it("term_update clear removes distinction", async () => {
     const root = await newProject();
     const tools = captureTools(root);

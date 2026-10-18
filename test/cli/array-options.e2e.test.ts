@@ -428,6 +428,31 @@ function terms(dir: string): Array<Record<string, never> & {
 }
 
 /** `term add` with the three required flags plus whatever a row is testing. */
+/** Every file under .story, by relative path: "nothing was written" is byte equality here. */
+function storyBytes(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (rel: string): void => {
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const next = join(rel, entry.name);
+      if (entry.isDirectory()) walk(next);
+      else out[next] = readFileSync(join(dir, next), "utf-8");
+    }
+  };
+  walk(".story");
+  return out;
+}
+
+/** ISS-1400: a bare or empty --clear is a usage error that names the clearable fields and writes nothing. */
+function expectEmptyClearRefused(dir: string, command: string[], fields: string): void {
+  for (const empty of [[], [""]]) {
+    const before = storyBytes(dir);
+    const res = run(dir, ...command, "--clear", ...empty, "--format", "json");
+    expectRejected(res, `${command.slice(0, 2).join(" ")} --clear needs a field to clear: ${fields}.`);
+    expect(res.code).toBe(1);
+    expect(storyBytes(dir)).toEqual(before);
+  }
+}
+
 function addTerm(dir: string, ...extra: string[]): { code: number; out: string } {
   return run(dir, "term", "add",
     "--id", "term-pen", "--term", "pen",
@@ -755,6 +780,7 @@ const MATRIX: Coverage[] = [
     key: "term update --clear",
     check: (dir) => {
       expect(addTerm(dir, "--distinction", "Not the manager.", "--added-by", "pen").code, "seed").toBe(0);
+      expectEmptyClearRefused(dir, ["term", "update", "term-pen"], "distinction, addedBy");
       // One comma-split value clears both optional fields (ISS-1287).
       const res = run(dir, "term", "update", "term-pen", "--clear", "distinction,addedBy");
       expect(res.code, res.out).toBe(0);
@@ -768,6 +794,7 @@ const MATRIX: Coverage[] = [
     check: (dir) => {
       gitify(dir);
       expect(addCap(dir, "--entry", "src/core/thing.ts", "--example", "thing()").code, "seed").toBe(0);
+      expectEmptyClearRefused(dir, ["capability", "update", "cap-thing"], "example");
       // The split is real: the second value is checked, and refused, on its own.
       const both = run(dir, "capability", "update", "cap-thing", "--clear", "example,summary", "--format", "json");
       expectRejected(both, "summary cannot be cleared");

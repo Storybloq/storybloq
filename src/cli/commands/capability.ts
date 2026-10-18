@@ -107,8 +107,8 @@ export const CAPABILITY_CLEARABLE: readonly string[] = ["example"];
 /**
  * ISS-1287, one contract for both catalogs: the fields an update's clear list
  * removes. Input-only, so it is checked before any transaction and a refusal
- * cannot write. A field outside `clearable`, or one both supplied and cleared,
- * is a usage error rather than a silent winner.
+ * cannot write. An empty list, a field outside `clearable`, or one both
+ * supplied and cleared, is a usage error rather than a silent winner.
  */
 export function clearedFields(
   clear: readonly string[] | undefined,
@@ -116,6 +116,11 @@ export function clearedFields(
   supplied: Readonly<Record<string, unknown>>,
   command: string,
 ): ReadonlySet<string> {
+  // ISS-1400: a bare or empty --clear (or MCP `clear: []`) would rewrite the
+  // record and clear nothing; it is a usage error, refused before any write.
+  if (clear !== undefined && clear.length === 0) {
+    throw new CliValidationError("invalid_input", `${command} --clear needs a field to clear: ${clearable.join(", ")}.`);
+  }
   const fields = new Set(clear ?? []);
   for (const field of fields) {
     if (!clearable.includes(field)) {

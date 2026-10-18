@@ -100,6 +100,9 @@ export const COMMIT_VERBS: Readonly<Record<string, string>> = {
   rotate: "rotated",
   compact: "compacted",
   rebase: "rebased",
+  // T-538: `checkpoint evidence` commits the ticket's new revision ref only;
+  // the copied file under docs/checkpoints is the user's, outside `.story/`.
+  evidence: "evidence added",
   // CLI command leaves whose last token is not a verb.
   meta: "updated",
   brief: "rebased",

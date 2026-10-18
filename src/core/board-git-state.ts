@@ -485,18 +485,27 @@ async function commitGroup(group: RepoGroup, tool: string, states: Map<string, s
 
 /**
  * T-538: a ledger file that names copied evidence must land in the same
- * commit as that evidence. When they sit in different repositories (a nested
- * repository or submodule under docs/, or evidence outside any repository),
- * no commit can carry both, so none is made. Null when they share one.
+ * commit as that evidence. Both sides need a repository lookup that worked,
+ * and it must be one repository; otherwise (a nested repository or submodule
+ * under docs/, an unversioned project, a lookup that failed for either side)
+ * no commit can carry both, so none is made. Null when no evidence is
+ * required or both share one repository.
  */
-function repositorySplit(groups: readonly RepoGroup[], unplacedRequired: readonly Target[]): string | null {
-  const ledger = groups.filter((g) => g.targets.some((t) => isBoardPath(t.abs))).map((g) => g.top);
-  const evidence = groups.filter((g) => g.targets.some((t) => t.required && !isBoardPath(t.abs))).map((g) => g.top);
-  const unplaced = unplacedRequired.filter((t) => !isBoardPath(t.abs)).map((t) => `${t.display} (no repository)`);
-  if (ledger.length === 0 || (evidence.length === 0 && unplaced.length === 0)) return null;
-  const elsewhere = [...evidence.filter((top) => top !== ledger[0]), ...unplaced];
-  if (ledger.length === 1 && elsewhere.length === 0) return null;
-  return BOARD_GIT_TEXT.splitRepositories(ledger.join(", "), (elsewhere.length > 0 ? elsewhere : evidence).join(", "));
+function repositorySplit(groups: readonly RepoGroup[], unplaced: readonly Target[]): string | null {
+  const isEvidence = (t: Target) => t.required && !isBoardPath(t.abs);
+  if (!groups.some((g) => g.targets.some(isEvidence)) && !unplaced.some(isEvidence)) return null;
+  const noRepo = (t: Target) => `${t.display} (no repository)`;
+  const ledger = [
+    ...groups.filter((g) => g.targets.some((t) => isBoardPath(t.abs))).map((g) => g.top),
+    ...unplaced.filter((t) => isBoardPath(t.abs)).map(noRepo),
+  ];
+  const evidence = [
+    ...groups.filter((g) => g.targets.some(isEvidence)).map((g) => g.top),
+    ...unplaced.filter(isEvidence).map(noRepo),
+  ];
+  const placed = (name: string) => groups.some((g) => g.top === name);
+  if (ledger.length === 1 && evidence.length === 1 && ledger[0] === evidence[0] && placed(ledger[0]!)) return null;
+  return BOARD_GIT_TEXT.splitRepositories(ledger.length > 0 ? ledger.join(", ") : "no repository", evidence.join(", "));
 }
 
 /**
@@ -513,7 +522,7 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
   if (targets.length === 0) return { lines, git };
 
   const groups: RepoGroup[] = [];
-  const unplacedRequired: Target[] = [];
+  const unplaced: Target[] = [];
   const topByDir = new Map<string, GitRawResult>();
   for (const target of targets) {
     let dir = dirname(target.abs);
@@ -524,7 +533,7 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
       topByDir.set(dir, top);
     }
     if (!top.ok) {
-      if (target.required) unplacedRequired.push(target);
+      unplaced.push(target);
       const reason = noGitReason(top);
       if (reason !== null) {
         gitUnavailable ??= { reason };
@@ -548,7 +557,7 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
     group.targets.push(target);
   }
 
-  const split = context.commit ? repositorySplit(groups, unplacedRequired) : null;
+  const split = context.commit ? repositorySplit(groups, unplaced) : null;
   for (const group of groups) {
     let states = await readStates(group.top, group.targets);
     let commitLines: string[] = [];

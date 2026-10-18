@@ -483,6 +483,39 @@ describe("evidence --commit commits the copied file with the ticket", () => {
     expect(execFileSync("git", ["status", "--porcelain", "--", ".story"], { cwd: dir, encoding: "utf-8" })).toBe("");
   });
 
+  it("an unversioned project never commits evidence alone into a nested repository", async () => {
+    const dir = await project();
+    const cp = await immutable(dir);
+    await mkdir(join(dir, "docs"));
+    execFileSync("git", ["init", "-q"], { cwd: join(dir, "docs") });
+    const src = await source(dir, "demo.txt", "shown\n");
+    const { report } = await evidenceWithCommit(dir, cp, src);
+    expect(report.gitCommit?.length).toBeGreaterThan(0);
+    for (const entry of report.gitCommit ?? []) expect(entry.outcome).toBe("incomplete");
+    expect(execFileSync("git", ["rev-list", "--all", "--count"], { cwd: join(dir, "docs"), encoding: "utf-8" }).trim()).toBe("0");
+    const line = report.lines.find((l) => l.startsWith("Git: commit incomplete")) ?? "";
+    expect(line).toContain("no repository");
+    expect(line).toContain(realpathSync(join(dir, "docs")));
+  });
+
+  it("a ticket whose repository lookup fails never lets its evidence commit alone", async () => {
+    const dir = await repo();
+    const cp = await immutable(dir);
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "checkpoint"], { cwd: dir });
+    const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf-8" });
+    const src = await source(dir, "demo.txt", "shown\n");
+    const { value, context } = await runWithBoardWriteContext("checkpoint evidence", true, () =>
+      addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR }));
+    // The ledger's lookup now fails: git meets a broken gitdir pointer under .story.
+    await writeFile(join(dir, ".story", ".git"), "gitdir: /nonexistent/t538\n");
+    const report = await reportBoardWrite(context);
+    expect(report.gitCommit?.length).toBeGreaterThan(0);
+    for (const entry of report.gitCommit ?? []) expect(entry.outcome).toBe("incomplete");
+    expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf-8" })).toBe(before);
+    expect(execFileSync("git", ["ls-tree", "--name-only", "HEAD", "--", value.ref], { cwd: dir, encoding: "utf-8" }).trim()).toBe("");
+  });
+
   it("evidence in a nested repository is never committed apart from its ticket", async () => {
     const dir = await repo();
     const cp = await immutable(dir);

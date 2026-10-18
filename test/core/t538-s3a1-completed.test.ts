@@ -13,6 +13,8 @@ import { loadProject } from "../../src/core/project-loader.js";
 import { setupApply, setupApplySeams, setupResolve, setupResume } from "../../src/core/setup-apply.js";
 import { effectiveEdges, parseSetupPayload, prerequisites, renderSetupPayload, validateSetupPayload } from "../../src/core/setup-payload.js";
 import { parseSetupMeta } from "../../src/core/setup-meta.js";
+import { retireCheckpoint } from "../../src/core/checkpoint-lifecycle.js";
+import { parseOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
 import { setupPaths } from "../../src/core/setup-review.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -309,6 +311,40 @@ describe("restore-planned meets the ordinary lifecycle authorisation (review S3a
     const checkpoint = state.tickets.find((x) => (x as { setup?: { key?: string } }).setup?.key === "K4")!;
     await editTicket(root, "T-001", (r) => { r.status = "open"; r.completedDate = null; r.blockedBy = [checkpoint.id]; });
     await refusedWithoutWrite(root, new RegExp(`^Setup refused: K2 \\(T-001\\): restore-planned refused: Cannot complete T-001: it waits on owner checkpoint ${checkpoint.id}, not yet approved or retired`));
+  });
+
+  it("refuses to reopen complete work that still carries another user's claim", async () => {
+    const root = await interrupted();
+    await editTicket(root, "T-003", (r) => { r.status = "complete"; r.completedDate = "2026-10-21"; r.claim = { user: "rival@example.com", branch: "rival", since: "2026-10-21" }; });
+    expect((await setupResume(root, SID)).exitCode).toBe(4);
+    const before = await ledger(root);
+    const result = await setupResolve(root, SID, [{ target: "K7 (T-003)", resolution: "restore-planned", ownerWords: "not done" }]);
+    expect(result.exitCode).toBe(2);
+    expect(result.lines.at(-1)).toBe("Setup refused: K7 (T-003): restore-planned refused: Cannot reopen T-003: it is complete and this caller cannot prove ownership.");
+    expect(await ledger(root)).toEqual(before);
+  });
+
+  it("completes work whose owner checkpoint has released, recording the evidence it relied on", async () => {
+    const root = await interrupted({ checkpoints: [cp("K4", ["K7"], [])] });
+    let { state } = await loadProject(root);
+    const checkpoint = state.tickets.find((x) => (x as { setup?: { key?: string } }).setup?.key === "K4")!;
+    await editTicket(root, "T-001", (r) => { r.status = "open"; r.completedDate = null; r.blockedBy = [checkpoint.id]; });
+    const p = parseOwnerCheckpoint(checkpoint);
+    if (p.kind !== "ok") throw new Error("not a readable checkpoint");
+    await retireCheckpoint(root, checkpoint.id, { generation: p.checkpoint.generation, revision: p.checkpoint.revision, digest: p.checkpoint.digest }, "dropped", "sam@example.com");
+    const stopped = await setupResume(root, SID);
+    expect(stopped.exitCode).toBe(4);
+    const reviewRevision = await reviewStore(root, "# amended packet\n");
+    const targets = stopped.lines.filter((l) => l.startsWith("Ambiguity:")).map((l) => l.split(" · ")[1]!);
+    const resolutions = targets.map((target) => target === "K2 (T-001)"
+      ? { target, resolution: "restore-planned", ownerWords: "it is built" }
+      : { target, resolution: "accept-current", ownerWords: "the owner retired it", reviewRevision });
+    const resolved = await setupResolve(root, SID, resolutions, { env: env() });
+    expect(resolved.exitCode).toBe(0);
+    ({ state } = await loadProject(root));
+    const restored = await ticketFile(root, "T-001");
+    expect([restored.status, restored.completedDate]).toEqual(["complete", "2026-10-20"]);
+    expect((restored.checkpointEvidence as Array<{ checkpoint: string; state: string }>).map((e) => [e.checkpoint, e.state])).toEqual([[checkpoint.id, "retired"]]);
   });
 
   it("completes work the caller's own claim holds, and the claim goes with the completion", async () => {

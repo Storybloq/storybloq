@@ -385,7 +385,7 @@ export async function prepareTicketWrite(
   }
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "tickets", `${parsed.id}.json`);
-  await guardPath(target, wrapDir);
+  await ensureEntityDir(target, wrapDir);
   const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${parsed.id}.json`);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
   // As for issues (Codex F1): nothing awaits between obtaining the context
@@ -413,6 +413,29 @@ export const entityDirSeams: {
   afterGuard: async () => {},
   mkdir,
 };
+
+/**
+ * ISS-1297: makes a ticket or issue directory that a fresh clone lacks (git
+ * keeps no empty directory) between two containment checks. The second check
+ * runs on the now-existing directory, so a symlink swapped in before the
+ * mkdir is refused. This holds for a stable filesystem topology: a swap after
+ * the second check is still followed (no handle-relative writes).
+ */
+async function ensureEntityDir(target: string, wrapDir: string): Promise<void> {
+  await guardPath(target, wrapDir);
+  const dir = dirname(target);
+  await entityDirSeams.afterGuard(dir);
+  try {
+    await entityDirSeams.mkdir(dir, { recursive: true });
+  } catch (err) {
+    throw new ProjectLoaderError(
+      "io_error",
+      `Cannot create the directory ${dir} for ${basename(target)}`,
+      err,
+    );
+  }
+  await guardPath(target, wrapDir);
+}
 
 /** Test seam (T-486 Codex F1): how `prepareIssueWrite` reads the record a write replaces. */
 export const prepareIssueWriteSeams: { readPrior: (path: string) => Promise<string | null> } = {
@@ -480,7 +503,7 @@ export async function prepareIssueWrite(
   }
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "issues", `${parsed.id}.json`);
-  await guardPath(target, wrapDir);
+  await ensureEntityDir(target, wrapDir);
   // Codex F1: the read comes first, and nothing awaits between obtaining the
   // context and the decision, so the lock cannot be released in between.
   const prior = priorRecord(await prepareIssueWriteSeams.readPrior(target));
@@ -2089,6 +2112,30 @@ async function fsyncWrite(
  * Symlink protection: resolve both root and target parent via realpath,
  * verify target is under root. On existing targets, lstat to reject symlinks.
  */
+/**
+ * ISS-1297: the real path of `dir`, resolved from its nearest existing
+ * ancestor when `dir` (or a parent) does not exist yet, with the missing
+ * segments re-appended. Comparing the unresolved path instead calls a root
+ * reached through a symlink an escape, and misses a symlink to an outside
+ * directory above the missing part (the Mac app's rule, ISS-286, ISS-355).
+ * Any other failure keeps the unresolved path, as before.
+ */
+async function resolveFromNearestAncestor(dir: string): Promise<string> {
+  const missing: string[] = [];
+  let current = dir;
+  for (;;) {
+    try {
+      return join(await realpath(current), ...missing.reverse());
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const parent = dirname(current);
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === current) return dir;
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
 export async function guardPath(
   target: string,
   root: string,
@@ -2103,14 +2150,7 @@ export async function guardPath(
     );
   }
 
-  const targetDir = dirname(target);
-  let resolvedDir: string;
-  try {
-    resolvedDir = await realpath(targetDir);
-  } catch {
-    // Parent dir doesn't exist -- check that the grandparent resolves under root
-    resolvedDir = targetDir;
-  }
+  const resolvedDir = await resolveFromNearestAncestor(dirname(target));
 
   const rel = relative(resolvedRoot, resolvedDir);
   if (rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)) {

@@ -119,6 +119,18 @@ describe("gate (T-536)", () => {
     expect(r.stdout).not.toMatch(/setup-review run|--matched|code SR-/);
   });
 
+  it("treats a claude whose --help lacks a review flag as not startable, so an old claude gets the stop, not a failed review", async () => {
+    fake = makeFakeBin(["claude"]);
+    extraEnv = { FAKE_CLAUDE_OLD: "1" };
+    const r = await gate();
+    expect(r.stdout).toContain("Reviewer probe: none available\n");
+    expect(r.stdout.trimEnd().endsWith(STOP)).toBe(true);
+    const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: setupIdOf(r) });
+    expect(run.exitCode).toBe(3);
+    expect(recordsOf(setupIdOf(r))).toEqual([]);
+    expect(reviews()).toBe(0);
+  });
+
   it("treats a backend whose --version fails as not startable", async () => {
     extraEnv = { FAKE_CODEX_VERSION_FAIL: "1" };
     expect((await gate()).stdout).toContain("Reviewer probe: claude 9.9.9 (Claude Code)\n");

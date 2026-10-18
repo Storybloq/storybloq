@@ -24,6 +24,13 @@ if (args.includes("--version")) {
   process.stdout.write(name === "codex" ? "codex-cli 9.9.9\n" : "9.9.9 (Claude Code)\n");
   process.exit(0);
 }
+if (args.includes("--help")) {
+  // FAKE_CLAUDE_OLD: a claude from before --permission-prompts existed.
+  const flags = ["--output-format", "--json-schema", "--tools", "--strict-mcp-config", "--no-session-persistence"];
+  if (process.env["FAKE_" + name.toUpperCase() + "_OLD"] !== "1") flags.push("--permission-prompts");
+  process.stdout.write("Usage: " + name + " [options]\n" + flags.map((f) => "  " + f + "\n").join(""));
+  process.exit(0);
+}
 const mode = process.env["FAKE_" + name.toUpperCase() + "_MODE"] || "approve";
 const log = process.env.FAKE_LOG;
 const chunks = [];

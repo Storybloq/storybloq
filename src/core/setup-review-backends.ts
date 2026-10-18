@@ -9,18 +9,21 @@ import { execFile, spawn } from "node:child_process";
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
 
+const VERDICTS: string[] = ["approve", "revise", "reject"];
+const SEVERITIES: string[] = ["critical", "major", "minor", "suggestion"];
+
 export const SETUP_REVIEW_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    verdict: { type: "string", enum: ["approve", "revise", "reject"] },
+    verdict: { type: "string", enum: VERDICTS },
     findings: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
         properties: {
-          severity: { type: "string", enum: ["critical", "major", "minor", "suggestion"] },
+          severity: { type: "string", enum: SEVERITIES },
           requirement: { type: "string" },
           description: { type: "string" },
         },
@@ -29,7 +32,7 @@ export const SETUP_REVIEW_SCHEMA = {
     },
   },
   required: ["verdict", "findings"],
-} as const;
+};
 
 export interface SetupReviewFinding {
   readonly severity: string;
@@ -70,14 +73,13 @@ function validateAnswer(value: unknown): SetupReviewAnswer {
   const v = value as Record<string, unknown>;
   const keys = Object.keys(v);
   if (keys.some((k) => k !== "verdict" && k !== "findings")) throw new Error("reviewer answer has fields outside the schema");
-  if (!SETUP_REVIEW_SCHEMA.properties.verdict.enum.includes(v.verdict as never)) throw new Error("reviewer verdict is outside the schema");
+  if (!VERDICTS.includes(v.verdict as string)) throw new Error("reviewer verdict is outside the schema");
   if (!Array.isArray(v.findings)) throw new Error("reviewer findings is not a list");
-  const severities: readonly string[] = SETUP_REVIEW_SCHEMA.properties.findings.items.properties.severity.enum;
   const findings = v.findings.map((f): SetupReviewFinding => {
     if (!f || typeof f !== "object" || Array.isArray(f)) throw new Error("reviewer finding is not an object");
     const r = f as Record<string, unknown>;
     if (Object.keys(r).some((k) => k !== "severity" && k !== "requirement" && k !== "description")) throw new Error("reviewer finding has fields outside the schema");
-    if (!severities.includes(r.severity as string) || typeof r.requirement !== "string" || typeof r.description !== "string") {
+    if (!SEVERITIES.includes(r.severity as string) || typeof r.requirement !== "string" || typeof r.description !== "string") {
       throw new Error("reviewer finding is outside the schema");
     }
     return { severity: r.severity as string, requirement: r.requirement, description: r.description };
@@ -103,19 +105,32 @@ export function parseReviewerOutput(backend: SetupReviewBackend, raw: Buffer): S
 
 export const PROBE_TIMEOUT_MS = 5000;
 
-/** `<backend> --version` exits 0 within the probe timeout: the backend can start. */
-export function probeBackend(backend: SetupReviewBackend, env: NodeJS.ProcessEnv): Promise<string | null> {
+function runProbe(backend: SetupReviewBackend, args: string[], env: NodeJS.ProcessEnv): Promise<string | null> {
   return new Promise((resolve) => {
     try {
-      execFile(backend, ["--version"], { env: reviewerEnv(backend, env), timeout: PROBE_TIMEOUT_MS, encoding: "utf-8" }, (err, stdout) => {
-        if (err) return resolve(null);
-        const version = stdout.trim().split("\n")[0]?.trim();
-        resolve(version ? version : "unknown version");
-      });
+      const child = execFile(backend, args, { env: reviewerEnv(backend, env), timeout: PROBE_TIMEOUT_MS, encoding: "utf-8" }, (err, stdout) => resolve(err ? null : stdout));
+      child.stdin?.end();
     } catch {
       resolve(null);
     }
   });
+}
+
+/**
+ * The backend can start a review: `--version` exits 0 within the probe
+ * timeout, and for claude, `--help` lists every flag the review passes. An
+ * older claude that lacks one would pass a version probe and then fail the
+ * review itself; it takes the unavailable path instead.
+ */
+export async function probeBackend(backend: SetupReviewBackend, env: NodeJS.ProcessEnv): Promise<string | null> {
+  const stdout = await runProbe(backend, ["--version"], env);
+  if (stdout === null) return null;
+  if (backend === "claude") {
+    const help = await runProbe(backend, ["--help"], env);
+    if (help === null || !claudeArgs("{}").filter((a) => a.startsWith("--")).every((flag) => help.includes(flag))) return null;
+  }
+  const version = stdout.trim().split("\n")[0]?.trim();
+  return version ? version : "unknown version";
 }
 
 export interface ReviewerRun {

@@ -19,6 +19,7 @@ import {
   setupApply,
   setupApplySeams,
   setupHandoverPath,
+  setupReport,
   setupResolve,
   setupResume,
 } from "../../src/core/setup-apply.js";
@@ -427,6 +428,18 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect(result.lines).toContainEqual(expect.stringMatching(/^Validation error: .*T-999/));
     expect(result.lines.at(-1)).toMatch(/^Setup stopped: the finalization gate refused: validation found 1 error/);
     expect((await loadProject(root)).state.setupInProgress).toEqual([{ setupId: SID, noteId: "N-001" }]);
+  });
+
+  it("a stage the owner changed and accepted shows in the live and the frozen report as kept current (review r1 #6)", async () => {
+    const root = await stoppedAt("step:governance:CLAUDE.md");
+    await editJson(configPath(root), (raw) => { (raw.recipeOverrides as { stages: { TEST: { enabled: boolean } } }).stages.TEST.enabled = false; });
+    await reviewStore(root, { skipped: true });
+    const result = await resolve1(root, ".story/config.json", "accept-current");
+    expect(result.exitCode).toBe(0);
+    const line = "Quality: full; stages on: WRITE_TESTS; kept current: TEST off (proposed on)";
+    expect(result.lines).toContain(line);
+    expect((await setupReport(root, SID)).lines).toContain(line);
+    expect((await setupReport(root, SID, { historical: true })).lines).toContain(line);
   });
 
   it("keep <id> supersedes the other item's key and leaves its content as it was", async () => {

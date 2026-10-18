@@ -1299,7 +1299,13 @@ export function setupReportLines(state: ProjectState, p: SetupPayload): string[]
   const adopted = adoptedKeys(p);
   const counts = userCounts(state, p, adopted);
   const { stages, pending } = computeInitialStages(activationInput(p));
-  const on = Object.entries(stages).filter(([, s]) => s.enabled === true).map(([name]) => name);
+  // Review r1 #6: enablement is the ledger config's; a stage an accepted amendment changed says so.
+  const ledgerOn = (name: string) => (stagesOf(state.config) as Record<string, { enabled?: unknown } | undefined>)[name]?.enabled === true;
+  const onOff = (on: boolean) => (on ? "on" : "off");
+  const on = Object.keys(stages).filter(ledgerOn);
+  const keptStages = Object.entries(stages)
+    .filter(([name, s]) => ledgerOn(name) !== (s.enabled === true))
+    .map(([name, s]) => `${name} ${onOff(ledgerOn(name))} (proposed ${onOff(s.enabled === true)})`);
   const keyedIds = new Set(
     [...p.tickets, ...p.checkpoints].map((t) => keyedTicket(state, p.setupId, t.key)?.id).filter((id): id is string => id !== undefined),
   );
@@ -1312,7 +1318,7 @@ export function setupReportLines(state: ProjectState, p: SetupPayload): string[]
     `Setup ${p.setupId}: ${config.project} (${config.type}, ${config.language})`,
     ...(kept.length > 0 ? [`Kept current: ${kept.join(", ")}`] : []),
     `Created: ${counts.phases} phases, ${counts.tickets} tickets, ${counts.checkpoints} checkpoints, ${counts.issues} issues${adopted.size > 0 ? `; adopted: ${adopted.size}` : ""}`,
-    `Quality: ${p.quality.level}; stages on: ${on.length > 0 ? on.join(", ") : "none"}`,
+    `Quality: ${p.quality.level}; stages on: ${on.length > 0 ? on.join(", ") : "none"}${keptStages.length > 0 ? `; kept current: ${keptStages.join(", ")}` : ""}`,
     ...pending.map((l) => `Pending: ${l.stage}${l.component === null ? "" : ` (${l.component})`}: ${l.command} (pending: ${l.reason})`),
     `Governance: ${p.governance.files.length > 0 ? p.governance.files.map((f) => f.path).join(", ") : "none"}; canonical facts: ${p.governance.canonicalFactsPath}`,
     ...p.review.lines.map((l) => `Review: ${l}`),

@@ -1646,6 +1646,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       terms: z.array(z.string()).optional(),
       status: z.enum(CAPABILITY_STATUSES).optional(),
       skipCheck: z.boolean().optional().describe("Accept cli/mcp names the reference lacks"),
+      clear: z.array(z.string()).optional().describe("Optional fields to remove: example"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCapabilityUpdate(args, format, root)));
 
@@ -1746,6 +1747,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       rulings: z.array(z.string()).optional(),
       core: z.boolean().optional(),
       addedBy: z.string().optional(),
+      clear: z.array(z.string()).optional().describe("Optional fields to remove: distinction, addedBy"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleTermUpdate(args, format, root)));
 

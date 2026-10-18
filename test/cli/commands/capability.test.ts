@@ -1004,3 +1004,35 @@ describe("nearestSurfaceNames (ISS-1301)", () => {
     expect(nearestSurfaceNames("cli", "zzz", known)).toEqual([]);
   });
 });
+
+describe("capability update --clear (ISS-1287)", () => {
+  it("removes the example key from the stored entry", async () => {
+    const root = await newRepo();
+    await handleCapabilityAdd({ ...BASE, example: "storybloq thing" }, "md", root);
+    const res = await handleCapabilityUpdate({ id: "cap-thing", clear: ["example"] }, "md", root);
+    expect(res.exitCode ?? ExitCode.OK).toBe(ExitCode.OK);
+    const entry = stored(root)[0]! as Record<string, unknown>;
+    expect("example" in entry).toBe(false);
+    expect(entry.summary).toBe(BASE.summary);
+  });
+
+  it("refuses to clear a required field, by name, and writes nothing", async () => {
+    const root = await newRepo();
+    await handleCapabilityAdd({ ...BASE, example: "storybloq thing" }, "md", root);
+    editCatalog(root, () => {}, 0);
+    const before = storyBytes(root);
+    await expect(handleCapabilityUpdate({ id: "cap-thing", clear: ["summary"] }, "md", root)).rejects.toThrow(/accepts only example/);
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("refuses a field both supplied and cleared, and writes nothing", async () => {
+    const root = await newRepo();
+    await handleCapabilityAdd({ ...BASE, example: "storybloq thing" }, "md", root);
+    editCatalog(root, () => {}, 0);
+    const before = storyBytes(root);
+    await expect(
+      handleCapabilityUpdate({ id: "cap-thing", example: "storybloq other", clear: ["example"] }, "md", root),
+    ).rejects.toThrow(/both supplied and cleared/);
+    expect(storyBytes(root)).toEqual(before);
+  });
+});

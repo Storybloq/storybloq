@@ -6678,6 +6678,7 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
                   ruling: { ...SPLIT_LIST, describe: "Ruling IDs, replacing the current list (repeatable)" },
                   item: { ...SPLIT_LIST, describe: "Item IDs, replacing the current list (repeatable)" },
                   term: { ...SPLIT_LIST, describe: "Term IDs, replacing the current list (repeatable)" },
+                  clear: { ...SPLIT_LIST, describe: "Optional field to remove: example (repeatable)" },
                 },
               ),
             ))(y)),
@@ -6794,6 +6795,7 @@ function capabilityWriteInput(argv: Record<string, unknown>): CapabilityWriteInp
     terms: argv.term as string[] | undefined,
     status: argv.status as string | undefined,
     skipCheck: argv["skip-check"] as boolean | undefined,
+    clear: argv.clear as string[] | undefined,
   };
 }
 
@@ -6961,13 +6963,14 @@ export function registerTermCommand(yargs: Argv): Argv {
                   alias: { ...LITERAL_DROP_BLANK, describe: "Aliases, REPLACING the current list (repeatable; a comma is legal in a phrase, so repeat the flag)" },
                   capability: { ...SPLIT_LIST, describe: "Capability IDs, replacing the current list (repeatable)" },
                   ruling: { ...SPLIT_LIST, describe: "Ruling IDs, replacing the current list (repeatable)" },
+                  clear: { ...SPLIT_LIST, describe: "Optional field to remove: distinction, addedBy (repeatable)" },
                 },
               ),
             ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             await runCatalogWrite(argv, format, (root) =>
-              handleTermUpdate({ ...termWriteInput(argv), id: argv.id as string, clearPending: argv["clear-pending"] as boolean | undefined }, format, root), true,
+              handleTermUpdate({ ...termWriteInput(argv), id: argv.id as string, clearPending: argv["clear-pending"] as boolean | undefined, clear: argv.clear as string[] | undefined }, format, root), true,
             );
           },
         )

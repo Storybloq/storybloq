@@ -350,15 +350,15 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "capability add",
-    description: "Add a capability. Stamps the checkpoint at HEAD, so it records that the entry points were actually read",
+    description: "Add a capability. Stamps the checkpoint at HEAD, recording that the entry points were read",
     usage: "storybloq capability add --id <value> --name <value> --summary <value> --entry <value> --contract <value> [--example <value>] [--cli <value>] [--mcp-tool <value>] [--app <value>] [--surface-file <value>] [--ruling <value>] [--item <value>] [--term <value>] [--status <current|review>] [--skip-check] [--commit] [--format <json|md>]",
     flags: ["--id", "--name", "--summary", "--entry", "--contract", "--example", "--cli", "--mcp-tool", "--app", "--surface-file", "--ruling", "--item", "--term", "--status", "--skip-check", "--format", "--commit"],
   },
   {
     name: "capability update",
-    description: "Edit a capability. Supplied list flags replace the stored lists; the checkpoint is never touched, because an edit is not an inspection",
-    usage: "storybloq capability update <id> [--name <value>] [--summary <value>] [--entry <value>] [--contract <value>] [--example <value>] [--cli <value>] [--mcp-tool <value>] [--app <value>] [--surface-file <value>] [--ruling <value>] [--item <value>] [--term <value>] [--status <current|review>] [--skip-check] [--commit] [--format <json|md>]",
-    flags: ["--name", "--summary", "--entry", "--contract", "--example", "--cli", "--mcp-tool", "--app", "--surface-file", "--ruling", "--item", "--term", "--status", "--skip-check", "--format", "--commit"],
+    description: "Edit a capability. Supplied list flags replace stored lists; the checkpoint is never touched (an edit is not an inspection)",
+    usage: "storybloq capability update <id> [--name <value>] [--summary <value>] [--entry <value>] [--contract <value>] [--example <value>] [--cli <value>] [--mcp-tool <value>] [--app <value>] [--surface-file <value>] [--ruling <value>] [--item <value>] [--term <value>] [--clear <value>] [--status <current|review>] [--skip-check] [--commit] [--format <json|md>]",
+    flags: ["--name", "--summary", "--entry", "--contract", "--example", "--cli", "--mcp-tool", "--app", "--surface-file", "--ruling", "--item", "--term", "--clear", "--status", "--skip-check", "--format", "--commit"],
   },
   {
     name: "capability check",
@@ -417,8 +417,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "term update",
     description: "Edit a term. Supplied list flags replace the stored lists",
-    usage: "storybloq term update <id> [--term <value>] [--definition <value>] [--distinction <value>] [--alias <value>] [--capability <value>] [--ruling <value>] [--core] [--added-by <value>] [--clear-pending] [--commit] [--format <json|md>]",
-    flags: ["--term", "--definition", "--distinction", "--alias", "--capability", "--ruling", "--core", "--added-by", "--clear-pending", "--format", "--commit"],
+    usage: "storybloq term update <id> [--term <value>] [--definition <value>] [--distinction <value>] [--alias <value>] [--capability <value>] [--ruling <value>] [--core] [--added-by <value>] [--clear <value>] [--clear-pending] [--commit] [--format <json|md>]",
+    flags: ["--term", "--definition", "--distinction", "--alias", "--capability", "--ruling", "--core", "--added-by", "--clear", "--clear-pending", "--format", "--commit"],
   },
   {
     name: "term defer",
@@ -1129,7 +1129,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_capability_list", description: "List the capability inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)", params: ["status?","skipCheck?"] },
   { name: "storybloq_capability_get", description: "Get one capability: contract, entry points, surfaces, rulings, items and findings", params: ["id","skipCheck?"] },
   { name: "storybloq_capability_add", description: "Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read", params: ["id","name","summary","entryPoints","contract","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","commit?"] },
-  { name: "storybloq_capability_update", description: "Edit a capability; supplied lists replace stored ones and the checkpoint is never touched", params: ["id","name?","summary?","entryPoints?","contract?","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","commit?"] },
+  { name: "storybloq_capability_update", description: "Edit a capability; supplied lists replace stored ones; the checkpoint is never touched", params: ["id","name?","summary?","entryPoints?","contract?","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","clear?","commit?"] },
   { name: "storybloq_capability_check", description: "Check every capability against HEAD; stamp re-records the checkpoint, refused for a structural or incomplete finding", params: ["stamp?","stampAll?"] },
   { name: "storybloq_projection_write", description: "Regenerate the decisions projection the Mac app reads, with a full freshness check. The status tool never writes it", params: ["commit?"] },
   { name: "storybloq_context_brief", description: "The context brief for a ticket or issue: binding and suggested rulings with reasons, capabilities, terms, lessons, and what discovery could not see. Suggestions bind nothing", params: ["id","budget?"] },
@@ -1137,7 +1137,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_term_list", description: "List the glossary, or its bounded names-only digest (core-first over the cap)", params: ["core?","thin?","digest?"] },
   { name: "storybloq_term_get", description: "Get one term: definition, distinction, and the capabilities and rulings behind it", params: ["id"] },
   { name: "storybloq_term_add", description: "Add a glossary term; a name another entry already owns is refused", params: ["id","term","definition","distinction?","aliases?","capabilities?","rulings?","core?","addedBy?","commit?"] },
-  { name: "storybloq_term_update", description: "Edit a glossary term; supplied lists replace the stored ones", params: ["id","term?","definition?","distinction?","aliases?","capabilities?","rulings?","core?","addedBy?","commit?"] },
+  { name: "storybloq_term_update", description: "Edit a glossary term; supplied lists replace the stored ones", params: ["id","term?","definition?","distinction?","aliases?","capabilities?","rulings?","core?","addedBy?","clear?","commit?"] },
   { name: "storybloq_ruling_list", description: "List rulings, optionally filtered by scope tag, superseded state or lifecycle status", params: ["scopeTag?","superseded?","status?"] },
   { name: "storybloq_ruling_get", description: "Get a ruling by ID", params: ["id"] },
   { name: "storybloq_ruling_create", description: "Record a ruling verbatim; cites adds its id to each named ticket or issue in one transaction", params: ["text","attribution","date","scopeTags?","cites?","clientTaskId?","context?","alternatives?","consequences?","reconsiderWhen?","commit?"] },

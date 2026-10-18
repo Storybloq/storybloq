@@ -617,3 +617,50 @@ describe("capabilityScan", () => {
     expect(scan.incomplete).toBe(false);
   });
 });
+
+/**
+ * ISS-1287: an optional scalar, once set, can be withdrawn and not only
+ * replaced. One contract for both catalogs: a clear list of optional fields,
+ * checked before the transaction, so every refusal leaves the ledger as it was.
+ */
+describe("term update --clear (ISS-1287)", () => {
+  it("removes the distinction key, and term check then reports the entry thin", async () => {
+    const root = await newRepo();
+    await handleTermAdd(PEN, "md", root);
+    const res = await handleTermUpdate({ id: "term-pen", clear: ["distinction"] }, "md", root);
+    expect(res.exitCode).toBeUndefined();
+    const entry = stored(root).terms[0]!;
+    expect("distinction" in entry).toBe(false);
+    expect(entry.definition).toBe(PEN.definition);
+    const check = await handleTermCheck(ctxFor(root));
+    expect(check.output).toContain("thin entry");
+    expect(check.output).toContain("no distinction");
+  });
+
+  it("removes addedBy and leaves distinction alone", async () => {
+    const root = await newRepo();
+    await handleTermAdd({ ...PEN, addedBy: "cpm-w7" }, "md", root);
+    await handleTermUpdate({ id: "term-pen", clear: ["addedBy"] }, "md", root);
+    const entry = stored(root).terms[0]!;
+    expect("addedBy" in entry).toBe(false);
+    expect(entry.distinction).toBe(PEN.distinction);
+  });
+
+  it("refuses to clear a required field, by name, and writes nothing", async () => {
+    const root = await newRepo();
+    await handleTermAdd(PEN, "md", root);
+    const before = storyBytes(root);
+    await expect(handleTermUpdate({ id: "term-pen", clear: ["definition"] }, "md", root)).rejects.toThrow(/distinction, addedBy/);
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("refuses a field both supplied and cleared, and writes nothing", async () => {
+    const root = await newRepo();
+    await handleTermAdd(PEN, "md", root);
+    const before = storyBytes(root);
+    await expect(
+      handleTermUpdate({ id: "term-pen", distinction: "Something else.", clear: ["distinction"] }, "md", root),
+    ).rejects.toThrow(/both supplied and cleared/);
+    expect(storyBytes(root)).toEqual(before);
+  });
+});

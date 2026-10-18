@@ -192,3 +192,31 @@ describe("capability surfaces through the registered MCP tools (ISS-1301)", () =
     expect(JSON.parse(readFileSync(catalogPath(root), "utf-8")).capabilities[0].surfaces.cli).toEqual(["ruling"]);
   });
 });
+
+describe("clear through the registered MCP tools (ISS-1287)", () => {
+  it("capability_update clear removes example, and an invalid clear is an error that writes nothing", async () => {
+    const root = await newProject();
+    const tools = captureTools(root);
+    await tools.get("storybloq_capability_add")!.handler({ ...CAP, example: "storybloq thing" });
+    writeFileSync(catalogPath(root), JSON.stringify(JSON.parse(readFileSync(catalogPath(root), "utf-8"))));
+    const before = durableBytes(root);
+    const bad = await tools.get("storybloq_capability_update")!.handler({ id: "cap-thing", clear: ["summary"] });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]!.text).toContain("accepts only example");
+    expect(durableBytes(root)).toEqual(before);
+    const ok = await tools.get("storybloq_capability_update")!.handler({ id: "cap-thing", clear: ["example"] });
+    expect(ok.isError).toBeFalsy();
+    expect("example" in JSON.parse(readFileSync(catalogPath(root), "utf-8")).capabilities[0]).toBe(false);
+  });
+
+  it("term_update clear removes distinction", async () => {
+    const root = await newProject();
+    const tools = captureTools(root);
+    const added = await tools.get("storybloq_term_add")!.handler({ id: "term-pen", term: "pen", definition: "The session model.", distinction: "Not hands." });
+    expect(added.isError).toBeFalsy();
+    const res = await tools.get("storybloq_term_update")!.handler({ id: "term-pen", clear: ["distinction"] });
+    expect(res.isError).toBeFalsy();
+    const glossary = JSON.parse(readFileSync(join(root, ".story", "glossary.json"), "utf-8"));
+    expect("distinction" in glossary.terms[0]).toBe(false);
+  });
+});

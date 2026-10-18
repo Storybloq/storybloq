@@ -28,7 +28,7 @@ import { hasPendingNote, PendingNoteSchema } from "../../models/capability.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
 import { sanitizeDisplayText } from "../../core/display-text.js";
 import { successEnvelope, escapeMarkdownInline, formatError, ExitCode } from "../../core/output-formatter.js";
-import { capabilityCatalog, catalogText, restoreCommand, type RestoreInput } from "./capability.js";
+import { capabilityCatalog, catalogText, clearedFields, restoreCommand, type RestoreInput } from "./capability.js";
 import { CliValidationError } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import type { OutputFormat } from "../../models/types.js";
@@ -45,7 +45,12 @@ export interface TermWriteInput {
   readonly addedBy?: string;
   /** T-526 (3.7): remove the pending note in this update. */
   readonly clearPending?: boolean;
+  /** ISS-1287 (update only): optional fields to remove, from `TERM_CLEARABLE`. */
+  readonly clear?: readonly string[];
 }
+
+/** ISS-1287: the optional scalar fields `term update --clear` removes (`core` is cleared by setting it false). */
+export const TERM_CLEARABLE: readonly string[] = ["distinction", "addedBy"];
 
 // --- shared ---
 
@@ -392,6 +397,7 @@ export async function handleTermAdd(input: TermWriteInput, format: OutputFormat,
 }
 
 export async function handleTermUpdate(input: TermWriteInput, format: OutputFormat, root: string): Promise<CommandResult> {
+  const cleared = clearedFields(input.clear, TERM_CLEARABLE, input as unknown as Readonly<Record<string, unknown>>, "term update");
   return refusing(async () => {
     const doc = await glossaryCatalog.mutate(root, (current) => {
       const index = current.terms.findIndex((t) => t.id === input.id);
@@ -405,11 +411,11 @@ export async function handleTermUpdate(input: TermWriteInput, format: OutputForm
           term: input.term ?? previous.term,
           aliases: input.aliases ? [...input.aliases] : previous.aliases,
           definition: input.definition ?? previous.definition,
-          distinction: input.distinction ?? previous.distinction,
+          distinction: cleared.has("distinction") ? undefined : (input.distinction ?? previous.distinction),
           capabilities: input.capabilities ? [...input.capabilities] : previous.capabilities,
           rulings: input.rulings ? [...input.rulings] : previous.rulings,
           core: input.core ?? previous.core,
-          addedBy: input.addedBy ?? previous.addedBy,
+          addedBy: cleared.has("addedBy") ? undefined : (input.addedBy ?? previous.addedBy),
           pendingNote: input.clearPending === true ? undefined : previous.pendingNote,
           updatedAt: stamp(),
         }),

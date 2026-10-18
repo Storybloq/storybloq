@@ -93,6 +93,45 @@ export interface CapabilityWriteInput {
   readonly status?: string;
   /** ISS-1301: write a cli or mcp name the compiled reference does not list. */
   readonly skipCheck?: boolean;
+  /** ISS-1287 (update only): optional fields to remove, from `CAPABILITY_CLEARABLE`. */
+  readonly clear?: readonly string[];
+}
+
+/**
+ * ISS-1287: the optional scalar fields `capability update --clear` removes.
+ * Required fields are deliberately absent: clearing one would fail the schema
+ * at write, and the caller would get a schema error instead of a usage error.
+ */
+export const CAPABILITY_CLEARABLE: readonly string[] = ["example"];
+
+/**
+ * ISS-1287, one contract for both catalogs: the fields an update's clear list
+ * removes. Input-only, so it is checked before any transaction and a refusal
+ * cannot write. A field outside `clearable`, or one both supplied and cleared,
+ * is a usage error rather than a silent winner.
+ */
+export function clearedFields(
+  clear: readonly string[] | undefined,
+  clearable: readonly string[],
+  supplied: Readonly<Record<string, unknown>>,
+  command: string,
+): ReadonlySet<string> {
+  const fields = new Set(clear ?? []);
+  for (const field of fields) {
+    if (!clearable.includes(field)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `${command} --clear accepts only ${clearable.join(", ")}; ${catalogText(field)} cannot be cleared.`,
+      );
+    }
+    if (supplied[field] !== undefined) {
+      throw new CliValidationError(
+        "invalid_input",
+        `${field} is both supplied and cleared in one ${command}: supply a value or clear it, not both.`,
+      );
+    }
+  }
+  return fields;
 }
 
 /**
@@ -654,6 +693,7 @@ export async function handleCapabilityUpdate(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
+  const cleared = clearedFields(input.clear, CAPABILITY_CLEARABLE, input as unknown as Readonly<Record<string, unknown>>, "capability update");
   const surfaces = surfaceRefusal(input, format);
   if (surfaces !== null) return surfaces;
   return refusing(async () => {
@@ -680,7 +720,7 @@ export async function handleCapabilityUpdate(
           surfaces: surfacesFrom(input, previous.surfaces),
           entryPoints: input.entryPoints ? [...input.entryPoints] : previous.entryPoints,
           contract: input.contract ?? previous.contract,
-          example: input.example ?? previous.example,
+          example: cleared.has("example") ? undefined : (input.example ?? previous.example),
           rulings: input.rulings ? [...input.rulings] : previous.rulings,
           items: input.items ? [...input.items] : previous.items,
           terms: input.terms ? [...input.terms] : previous.terms,

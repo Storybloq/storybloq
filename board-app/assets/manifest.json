@@ -1,0 +1,50 @@
+[
+  {
+    "path": "fonts/inter-latin.woff2",
+    "bytes": 48432,
+    "sha256": "c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4",
+    "kind": "font",
+    "family": "Inter",
+    "weight": "100 900",
+    "copyright": "Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)",
+    "source": "web/out/_next/static/media/e4af272ccee01ff0-s.p.woff2",
+    "license": {
+      "path": "fonts/inter-OFL.txt",
+      "bytes": 4377,
+      "sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+      "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/OFL.txt"
+    }
+  },
+  {
+    "path": "fonts/fraunces-latin.woff2",
+    "bytes": 120724,
+    "sha256": "ae1d21f0a3120a56e7b163af66f709b58f140d024c0ac4f0a362662c7692a738",
+    "kind": "font",
+    "family": "Fraunces",
+    "weight": "100 900",
+    "copyright": "Copyright 2020 The Fraunces Project Authors (github.com/undercasetype/Fraunces)",
+    "source": "web/out/_next/static/media/26dc4a78f0c7af7f-s.woff2",
+    "license": {
+      "path": "fonts/fraunces-OFL.txt",
+      "bytes": 4391,
+      "sha256": "bdf4c22802eaf804f998195871c6b8938aac2ac14b2d78a8bd66a6f1eced833b",
+      "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/fraunces/OFL.txt"
+    }
+  },
+  {
+    "path": "brand/lockup-light.png",
+    "bytes": 86072,
+    "sha256": "4565b41b2ff963c9adf98aa4708bcadfe612b2c84e4efa7e38ff97af6bde374f",
+    "kind": "image",
+    "theme": "light",
+    "source": "web/public/brand/lockup-light.png"
+  },
+  {
+    "path": "brand/lockup-dark.png",
+    "bytes": 87013,
+    "sha256": "223efd98fa16c98f96289d5a94ee27191e3dd78516f7455ab929e595d37a5f96",
+    "kind": "image",
+    "theme": "dark",
+    "source": "web/public/brand/lockup-dark.png"
+  }
+]

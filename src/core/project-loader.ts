@@ -32,6 +32,7 @@ import {
   CROCKFORD_CLASS,
 } from "../models/types.js";
 import { ProjectState } from "./project-state.js";
+import type { PreparedContentValidation } from "./update-write-hooks.js";
 import {
   ProjectLoaderError,
   MAX_SUPPORTED_SCHEMA_VERSION,
@@ -418,11 +419,12 @@ async function readIfExists(path: string): Promise<string | null> {
 export async function writeTicketUnlocked(
   ticket: Ticket,
   root: string,
-  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority },
+  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority } & PreparedContentValidation,
 ): Promise<void> {
   const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority });
   assertPreparedWritesCurrent(root, [{ target, content }]);
   await assertWithdrawalLedgerCurrent(root, [{ op: "write", target, content }]);
+  await options?.validatePreparedContent?.(content);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -651,10 +653,11 @@ function heldResolutionContext(root: string, given: ResolutionWriteContext | und
 export async function writeIssueUnlocked(
   issue: Issue,
   root: string,
-  options?: { createOnly?: boolean },
+  options?: { createOnly?: boolean } & PreparedContentValidation,
 ): Promise<void> {
   const { target, content } = await prepareIssueWrite(issue, root);
   assertPreparedWritesCurrent(root, [{ target, content }]);
+  await options?.validatePreparedContent?.(content);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -959,7 +962,7 @@ export async function deleteIssue(
 export async function writeNoteUnlocked(
   note: Note,
   root: string,
-  options?: { createOnly?: boolean },
+  options?: { createOnly?: boolean } & PreparedContentValidation,
 ): Promise<void> {
   const parsed = NoteSchema.parse(note);
   if (!NOTE_ID_REGEX.test(parsed.id) && !NOTE_CANONICAL_ID_REGEX.test(parsed.id)) {
@@ -973,6 +976,7 @@ export async function writeNoteUnlocked(
   await mkdir(dirname(targetPath), { recursive: true });
   await guardPath(targetPath, wrapDir);
   const json = serializeJSON(parsed);
+  await options?.validatePreparedContent?.(json);
   if (options?.createOnly) {
     await atomicCreate(targetPath, json);
   } else {

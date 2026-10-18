@@ -75,6 +75,7 @@ const PLAN_1B_FUNCTIONS: readonly string[] = [
   "src/cli/commands/session-compact.ts#handleSessionResumePrompt",
   "src/cli/commands/session-compact.ts#handleSessionStop",
   "src/cli/housekeeping.ts#preCommandHousekeeping",
+  "src/cli/index.ts#<module>",
   "src/cli/limit-retirement-entry.ts#retireLimitAutoResumeBestEffort",
   "src/cli/register.ts#registerSessionCommand",
   "src/cli/register.ts#runCatalogWrite",

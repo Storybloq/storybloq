@@ -16,15 +16,8 @@ import {
 import type { Argv } from "yargs";
 import { resolveNodeRoot, checkNodeWritePermission, readOrchestratorConfig, ORCHESTRATOR_NODE_SENTINEL } from "../mcp/node-resolution.js";
 
-export class CliValidationError extends Error {
-  constructor(
-    public readonly code: ErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "CliValidationError";
-  }
-}
+import { CliValidationError } from "../core/cli-validation-error.js";
+export { CliValidationError } from "../core/cli-validation-error.js";
 
 function formatZodError(err: ZodError): string {
   return err.issues.map((i) => i.message).join("; ");
@@ -94,7 +87,7 @@ export function todayISO(): string {
  * how a caller clears `phase`, `parentTicket`, or `resolution`.
  */
 export function assertUpdateHasFields(
-  updates: Record<string, unknown>,
+  updates: object,
   entity: string,
   fieldHint: string,
 ): void {

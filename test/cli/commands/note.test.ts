@@ -377,6 +377,24 @@ describe("handleNoteUpdate append mode and replace guard (ISS-1092)", () => {
     expect(await refused(below, { content: chars(199, "y") })).toContain("199");
   });
 
+  it("T-566: only the destructive-replace refusal carries reason note_destructive_replace", async () => {
+    const reasonOf = async (dir: string, updates: Parameters<typeof handleNoteUpdate>[1]) => {
+      const err = await handleNoteUpdate("N-001", updates, "json", dir).then(
+        () => { throw new Error("expected a refusal"); },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(CliValidationError);
+      return { code: (err as CliValidationError).code, reason: (err as CliValidationError).reason };
+    };
+    const dir = await noteOf(chars(1000));
+    expect(await reasonOf(dir, { content: chars(199, "y") }))
+      .toEqual({ code: "invalid_input", reason: "note_destructive_replace" });
+    expect(await reasonOf(dir, { content: " " })).toEqual({ code: "invalid_input", reason: undefined });
+    expect(await reasonOf(dir, { status: "deleted" })).toEqual({ code: "invalid_input", reason: undefined });
+    expect(await reasonOf(dir, { content: "more", mode: "append", confirmReplace: true }))
+      .toEqual({ code: "invalid_input", reason: undefined });
+  });
+
   it("A3: the guard measures content after the render fence is stripped", async () => {
     const dir = await noteOf(chars(1000));
     const fenced = `\`\`\`\`\n${chars(199, "y")}\n\`\`\`\``;

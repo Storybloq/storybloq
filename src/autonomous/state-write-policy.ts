@@ -62,6 +62,8 @@ export const STATE_WRITE_CATCHES: Readonly<Record<string, string>> = {
   // Registration-time catches: tools are registered, no state is written here.
   "src/mcp/index.ts#registerDegradedTools#catch#3": "B",
   "src/mcp/index.ts#<module>#promise#1": "B", // main().catch, process exit
+  // The --local-cli entry: reports the error on stderr and sets exit code 2.
+  "src/cli/index.ts#<module>#catch#1": "B",
 };
 
 /** Value escapes of a writer -> the sink slot it feeds (`file#Container.member`). */
@@ -107,6 +109,8 @@ export const STATE_WRITE_EDGES: Readonly<Record<string, string>> = {
   "src/cli/register.ts#registerTermCommand#edge#6": "yargs.command(handler)",
   "src/cli/register.ts#registerLedgerCommand#edge#1": "yargs.command(builder)",
   "src/cli/register.ts#registerLedgerCommand#edge#2": "yargs.command(handler)",
+  // The --local-cli dispatch closure; runLocalProjectCommand awaits it with no catch around the call.
+  "src/cli/index.ts#<module>#edge#1": "src/cli/local-profile.ts#runLocalProjectCommand(dispatch)",
   // MCP tool callbacks; the SDK awaits the returned promise.
   "src/mcp/index.ts#registerDegradedTools#edge#1": "McpServer.registerTool(callback)",
   "src/mcp/tools.ts#registerAllTools#edge#1": "McpServer.registerTool(callback)",

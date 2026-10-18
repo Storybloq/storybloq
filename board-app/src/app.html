@@ -1,0 +1,2069 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Storybloq board</title>
+    <!-- BRAND ASSETS -->
+    <style>
+      /* Website typography and Fabric spacing, shared with the Mac app. */
+      :root {
+        color-scheme: light;
+        --story-sans:
+          "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --story-serif: "Fraunces", Georgia, serif;
+        --space-xs: 4px;
+        --space-sm: 8px;
+        --space-md: 14px;
+        --space-lg: 20px;
+        --space-xl: 28px;
+        --space-xxl: 40px;
+        --radius-card: 16px;
+        --radius-panel: 24px;
+        --paper: #f4ede0;
+        --panel: #efe7d8;
+        --card: #fcf8f0;
+        --card-line: #ded3bf;
+        --ink: #1c1a17;
+        --muted: #615a50;
+        --line: #cabda6;
+        --copper: #905830;
+        --copper-text: #87502b;
+        --wash: #dfd3ba;
+        --warning: #835820;
+        /* Darker rust for small text on card and change-highlight surfaces. */
+        --danger: #973f26;
+        --success: #5f6b4a;
+        --runtime-link: #587b98;
+      }
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --paper: #1c1a17;
+        --panel: #26221e;
+        --card: #2b2722;
+        --card-line: #53483c;
+        --ink: #f4ede0;
+        --muted: #c1b59e;
+        --line: #53483c;
+        --copper: #c48568;
+        --copper-text: #c48568;
+        --wash: #3b3027;
+        --warning: #d9a055;
+        --danger: #e09a7f;
+        --success: #a5b483;
+        --runtime-link: #91b3cf;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font: 15px/1.5 var(--story-sans);
+        letter-spacing: 0.007em;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 1440px;
+        margin: auto;
+        padding: var(--space-lg) var(--space-xl) var(--space-xxl);
+      }
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: var(--space-lg);
+        padding-bottom: var(--space-md);
+        border-bottom: 1px solid var(--line);
+      }
+      .brand-lockup {
+        display: flex;
+        align-items: center;
+        gap: var(--space-lg);
+        min-width: 0;
+      }
+      .wordmark {
+        width: 180px;
+        height: 45px;
+        margin-left: -12px;
+        flex-shrink: 0;
+      }
+      .wordmark img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .wordmark .brand-dark,
+      html[data-theme="dark"] .wordmark .brand-light {
+        display: none;
+      }
+      html[data-theme="dark"] .wordmark .brand-dark {
+        display: block;
+      }
+      .eyebrow {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted);
+        margin: 0;
+      }
+      .brand-lockup .eyebrow {
+        padding-left: var(--space-lg);
+        border-left: 1px solid var(--line);
+      }
+      .project-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-lg);
+        margin: var(--space-md) 0;
+      }
+      p {
+        margin: 5px 0;
+      }
+      #phase,
+      #progress {
+        min-width: 0;
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      #progress {
+        flex: 0 1 320px;
+        text-align: right;
+        font: 11px/1.7 var(--story-sans);
+      }
+      #progress:empty {
+        display: none;
+      }
+      button,
+      input {
+        font: inherit;
+        color: inherit;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        min-height: 40px;
+        padding: 6px 12px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 2px solid var(--copper);
+        outline-offset: 3px;
+      }
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 0 0 var(--space-sm);
+      }
+      .types {
+        display: flex;
+        gap: 4px;
+      }
+      .board-toolbar {
+        justify-content: flex-end;
+      }
+      #search-form {
+        flex-basis: 520px;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        min-width: 0;
+      }
+      #search-form > button,
+      #board-filter {
+        flex-shrink: 0;
+      }
+      #board-filter {
+        position: relative;
+      }
+      #filter-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+      }
+      #filter-toggle[aria-expanded="true"],
+      #filter-toggle[data-filtered="true"] {
+        border-color: var(--copper);
+        color: var(--copper-text);
+      }
+      .filter-chevron {
+        width: 6px;
+        height: 6px;
+        border-right: 1.5px solid currentColor;
+        border-bottom: 1.5px solid currentColor;
+        transform: rotate(45deg) translateY(-2px);
+      }
+      #filter-options {
+        position: absolute;
+        z-index: 5;
+        top: calc(100% + 8px);
+        right: 0;
+        width: 192px;
+        max-width: calc(100vw - 32px);
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+        box-shadow: 0 8px 24px #0002;
+      }
+      #filter-options button {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        text-align: left;
+        border-color: transparent;
+        background: transparent;
+      }
+      #filter-options button:hover {
+        background: var(--panel);
+      }
+      #filter-options button[aria-pressed="true"] {
+        color: var(--copper-text);
+        background: var(--panel);
+      }
+      .filter-check {
+        width: 14px;
+        visibility: hidden;
+      }
+      [aria-pressed="true"] > .filter-check {
+        visibility: visible;
+      }
+      .types button {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+      .types button[aria-pressed="true"] {
+        border-color: var(--line);
+        color: var(--ink);
+        background: var(--card);
+      }
+      form {
+        display: flex;
+        gap: 6px;
+        flex: 0 1 380px;
+      }
+      input {
+        width: 100%;
+        min-width: 0;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      #phase-rail {
+        display: flex;
+        overflow-x: auto;
+        gap: 0;
+        padding: 8px 5px 12px;
+        margin: 0 -5px 10px;
+        scrollbar-width: thin;
+      }
+      /* Center fitting phases without clipping either end of an overflowing row. */
+      #phase-rail > :first-child {
+        margin-left: auto;
+      }
+      #phase-rail > :last-child {
+        margin-right: auto;
+      }
+      .phase-step {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        flex: 0 0 146px;
+        position: relative;
+        border: 0;
+        border-radius: 8px;
+        min-height: 84px;
+        background: transparent;
+        padding: 8px 10px;
+        color: var(--muted);
+        text-align: center;
+      }
+      .phase-step:after {
+        content: "";
+        position: absolute;
+        height: 1px;
+        background: var(--line);
+        left: calc(50% + 14px);
+        right: calc(-50% + 14px);
+        top: 19px;
+      }
+      .phase-step:last-child:after {
+        display: none;
+      }
+      .phase-dot {
+        position: relative;
+        z-index: 1;
+        display: block;
+        width: 22px;
+        height: 22px;
+        border: 2px solid var(--line);
+        border-radius: 50%;
+        margin: 0 auto 6px;
+        font-size: 13px;
+        line-height: 18px;
+        background: var(--paper);
+        color: var(--paper);
+      }
+      .phase-step[data-status="complete"] .phase-dot,
+      .phase-step[data-status="inprogress"] .phase-dot {
+        background: var(--copper);
+        border-color: var(--copper);
+      }
+      .phase-step[aria-current="step"] .phase-dot {
+        background: var(--paper);
+        border-color: var(--copper);
+        box-shadow: 0 0 0 3px var(--wash);
+      }
+      .phase-label {
+        display: block;
+        width: 100%;
+        font: 11px/1.4 var(--story-sans);
+        min-height: 14px;
+        overflow-wrap: anywhere;
+      }
+      .phase-name {
+        display: block;
+        max-width: 100%;
+        padding: 4px 8px;
+        border-radius: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .phase-step[aria-pressed="true"] {
+        color: var(--copper-text);
+      }
+      .phase-step[aria-pressed="true"] .phase-dot {
+        box-shadow:
+          0 0 0 3px var(--paper),
+          0 0 0 5px var(--copper);
+      }
+      .phase-step[aria-pressed="true"] .phase-name {
+        color: var(--paper);
+        background: var(--copper);
+      }
+      .phase-step:focus-visible {
+        outline: none;
+      }
+      .phase-step:focus-visible .phase-name {
+        outline: 2px solid var(--ink);
+        outline-offset: 3px;
+      }
+      main:has(#board-screen:not([hidden])) {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        height: 100dvh;
+        min-height: 640px;
+        padding-bottom: var(--space-lg);
+      }
+      main:has(#board-screen:not([hidden])) > :not(#board-screen),
+      #board-screen > :not(#board-layout),
+      .column > :not(ul) {
+        flex-shrink: 0;
+      }
+      #board-screen {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+      }
+      #board-layout {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: stretch;
+        gap: var(--space-lg);
+      }
+      #board-layout.detail-open {
+        grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+      }
+      .board {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-md);
+        align-items: stretch;
+        min-height: 0;
+        width: 100%;
+      }
+      .column {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-card);
+        background: var(--panel);
+        padding: var(--space-md);
+        min-width: 0;
+      }
+      .column-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 0 0 10px;
+        border-bottom: 1px solid var(--line);
+        margin: 0 0 8px;
+      }
+      .column-heading h2 {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+      }
+      .column-heading h2::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        flex-shrink: 0;
+        border: 1px solid var(--muted);
+        border-radius: 50%;
+      }
+      #inProgress-heading::before {
+        background: var(--copper);
+        border-color: var(--copper);
+      }
+      #done-heading::before {
+        background: var(--success);
+        border-color: var(--success);
+      }
+      h2 {
+        font: 600 18px/1.3 var(--story-serif);
+        font-variation-settings: "SOFT" 50;
+        letter-spacing: 0.011em;
+        margin: 0;
+      }
+      .count {
+        font: 11px var(--story-sans);
+        color: var(--muted);
+        border-radius: 8px;
+        padding: 3px 7px;
+        background: transparent;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 4px 2px;
+        min-height: 180px;
+        max-height: 520px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+      .column > ul {
+        flex: 1;
+        min-height: 0;
+        max-height: none;
+      }
+      li + li {
+        margin-top: 8px;
+      }
+      .item {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: var(--card);
+        border: 1px solid var(--card-line);
+        border-radius: var(--radius-card);
+        padding: var(--space-md);
+        min-height: 0;
+      }
+      .item:hover {
+        border-color: var(--line);
+      }
+      .item[aria-pressed="true"] {
+        border-color: var(--copper);
+        box-shadow: 0 0 0 1px var(--copper);
+      }
+      .card-heading {
+        display: flex;
+        flex-direction: column-reverse;
+        align-items: start;
+        justify-content: space-between;
+        gap: 5px;
+      }
+      .meta {
+        flex: 0 0 auto;
+        max-width: 100%;
+        font: 11px/1.6 var(--story-sans);
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .title {
+        display: block;
+        min-width: 0;
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+      .description {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--muted);
+        margin-top: 6px;
+        overflow-wrap: anywhere;
+      }
+      .description:empty {
+        display: none;
+      }
+      .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        margin-top: 10px;
+      }
+      .tag {
+        font-size: 11px;
+        line-height: 1.5;
+        padding: 0;
+        color: var(--muted);
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+      .tag + .tag {
+        border-left: 1px solid var(--line);
+        padding-left: 8px;
+      }
+      .tag.attention {
+        color: var(--danger);
+      }
+      .empty {
+        color: var(--muted);
+        font-size: 13px;
+        padding: 25px 8px;
+      }
+      .pager {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 4px;
+        border-top: 1px solid var(--line);
+        padding-top: 7px;
+        margin-top: 6px;
+      }
+      .pager button {
+        background: transparent;
+        border: 0;
+        padding: 5px;
+        min-width: 34px;
+        font-size: 12px;
+      }
+      .position {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      footer {
+        margin-top: 18px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      #severity {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .critical {
+        color: var(--danger);
+      }
+      .high {
+        color: var(--warning);
+      }
+      #status {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      #error {
+        color: var(--danger);
+        font-size: 12px;
+      }
+      #error:empty {
+        display: none;
+      }
+      #detail {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-card);
+        padding: var(--space-lg);
+        overflow-wrap: anywhere;
+        align-self: stretch;
+        /* Let the board set the row height while detail content scrolls. */
+        contain: size;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      #detail[hidden] {
+        display: none;
+      }
+      .detail-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: start;
+        gap: 12px;
+        padding-bottom: var(--space-md);
+        margin-bottom: var(--space-md);
+        border-bottom: 1px solid var(--line);
+      }
+      #detail-title {
+        font-size: 18px;
+        line-height: 1.4;
+        min-width: 0;
+      }
+      #close-detail {
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      #detail-body {
+        white-space: pre-wrap;
+        margin-top: 14px;
+        font-size: 13px;
+      }
+      .changed {
+        animation: changed 1.4s ease-out;
+      }
+      @keyframes changed {
+        from {
+          background: var(--wash);
+        }
+        to {
+          background: var(--card);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .changed {
+          animation: none;
+        }
+      }
+      @media (max-width: 1050px) {
+        #board-layout.detail-open {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: minmax(300px, 1fr) auto;
+          overflow-y: auto;
+        }
+        #detail {
+          align-self: start;
+          contain: none;
+          max-height: min(650px, 60dvh);
+        }
+      }
+      @media (max-width: 700px) {
+        main:has(#board-screen:not([hidden])) {
+          display: block;
+          height: auto;
+          min-height: 100dvh;
+        }
+        #board-screen {
+          display: block;
+        }
+        #board-layout.detail-open {
+          grid-template-rows: auto auto;
+          overflow: visible;
+        }
+        .column {
+          height: max(320px, 65dvh);
+        }
+        main {
+          padding: 16px;
+        }
+        .brand-lockup {
+          flex-wrap: wrap;
+          gap: 0;
+        }
+        .brand-lockup .eyebrow {
+          flex-basis: 100%;
+          padding: 4px 0 0;
+          border: 0;
+          font-size: 9px;
+        }
+        .project-summary {
+          flex-direction: column;
+          align-items: start;
+          gap: 4px;
+        }
+        #progress {
+          flex-basis: auto;
+          text-align: left;
+        }
+        .board {
+          grid-template-columns: 1fr;
+        }
+        .column {
+          padding: var(--space-md);
+        }
+        form {
+          flex-basis: 100%;
+        }
+        #search-form {
+          flex-basis: 100%;
+          flex-wrap: wrap;
+        }
+        #search-form > input {
+          flex-basis: 100%;
+        }
+        .toolbar {
+          gap: 10px;
+        }
+        .phase-step {
+          flex-basis: 130px;
+        }
+        ul {
+          max-height: 460px;
+        }
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .workspace-nav {
+        gap: var(--space-lg);
+        margin: 0;
+      }
+      .workspace-nav button {
+        font-size: 13px;
+        font-weight: 500;
+        min-height: 44px;
+        padding: 8px 2px;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+      }
+      .workspace-nav button[aria-pressed="true"] {
+        color: var(--ink);
+        background: transparent;
+        border-color: var(--copper);
+        font-weight: 600;
+      }
+      @media (max-width: 900px) {
+        header {
+          grid-template-columns: minmax(0, 1fr) auto;
+        }
+        .workspace-nav {
+          grid-column: 1 / -1;
+          grid-row: 2;
+          flex-wrap: wrap;
+        }
+        #refresh {
+          grid-column: 2;
+          grid-row: 1;
+        }
+      }
+      @media (max-width: 700px) {
+        .workspace-nav {
+          gap: 14px;
+        }
+        .workspace-nav button {
+          font-size: 12px;
+        }
+      }
+      main > section > h2 {
+        font-size: 24px;
+      }
+      main > section > h2 + .muted {
+        margin: 6px 0 var(--space-lg);
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--copper);
+      }
+      #refresh {
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        flex-shrink: 0;
+        font-size: 13px;
+        border-radius: 8px;
+      }
+      .muted,
+      .view-status,
+      .relation-legend {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .workspace-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-lg);
+        align-items: start;
+      }
+      .workspace-layout.detail-open {
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+      }
+      .inspector {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-card);
+        padding: var(--space-lg);
+        overflow-wrap: anywhere;
+        max-height: 650px;
+        overflow-y: auto;
+      }
+      .inspector .detail-header button {
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      .inspector h3 {
+        font: 600 16px/1.4 var(--story-serif);
+        font-variation-settings: "SOFT" 50;
+        letter-spacing: 0.011em;
+        margin: 18px 0 8px;
+      }
+      .markdown {
+        margin-top: 18px;
+        font-size: 13px;
+      }
+      .markdown p {
+        margin: 10px 0;
+      }
+      .markdown ul {
+        list-style: disc;
+        padding-left: 22px;
+        min-height: 0;
+        max-height: none;
+        overflow: visible;
+      }
+      .markdown pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 10px;
+        background: var(--card);
+        border-radius: 8px;
+      }
+      .history-column {
+        container-type: inline-size;
+        min-width: 0;
+      }
+      #history-list {
+        max-width: 1000px;
+        margin: 28px auto;
+      }
+      .history-group {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+        align-items: center;
+        column-gap: 20px;
+        width: 100%;
+        min-height: 128px;
+        margin: 0;
+        padding: 20px 6px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        overflow-wrap: anywhere;
+      }
+      .history-group::before {
+        content: "";
+        position: absolute;
+        width: 3px;
+        top: 0;
+        bottom: 0;
+        left: calc(50% - 1.5px);
+        background: var(--line);
+      }
+      .history-group:first-child::before {
+        top: 50%;
+      }
+      .history-group:last-child::before {
+        bottom: 50%;
+      }
+      .history-marker {
+        grid-column: 2;
+        grid-row: 1;
+        justify-self: center;
+        z-index: 1;
+        width: 22px;
+        height: 22px;
+        border: 2.5px solid var(--copper);
+        border-radius: 50%;
+        background: var(--paper);
+        box-shadow: 0 0 0 3px var(--paper);
+      }
+      .history-label {
+        display: grid;
+        gap: 5px;
+        grid-column: 3;
+        grid-row: 1;
+        max-width: 360px;
+        text-align: left;
+      }
+      .history-group:nth-child(even) .history-label {
+        grid-column: 1;
+        justify-self: end;
+        text-align: right;
+      }
+      .history-date,
+      .history-more {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .history-heading {
+        font: 600 19px/1.35 var(--story-serif);
+        font-variation-settings: "SOFT" 50;
+      }
+      .history-preview {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .history-group:hover .history-heading,
+      .history-group[aria-pressed="true"] .history-heading {
+        color: var(--copper-text);
+      }
+      .history-group[aria-pressed="true"] .history-marker {
+        background: var(--copper);
+        box-shadow:
+          0 0 0 3px var(--paper),
+          0 0 0 5px var(--line);
+      }
+      #history-status {
+        overflow-wrap: anywhere;
+      }
+      .history-day-count {
+        margin-top: 0;
+      }
+      .history-back {
+        margin-bottom: 16px;
+      }
+      .handover-row {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr) 12px;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        text-align: left;
+        margin-top: 8px;
+        background: var(--card);
+        border-color: var(--card-line);
+        padding: var(--space-md);
+        overflow-wrap: anywhere;
+      }
+      .handover-document {
+        width: 13px;
+        height: 17px;
+        border: 1.5px solid var(--copper);
+        border-radius: 2px;
+        background:
+          linear-gradient(var(--copper), var(--copper)) 3px 5px / 5px 1px
+            no-repeat,
+          linear-gradient(var(--copper), var(--copper)) 3px 9px / 5px 1px
+            no-repeat;
+      }
+      .handover-chevron {
+        font-size: 22px;
+        color: var(--muted);
+      }
+      .node-card[aria-pressed="true"] {
+        border-color: var(--copper);
+      }
+      @container (max-width: 620px) {
+        .history-group {
+          grid-template-columns: 28px minmax(0, 1fr);
+          column-gap: 16px;
+        }
+        .history-group::before {
+          left: 18.5px;
+        }
+        .history-marker {
+          grid-column: 1;
+        }
+        .history-label,
+        .history-group:nth-child(even) .history-label {
+          grid-column: 2;
+          justify-self: start;
+          text-align: left;
+        }
+      }
+      .federation-panel {
+        min-width: 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-card);
+        background: var(--panel);
+      }
+      .federation-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .federation-toolbar p {
+        margin: 0;
+      }
+      .relation-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        font-size: 12px;
+      }
+      .relation-legend span {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .relation-legend span::before {
+        content: "";
+        width: 24px;
+        border-top: 2px solid var(--copper);
+      }
+      .relation-legend .runtime::before {
+        border-top: 2px dashed var(--runtime-link);
+      }
+      #nodes-list {
+        position: relative;
+        margin: 0 auto;
+      }
+      #nodes-graph {
+        max-height: 540px;
+        overflow: auto;
+        overscroll-behavior: contain;
+        background-image: radial-gradient(
+          var(--line) 0.65px,
+          transparent 0.65px
+        );
+        background-size: 20px 20px;
+      }
+      .node-card {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 9px;
+        background: var(--card);
+        border-color: var(--card-line);
+        padding: 15px 16px;
+        text-align: left;
+        border-radius: 12px;
+        box-shadow: 0 2px 5px #00000006;
+        scroll-margin: 24px;
+      }
+      .node-card[aria-pressed="true"] {
+        box-shadow: 0 0 0 1px var(--copper);
+      }
+      .node-name {
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .node-name,
+      .node-caption,
+      .node-cache {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        width: 100%;
+      }
+      .node-health {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .node-health[data-health="green"] {
+        background: var(--success);
+      }
+      .node-health[data-health="yellow"] {
+        background: var(--warning);
+      }
+      .node-health[data-health="red"] {
+        background: var(--danger);
+      }
+      .node-caption,
+      .node-cache {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .node-progress {
+        height: 3px;
+        width: 100%;
+        background: var(--line);
+        border-radius: 2px;
+      }
+      .node-progress > span {
+        display: block;
+        height: 100%;
+        background: var(--success);
+        border-radius: inherit;
+      }
+      .federation-graph {
+        position: absolute;
+        inset: 0;
+        display: block;
+        pointer-events: none;
+      }
+      .federation-edge {
+        pointer-events: stroke;
+        fill: none;
+        stroke: var(--copper);
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .federation-edge.runtime {
+        stroke: var(--runtime-link);
+        stroke-dasharray: 6 5;
+      }
+      .federation-edge.is-selected {
+        stroke-width: 2.5;
+      }
+      .federation-edge.is-unrelated {
+        opacity: 0.16;
+      }
+      .node-card.is-unrelated {
+        opacity: 0.6;
+      }
+      .federation-hint {
+        margin: 0;
+        padding: 12px 20px;
+        border-top: 1px solid var(--line);
+      }
+      .node-relations {
+        display: grid;
+        gap: 8px;
+      }
+      .node-relation {
+        display: grid;
+        gap: 3px;
+        width: 100%;
+        text-align: left;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        background: var(--paper);
+        border-color: var(--card-line);
+        border-left: 3px solid var(--copper);
+        padding: 9px 12px;
+        font-size: 13px;
+      }
+      .node-relation.runtime {
+        border-left-color: var(--runtime-link);
+      }
+      .node-role {
+        font-weight: 600;
+      }
+      #node-detail-body {
+        font-size: 13px;
+      }
+      .view-error {
+        color: var(--danger);
+        font-size: 13px;
+      }
+      @media (max-width: 1050px) {
+        .workspace-layout.detail-open {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      #item-editor {
+        display: block;
+        margin: 14px 0;
+      }
+      #item-editor[hidden] {
+        display: none;
+      }
+      #editor-fields,
+      #note-editor-fields {
+        display: grid;
+        gap: var(--space-md);
+      }
+      #editor-fields label,
+      #note-editor-fields label {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+      #editor-fields label > span,
+      #note-editor-fields label > span {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      #editor-fields small,
+      #note-editor-fields small {
+        color: var(--muted);
+      }
+      textarea,
+      select {
+        font: inherit;
+        color: inherit;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        width: 100%;
+        min-width: 0;
+      }
+      textarea {
+        resize: vertical;
+      }
+      textarea:disabled,
+      select:disabled,
+      input:disabled {
+        opacity: 0.65;
+      }
+      textarea:focus-visible,
+      select:focus-visible {
+        outline: 2px solid var(--copper);
+        outline-offset: 3px;
+      }
+      .editor-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      #save-item,
+      #save-note {
+        background: var(--ink);
+        color: var(--paper);
+        border-color: var(--ink);
+        font-weight: 500;
+      }
+      .editor-notice {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: var(--space-md);
+        margin-top: 14px;
+      }
+      .editor-notice h3 {
+        margin: 0 0 10px;
+        font: 500 18px/1.3 var(--story-serif);
+        font-variation-settings: "SOFT" 50;
+        letter-spacing: 0.011em;
+      }
+      .editor-notice button {
+        margin: 4px 4px 0 0;
+      }
+      #current-values {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 340px;
+        overflow: auto;
+        font: inherit;
+      }
+      #edit-status {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      #notes-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-md);
+        align-items: start;
+      }
+      .notes-toolbar {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto minmax(140px, 200px);
+      }
+      .sessions-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .session-card {
+        padding: var(--space-lg);
+        border: 1px solid var(--card-line);
+        border-radius: var(--radius-card);
+        background: var(--card);
+        margin-bottom: 16px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .sessions-grid .session-card {
+        margin-bottom: 0;
+      }
+      #sessions-recorded {
+        padding: var(--space-sm) var(--space-md);
+        margin: 0 0 var(--space-lg);
+        border-left: 2px solid var(--line);
+        font: 11px/1.6 var(--story-sans);
+      }
+      .session-card h3 {
+        font: 500 22px/1.3 var(--story-serif);
+        font-variation-settings: "SOFT" 50;
+        letter-spacing: 0.011em;
+        margin: 4px 0 10px;
+      }
+      .session-card h4 {
+        margin: 12px 0 6px;
+      }
+      .session-state {
+        color: var(--copper-text);
+        font-weight: 600;
+      }
+      .session-facts {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px 22px;
+      }
+      .session-fact {
+        min-width: 0;
+        padding-bottom: var(--space-sm);
+        border-bottom: 1px solid var(--line);
+      }
+      .session-fact dt {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .session-fact dd {
+        margin: 0;
+      }
+      .session-alerts {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .session-alert {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+      .session-alert.madder h4 {
+        color: var(--danger);
+      }
+      .session-alert.ochre h4 {
+        color: var(--warning);
+      }
+      .session-alert h4,
+      .session-alert p {
+        margin: 0 0 4px;
+      }
+      .session-card details {
+        margin: 10px 0;
+      }
+      .session-card ul {
+        min-height: 0;
+      }
+      .session-card summary {
+        cursor: pointer;
+      }
+      .session-card summary:focus-visible {
+        outline: 2px solid var(--copper);
+        outline-offset: 3px;
+      }
+      .session-card progress {
+        width: 100%;
+        accent-color: var(--copper);
+      }
+      .session-empty {
+        padding: 18px;
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        color: var(--muted);
+      }
+      @media (max-width: 700px) {
+        .sessions-grid,
+        .session-facts,
+        .session-alerts {
+          grid-template-columns: 1fr;
+        }
+        #sessions-screen .pager {
+          flex-wrap: wrap;
+        }
+        #sessions-position {
+          flex-basis: 100%;
+          order: -1;
+          white-space: normal;
+          text-align: center;
+        }
+      }
+      .note-card {
+        overflow-wrap: anywhere;
+        border-color: var(--card-line);
+        min-width: 0;
+      }
+      .note-card-preview,
+      .note-card-date {
+        display: block;
+        margin-top: 12px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .note-card-date,
+      .position,
+      .session-state,
+      .markdown code,
+      .markdown pre {
+        font-family: var(--story-sans);
+        font-size: 12px;
+        letter-spacing: 0;
+      }
+      .note-card-preview {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 4;
+        overflow: hidden;
+        white-space: normal;
+        color: var(--muted);
+      }
+      .note-card .title {
+        font-size: 17px;
+      }
+      .note-card-date {
+        border-top: 1px solid var(--line);
+        padding-top: var(--space-md);
+        margin-top: var(--space-md);
+      }
+      #note-editor {
+        display: block;
+        margin-top: 18px;
+      }
+      #note-editor[hidden] {
+        display: none;
+      }
+      #note-current-values {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 340px;
+        overflow: auto;
+        font: inherit;
+      }
+      @media (max-width: 700px) {
+        .notes-toolbar {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #notes-list {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        input,
+        textarea,
+        select {
+          font-size: 16px;
+        }
+      }
+
+      /* Notes keeps browsing compact and gives the document room to read. */
+      #notes-list {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+      }
+      #notes-layout.detail-open {
+        grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+        gap: 24px;
+      }
+      #notes-layout.detail-open #notes-browser {
+        max-height: 76vh;
+        overflow-y: auto;
+        padding: 3px;
+      }
+      #notes-layout.detail-open #notes-list {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+      }
+      #notes-layout .note-card {
+        margin: 0;
+        padding: 18px;
+        width: 100%;
+      }
+      #notes-layout.detail-open .note-card-preview {
+        -webkit-line-clamp: 2;
+        margin-top: 8px;
+      }
+      #notes-layout.detail-open .note-card-date {
+        border: 0;
+        padding-top: 0;
+        margin-top: 10px;
+      }
+      #notes-layout .note-card[aria-pressed="true"] {
+        border-color: var(--copper);
+        box-shadow: none;
+      }
+      #note-detail {
+        min-width: 0;
+        min-height: min(640px, 76vh);
+        max-height: 76vh;
+        padding: clamp(20px, 3vw, 40px);
+      }
+      #note-detail .detail-header {
+        align-items: flex-start;
+        gap: 20px;
+      }
+      #note-detail-title {
+        font-size: clamp(24px, 2.5vw, 32px);
+        line-height: 1.25;
+      }
+      #note-detail-meta {
+        margin: 16px 0 20px;
+      }
+      #note-preview {
+        max-width: 68ch;
+        margin: 28px auto 0;
+        font-size: 16px;
+        line-height: 1.8;
+      }
+      #note-preview h2 {
+        font-size: 24px;
+      }
+      #note-preview h3 {
+        font-size: 20px;
+      }
+      #note-content {
+        min-height: 320px;
+        line-height: 1.7;
+        font-size: 16px;
+        padding: 16px;
+      }
+      #note-title {
+        font-size: 18px;
+      }
+      #note-retry {
+        margin-top: 20px;
+      }
+      @media (max-width: 900px) {
+        #notes-layout.detail-open {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #notes-layout.detail-open #notes-browser {
+          display: none;
+        }
+        #note-detail {
+          max-height: none;
+          min-height: 60vh;
+        }
+      }
+      @media (max-width: 480px) {
+        #note-detail .detail-header {
+          flex-direction: column-reverse;
+          gap: 16px;
+        }
+        #note-detail {
+          padding: 20px 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand-lockup">
+          <div class="wordmark" role="img" aria-label="Storybloq">
+            <img
+              class="brand-light"
+              src="__WORDMARK_LIGHT__"
+              width="2400"
+              height="600"
+              alt=""
+              aria-hidden="true"
+            />
+            <img
+              class="brand-dark"
+              src="__WORDMARK_DARK__"
+              width="2400"
+              height="600"
+              alt=""
+              aria-hidden="true"
+            />
+          </div>
+          <div class="eyebrow">Project board</div>
+        </div>
+        <nav class="workspace-nav types" aria-label="Project views">
+          <button id="nav-board" type="button" aria-pressed="true">
+            Board
+          </button>
+          <button id="nav-timeline" type="button" aria-pressed="false">
+            Timeline
+          </button>
+          <button id="nav-notes" type="button" aria-pressed="false">
+            Notes
+          </button>
+          <button id="nav-sessions" type="button" aria-pressed="false">
+            Sessions
+          </button>
+          <button id="nav-nodes" type="button" aria-pressed="false" hidden>
+            Nodes
+          </button>
+        </nav>
+        <button id="refresh" type="button" aria-label="Refresh" title="Refresh">
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" />
+          </svg>
+        </button>
+      </header>
+      <h1 id="project" class="sr-only" tabindex="-1">Your project</h1>
+      <div class="project-summary">
+        <p id="phase">Connecting to your project…</p>
+        <p id="progress"></p>
+      </div>
+      <section id="board-screen" aria-label="Project board">
+        <div class="toolbar board-toolbar">
+          <form id="search-form" role="search">
+            <label class="sr-only" for="search">Search tickets, issues...</label
+            ><input
+              id="search"
+              type="search"
+              maxlength="100"
+              placeholder="Search tickets, issues..."
+            /><button type="submit">Search</button>
+            <div id="board-filter">
+              <button
+                id="filter-toggle"
+                title="Filter"
+                type="button"
+                aria-expanded="false"
+                aria-controls="filter-options"
+                data-filtered="false"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 5h14M5 10h10M8 15h4" />
+                </svg>
+                <span id="filter-label" class="sr-only">Filter</span>
+                <span class="filter-chevron" aria-hidden="true"></span>
+              </button>
+              <div
+                id="filter-options"
+                role="group"
+                aria-label="Item type"
+                hidden
+              >
+                <button id="all" type="button" aria-pressed="true">
+                  <span class="filter-check" aria-hidden="true">✓</span>All work
+                </button>
+                <button id="tickets" type="button" aria-pressed="false">
+                  <span class="filter-check" aria-hidden="true">✓</span>Tickets
+                </button>
+                <button id="issues" type="button" aria-pressed="false">
+                  <span class="filter-check" aria-hidden="true">✓</span>Issues
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+        <nav id="phase-rail" aria-label="Project phases"></nav>
+        <div id="board-layout">
+          <div class="board" aria-label="Project work">
+            <section
+              class="column"
+              id="open-column"
+              aria-labelledby="open-heading"
+            >
+              <div class="column-heading">
+                <h2 id="open-heading">Open</h2>
+                <span class="count" id="open-count"></span>
+              </div>
+              <ul id="open-items"></ul>
+              <div class="pager">
+                <button
+                  id="open-previous"
+                  aria-label="Previous Open page"
+                  disabled
+                >
+                  Prev</button
+                ><span class="position" id="open-position"></span
+                ><button id="open-next" aria-label="Next Open page" disabled>
+                  Next
+                </button>
+              </div>
+            </section>
+            <section
+              class="column"
+              id="inProgress-column"
+              aria-labelledby="inProgress-heading"
+            >
+              <div class="column-heading">
+                <h2 id="inProgress-heading">In Progress</h2>
+                <span class="count" id="inProgress-count"></span>
+              </div>
+              <ul id="inProgress-items"></ul>
+              <div class="pager">
+                <button
+                  id="inProgress-previous"
+                  aria-label="Previous In progress page"
+                  disabled
+                >
+                  Prev</button
+                ><span class="position" id="inProgress-position"></span
+                ><button
+                  id="inProgress-next"
+                  aria-label="Next In progress page"
+                  disabled
+                >
+                  Next
+                </button>
+              </div>
+            </section>
+            <section
+              class="column"
+              id="done-column"
+              aria-labelledby="done-heading"
+            >
+              <div class="column-heading">
+                <h2 id="done-heading">Complete</h2>
+                <span class="count" id="done-count"></span>
+              </div>
+              <ul id="done-items"></ul>
+              <div class="pager">
+                <button
+                  id="done-previous"
+                  aria-label="Previous Complete page"
+                  disabled
+                >
+                  Prev</button
+                ><span class="position" id="done-position"></span
+                ><button
+                  id="done-next"
+                  aria-label="Next Complete page"
+                  disabled
+                >
+                  Next
+                </button>
+              </div>
+            </section>
+          </div>
+          <section id="detail" aria-labelledby="detail-title" hidden>
+            <div class="detail-header">
+              <h2 id="detail-title" tabindex="-1">Item details</h2>
+              <button id="close-detail" type="button">Close</button>
+            </div>
+            <p id="detail-body"></p>
+            <button id="edit-item" type="button" disabled>Edit</button>
+            <p id="edit-status" role="status" aria-live="polite"></p>
+            <form id="item-editor" hidden>
+              <div id="editor-fields"></div>
+              <div class="editor-actions">
+                <button id="save-item" type="submit">Save changes</button>
+                <button id="cancel-item" type="button">Cancel</button>
+              </div>
+            </form>
+            <button id="reopen-item" type="button" hidden>Reopen ticket</button>
+            <div id="reopen-confirmation" class="editor-notice" hidden>
+              <p>
+                Reopen this completed ticket? Its completion date will be
+                cleared.
+              </p>
+              <button id="confirm-reopen" type="button">Reopen ticket</button>
+              <button id="cancel-reopen" type="button">Keep completed</button>
+            </div>
+            <div id="edit-discard" class="editor-notice" hidden>
+              <h3 id="edit-discard-title" tabindex="-1">
+                Discard unsaved changes?
+              </h3>
+              <button id="keep-editing" type="button">Keep editing</button>
+              <button id="discard-edits" type="button">Discard changes</button>
+            </div>
+            <div id="edit-conflict" class="editor-notice" hidden>
+              <h3 id="edit-conflict-title" tabindex="-1">This item changed</h3>
+              <p>
+                Your draft is preserved. Compare it with the current values
+                below.
+              </p>
+              <pre id="current-values"></pre>
+              <button id="back-to-draft" type="button">Back to draft</button>
+              <button id="reload-item" type="button">
+                Reload current values
+              </button>
+            </div>
+          </section>
+        </div>
+        <footer>
+          <span id="issue-count"></span>
+          <div id="severity" aria-label="Unresolved issue severity"></div>
+        </footer>
+        <p id="status" role="status" aria-live="polite">
+          Connecting to your project…
+        </p>
+        <p id="error" role="alert"></p>
+      </section>
+      <section id="timeline-screen" aria-label="Handover timeline" hidden>
+        <h2>Handover timeline</h2>
+        <p class="muted">
+          Decisions and progress, carried from session to session.
+        </p>
+        <div id="history-layout" class="workspace-layout">
+          <div class="history-column">
+            <div id="history-list"></div>
+            <div class="pager">
+              <button
+                id="history-previous"
+                aria-label="Previous handover dates"
+                disabled
+              >
+                Prev</button
+              ><span id="history-position" class="position"></span
+              ><button
+                id="history-next"
+                aria-label="Next handover dates"
+                disabled
+              >
+                Next
+              </button>
+            </div>
+          </div>
+          <section
+            id="history-detail"
+            class="inspector"
+            aria-labelledby="history-detail-title"
+            hidden
+          >
+            <div class="detail-header">
+              <h2 id="history-detail-title" tabindex="-1">Handover</h2>
+              <button id="history-close" type="button">Close</button>
+            </div>
+            <div id="history-detail-body" class="markdown"></div>
+          </section>
+        </div>
+        <p
+          id="history-status"
+          class="view-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <p id="history-error" class="view-error" role="alert"></p>
+      </section>
+      <section id="notes-screen" aria-labelledby="notes-title" hidden>
+        <h2 id="notes-title" tabindex="-1">Notes</h2>
+        <p class="muted">Ideas and decisions, kept with your project.</p>
+        <div class="toolbar notes-toolbar">
+          <label for="notes-search">Search notes</label
+          ><input
+            id="notes-search"
+            type="search"
+            maxlength="100"
+            placeholder="ID, title, content or tag"
+          />
+          <label for="notes-status">Show</label
+          ><select id="notes-status">
+            <option value="active">Active</option>
+            <option value="archived">Archived</option>
+            <option value="all">All notes</option>
+          </select>
+        </div>
+        <div id="notes-layout" class="workspace-layout">
+          <div id="notes-browser">
+            <div id="notes-list"></div>
+            <div class="pager">
+              <button
+                id="notes-previous"
+                type="button"
+                disabled
+                aria-label="Previous notes"
+              >
+                Prev</button
+              ><span id="notes-position" class="position"></span
+              ><button
+                id="notes-next"
+                type="button"
+                disabled
+                aria-label="Next notes"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+          <section
+            id="note-detail"
+            class="inspector"
+            aria-labelledby="note-detail-title"
+            hidden
+          >
+            <div class="detail-header">
+              <h2 id="note-detail-title" tabindex="-1">Note</h2>
+              <button id="note-close" type="button">Back to notes</button>
+            </div>
+            <p id="note-detail-meta" class="muted"></p>
+            <button id="edit-note" type="button" disabled>Edit note</button>
+            <button id="note-edit-draft" type="button" hidden>
+              Edit draft
+            </button>
+            <div id="note-preview" class="markdown"></div>
+            <button id="note-retry" type="button" hidden>Retry note</button>
+            <form id="note-editor" hidden>
+              <div id="note-editor-fields"></div>
+              <div class="editor-actions">
+                <button id="save-note" type="submit">Save changes</button
+                ><button id="cancel-note" type="button">Cancel</button
+                ><button id="note-preview-draft" type="button">
+                  Preview draft
+                </button>
+              </div>
+            </form>
+            <div id="note-discard" class="editor-notice" hidden>
+              <h3 id="note-discard-title" tabindex="-1">
+                Discard unsaved changes?
+              </h3>
+              <p>Your note draft has not been saved.</p>
+              <button id="note-keep-editing" type="button">Keep editing</button
+              ><button id="note-discard-edits" type="button">
+                Discard changes
+              </button>
+            </div>
+            <div id="note-confirm-replace" class="editor-notice" hidden>
+              <h3 id="note-confirm-replace-title" tabindex="-1">
+                Replace most of this note?
+              </h3>
+              <p>
+                This draft discards most of a long note. Replace it only if you
+                mean to. Editing the draft cancels this confirmation.
+              </p>
+              <button id="note-confirm-replace-save" type="button">
+                Replace note</button
+              ><button id="note-confirm-replace-cancel" type="button">
+                Keep editing
+              </button>
+            </div>
+            <div id="note-conflict" class="editor-notice" hidden>
+              <h3 id="note-conflict-title" tabindex="-1">This note changed</h3>
+              <p>
+                Your draft is preserved. Compare the current values before
+                deciding what to keep.
+              </p>
+              <h4>Current values</h4>
+              <pre id="note-current-values"></pre>
+              <button id="note-back-to-draft" type="button">
+                Keep editing draft</button
+              ><button id="note-reload-current" type="button">
+                Reload current note
+              </button>
+            </div>
+            <p
+              id="note-edit-status"
+              class="view-status"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </section>
+        </div>
+        <p
+          id="notes-live-status"
+          class="view-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <p id="notes-error" class="view-error" role="alert"></p>
+      </section>
+      <section id="sessions-screen" aria-labelledby="sessions-title" hidden>
+        <h2 id="sessions-title" tabindex="-1">Sessions</h2>
+        <p class="muted">Recorded work, progress and recent activity.</p>
+        <p id="sessions-recorded" class="muted"></p>
+        <p id="sessions-stale" class="view-error" hidden></p>
+        <div id="sessions-body"></div>
+        <p id="sessions-diagnostics" class="muted"></p>
+        <div class="pager">
+          <button id="sessions-previous" type="button" disabled>
+            Previous sessions
+          </button>
+          <span id="sessions-position" class="position"></span>
+          <button id="sessions-next" type="button" disabled>
+            Next sessions
+          </button>
+        </div>
+        <p
+          id="sessions-live"
+          class="view-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <p id="sessions-error" class="view-error" role="alert"></p>
+      </section>
+      <section id="nodes-screen" aria-label="Federation nodes" hidden>
+        <h2>Federation</h2>
+        <p class="muted">Projects, their relationships and cached progress.</p>
+        <div id="nodes-warnings" class="view-error" role="status"></div>
+        <div id="nodes-layout" class="workspace-layout">
+          <div class="federation-panel">
+            <div class="federation-toolbar">
+              <p id="nodes-summary" class="muted"></p>
+              <div class="relation-legend" aria-label="Relationship legend">
+                <span>Build dependency</span>
+                <span class="runtime">Runtime link</span>
+              </div>
+            </div>
+            <div
+              id="nodes-graph"
+              tabindex="0"
+              aria-label="Federation map, scroll to explore"
+            >
+              <div
+                id="nodes-list"
+                aria-label="Selectable federation nodes"
+              ></div>
+            </div>
+            <p class="federation-hint muted">
+              Select a project to explore its connections. Build arrows point to
+              dependents; runtime arrows point to destinations.
+            </p>
+          </div>
+          <section
+            id="node-detail"
+            class="inspector"
+            aria-labelledby="node-detail-title"
+            hidden
+          >
+            <div class="detail-header">
+              <h2 id="node-detail-title" tabindex="-1">Node</h2>
+              <button id="node-close" type="button">Close</button>
+            </div>
+            <div id="node-detail-body"></div>
+          </section>
+        </div>
+        <p
+          id="nodes-status"
+          class="view-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <p id="nodes-error" class="view-error" role="alert"></p>
+      </section>
+    </main>
+    <!-- APP -->
+  </body>
+</html>

@@ -13,6 +13,7 @@ export default defineConfig({
     index: "src/index.ts",
     mcp: "src/mcp/index.ts",
     presence: "src/hooks/presence-entry.ts",
+    "codex-plugin": "src/codex-plugin.ts",
   },
   dts: true,
   format: ["esm"],

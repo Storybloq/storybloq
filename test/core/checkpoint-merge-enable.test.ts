@@ -29,7 +29,7 @@ import {
   writeGitattributes,
 } from "../../src/core/team-setup.js";
 import { checkpointMergeProblems, enableCheckpoints, type CheckpointEnableDeps } from "../../src/core/checkpoint-enable.js";
-import { checkCheckpointMergeAttributes } from "../../src/core/team-doctor.js";
+import { checkCheckpointMergeAttributes, checkCheckpointMergeBinary } from "../../src/core/team-doctor.js";
 import {
   MERGE_DRIVER_PROTOCOL,
   SUPPORTED_MERGE_DRIVER_PROTOCOLS,
@@ -497,5 +497,47 @@ describe("team doctor", () => {
     writeFileSync(join(root, ".story", ".gitattributes"), "");
     findings = checkCheckpointMergeAttributes((await loadProject(root)).state, ctx(root));
     expect(findings.map((f) => f.code)).toEqual(["checkpoint_merge_driver", "checkpoint_gitattributes_missing"]);
+  });
+
+  // T-538: the binary git would run must read the project's schema, not just 4.
+  const SCHEMA4_BINARY = async (_root: string, protocol: number) => ({ ...mergeDriverCapabilities(protocol), maxSchemaVersion: 4 });
+
+  it("names a configured clone whose driver binary reads schema 4 on a schema-5 project", async () => {
+    const { root } = await project({ git: true, team: true });
+    await teamSetup(root);
+    await enableCheckpoints(root, READY, { immutableEvidence: true });
+    const state = (await loadProject(root)).state;
+    expect(state.config.schemaVersion).toBe(5);
+    const findings = await checkCheckpointMergeBinary(state, { ...ctx(root), mergeDriverCapabilities: SCHEMA4_BINARY });
+    expect(findings.map((f) => f.code)).toEqual(["checkpoint_merge_binary"]);
+    expect(findings[0]!.severity).toBe("error");
+    expect(findings[0]!.message).toContain("reads schema 4 at most, not 5");
+    expect(await checkCheckpointMergeBinary(state, { ...ctx(root), mergeDriverCapabilities: READY.capabilities })).toEqual([]);
+  });
+
+  it("accepts a schema-4 driver binary on a schema-4 project, and names one that does not answer", async () => {
+    const { root } = await project({ git: true, team: true });
+    await teamSetup(root);
+    await enableCheckpoints(root, READY);
+    const state = (await loadProject(root)).state;
+    expect(state.config.schemaVersion).toBe(CHECKPOINT_SCHEMA_VERSION);
+    expect(await checkCheckpointMergeBinary(state, { ...ctx(root), mergeDriverCapabilities: SCHEMA4_BINARY })).toEqual([]);
+    const old = await checkCheckpointMergeBinary(state, { ...ctx(root), mergeDriverCapabilities: OLD_BINARY.capabilities });
+    expect(old.map((f) => f.code)).toEqual(["checkpoint_merge_binary"]);
+  });
+
+  it("leaves an unconfigured clone to checkpoint_merge_driver and never asks its binary", async () => {
+    const { repo, root } = await project({ git: true, team: true });
+    await teamSetup(root);
+    await enableCheckpoints(root, READY, { immutableEvidence: true });
+    writeFileSync(join(repo, git(repo, "rev-parse", "--git-path", "info/attributes")), "");
+    git(repo, "config", "--unset-all", "merge.storybloq-json-v5.driver");
+    let asked = false;
+    const findings = await checkCheckpointMergeBinary((await loadProject(root)).state, {
+      ...ctx(root),
+      mergeDriverCapabilities: async () => { asked = true; return null; },
+    });
+    expect(findings).toEqual([]);
+    expect(asked).toBe(false);
   });
 });

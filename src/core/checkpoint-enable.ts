@@ -153,17 +153,20 @@ export function checkpointDriverProblems(storyDir: string, gitRoot: string): {
   return { wrongAttributes, registrationProblems, protocols };
 }
 
-/** Every reason this clone cannot merge checkpoints yet; empty when it can. Reads only. */
-export async function checkpointMergeProblems(
-  root: string,
+/**
+ * What the storybloq binary git would run lacks: asked once per protocol a
+ * registration in use requires, or for the current one when none is
+ * registered, so an old binary is named too. Empty when every answer has
+ * owner checkpoints and reads `minSchemaVersion`. Shared by enable and
+ * `team doctor`.
+ */
+export async function checkpointBinaryProblems(
   gitRoot: string,
+  protocols: readonly number[],
   deps: CheckpointEnableDeps,
   minSchemaVersion: number = CHECKPOINT_SCHEMA_VERSION,
 ): Promise<string[]> {
-  const { wrongAttributes, registrationProblems, protocols } = checkpointDriverProblems(join(root, ".story"), gitRoot);
-  const problems = [...registrationProblems];
-  // Ask the binary once per protocol a registration in use requires; with
-  // none registered, ask for the current one, so an old binary is named too.
+  const problems: string[] = [];
   for (const protocol of protocols.length > 0 ? protocols : [MERGE_DRIVER_PROTOCOL]) {
     const caps = await deps.capabilities(gitRoot, protocol);
     const record = typeof caps === "object" && caps !== null ? (caps as Record<string, unknown>) : {};
@@ -173,6 +176,18 @@ export async function checkpointMergeProblems(
       problems.push(`the storybloq binary git would run reads schema ${record.maxSchemaVersion} at most, not ${minSchemaVersion} (it predates immutable checkpoint evidence)`);
     }
   }
+  return problems;
+}
+
+/** Every reason this clone cannot merge checkpoints yet; empty when it can. Reads only. */
+export async function checkpointMergeProblems(
+  root: string,
+  gitRoot: string,
+  deps: CheckpointEnableDeps,
+  minSchemaVersion: number = CHECKPOINT_SCHEMA_VERSION,
+): Promise<string[]> {
+  const { wrongAttributes, registrationProblems, protocols } = checkpointDriverProblems(join(root, ".story"), gitRoot);
+  const problems = [...registrationProblems, ...(await checkpointBinaryProblems(gitRoot, protocols, deps, minSchemaVersion))];
   for (const { path, driver } of wrongAttributes) {
     problems.push(`git merges ${path} with ${driver ?? "no driver"}, not ${CHECKPOINT_MERGE_DRIVERS.join(" or ")}`);
   }

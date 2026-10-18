@@ -18,7 +18,7 @@ import {
   hasCheckpointGitattributes,
   CHECKPOINT_MERGE_DRIVERS,
 } from "./team-setup.js";
-import { checkpointDriverProblems } from "./checkpoint-enable.js";
+import { checkpointBinaryProblems, checkpointDriverProblems, defaultEnableDeps, type CheckpointEnableDeps } from "./checkpoint-enable.js";
 import { CHECKPOINT_SCHEMA_VERSION } from "./errors.js";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
@@ -44,6 +44,8 @@ export interface DoctorContext {
   cliVersion: string | null;
   isTeamMode: boolean;
   loadWarnings: readonly LoadWarning[];
+  /** T-538: how the merge driver binary is asked its capabilities; the installed `storybloq` by default. */
+  mergeDriverCapabilities?: CheckpointEnableDeps["capabilities"];
 }
 
 export type DoctorCheck = (state: ProjectState, ctx: DoctorContext) => DoctorFinding[] | Promise<DoctorFinding[]>;
@@ -751,6 +753,33 @@ export function checkCheckpointMergeAttributes(state: ProjectState, ctx: DoctorC
   return findings;
 }
 
+/**
+ * T-538: the binary git would run as this clone's checkpoint merge driver,
+ * asked for its capabilities: it must have owner checkpoints and read the
+ * schema the project is at (never below CHECKPOINT_SCHEMA_VERSION). An old
+ * binary fails a merge loudly at the schema fence, so this is a warning ahead
+ * of that, not a corruption guard. Asked only once the registrations hold;
+ * until then checkpoint_merge_driver already sends the clone to team setup.
+ */
+export async function checkCheckpointMergeBinary(state: ProjectState, ctx: DoctorContext): Promise<DoctorFinding[]> {
+  if (state.config.team?.enabled !== true) return [];
+  const version = state.config.schemaVersion;
+  if (version === undefined || version < CHECKPOINT_SCHEMA_VERSION) return [];
+  const { registrationProblems, protocols } = checkpointDriverProblems(join(ctx.root, ".story"), ctx.root);
+  if (registrationProblems.length > 0 || protocols.length === 0) return [];
+  const deps: CheckpointEnableDeps = ctx.mergeDriverCapabilities ? { capabilities: ctx.mergeDriverCapabilities } : defaultEnableDeps;
+  const required = Math.max(version, CHECKPOINT_SCHEMA_VERSION);
+  const problems = await checkpointBinaryProblems(ctx.root, protocols, deps, required);
+  if (problems.length === 0) return [];
+  return [{
+    severity: "error",
+    code: "checkpoint_merge_binary",
+    message: `This clone cannot merge owner checkpoints at schema ${required}: ${problems.join("; ")}. Install a storybloq that reads it before merging branches here.`,
+    entity: null,
+    repair: null,
+  }];
+}
+
 export function checkLocalIdAllocator(state: ProjectState, _ctx: DoctorContext): DoctorFinding[] {
   if (state.config.team?.idAllocator === "git-refs") return [];
   return [{
@@ -798,5 +827,6 @@ registerDoctorCheck(checkLocalIdAllocator);
 registerDoctorCheck(checkRulingLifecycleReadiness);
 registerDoctorCheck(checkCatalogMergeAttributes);
 registerDoctorCheck(checkCheckpointMergeAttributes);
+registerDoctorCheck(checkCheckpointMergeBinary);
 registerDoctorCheck(checkResolutionKindReadiness);
 registerDoctorCheck(checkHandoverFilenamePolicy);

@@ -25,6 +25,10 @@ import {
 } from "../../src/core/setup-apply.js";
 import { parseSetupPayload, validateSetupPayload, type SetupPayload } from "../../src/core/setup-payload.js";
 import { setupPaths } from "../../src/core/setup-review.js";
+import { handleSetupReviewStatus, type SetupReviewIo } from "../../src/cli/commands/setup-review.js";
+import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { handleTicketCreate, handleTicketUpdate } from "../../src/cli/commands/ticket.js";
 import { handleIssueUpdate } from "../../src/cli/commands/issue.js";
 import { parseSetupMeta } from "../../src/core/setup-meta.js";
@@ -341,6 +345,24 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect(result.lines).toContain("-> storybloq · resolved K2 (T-001): restore-planned");
     expect((await loadProject(root)).state.ticketByID("T-001")!.description).toBe("d");
     expect((await progressPayload(root, "archived")).amendments).toEqual([]);
+  });
+
+  it("the revision the flow names, from setup-review status, in the documented answer shape, is accepted for a material resolution (review r1 #7)", async () => {
+    const root = await stoppedAt("step:config");
+    await handleTicketUpdate("T-001", { description: "mine" }, "json", root);
+    const packet = "## Source requirements\nR1: sign in (source: brief, goals)\n## Owner answers and decisions\nkeep my description\n## Existing-state evidence\nnone\n## Plan\nTicket: Sign in\n";
+    await reviewStore(root, { packet });
+    const status = await handleSetupReviewStatus({ cwd: root, env: env(), stdin: () => Buffer.from(packet), deps: {} as SetupReviewIo["deps"] }, { setup: SID });
+    const revision = /^Revision: ([0-9a-f]{64})$/m.exec(status.stdout)?.[1];
+    expect(revision).toBe(sha(packet));
+    const flow = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "skill", "setup-flow.md"), "utf-8");
+    const shape = /a JSON array of `(\{[^`]+\})`/.exec(flow)![1]!;
+    const extra = /add `("reviewRevision": "<revision>")`/.exec(flow)![1]!;
+    const answer = JSON.parse(`${shape.slice(0, -1)}, ${extra}}`
+      .replace("<the line's target>", "K2 (T-001)").replace("<the answer>", "accept-current").replace("<the owner's words>", "keep my description").replace("<revision>", revision!)) as Record<string, unknown>;
+    const result = await setupResolve(root, SID, [answer], { env: env() });
+    expect(result.exitCode).toBe(0);
+    expect(result.lines).toContain("-> storybloq · resolved K2 (T-001): accept-current (material, review recorded)");
   });
 
   it("accept-current on an owned field is material: refused without a review, accepted with a completed review of the amended packet", async () => {

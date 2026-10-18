@@ -430,6 +430,12 @@ export const completedLine = (rec: CompletedRecord): string =>
 export const roundLimitLine = (revisionSha256: string, last: CompletedRecord): string =>
   `Independent review: revision ${digest12(revisionSha256)} not reviewed, round limit reached; last review ${last.verdict}, invocation ${last.recordId}, revision ${digest12(last.revisionSha256)}`;
 
+/**
+ * T-538 (review r1 #7): the full revision status names, the value a material
+ * resolution sends as reviewRevision. Never part of the package's two lines.
+ */
+export const revisionLine = (revisionSha256: string): string => `Revision: ${revisionSha256}`;
+
 export const absentLine = (revisionSha256: string): string => `Independent review: none for revision ${digest12(revisionSha256)}`;
 
 export const failedLine = (revisionSha256: string, recordId: string): string =>

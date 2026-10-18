@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "../../core/project-lock.js";
 import {
   absentLine, classify, completedInCycle, completedLine, failedLine, fsyncDir, loadRecords, parsePacket, persistRevision,
-  probeLine, probeOf, readSetup, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
+  probeLine, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
   SKIPPED_LINE, STOP_LINES, storeRoot, unreadableLine, writeFileDurable, writeFileSynced,
   type CompletedRecord, type FailedRecord, type FailureKind, type ProbeResult, type ReviewPacket, type SetupPaths, type SetupState,
 } from "../../core/setup-review.js";
@@ -489,9 +489,9 @@ function statusLines(paths: SetupPaths, setup: SetupState, packet: ReviewPacket)
     case "unreadable":
       return { stdout: lines(probeLine(c.record ? probeOf(c.record) : setup.probe), unreadableLine(c.recordId)) + STOP, exitCode: SETUP_REVIEW_EXIT.unreadable };
     case "completed":
-      return { stdout: lines(probeLine(probeOf(c.record)), completedLine(c.record)), exitCode: SETUP_REVIEW_EXIT.ok };
+      return { stdout: lines(probeLine(probeOf(c.record)), completedLine(c.record), revisionLine(packet.revisionSha256)), exitCode: SETUP_REVIEW_EXIT.ok };
     case "round-limit":
-      return { stdout: lines(probeLine(probeOf(c.last)), roundLimitLine(packet.revisionSha256, c.last)), exitCode: SETUP_REVIEW_EXIT.ok };
+      return { stdout: lines(probeLine(probeOf(c.last)), roundLimitLine(packet.revisionSha256, c.last), revisionLine(packet.revisionSha256)), exitCode: SETUP_REVIEW_EXIT.ok };
     case "failed":
       return { stdout: lines(probeLine(probeOf(c.record)), failedLine(packet.revisionSha256, c.record.recordId)) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
     case "absent":

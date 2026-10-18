@@ -17,7 +17,7 @@ const read = (name: string): string => readFileSync(join(SKILL_DIR, name), "utf-
 
 // Review r1 #7: the engine takes the full 64-character revision; digest12 is for display only.
 const REVISION_SENTENCE =
-  "add `\"reviewRevision\": \"<revision>\"` to that answer, `<revision>` being the full 64-character revision of the amended packet you reviewed: send the same packet heredoc to `shasum -a 256` (`sha256sum` on Linux) and take the 64 hex characters its output starts with. The 12-character digest in a status line is for display only, and setup-apply refuses it. After the owner's skip no review is needed.";
+  "add `\"reviewRevision\": \"<revision>\"` to that answer, `<revision>` being the 64 hex characters of the `Revision:` line `setup-review status` printed for the amended packet. The 12-character digest in a status line is for display only, and setup-apply refuses it. After the owner's skip no review is needed.";
 
 describe("setup-flow.md onboarding anchors (T-536)", () => {
   const flow = read("setup-flow.md");
@@ -36,7 +36,7 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     expect(flow).toContain("**Open the review gate first**, in your first turn, before any question: run `storybloq setup-review gate` as a shell call of its own and follow its output. Keep the setup id it prints.");
     expect(flow).toContain("`## Source requirements` (one `R<n>: <requirement> (source: <file>, <section>)` per line), `## Owner answers and decisions`, `## Existing-state evidence`, and `## Plan`");
     expect(flow).toContain("Run `storybloq setup-review run --setup <id> <<'STORYBLOQ_PACKET'`, then the packet, then a line `STORYBLOQ_PACKET`.");
-    expect(flow).toContain("copy its two lines into the package verbatim. Never write either line yourself and never state a review outcome anywhere else.");
+    expect(flow).toContain("copy its first two lines into the package verbatim; a `Revision:` line after them is for a resolution (1e) and never goes in the package. Never write either line yourself and never state a review outcome anywhere else.");
     expect(flow).toContain("When it prints a failed, absent or unreadable line, the package cannot be shown: send the stop.");
     expect(flow).toContain("between two lines of its own: `Plan, revision <digest12>:` before it and `End of plan, revision <digest12>` after it");
     // Only a reviewed revision has markers: a skipped package shows the proposed Plan bare.

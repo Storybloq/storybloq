@@ -154,7 +154,7 @@ describe("run and status: the completed path (T-536)", () => {
     expect(rec).toMatchObject({ state: "completed", setupId: id, cycle: 1, round: 1, revisionSha256: sha(REVIEW_PACKET), backend: "codex", backendVersion: "codex-cli 9.9.9", verdict: "approve", findingsCount: 0 });
     expect(run.stdout.startsWith(`Reviewer probe: codex codex-cli 9.9.9\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\n`)).toBe(true);
     const status = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
-    expect(status).toEqual({ exitCode: 0, stdout: `Reviewer probe: codex codex-cli 9.9.9\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\n` });
+    expect(status).toEqual({ exitCode: 0, stdout: `Reviewer probe: codex codex-cli 9.9.9\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\nRevision: ${sha(REVIEW_PACKET)}\n` });
     expect(readdirSync(project)).toEqual([]);
   });
 
@@ -208,7 +208,7 @@ describe("cycles and rounds (T-536)", () => {
     const last = recordsOf(id).find((r) => r.round === 2)!;
     const status = await handleSetupReviewStatus(io(final), { setup: id });
     expect(status.exitCode).toBe(0);
-    expect(status.stdout).toBe(`Reviewer probe: codex codex-cli 9.9.9\nIndependent review: revision ${d12(final)} not reviewed, round limit reached; last review approve, invocation ${last.recordId}, revision ${d12(revised)}\n`);
+    expect(status.stdout).toBe(`Reviewer probe: codex codex-cli 9.9.9\nIndependent review: revision ${d12(final)} not reviewed, round limit reached; last review approve, invocation ${last.recordId}, revision ${d12(revised)}\nRevision: ${sha(final)}\n`);
     expect(readFileSync(join(setupDir(id), "revisions", `${sha(final)}.md`), "utf-8")).toBe(final);
   });
 

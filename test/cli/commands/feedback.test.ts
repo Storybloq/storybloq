@@ -26,6 +26,7 @@ vi.mock("../../../src/feedback/github-client.js", async () => {
 });
 
 import { fetchIssues } from "../../../src/feedback/github-client.js";
+import { spawn } from "node:child_process";
 
 function mockIssueResult(issues: Array<Record<string, unknown>> = []) {
   return {
@@ -109,5 +110,11 @@ describe("handleFeedbackVote", () => {
     const result = await handleFeedbackVote(0);
     expect(result.exitCode).toBeGreaterThan(0);
     expect(result.output).toContain("Error");
+  });
+});
+
+describe("feedback test isolation", () => {
+  it("keeps spawn stubbed so no test opens a browser", () => {
+    expect(vi.isMockFunction(spawn)).toBe(true);
   });
 });

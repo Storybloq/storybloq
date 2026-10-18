@@ -118,6 +118,15 @@ describe("check set 6, rule 1 and rule 2 (T-536)", () => {
     expect(check(turns).failures.some((f) => f.startsWith("rule 1"))).toBe(true);
   });
 
+  it("checks every review line and its probe: a fabricated or repeated pair after a valid one fails", () => {
+    const fabricated = completedRun(REVIEW_PACKET, planOf(REVIEW_PACKET), `\n\n${PROBE}\nIndependent review: approve, invocation SR-99999999, revision ${d12(REVIEW_PACKET)}`);
+    expect(check(fabricated).failures.some((f) => f.startsWith("rule 1"))).toBe(true);
+    const repeated = completedRun(REVIEW_PACKET, planOf(REVIEW_PACKET), `\n\n${PROBE}\n${completedLine(REVIEW_PACKET)}`);
+    expect(check(repeated).failures.some((f) => f.startsWith("rule 1"))).toBe(true);
+    const loneProbe = completedRun(REVIEW_PACKET, planOf(REVIEW_PACKET), "\n\nReviewer probe: claude 9.9.9 (Claude Code)");
+    expect(check(loneProbe).failures.some((f) => f.startsWith("rule 1"))).toBe(true);
+  });
+
   it("fails a package carrying an absent, failed or unreadable line", () => {
     for (const line of [`Independent review: none for revision ${d12(REVIEW_PACKET)}`, `Independent review: failed for revision ${d12(REVIEW_PACKET)}, invocation SR-11112222`, "Independent review: record unreadable, invocation SR-11112222"]) {
       persist(REVIEW_PACKET);
@@ -169,6 +178,18 @@ describe("check set 6, the skipped package (T-536)", () => {
     expect(check(skipped(false), true).failures.some((f) => f.startsWith("rule 2"))).toBe(true);
   });
 
+  it("fails an owner skip that follows no stop turn", () => {
+    const turns = skipped(true);
+    turns[0] = { ...turns[0]!, text: "Who are the users?" };
+    expect(check(turns).failures.some((f) => f.startsWith("rule 2"))).toBe(true);
+  });
+
+  it("fails a status --skipped printed before the owner's skip", () => {
+    const turns = skipped(true);
+    const early = { ...turns[0]!, calls: [...turns[0]!.calls, { command: `storybloq setup-review status --setup ${SETUP} --skipped`, output: `${skipLines}\n` }] };
+    expect(check([early, turns[1]!, { ...turns[2]!, calls: [] }], true).failures.some((f) => f.startsWith("rule 2"))).toBe(true);
+  });
+
   it("fails a skip whose status call was given stdin", () => {
     expect(check(skipped(true, `storybloq setup-review status --setup ${SETUP} --skipped <<'X'\nplan\nX`), true).failures.some((f) => f.startsWith("rule 2"))).toBe(true);
   });
@@ -192,12 +213,22 @@ describe("check set 6, rule 3 (T-536)", () => {
     chained[1] = { ...chained[1]!, calls: [...chained[1]!.calls, { command: `storybloq setup-review status --setup ${SETUP} --skipped; ls ${store}`, output: "" }] };
     expect(check(chained).failures.some((f) => f.startsWith("rule 3"))).toBe(true);
   });
+
+  it("exempts only a single-quoted here-document: an unquoted or double-quoted one expands its body in the shell", () => {
+    const storeFile = join(store, "0123456789abcdef", SETUP, "setup.json");
+    for (const delim of ["EOF", '"EOF"']) {
+      const turns = completedRun(REVIEW_PACKET);
+      turns[1] = { ...turns[1]!, calls: [...turns[1]!.calls, { command: `storybloq setup-review status --setup ${SETUP} <<${delim}\n$(cat ${storeFile})\nEOF`, output: "" }] };
+      expect(check(turns).failures.some((f) => f.startsWith("rule 3"))).toBe(true);
+    }
+  });
 });
 
 describe("heredocStdin (T-536)", () => {
   it("returns the here-document body the shell would feed, newline-terminated", () => {
     expect(heredocStdin("storybloq setup-review status --setup SS-1 <<'EOF'\na\nb\nEOF")).toBe("a\nb\n");
-    expect(heredocStdin("storybloq setup-review status --setup SS-1 <<EOF\na\nEOF")).toBe("a\n");
+    expect(heredocStdin("storybloq setup-review status --setup SS-1 <<EOF\na\nEOF")).toBeNull();
+    expect(heredocStdin('storybloq setup-review status --setup SS-1 <<"EOF"\na\nEOF')).toBeNull();
     expect(heredocStdin("storybloq setup-review status --setup SS-1 --skipped")).toBeNull();
   });
 });

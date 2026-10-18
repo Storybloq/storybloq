@@ -128,7 +128,7 @@ The review checks coverage and fidelity to the brief, journey completeness and u
 
 **The package's review lines.** Run `storybloq setup-review status --setup <id>` with the current packet on standard input the same way, or with `--skipped` after the owner's skip, and copy its two lines into the package verbatim. Never write either line yourself and never state a review outcome anywhere else. When status prints the round-limit line, say above it what the round-2 findings were and what changed in response. When it prints a failed, absent or unreadable line, the package cannot be shown: send the stop.
 
-**The Plan in the package** is the `## Plan` section of the packet status was given, unchanged, between two lines of its own: `Plan, revision <digest12>:` before it and `End of plan, revision <digest12>` after it, `<digest12>` being the revision in the status line (the first one in a round-limit line). No ticket, dependency, coverage row or checkpoint line appears outside them.
+**The Plan in the package.** With a completed or round-limit line, it is the `## Plan` section of the packet status was given, unchanged, between two lines of its own: `Plan, revision <digest12>:` before it and `End of plan, revision <digest12>` after it, `<digest12>` being the revision in the status line (the first one in a round-limit line). No ticket, dependency, coverage row or checkpoint line appears outside them. After the owner's skip no revision was reviewed: show the proposed Plan with no markers and no digest.
 
 #### 1d. Present Proposal
 
@@ -140,7 +140,7 @@ Present one setup package. A readable summary comes first:
 - the work that can begin immediately;
 - the two review lines from `setup-review status` (1c2), with findings incorporated or still open described above it in prose, and the stage-1 checkpoint limitation when checkpoints are planned.
 
-Then the marked Plan (1c2): the tickets by milestone with their dependencies and checkpoints, and the coverage map. Then what else the approval covers:
+Then the Plan (1c2), marked when the status line names a revision: the tickets by milestone with their dependencies and checkpoints, and the coverage map. Then what else the approval covers:
 
 - **Project:** name, type, language (every part of a mixed stack).
 - **Governance files** to write: `CLAUDE.md` (or `AGENTS.md`), `RULES.md` and `REVIEW.md`, each previewed on request. Omit a file that already exists; it is never overwritten.

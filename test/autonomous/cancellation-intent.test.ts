@@ -188,7 +188,11 @@ interface MarkerResult {
 
 const children: Spawned[] = [];
 const childTmpDirs: string[] = [];
-/** Read only by the emergency `afterAll`, which sits outside every helper. */
+/**
+ * Read by the emergency `afterAll`, which sits outside every helper. A group
+ * leaves it as soon as teardown confirms it gone, so the net never signals a
+ * pgid the system may since have reused for an unrelated group.
+ */
 const retained = { pgids: new Set<number>(), paths: new Set<string>() };
 
 function isErrno(err: unknown, code: string): boolean {
@@ -311,6 +315,7 @@ async function teardownChildren(): Promise<void> {
     }
     const settled = await Promise.race([spawned.done.then(() => true), sleep(2_000).then(() => false)]);
     if ((pgid !== undefined && groupAlive(pgid)) || !settled) survivors.push(String(pgid ?? spawned.child.pid));
+    else if (pgid !== undefined) retained.pgids.delete(pgid);
   }
   if (survivors.length > 0) throw new Error(`teardown left children alive: ${survivors.join(", ")}`);
   for (const dir of childTmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -989,6 +994,7 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
       expect(rec.pgids.length + rec.pids.length).toBeGreaterThan(0);
       expect(rec.dirs.length).toBeGreaterThan(0);
       for (const pgid of rec.pgids) expect(groupAlive(pgid), `group ${pgid} survived teardown`).toBe(false);
+      for (const pgid of rec.pgids) expect(retained.pgids.has(pgid), `group ${pgid} still retained`).toBe(false);
       for (const pid of rec.pids) expect(pidAlive(pid), `pid ${pid} survived teardown`).toBe(false);
       for (const dir of rec.dirs) expect(existsSync(dir), `${dir} survived teardown`).toBe(false);
     });
@@ -1011,8 +1017,11 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
   it.skipIf(process.platform === "win32")("a launcher that exits while its descendant lives on is stopped by the registered teardown", async () => {
     const marker = join(sessDir, "orphan-pid");
     const launcher = spawnTsx([fixture("tsx-orphan.ts"), marker]);
-    const result = await waitForMarker(marker, launcher);
-    expect(result.found, markerMessage(marker, result)).toBe(true);
+    // The launcher exits before its descendant writes the marker, so this
+    // waits on the marker alone rather than on the launcher's completion.
+    const found = await until(() => existsSync(marker), 30_000);
+    const result = { found, stderr: launcher.stderr(), spawnError: launcher.spawnError() };
+    expect(found, markerMessage(marker, result)).toBe(true);
     const descendant = Number(readFileSync(marker, "utf-8"));
     await launcher.done;
     expect(launcher.pgid).toBeDefined();
@@ -1026,6 +1035,26 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     const spawned = spawnTsx([fixture("tsx-marker.ts"), marker]);
     await spawned.done;
     checkAfterTeardown({ pgids: groups(spawned), pids: [], dirs: [spawned.tmp] });
+  }, 40_000);
+
+  it.skipIf(process.platform === "win32")("a group teardown confirmed gone leaves the emergency set, even when another child's teardown fails", async () => {
+    const spawned = spawnTsx([fixture("tsx-marker.ts"), join(sessDir, "finished")]);
+    await spawned.done;
+    expect(spawned.pgid).toBeDefined();
+    const pgid = spawned.pgid as number;
+    expect(retained.pgids.has(pgid)).toBe(true);
+    // A child whose completion never settles: its teardown fails.
+    const stuck: Spawned = {
+      child: { pid: undefined, exitCode: null } as unknown as ChildProcess,
+      pgid: undefined,
+      tmp: spawned.tmp,
+      stderr: () => "",
+      spawnError: () => undefined,
+      done: new Promise<Completion>(() => {}),
+    };
+    children.push(stuck);
+    await expect(teardownChildren()).rejects.toThrow("teardown left children alive");
+    expect(retained.pgids.has(pgid), `group ${pgid} still retained`).toBe(false);
   }, 40_000);
 
   it("survives a stale temp left linked to an ARCHIVE", () => {

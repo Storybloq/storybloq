@@ -23,7 +23,9 @@ const saved: Record<string, string | undefined> = {};
 let scratchHome: string;
 beforeAll(async () => {
   scratchHome = await mkdtemp(join(tmpdir(), "t538-s3a1c-home-"));
-  for (const k of ["HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]) saved[k] = process.env[k];
+  for (const k of ["HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "TZ"]) saved[k] = process.env[k];
+  // Setup writes local dates; the zone is pinned so the bytes do not depend on the host (the clock inputs are UTC instants too).
+  process.env.TZ = "UTC";
   process.env.HOME = scratchHome;
   process.env.GIT_CONFIG_GLOBAL = join(scratchHome, "gitconfig");
   process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -161,7 +163,7 @@ describe("the payload", () => {
 describe("applying already-built work", () => {
   it("creates the ticket complete, dated the setup's first day, and reports it as built", async () => {
     const root = await folder();
-    clock("2026-10-20T12:00:00");
+    clock("2026-10-20T12:00:00Z");
     const result = await setupApply(root, payload());
     expect(result.exitCode).toBe(0);
     const built = await ticketFile(root, "T-001");
@@ -176,12 +178,12 @@ describe("applying already-built work", () => {
 
   it("dates the ticket the setup's first day when it is created on a later day", async () => {
     const root = await folder();
-    clock("2026-10-20T12:00:00");
+    clock("2026-10-20T12:00:00Z");
     // The fault fires after the phase step, so the complete ticket is first written by the resume.
     faultOnce("step:phase:K1");
     expect((await setupApply(root, payload())).exitCode).toBe(3);
     setupApplySeams.fault = () => {};
-    clock("2026-10-23T12:00:00");
+    clock("2026-10-23T12:00:00Z");
     expect((await setupResume(root, SID)).exitCode).toBe(0);
     expect((await ticketFile(root, "T-001")).completedDate).toBe("2026-10-20");
   });
@@ -190,7 +192,7 @@ describe("applying already-built work", () => {
 describe("the status as an owned field", () => {
   async function interrupted(): Promise<string> {
     const root = await folder();
-    clock("2026-10-20T12:00:00");
+    clock("2026-10-20T12:00:00Z");
     faultOnce("step:config");
     expect((await setupApply(root, payload())).exitCode).toBe(3);
     setupApplySeams.fault = () => {};
@@ -215,7 +217,7 @@ describe("the status as an owned field", () => {
     const root = await interrupted();
     for (const day of ["2026-10-21", "2026-10-22"]) {
       await editTicket(root, "T-001", (r) => { r.status = "open"; r.completedDate = null; });
-      clock(`${day}T09:00:00`);
+      clock(`${day}T12:00:00Z`);
       expect((await setupResume(root, SID)).exitCode).toBe(4);
       // The resolution goes on to finish the setup; stop it again at config so the next day has a setup to resume.
       faultOnce("step:config");

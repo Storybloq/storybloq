@@ -1,4 +1,5 @@
 import type { ProjectState } from "./project-state.js";
+import { parseSetupMeta, type SetupEntity } from "./setup-meta.js";
 import type { LoadWarning } from "./errors.js";
 import { PRIORITIES, WAITING_ON } from "../models/types.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
@@ -182,6 +183,36 @@ export function validateProject(
       message: `${displayIdOf(t)}: checkpointEvidenceMode ${JSON.stringify(mode.value)} is not a mode this CLI knows (only "immutable"); the checkpoint cannot be resolved or changed until the file is fixed by hand or storybloq is updated.`,
       entity: t.id,
     });
+  }
+
+  // T-538 S2: the setup field (core/setup-meta.ts). An item key is owned by
+  // one ticket or issue per setup, a record by one note per setup; a merge of
+  // two branches that each created one leaves two owners, named here.
+  const keyOwners = new Map<string, string[]>();
+  const recordOwners = new Map<string, string[]>();
+  const setupCarriers: Array<[SetupEntity, { id: string }]> = [
+    ...state.tickets.map((t): [SetupEntity, { id: string }] => ["ticket", t]),
+    ...state.issues.map((i): [SetupEntity, { id: string }] => ["issue", i]),
+    ...state.notes.map((n): [SetupEntity, { id: string }] => ["note", n]),
+  ];
+  for (const [entity, item] of setupCarriers) {
+    const parsed = parseSetupMeta(entity, item);
+    if (parsed.kind === "invalid") {
+      findings.push({ level: "error", code: "setup_meta_invalid", message: `${displayIdOf(item)}: its setup field ${parsed.reason}.`, entity: item.id });
+    } else if (parsed.kind === "item" && parsed.meta.supersededBy === undefined) {
+      const k = `${parsed.meta.setupId} ${parsed.meta.key}`;
+      keyOwners.set(k, [...(keyOwners.get(k) ?? []), displayIdOf(item)]);
+    } else if (parsed.kind === "record") {
+      const k = `${parsed.meta.setupId} ${parsed.meta.record}`;
+      recordOwners.set(k, [...(recordOwners.get(k) ?? []), displayIdOf(item)]);
+    }
+  }
+  for (const [code, owners, what] of [["setup_key_duplicate", keyOwners, "key"], ["setup_record_duplicate", recordOwners, "record"]] as const) {
+    for (const [k, ids] of owners) {
+      if (ids.length < 2) continue;
+      const [sid, name] = k.split(" ");
+      findings.push({ level: "error", code, message: `Setup ${sid} ${what} ${name} is held by ${ids.join(", ")}; resolve it with setup-apply --resume.`, entity: null });
+    }
   }
 
   // Dedupe keys are idempotency identities, so two issues may never share one.

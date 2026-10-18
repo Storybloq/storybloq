@@ -3,7 +3,7 @@
  * and fails the run that breaks it.
  */
 import { describe, it, expect } from "vitest";
-import { checkSetupApply, cs7TurnsFrom, type Cs7Call, type Cs7Options, type Cs7Turn } from "../../scripts/onboarding-eval-checkset7.js";
+import { checkSetupApply, cs7TurnsFrom, rule6, type Cs7Call, type Cs7Options, type Cs7Turn } from "../../scripts/onboarding-eval-checkset7.js";
 import type { DriveTurn } from "../../scripts/onboarding-eval-drive.js";
 import type { EvalCall } from "../../scripts/onboarding-eval-lib.js";
 
@@ -222,5 +222,46 @@ describe("check set 7", () => {
     ];
     const turns = cs7TurnsFrom([{ prompt: "p", stopText: "t", callRange: [0, 2] } as unknown as DriveTurn], calls);
     expect(turns).toEqual([{ owner: "p", text: "t", calls: [{ name: "Bash", command: "storybloq setup-apply --resume --setup SS-0123abcd", input: { command: "storybloq setup-apply --resume --setup SS-0123abcd" }, output: "out" }] }]);
+  });
+});
+
+describe("rule 6: establishment tickets (T-538 S3a-2)", () => {
+  const quality = (level: string, status = "pending") => ({ level, components: [{ id: "app", test: { status } }] });
+  const scaffold = { key: "K2", blockedBy: [] };
+  const est = (extra: Record<string, unknown> = {}) => ({ key: "K3", blockedBy: ["K2"], establishes: { component: "app" }, ...extra });
+  const story = { key: "K4", blockedBy: ["K3"] };
+
+  it("passes one establishment ticket per pending test component that something waits on, with no status", () => {
+    expect(rule6({ quality: quality("tests-only"), tickets: [scaffold, est(), story] })).toEqual([]);
+    expect(rule6({ quality: quality("full"), tickets: [scaffold, est(), story] })).toEqual([]);
+  });
+
+  it("reads dependents on the effective graph: a checkpoint that reviews it counts", () => {
+    expect(rule6({ quality: quality("tests-only"), tickets: [scaffold, est()], checkpoints: [{ key: "K6", blockedBy: ["K3"], gates: [] }] })).toEqual([]);
+    expect(rule6({ quality: quality("tests-only"), tickets: [scaffold, est()], checkpoints: [{ key: "K6", blockedBy: [], gates: ["K2"] }] }))
+      .toEqual(["rule 6: nothing waits on K3, the establishment ticket for app"]);
+  });
+
+  it("fails a pending component with no establishment ticket, or two", () => {
+    expect(rule6({ quality: quality("tests-only"), tickets: [scaffold, story] })).toEqual(["rule 6: component app's test stage is pending and has 0 establishment tickets; expected exactly one"]);
+    expect(rule6({ quality: quality("tests-only"), tickets: [scaffold, est(), { ...est(), key: "K5" }, story] })).toEqual(["rule 6: component app's test stage is pending and has 2 establishment tickets; expected exactly one"]);
+  });
+
+  it("fails an establishment ticket that states a status", () => {
+    expect(rule6({ quality: quality("tests-only"), tickets: [scaffold, est({ status: "open" }), story] })).toEqual(["rule 6: K3, the establishment ticket for app, states a status (open); setup-verify completes it"]);
+  });
+
+  it("owes nothing under minimal, or for an established test stage", () => {
+    expect(rule6({ quality: quality("minimal"), tickets: [scaffold, story] })).toEqual([]);
+    expect(rule6({ quality: quality("tests-only", "established"), tickets: [scaffold, story] })).toEqual([]);
+  });
+
+  it("runs inside checkSetupApply on the payload as sent", () => {
+    const sent = { ...payload, quality: quality("tests-only") };
+    const turns: Cs7Turn[] = [
+      { owner: "set it up", calls: [], text: PACKAGE },
+      { owner: APPROVE, calls: [shell(heredoc(sent), APPLIED)], text: APPLIED },
+    ];
+    expect(checkSetupApply(turns, opts()).failures).toContain("rule 6: component app's test stage is pending and has 0 establishment tickets; expected exactly one");
   });
 });

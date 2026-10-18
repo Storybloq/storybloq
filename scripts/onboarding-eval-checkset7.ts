@@ -20,9 +20,16 @@
  * target with the words of an owner message sent after that ambiguity.
  * Rule 5: no individual create call (init, phase, ticket, issue, note) runs
  * during setup; the engine is the only writer.
+ * Rule 6 (T-538 S3a-2): under a level that uses the test stage, each
+ * component whose test stage is pending has exactly one establishment ticket
+ * in the payload, at least one item waits on it in the effective graph
+ * (blockedBy plus checkpoint gates), and it states no status. Not yet wired
+ * to runs (S5a).
  */
 import { heredocStdin } from "./onboarding-eval-checkset6.js";
 import { parseSetupMeta } from "../src/core/setup-meta.js";
+import { effectiveEdges } from "../src/core/setup-payload.js";
+import { STAGES_USED } from "../src/core/verification-activation.js";
 import type { DriveTurn } from "./onboarding-eval-drive.js";
 import type { EvalCall } from "./onboarding-eval-lib.js";
 
@@ -216,6 +223,38 @@ function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, 
   return failures;
 }
 
+interface EstablishmentShape {
+  readonly quality?: { readonly level?: string; readonly components?: ReadonlyArray<{ id: string; test: { status: string } | null }> };
+  readonly tickets?: ReadonlyArray<{ key: string; status?: string; blockedBy?: readonly string[]; establishes?: { component: string } }>;
+  readonly checkpoints?: ReadonlyArray<{ key: string; blockedBy?: readonly string[]; gates?: readonly string[] }>;
+}
+
+/** Rule 6: the establishment tickets the payload owes, read from the payload as sent. */
+export function rule6(payload: EstablishmentShape): string[] {
+  const level = payload.quality?.level as keyof typeof STAGES_USED | undefined;
+  const used = level !== undefined && Object.hasOwn(STAGES_USED, level) ? STAGES_USED[level] : [];
+  if (!used.includes("TEST") && !used.includes("WRITE_TESTS")) return [];
+  const failures: string[] = [];
+  const tickets = payload.tickets ?? [];
+  const edges = effectiveEdges({
+    tickets: tickets.map((t) => ({ key: t.key, blockedBy: [...(t.blockedBy ?? [])] })),
+    checkpoints: (payload.checkpoints ?? []).map((c) => ({ key: c.key, blockedBy: [...(c.blockedBy ?? [])], gates: [...(c.gates ?? [])] })),
+  } as Parameters<typeof effectiveEdges>[0]);
+  const waitedOn = new Set([...edges.values()].flat());
+  for (const c of payload.quality?.components ?? []) {
+    if (c.test === null || c.test.status !== "pending") continue;
+    const serving = tickets.filter((t) => t.establishes?.component === c.id);
+    if (serving.length !== 1) {
+      failures.push(`rule 6: component ${c.id}'s test stage is pending and has ${serving.length} establishment tickets; expected exactly one`);
+      continue;
+    }
+    const t = serving[0]!;
+    if (!waitedOn.has(t.key)) failures.push(`rule 6: nothing waits on ${t.key}, the establishment ticket for ${c.id}`);
+    if (t.status !== undefined) failures.push(`rule 6: ${t.key}, the establishment ticket for ${c.id}, states a status (${t.status}); setup-verify completes it`);
+  }
+  return failures;
+}
+
 export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { failures: string[] } {
   const failures: string[] = [];
   const applies: ApplyCall[] = [];
@@ -286,6 +325,7 @@ export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { 
     if (plan === null) failures.push("rule 3: no package with a marked Plan section came before the approval");
     else failures.push(...rule3(plan, payload));
     failures.push(...rule2(payload, opts.ledger, new Set(opts.baselineIds), amended, droppedCheckpoints));
+    failures.push(...rule6(first.payload as EstablishmentShape));
   }
   return { failures };
 }

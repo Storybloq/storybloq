@@ -124,6 +124,16 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     ]) expect(flow).toContain(line);
   });
 
+  it("plans one establishment ticket per pending test component and routes setup-verify's unreadable stop (T-538 S3a-2)", () => {
+    for (const line of [
+      "a test stage reads `TEST: <command> (<wrapper> -> <runner>)`.",
+      "each component whose test stage is pending gets exactly one establishment ticket: a task with `\"establishes\": {\"component\": \"<id>\", \"stage\": \"test\", \"scaffold\": \"<key>\"}`, no `status`, and `blockedBy` its scaffold alone",
+      "Its description owes one minimal real test of the scaffold, then `storybloq setup-verify --ticket <id>`, which alone completes it. Work that needs the tests waits on it.",
+      "is the owner's to answer: an adapter (an argv run with no shell; show the owner any `--drop` and what replaces it), leave-off or stop",
+      "`storybloq setup-verify --ticket <id> --resolve <adapter|leave-off|stop> --owner-words '<the owner's words>'`",
+    ]) expect(flow).toContain(line);
+  });
+
   it("copies the engine's report lines verbatim (T-538)", () => {
     expect(flow).toContain("Copy the report lines into the message verbatim, never retyped, merged or shortened");
     expect(flow).toContain("**Last check before sending the completion message.** Every `Pending:` line of the report is in the message itself, one per line.");

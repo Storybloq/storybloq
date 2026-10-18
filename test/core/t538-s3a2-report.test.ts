@@ -25,7 +25,7 @@ async function ready(): Promise<string> {
 
 const live = async (root: string) => (await setupReport(root, SID)).lines;
 const frozen = async (root: string) => (await setupReport(root, SID, { historical: true })).lines;
-const pendingOf = (lines: string[]) => lines.filter((l) => l.startsWith("Pending:"));
+const pendingOf = (lines: readonly string[]) => lines.filter((l) => l.startsWith("Pending:"));
 
 describe("the live report's pending lines", () => {
   it("before anything, the record's line is the payload's", async () => {

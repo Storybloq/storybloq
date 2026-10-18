@@ -1946,6 +1946,13 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
   // failure applying an entry (including lock-ownership loss, fenced below),
   // stop recovering immediately: do not unlink that temp, do not process
   // remaining entries, do not delete the journal.
+  //
+  // ISS-1399: the true journal may come from a marker rename whose `.story`
+  // sync failed or never ran (a CLI marker-unconfirmed run, or a Mac app
+  // crash). Until that rename is durable a power loss mid-replay could bring
+  // back the false journal over targets already renamed, and the next
+  // recovery would roll back the rest. Nothing is replayed until it is.
+  await syncOrThrow(() => syncDir(wrapDir), "the commit marker");
   for (const entry of entries) {
     if (entry.op === "write" && entry.tempPath) {
       const tempExists = await probeExists(entry.tempPath, entry.tempPath);

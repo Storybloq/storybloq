@@ -458,7 +458,12 @@ describe("ISS-1399: the commit marker", () => {
     expect(err).toBeInstanceOf(TransactionRecoveryPendingError);
     expect((err as InstanceType<typeof TransactionRecoveryPendingError>).phase).toBe("marker-unconfirmed");
     expect(journalOf(f).commitStarted).toBe(true);
+    seam.log = [];
     await recover(f);
+    // The marker's rename is made durable before any target changes.
+    const firstTargetChange = seam.log.findIndex((e) => /^(rename|unlink) (notes|lessons)\//.test(e));
+    expect(firstTargetChange).toBeGreaterThan(-1);
+    expect(seam.log.slice(0, firstTargetChange)).toContain("sync .");
     expect(readFileSync(f.w, "utf-8")).toBe(NEW);
     expect(existsSync(f.d)).toBe(false);
     for (const p of [f.sidecar, f.journal, f.temp(f.w)]) expect(existsSync(p)).toBe(false);
@@ -505,8 +510,10 @@ describe("ISS-1399: after the marker", () => {
     seam.log = [];
     await recover(f);
     // The write's temp is gone and the delete finds ENOENT: nothing changes in
-    // this run, and every target's directory is still synced.
+    // this run. The marker is synced first, and every target's directory is
+    // still synced.
     expect(seam.log.filter((e) => /^(sync |unlink \.txn\.json$)/.test(e))).toEqual([
+      "sync .",
       "sync notes",
       "sync lessons",
       "unlink .txn.json",
@@ -569,6 +576,26 @@ describe("ISS-1399: recovery", () => {
     seam.before = failOnce("sync notes", eio("rollback sync"));
     await expect(recover(f)).rejects.toThrow(/temp directories; journal preserved/);
     expect(existsSync(f.journal)).toBe(true);
+  });
+
+  it("14: a failed commit-marker barrier before a forward replay changes nothing and keeps the journal and temps", async () => {
+    const f = await project();
+    const present = `${f.w}.4242.tmp`;
+    writeFileSync(present, NEW);
+    plantJournal(f, true, [
+      { op: "write", target: f.w, tempPath: present },
+      { op: "delete", target: f.d },
+    ]);
+    seam.before = failOnce("sync .", eio("commit marker sync"));
+    await expect(recover(f)).rejects.toThrow(/the commit marker; journal preserved/);
+    expect(readFileSync(f.w, "utf-8")).toBe(OLD);
+    expect(readFileSync(f.d, "utf-8")).toBe(OLD);
+    expect(readFileSync(present, "utf-8")).toBe(NEW);
+    expect(journalOf(f).commitStarted).toBe(true);
+    seam.before = null;
+    await recover(f);
+    expect(readFileSync(f.w, "utf-8")).toBe(NEW);
+    for (const p of [f.d, present, f.journal]) expect(existsSync(p)).toBe(false);
   });
 
   it("13: a sidecar beside a journal is removed by recovery; one with no journal is left for the next transaction", async () => {

@@ -834,7 +834,8 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     const content = JSON.stringify(ticket("T-023"));
     openOverride.failDirectoryPath = ticketsDir;
 
-    await expect(atomicCreate(target, content)).resolves.toBeUndefined();
+    // T-538: the create reports the identity of the file it made.
+    await expect(atomicCreate(target, content)).resolves.toEqual({ dev: expect.any(Number), ino: expect.any(Number) });
     expect(await readFile(target, "utf-8")).toBe(content);
   });
 

@@ -4,4 +4,4 @@
  */
 import { writeFileSync } from "node:fs";
 
-writeFileSync(process.argv[2], "1");
+writeFileSync(process.argv[2]!, "1");

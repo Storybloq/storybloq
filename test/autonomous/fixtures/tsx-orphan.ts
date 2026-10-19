@@ -15,6 +15,6 @@ const park = [
   "fs.renameSync(process.argv[1] + '.tmp', process.argv[1]);",
   "setInterval(() => {}, 1000);",
 ].join(" ");
-const descendant = spawn(process.execPath, ["-e", park, process.argv[2]], { stdio: "ignore" });
+const descendant = spawn(process.execPath, ["-e", park, process.argv[2]!], { stdio: "ignore" });
 descendant.unref();
 process.exit(0);

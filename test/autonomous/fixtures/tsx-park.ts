@@ -7,4 +7,4 @@ import { writeFileSync } from "node:fs";
 
 process.on("SIGTERM", () => {});
 setInterval(() => {}, 1_000);
-writeFileSync(process.argv[2], String(process.pid));
+writeFileSync(process.argv[2]!, String(process.pid));

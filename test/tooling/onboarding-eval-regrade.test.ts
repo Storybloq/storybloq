@@ -343,21 +343,32 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
    * process under the evaluation collector, so the events log and snapshot are ones it wrote.
    */
   async function g11(): Promise<{ readonly s: Synth; readonly events: string; readonly snapshot: string }> {
+    const r = await killed("archive-committed", true);
+    return { s: r.s, events: r.events, snapshot: r.snapshot! };
+  }
+
+  /** A setup killed at `point`; `resumed` says the approve turn resumes it in the approve turn, else the run ends with the setup unfinished. */
+  async function killed(point: string, resumes: boolean): Promise<{ readonly s: Synth; readonly events: string; readonly snapshot: string | null }> {
     const root = join(scratch, `p${n++}`);
     mkdirSync(root);
     const store = join(scratch, `store${n}`);
     mkdirSync(store);
     const eventsPath = join(scratch, `${n}-events.jsonl`);
     const env = { PATH: process.env.PATH ?? "", HOME: scratch, STORYBLOQ_SETUP_REVIEW_DIR: join(scratch, "review-store") };
-    setAfterWriteFault(collector(eventsPath, "archive-committed", "cli", () => { throw new Killed("killed"); }));
+    setAfterWriteFault(collector(eventsPath, point, "cli", () => { throw new Killed("killed"); }));
     await handleSetupApply({ cwd: root, env, stdin: () => Buffer.from(JSON.stringify(payload)) }, {});
-    writeFileSync(eventsPath, cutAfter(readFileSync(eventsPath, "utf-8"), "archive-committed"));
-    setAfterWriteFault(collector(eventsPath, null, "cli", () => { throw new Killed("killed"); }));
-    const resumed = (await handleSetupApply({ cwd: root, env, stdin: () => Buffer.from("") }, { resume: true, setup: SID })).stdout;
-    expect(resumed).toContain(`Setup applied: ${SID}`);
+    writeFileSync(eventsPath, cutAfter(readFileSync(eventsPath, "utf-8"), point));
+    let last: SynthTurn = { text: "The setup was interrupted.", commands: [{ command: heredoc, output: "" }] };
+    if (resumes) {
+      setAfterWriteFault(collector(eventsPath, null, "cli", () => { throw new Killed("killed"); }));
+      const resumed = (await handleSetupApply({ cwd: root, env, stdin: () => Buffer.from("") }, { resume: true, setup: SID })).stdout;
+      expect(resumed).toContain(`Setup applied: ${SID}`);
+      last = { text: resumed, commands: [{ command: heredoc, output: "" }, { command: resume, output: resumed }] };
+    }
     const events = readFileSync(eventsPath, "utf-8");
-    const snapshot = readFileSync(`${eventsPath}.setup-snapshot.json`, "utf-8");
-    const script: SynthTurn[] = [{ text: PACKAGE7 }, { text: PACKAGE7 }, { text: PACKAGE7 }, { text: resumed, commands: [{ command: heredoc, output: "" }, { command: resume, output: resumed }] }];
+    const snapshotPath = `${eventsPath}.setup-snapshot.json`;
+    const snapshot = existsSync(snapshotPath) ? readFileSync(snapshotPath, "utf-8") : null;
+    const script: SynthTurn[] = [{ text: PACKAGE7 }, { text: PACKAGE7 }, { text: PACKAGE7 }, last];
     return { s: synth("none", script, join(root, ".story"), { store }, { events, snapshot, projectRoot: root }), events, snapshot };
   }
 
@@ -383,6 +394,9 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     expect(refused(withRaw(s.input, "events.jsonl", events.replace(SID, "SS-ffffffff")))).toBe("replay input events.jsonl does not match its recorded sha256");
     expect(refused(withRaw(s.input, "events.jsonl", "", true))).toMatch(/^replay input events\.jsonl is malformed or incomplete: /);
     expect(refused(withRaw(s.input, "events.jsonl", `${events.split("\n").slice(1).join("\n")}`, true))).toMatch(/^replay input events\.jsonl is malformed or incomplete: /);
+    // The commit lines deleted with no step:archive left: completion evidence is gone while the snapshot is still pinned.
+    const archiveless = `${events.split("\n").filter((l) => l !== "" && !l.includes('"point":"archive-committed"')).join("\n")}\n`;
+    expect(refused(withRaw(s.input, "events.jsonl", archiveless, true))).toBe("replay input events.jsonl is incomplete: the record pins setup-snapshot.json but the log has no archive-committed");
     // The kill left no step:archive, so the archive's commit line is turned into one: a step:archive with no commit.
     const uncommitted = events.replace('"point":"archive-committed"', '"point":"step:archive"');
     expect(refused(withRaw(s.input, "events.jsonl", uncommitted, true))).toBe("replay input events.jsonl is incomplete: step:archive with no archive-committed");
@@ -394,6 +408,21 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     const other = snapshot.replace("Sign in", "Signed in");
     expect(refused(withRaw(s.input, "setup-snapshot.json", other))).toBe("replay input setup-snapshot.json does not match its recorded sha256");
     expect(refused(withRaw(s.input, "setup-snapshot.json", other, true))).toBe("replay input setup-snapshot.json is not the snapshot archive-committed names");
+  });
+
+  it("a log with archive-committed and no pinned snapshot is refused by name", async () => {
+    const { s } = await g11();
+    const unpinned = withRecord(s.input, (r) => { r.replayInputs = r.replayInputs.filter((e: { path: string }) => e.path !== "setup-snapshot.json"); });
+    expect(refused(without(unpinned, "setup-snapshot.json"))).toBe("replay input setup-snapshot.json is missing");
+  });
+
+  it("a setup killed before its archive and never resumed regrades accepted, judged incomplete by name", async () => {
+    const { s, snapshot } = await killed("step:handover", false);
+    expect(snapshot).toBeNull();
+    expect(s.state.failures).toContain("setup incomplete: no archive-committed event");
+    const g = accepted(s.input);
+    expect(g.checkSet).toBe(7);
+    expect(g.manifest.map((m) => m.path)).not.toContain("setup-snapshot.json");
   });
 
   it("refuses an invocation mapping that is missing, tampered, malformed, or not the replayed run's", async () => {

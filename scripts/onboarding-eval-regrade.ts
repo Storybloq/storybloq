@@ -215,6 +215,8 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
   const stepArchive = log.events.find((e) => e.point === "step:archive");
   if (stepArchive !== undefined && archive === undefined) refuse(`replay input ${EVENTS_RAW} is incomplete: step:archive with no archive-committed`);
   if (stepArchive !== undefined && archive !== undefined && stepArchive.snapshotSha256 !== archive.snapshotSha256) refuse(`replay input ${EVENTS_RAW} is incomplete: step:archive and archive-committed name different snapshots`);
+  // A pinned snapshot is completion evidence; a log that lost the commit naming it is incomplete, not a run that never finished.
+  if (archive === undefined && hashOf.has(SNAPSHOT_RAW)) refuse(`replay input ${EVENTS_RAW} is incomplete: the record pins ${SNAPSHOT_RAW} but the log has no archive-committed`);
   const snapshotBytes = read(SNAPSHOT_RAW, archive !== undefined);
   if (snapshotBytes !== null && archive !== undefined && sha256(snapshotBytes) !== archive.snapshotSha256) refuse(`replay input ${SNAPSHOT_RAW} is not the snapshot archive-committed names`);
   const invocationsBytes = read(INVOCATIONS_RAW, true)!;

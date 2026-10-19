@@ -149,7 +149,21 @@ describe("the guard without authority", () => {
     expect(viaMcp.isError).toBeUndefined();
   });
 
-  it("refuses a reopen out of complete in every closed state, on both transports; setup-verify --reopen recovers", async () => {
+  it("lets the same owner reopen a ticket with no setup hold on both transports (the control: force proves ownership to status-authority)", async () => {
+    const root = await applied();
+    const { tools, server } = makeRegistry();
+    registerAllTools(server, root);
+    const complete = () => editTicket(root, "T-001", (raw) => { raw.status = "complete"; raw.completedDate = "2026-10-18"; });
+    await complete();
+    await handleTicketUpdate("T-001", { status: "open" }, "json", root, true);
+    expect((await ticketFile(root, "T-001")).status).toBe("open");
+    await complete();
+    const mcp = await tools.get("storybloq_ticket_update")!.handler({ id: "T-001", status: "inprogress", force: true });
+    expect(mcp.isError).toBeUndefined();
+    expect((await ticketFile(root, "T-001")).status).toBe("inprogress");
+  });
+
+  it("refuses a reopen out of complete in every closed state, on both transports, to a caller who proves ownership; setup-verify --reopen recovers", async () => {
     const closed: Record<string, Record<string, unknown> | undefined> = {
       verified: { status: "verified", at: "2026-10-18T00:00:00.000Z" },
       "left-off": { status: "left-off", at: "2026-10-18T00:00:00.000Z" },
@@ -165,10 +179,10 @@ describe("the guard without authority", () => {
       });
       const before = await ticketBytes(root, "T-002");
       for (const status of ["open", "inprogress"]) {
-        await expect(handleTicketUpdate("T-002", { status }, "json", root), state).rejects.toThrow(guardMessage);
+        await expect(handleTicketUpdate("T-002", { status }, "json", root, true), state).rejects.toThrow(guardMessage);
         const { tools, server } = makeRegistry();
         registerAllTools(server, root);
-        const mcp = await tools.get("storybloq_ticket_update")!.handler({ id: "T-002", status });
+        const mcp = await tools.get("storybloq_ticket_update")!.handler({ id: "T-002", status, force: true });
         expect([state, mcp.isError, mcp.content[0]!.text]).toEqual([state, true, expect.stringMatching(guardMessage)]);
       }
       expect(await ticketBytes(root, "T-002"), state).toBe(before);

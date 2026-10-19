@@ -37,11 +37,13 @@ import { checkpointState, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import type { CompletionGuardOptions } from "./claims.js";
-import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type BuildSpec, type EstablishableStage, type ParsedSetupMeta, type SetupItemMeta, type TestSpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
+import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type BuildSpec, type EstablishableStage, type ParsedSetupMeta, type SetupItemMeta, type TestSpec, type VerifySpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
 import { VERIFICATION_RESULT_AUTHORITY } from "./setup-verification-guard.js";
 import { readRecord, recordActivation, type RecordComponent, type SetupVerificationRecord } from "./setup-verification-record.js";
 import { establishStage, SERVES, type StagesConfig } from "./verification-activation.js";
 import { allKeyed, ambiguityLine } from "./setup-apply.js";
+import { readinessEndpoint } from "./setup-payload.js";
+import { lsofUnavailable, runServe, type ServeOutcome } from "./setup-verify-serve.js";
 import { KILL_GRACE_MS, ownedGroupUnsupported, runInGroup, runOwnedGroup } from "./process-group.js";
 import { classifyEvidence, EvidenceScanner, tailDigest, type Evidence, type TestRunner } from "./setup-verify-parsers.js";
 import type { ProjectState } from "./project-state.js";
@@ -211,9 +213,6 @@ function identify(state: ProjectState, ref: string): Identified {
   if (parsed.kind !== "item" || parsed.meta.establishes === undefined || parsed.meta.verification === undefined) {
     throw refuse(`${label(ticket)} is not an establishment ticket; setup-verify runs only on a ticket a setup created to establish a test stage.`);
   }
-  if (parsed.meta.verification.spec.stage === "verify") {
-    throw refuse(`${label(ticket)} establishes the verify stage; this CLI runs setup-verify only for a test or build stage.`);
-  }
   const meta = parsed.meta as Meta;
   const spec = meta.verification.spec;
 
@@ -241,10 +240,16 @@ function identify(state: ProjectState, ref: string): Identified {
     ? [["command", component.test!.command, spec.command], ["runner", component.test!.runner, spec.runner], ["wrapper", component.test!.wrapper, spec.wrapper]]
     : spec.stage === "build"
       ? [["command", component.build!.command, spec.command]]
-      : [["command", component.verify!.startCommand, spec.command]];
+      : [["command", component.verify!.startCommand, spec.command], ["readiness URL", endpointOf(component.verify!.readinessUrl), `${spec.port}${spec.readinessPath}`]];
   const mismatch = [...common, ...own].find(([, a, b]) => a !== b);
   if (mismatch) throw refuse(`${label(ticket)}'s verification spec and the setup verification record disagree on the ${mismatch[0]} of ${spec.component} (${String(mismatch[2])} against ${String(mismatch[1])}).`);
   return { ticket, meta, record, component };
+}
+
+/** The port and path of a record's readiness URL, compared with the spec's; the URL itself when setup-verify cannot own it. */
+function endpointOf(url: string | null | undefined): string {
+  const e = typeof url === "string" ? readinessEndpoint(url) : null;
+  return e === null ? String(url) : `${e.port}${e.path}`;
 }
 
 /** A component already verified or left off is terminal, whichever ticket asks; so is a ticket that is complete. */
@@ -514,8 +519,7 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     const checked = first as unknown as Checked;
     const spec = checked.meta.verification.spec;
     if (spec.stage === "build") return await runBuild(absRoot, input.ticket, checked, spec, env!, digestEnv, options);
-    // identify refuses a verify stage until setup-verify runs it.
-    if (spec.stage !== "test") throw new Error(`setup-verify: no run for the ${spec.stage} stage`);
+    if (spec.stage === "verify") return await runVerify(absRoot, input.ticket, checked, spec, env!, digestEnv, options);
     if (incompatible !== null) return unreadable(checked, spec.runner, incompatible, "");
 
     // Outside the lock: the command in its own process group, read as it streams.
@@ -602,13 +606,13 @@ async function runBuild(root: string, ref: string, checked: Checked, spec: Build
     },
   );
   const tail = scanner.end().tail;
-  if (run.kind === "spawn-error") return buildFailed(checked, `the command could not start (${run.reason})`, "");
+  if (run.kind === "spawn-error") return stageFailed(checked, `the command could not start (${run.reason})`, "");
   if (!run.value.ok) throw run.value.error;
   const { timedOut, exited, left } = run.value.value;
-  if (run.cleanup === "unconfirmed") return buildFailed(checked, `cleanup failed: ${run.cleanupDetail}`, tail);
-  if (left === true) return buildFailed(checked, "cleanup failed: a process it started was still in its group when it exited", tail);
-  if (timedOut || exited === null) return buildFailed(checked, `timed out after ${spec.timeoutMs} ms`, tail);
-  if (exited.code !== 0) return buildFailed(checked, exited.signal !== null ? `ended by ${exited.signal}` : `exited with code ${exited.code}`, tail);
+  if (run.cleanup === "unconfirmed") return stageFailed(checked, `cleanup failed: ${run.cleanupDetail}`, tail);
+  if (left === true) return stageFailed(checked, "cleanup failed: a process it started was still in its group when it exited", tail);
+  if (timedOut || exited === null) return stageFailed(checked, `timed out after ${spec.timeoutMs} ms`, tail);
+  if (exited.code !== 0) return stageFailed(checked, exited.signal !== null ? `ended by ${exited.signal}` : `exited with code ${exited.code}`, tail);
   await setupVerifySeams.afterRun();
   try {
     return await commit(root, ref, checked, digestEnv, { tail, line: (on) => `Verified: ${spec.component} build; stages on: ${on}` }, options);
@@ -618,8 +622,43 @@ async function runBuild(root: string, ref: string, checked: Checked, spec: Build
   }
 }
 
-function buildFailed({ ticket, token, meta }: Checked, reason: string, tail: string): SetupVerifyResult {
-  return { exitCode: 1, lines: [`Verification failed: ${meta.verification.spec.component} build: ${reason}. ${label(ticket)} stays as it was (run ${token}).`, ...tailLines(tail)] };
+function stageFailed({ ticket, token, meta }: Checked, reason: string, tail: string): SetupVerifyResult {
+  const { component, stage } = meta.verification.spec;
+  return { exitCode: 1, lines: [`Verification failed: ${component} ${stage}: ${reason}. ${label(ticket)} stays as it was (run ${token}).`, ...tailLines(tail)] };
+}
+
+/**
+ * A VERIFY run (T-538 S3b): the approved start command in its own process
+ * group, ready when 127.0.0.1:<port><path> answers 2xx from a listener the
+ * group owns (setup-verify-serve.ts), then stopped with the port left free.
+ * Every other outcome writes nothing and prints the run token. Without
+ * process groups or lsof nothing runs: unsupported, exit 4.
+ */
+async function runVerify(root: string, ref: string, checked: Checked, spec: VerifySpec, env: Record<string, string>, digestEnv: Readonly<Record<string, string>>, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
+  const why = ownedGroupUnsupported() ?? (await lsofUnavailable());
+  if (why !== null) return unsupported(checked, why);
+  const scanner = new EvidenceScanner();
+  let tail: string | null = null;
+  const outcome: ServeOutcome = await runServe({
+    command: spec.command,
+    cwd: checked.workdir,
+    env,
+    port: spec.port,
+    readinessPath: spec.readinessPath,
+    startupTimeoutMs: spec.startupTimeoutMs,
+    shutdownTimeoutMs: spec.shutdownTimeoutMs,
+    onData: (c) => scanner.feed(c),
+    tail: () => (tail ??= scanner.end().tail),
+  });
+  if (outcome.kind !== "verified") return stageFailed(checked, outcome.kind === "failed" ? outcome.detail : `${outcome.kind.replace("-", " ")}: ${outcome.detail}`, outcome.tail);
+  await setupVerifySeams.afterRun();
+  const at = `127.0.0.1:${spec.port}${spec.readinessPath}`;
+  try {
+    return await commit(root, ref, checked, digestEnv, { tail: outcome.tail, line: (on) => `Verified: ${spec.component} verify (${at} answered ${outcome.status}); stages on: ${on}` }, options);
+  } catch (err) {
+    if (err instanceof Refusal) return stale(checked.ticket, err.lines.join(" "));
+    throw err;
+  }
 }
 
 /** A stage this platform cannot run: nothing was spawned, and the owner may leave it off or stop. */
@@ -629,7 +668,7 @@ function unsupported({ ticket, token, meta }: Checked, why: string): SetupVerify
     exitCode: 4,
     lines: [
       `Setup-verify stopped: ${component}'s ${stage} stage cannot run here; nothing was written (run ${token}).`,
-      ambiguityLine({ class: "verification unsupported", target: label(ticket), observed: why, expected: `a platform that can own the ${stage} command's processes`, resolutions: ["leave-off", "stop"] }),
+      ambiguityLine({ class: "verification unsupported", target: label(ticket), observed: why, expected: `a platform that can own the ${stage} command's processes${stage === "verify" ? " and see who listens on its port" : ""}`, resolutions: ["leave-off", "stop"] }),
     ],
   };
 }

@@ -2,18 +2,14 @@
  * T-538 S3b commit 1: a setup can establish a component's BUILD or VERIFY
  * stage as well as its test stage. The payload allows BUILD and VERIFY only
  * under the full level, VERIFY only where it applies and only at a readiness
- * URL setup-verify can own; the ticket's verification spec is a union on the
- * stage; and setup-verify, until it runs BUILD and VERIFY, refuses them by
- * name with nothing written (BUILD runs from commit 3).
+ * URL setup-verify can own; and the ticket's verification spec is a union on
+ * the stage.
  */
 import { describe, it, expect } from "vitest";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { readinessEndpoint, validateSetupPayload } from "../../src/core/setup-payload.js";
 import { parseSetupMeta } from "../../src/core/setup-meta.js";
 import { setupApply, VERIFICATION_TIMEOUT_MS, VERIFY_SHUTDOWN_TIMEOUT_MS, VERIFY_STARTUP_TIMEOUT_MS } from "../../src/core/setup-apply.js";
-import { setupVerify } from "../../src/core/setup-verify.js";
-import { SID, comp, editTicket, payload, pinEnvironment, t, ticketFile, type PT } from "./t538-s3a2-fixture.js";
+import { SID, comp, payload, pinEnvironment, t, ticketFile, type PT } from "./t538-s3a2-fixture.js";
 
 const { folder } = pinEnvironment("t538-s3b-est");
 
@@ -139,19 +135,5 @@ describe("a setup that establishes BUILD or VERIFY", () => {
       host: "127.0.0.1", port: 4310, readinessPath: "/health",
       startupTimeoutMs: VERIFY_STARTUP_TIMEOUT_MS, shutdownTimeoutMs: VERIFY_SHUTDOWN_TIMEOUT_MS,
     });
-  });
-
-  it("is refused by setup-verify for VERIFY, until it runs it, with nothing written", async () => {
-    for (const stage of ["verify"] as const) {
-      const root = await folder();
-      expect((await setupApply(root, full(stage))).exitCode).toBe(0);
-      await editTicket(root, "T-001", (r) => { r.status = "complete"; r.completedDate = "2026-10-18"; });
-      const before = { ticket: await readFile(join(root, ".story", "tickets", "T-002.json"), "utf-8"), config: await readFile(join(root, ".story", "config.json"), "utf-8") };
-      const r = await setupVerify(root, { ticket: "T-002" });
-      expect(r.exitCode).toBe(2);
-      expect(r.lines.join("\n")).toMatch(new RegExp(`T-002 establishes the ${stage} stage; this CLI runs setup-verify only for a test or build stage`));
-      expect(await readFile(join(root, ".story", "tickets", "T-002.json"), "utf-8")).toBe(before.ticket);
-      expect(await readFile(join(root, ".story", "config.json"), "utf-8")).toBe(before.config);
-    }
   });
 });

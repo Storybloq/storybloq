@@ -94,6 +94,11 @@ class Refusal extends Error {
 
 const refuse = (why: string): Refusal => new Refusal([`Setup-verify refused: ${why}`]);
 
+/** A refusal over who may act, not over what changed: a resolution's --run never turns it stale. */
+class OwnershipRefusal extends Refusal {}
+
+const refuseOwnership = (why: string): OwnershipRefusal => new OwnershipRefusal([`Setup-verify refused: ${why}`]);
+
 type Meta = SetupItemMeta & { readonly verification: NonNullable<SetupItemMeta["verification"]>; readonly establishes: NonNullable<SetupItemMeta["establishes"]> };
 
 /** A component's evidence for one stage in the record, or null when the plan has none. */
@@ -273,14 +278,14 @@ async function ownership(root: string): Promise<CompletionGuardOptions> {
     return await collectCompletionOwnership(root);
   } catch (err) {
     if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
-    throw refuse(`ownership cannot be verified: ${err.unreadable ? err.message : `the session store (.story/sessions) could not be read (${err.message}).`}`);
+    throw refuseOwnership(`ownership cannot be verified: ${err.unreadable ? err.message : `the session store (.story/sessions) could not be read (${err.message}).`}`);
   }
 }
 
 /** Whether this caller may complete the ticket: the authority a run, an adapter, leave-off and stop all need. */
 function assertMayComplete(ticket: Ticket, guard: CompletionGuardOptions): void {
   const decision = authoriseStatusChange(ticket, { ...ticket, status: "complete" } as Ticket, guard, { claimFreeReopen: false }, label(ticket));
-  if (!decision.ok) throw refuse(decision.reason);
+  if (!decision.ok) throw refuseOwnership(decision.reason);
 }
 
 async function check(root: string, state: ProjectState, ref: string, env: Readonly<Record<string, string>>): Promise<Checked> {
@@ -761,11 +766,12 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
   const decision: VerificationDecision = { kind, ...(adapter ? { adapter } : {}), ownerWords: input.ownerWords!.trim(), at };
 
   // The run it answers: everything that run depended on must be as it was.
+  // An ownership refusal is no change a rerun clears, so it stays a refusal (exit 2).
   let now: Checked;
   try {
     now = await check(root, state, input.ticket, runEnvironment(parseSetupMeta("ticket", ticket), env, "<report>").digestEnv);
   } catch (err) {
-    if (err instanceof Refusal) return stale(ticket, err.lines.join(" "));
+    if (err instanceof Refusal && !(err instanceof OwnershipRefusal)) return stale(ticket, err.lines.join(" "));
     throw err;
   }
   if (now.token !== input.run) return stale(ticket, `the ticket, its prerequisites, the record, the stages or the ownership changed since run ${input.run}`);

@@ -160,6 +160,16 @@ describe("a VERIFY that does not verify writes nothing and prints its run", () =
     await fails(root, new RegExp(`^Verification failed: app verify: not ready: no 2xx from http://127\\.0\\.0\\.1:${port}/health within 700 ms\\.`));
   });
 
+  it("a slow ownership query well inside the deadline gets its whole bound, and the run verifies", async () => {
+    const port = await freePort();
+    const root = await ready(port);
+    const slow = join(root, "slow-lsof");
+    await writeFile(slow, `#!/bin/sh\nsleep 0.3\nexec ${REAL.lsofPath} "$@"\n`, { mode: 0o755 });
+    serveSeams.lsofPath = slow;
+    await editSpec(root, { startupTimeoutMs: 5000 });
+    expect(await setupVerify(root, { ticket: "T-002" })).toEqual({ exitCode: 0, lines: [`Verified: app verify (127.0.0.1:${port}/health answered 200); stages on: VERIFY`] });
+  });
+
   /** A run with slow lsof and ps from `slowFrom` on, Q = 1000 ms and a 1500 ms startup; returns the outcome and ms from the port check to the shutdown. */
   async function overtaken(port: number, root: string, at: "observation-1" | "observation-2" | "after-2"): Promise<{ lines: string[]; ms: number }> {
     const fast = join(root, "fast-lsof");

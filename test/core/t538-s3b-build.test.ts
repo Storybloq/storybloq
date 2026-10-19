@@ -204,6 +204,17 @@ describe("resolving a BUILD", () => {
     expect((await setupVerify(root, { ticket: "T-999", resolve: "stop", ownerWords: "x", run })).exitCode).toBe(2);
   });
 
+  it("with --run, a foreign claim taken since the run is still refused (exit 2), not stale, and nothing is written", async () => {
+    const root = await ready("exit 1");
+    const run = TOKEN.exec((await setupVerify(root, { ticket: "T-002" })).lines[0]!)![1]!;
+    await editTicket(root, "T-002", (r) => { r.status = "inprogress"; r.claim = { user: "rival@example.com", branch: "rival", since: "2026-10-19" }; });
+    const before = await files(root);
+    const r = await setupVerify(root, { ticket: "T-002", resolve: "stop", ownerWords: "x", run });
+    expect(r.exitCode).toBe(2);
+    expect(r.lines[0]).toMatch(/^Setup-verify refused: Cannot complete T-002: it is claimed by rival@example\.com/);
+    expect(await files(root)).toEqual(before);
+  });
+
   it("refuses an adapter by name: BUILD has no evidence to adapt", async () => {
     const root = await ready("exit 1");
     const run = TOKEN.exec((await setupVerify(root, { ticket: "T-002" })).lines[0]!)![1]!;

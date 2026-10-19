@@ -125,6 +125,28 @@ describe("capability list --digest: the cap and the order run on the checked rep
     expect(ids.filter((id) => id === "cap-p")).toHaveLength(1);
     expect(ids.slice(1)).toEqual(Array.from({ length: 19 }, (_, i) => `cap-r${pad(i)}`));
   });
+
+  it("D6: in a shuffled, oversized catalog, pending entries lead and each group keeps document order", async () => {
+    const root = await project(false);
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    // Ids out of lexical order in the file, so a sort within either group would change the sequence.
+    const ids = Array.from({ length: 21 }, (_, i) => `cap-${pad((i * 8 + 5) % 21)}`);
+    const pendingAt = new Set([4, 9, 15]);
+    writeCatalog(root, ids.map((id, i) =>
+      entry(id, id.toUpperCase(), "src/core/stable.ts", sha, pendingAt.has(i) ? { pendingNote: `owe ${i}` } : { status: "review" })));
+    const pendingIds = ids.filter((_, i) => pendingAt.has(i));
+    const restIds = ids.filter((_, i) => !pendingAt.has(i));
+    expect(pendingIds).not.toEqual([...pendingIds].sort());
+    expect(restIds).not.toEqual([...restIds].sort());
+    const d = await json({ digest: true, skipCheck: true }, root);
+    expect(d).toMatchObject({ total: 21, review: 21, pending: 3, returned: 20, omitted: 1 });
+    const listed = (d.entries as Entry[]).map((e) => e.id);
+    expect(listed).toEqual([...pendingIds, ...restIds.slice(0, 17)]);
+    // The one left out is the last non-pending entry in document order, not the last by id.
+    const omitted = ids.filter((id) => !listed.includes(id));
+    expect(omitted).toEqual([restIds[17]]);
+    expect(omitted).not.toEqual([[...restIds].sort()[17]]);
+  });
 });
 
 describe("capability list: the unbounded form is unchanged (ISS-1283)", () => {

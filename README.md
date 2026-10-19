@@ -148,6 +148,24 @@ Commit everything except `.story/snapshots/`.
   <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/board.png" alt="Ticket board showing phases, tickets, and in-progress work" />
 </p>
 
+## Guided setup and verification
+
+On a project without `.story/`, `/story` (or `$story`) plans the project with you and writes it in one engine call, `storybloq setup-apply`, after you approve the package. `storybloq setup-report --setup <id>` shows the setup as it is now: one line per setup checkpoint (ready, or waiting on its blockers) and one per recipe stage the level uses (on, or off and why). `--historical` prints the report frozen when the setup finished.
+
+A setup can propose a pointer block for `CLAUDE.md` and `AGENTS.md`. The engine never writes either file: it leaves `<file>.storybloq-<setup>.proposed` beside it and stops (`pointer edit owed`, one stop per file) until the block is there (`applied`) or you keep the file as it is (`keep-current`). A `.proposed` file setup did not write is a `proposal conflict`: it is never adopted or removed.
+
+A stage the setup could not prove yet is established by a ticket that only `storybloq setup-verify --ticket <id>` completes. It runs the approved command and, on success, turns the stage on in `.story/config.json`:
+
+| Stage | Verified when | Outcomes that write nothing (exit) |
+|-------|---------------|------------------------------------|
+| test | the runner's summary reports at least one test and no failures | failed or no tests (1), evidence unreadable (4: adapter, leave-off or stop) |
+| build | the command exits 0 within its deadline, nothing it started is left in its process group when it exits, and the group is confirmed gone | failed, timed out or cleanup failed (1: stop), unsupported (4: leave-off or stop) |
+| verify | `127.0.0.1:<port><path>` answers 2xx from a listener the command's process group owns, checked before the request and after the response, then the group stops and the port is free | port occupied, exited early, not ready, foreign listener, ownership unknown, shutdown failed or cleanup failed (1: stop), unsupported (4: leave-off or stop) |
+
+Every outcome that can be answered prints `(run <hex>)`; answer it with `storybloq setup-verify --ticket <id> --resolve <adapter|leave-off|stop> --owner-words '<words>' --run <hex>`. A change to the ticket, its prerequisites, the record or the stages since that run makes the answer stale (exit 5): run setup-verify again. Build and verify are unsupported on Windows (no process groups to own), and verify needs `lsof`; leave them off there. Ownership is observed, not proven: a foreign process that answers the request and leaves between the two observations, while the command's own listener stays bound, is not detected.
+
+A project created by setup uses checkpoint schema 5: open it with CLI 1.16 or later and the matching Mac app.
+
 ## Daily use
 
 Inside Claude Code or Codex:

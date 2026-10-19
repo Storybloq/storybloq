@@ -1528,10 +1528,14 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
       registry: { ...EMPTY, ...CTX_REG, ...LISTED },
       lockContext: { file: "types.ts", className: "StageContext", stageInterface: "WorkflowStage" },
     };
-    expect(asserted(scanStateWrites(program, opts))).toEqual([]);
+    const full = scanStateWrites(program, opts);
+    expect(asserted(full)).toEqual([]);
+    // At the default budget the rule I walk of AsyncLocalStorage<number>'s result completes: fail closed never fires on it.
+    expect(full.reach.exhausted).not.toContain("AsyncLocalStorage<number>");
     const r = scanStateWrites(program, { ...opts, reachBudget: 2 });
     expect(asserted(r)).toHaveLength(1);
-    expect(r.reach.exhausted).toEqual(["Wide"]);
+    // ISS-1381: rule I also walks the generic result of `new AsyncLocalStorage<number>()`, which exhausts a budget of 2.
+    expect(r.reach.exhausted).toEqual(["Wide", "AsyncLocalStorage<number>"]);
   });
 
   it("R5-1: a library type with an untyped member is not walked; what it yields is refused as an untyped provider or a supply", () => {
@@ -1547,6 +1551,300 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
   it("R5-2: a get-trap Proxy over a Box reaching Deps is UNRESOLVED", () => {
     const body = `const detach = ${P};\n    const wrap = (b: Box) => new Proxy(b, { get() { return { withLockX: detach }; } });\n    void wrap;`;
     expect(proxyWhy(add2Scan(body, TOP + BOX, LISTED))).toHaveLength(1);
+  });
+
+  // ISS-1381 (Y1): a type parameter's default is walked as its constraint is.
+  const generic = (r: { errors: string[] }) => r.errors.filter((e) => /^UNRESOLVED generic result at user\.ts:\d+ \(/.test(e));
+  const specialized = (r: { errors: string[] }) => r.errors.filter((e) => /^UNRESOLVED generic specialization at user\.ts:\d+ \(/.test(e));
+  const ORIGINAL = `const detach = ${P};\n    const original = () => ({ withLockX: detach });\n    `;
+  it.each([
+    ["a default (Y1 verbatim)", "const make = original as unknown as <T = Deps>() => T;\n    const deps = make();", 1],
+    ["a constraint (a control that passes on the base)", "const make = original as unknown as <T extends Deps>() => T;\n    const deps = make();", 1],
+  ])("ISS-1381 (Y1): a generic signature with %s: the assertion and the call are UNRESOLVED", (_n, body, assertions) => {
+    const r = add2Scan(ORIGINAL + body + "\n    void deps;", TOP, LISTED);
+    expect(asserted(r)).toHaveLength(assertions);
+    expect(generic(r)).toHaveLength(1);
+  });
+
+  it("ISS-1381 (Y1): a get-trap Proxy over a generic signature whose default is Deps is UNRESOLVED", () => {
+    const r = add2Scan("const wrap = (f: <T = Deps>() => T) => new Proxy(f, { get() { return undefined; } });\n    void wrap;", TOP, LISTED);
+    expect(proxyWhy(r)).toHaveLength(1);
+  });
+
+  // ISS-1381 rule I: a sensitive type out of a generic call needs the same sensitive type in.
+  const GEN = `export declare function make<T>(): T;
+export declare function id<T>(x: T): T;
+export declare function rest<T>(...xs: T[]): T;
+export declare function opt<T>(x?: T): T;
+export declare function selfNi<T>(this: void | NoInfer<T>): T;
+export declare function ni<T>(x: NoInfer<T>): T;
+export type NI<T> = NoInfer<T>;
+export declare function niAlias<T>(x: NI<T>): T;
+export declare function ov<T>(x: T): T;
+export declare function ov<T>(): T;
+export declare function boxed<T>(): { value: T };
+export declare function later<T>(): Promise<T>;
+export declare function ovw<T>(x: T): T;
+export declare function ovw<T>(): { value: T };
+export declare function tuple<T>(...a: [number, T?]): T;
+export declare function spreadOpt<T>(a: number, b?: T): T;
+export declare function tag<T>(s: TemplateStringsArray, ...v: unknown[]): T;
+export declare function tagT<T>(s: TemplateStringsArray, ...v: T[]): T;
+export declare function partial<T>(x: { value?: T }): T;
+export declare function all<T>(xs: T[]): T;
+export declare function branch<T>(x: T | number): T;
+export declare const either1: (<T>() => number) | (<T>() => T);
+export declare const either2: (<T>() => T) | (<T>() => number);
+export interface Obj<T> { shape: T }
+export declare function object<T>(shape: T): Obj<T>;
+export declare function swap<T>(c: StageContext): Deps;
+export declare function res<T>(a: Deps, b?: { v?: T }): T;
+export interface Holder2 { deps: Deps; again<T>(): Deps }
+export function viaHolder(h: Holder2): Deps { return h.again<number>(); }
+export function useCb(f: () => Deps): Deps { return f(); }
+export function useId(f: <T>(x: T) => T): void { void f; }
+`;
+  const gen = (body: string, extra = "") => add2Scan(body, TOP + GEN + extra, LISTED);
+  it.each([
+    ["a bare <T>() => T", "make<Deps>()", "make()"],
+    ["a rest parameter, called with no argument", "rest<Deps>()", "rest()"],
+    ["an optional parameter, called with no argument", "opt<Deps>()", "opt()"],
+    ["a this-parameter of void | NoInfer<T>", "selfNi<Deps>()", "selfNi()"],
+    ["NoInfer, called with a non-Deps argument", "ni<Deps>({})", "ni({})"],
+    ["the second overload", "ov<Deps>()", "ov()"],
+  ])("ISS-1381 rule I: %s is UNRESOLVED, explicit and contextual", (_n, explicit, contextual) => {
+    expect(generic(gen(`const deps = ${explicit};\n    void deps;`))).toHaveLength(1);
+    expect(generic(gen(`const deps: Deps = ${contextual};\n    void deps;`))).toHaveLength(1);
+  });
+
+  it.each([
+    ["the object wrapper", "boxed<Deps>().value", "const b: { value: Deps } = boxed();\n    const deps = b.value;"],
+    ["the Promise wrapper", "await later<Deps>()", "const p: Promise<Deps> = later();\n    const deps = await p;"],
+    ["an overload returning a wrapper", "ovw<Deps>().value", "const b: { value: Deps } = ovw();\n    const deps = b.value;"],
+  ])("ISS-1381 rule I: %s is UNRESOLVED, explicit and contextual", (_n, explicit, contextual) => {
+    expect(generic(gen(`const deps = ${explicit};\n    void deps;`))).toHaveLength(1);
+    expect(generic(gen(`${contextual}\n    void deps;`))).toHaveLength(1);
+  });
+
+  it.each([
+    ["the object wrapper", "const f = (() => ({ value: {} })) as unknown as <T>() => { value: T };\n    const deps = f<Deps>().value;"],
+    ["the Promise wrapper", "const f = (async () => ({})) as unknown as <T>() => Promise<T>;\n    const deps = await f<Deps>();"],
+  ])("ISS-1381 rule I: %s reached through an assertion into the generic signature is UNRESOLVED at the call", (_n, body) => {
+    const r = add2Scan(body + "\n    void deps;", TOP, LISTED);
+    expect(asserted(r)).toEqual([]);
+    expect(generic(r)).toHaveLength(1);
+  });
+
+  it.each([
+    ["an empty spread", "rest(...[])"],
+    ["a tuple rest given only its first element", "tuple(1)"],
+    ["a spread before an optional parameter", "spreadOpt(...([1] as [number]))"],
+    ["a tagged template whose substitutions carry no Deps", "tag`a${1}`"],
+    ["an argument that contributes nothing, partial({})", "partial({})"],
+    ["an empty array, explicit", "all<Deps>([])"],
+    // Pen ruling: T infers never and never is assignable to Deps, so the never/any rule refuses it.
+    ["an empty array, inferred", "all([])"],
+    ["an argument matching the non-T union branch, explicit", "branch<Deps>(1)"],
+    ["NoInfer through a type alias", "niAlias({})"],
+  ])("ISS-1381 rule I (round 2): %s is UNRESOLVED", (_n, call) => {
+    expect(generic(gen(`const deps: Deps = ${call};\n    void deps;`))).toHaveLength(1);
+  });
+
+  it.each([["either1"], ["either2"]])("ISS-1381 rule I (round 2): the union signature %s is UNRESOLVED in either order", (u) => {
+    const found = generic(gen(`const deps = ${u}<Deps>();\n    void deps;`));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/^UNRESOLVED generic result at user\.ts:\d+ \(Deps returned with no Deps argument; /);
+  });
+
+  it("ISS-1381 pen ruling: a never result under an assertion is refused once, by the assertion rule (R4-3)", () => {
+    const unresolved = gen("const deps = all([]) as Deps;\n    void deps;").errors.filter((e) => e.startsWith("UNRESOLVED"));
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0]).toMatch(/^UNRESOLVED assertion at user\.ts:\d+ /);
+  });
+
+  it("ISS-1381 rule I: a second sensitive type in does not vouch for Deps out", () => {
+    expect(generic(gen("const deps = swap<number>(ctx);\n    void deps;"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["an identity fed by a checked Deps", "const checked: Deps = {};\n    const deps = id(checked);\n    void deps;"],
+    ["a generic method on a checked receiver carrying Deps", "void viaHolder;"],
+    ["a tagged template whose substitution is a checked Deps", "const checked: Deps = {};\n    const deps = tagT`a${checked}`;\n    void deps;"],
+    ["the Zod shape", "const o = object({ a: 1 });\n    void o;"],
+    ["a result reaching no sensitive type", "const n = make<number>();\n    void n;"],
+    ["an empty map of numbers", "const m = new Map<string, number>();\n    void m;"],
+    // The recorded residual: a checked Deps in and a different, forged Deps of the same type out passes rule I.
+    ["the residual, a checked Deps in and a forged Deps out", "const checked: Deps = {};\n    const deps = res<Deps>(checked);\n    void deps;"],
+  ])("ISS-1381 rule I: %s passes", (_n, body) => {
+    expect(generic(gen(body))).toEqual([]);
+  });
+
+  it("ISS-1381 rule I: an empty map whose value type reaches Deps is UNRESOLVED (flagged in the plan)", () => {
+    expect(generic(gen("const m = new Map<string, Deps>();\n    void m;"))).toHaveLength(1);
+  });
+
+  // A union callee needs no clause of its own: the checker's resolved signature for either shape is already generic.
+  it.each([
+    ["a plain and a generic signature", "(() => number) | (<T>() => T)"],
+    ["two generic signatures", "(<T>() => T) | (<U>() => U)"],
+  ])("ISS-1381 rule I: a union of %s is UNRESOLVED, by rule I", (_name, u) => {
+    const found = generic(gen("const deps: Deps = u();\n    void deps;", `export declare const u: ${u};\n`));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/^UNRESOLVED generic result at user\.ts:\d+ \(Deps returned with no Deps argument; /);
+  });
+
+  // ISS-1381 pen ruling: a reviewed generic-result site is keyed by file, line and exact text, and nothing else.
+  const STALE = (key: string) => `stale reviewed site ${key}: the line or text moved; re-review the site and update the key, or remove the entry`;
+  const MAP_BODY = "const m = new Map<string, Deps>();\n    void m;";
+  const siteKey = () => {
+    const [hit] = generic(gen(MAP_BODY));
+    return `user.ts:${/ at user\.ts:(\d+) /.exec(hit ?? "")![1]}:new Map<string, Deps>()`;
+  };
+  const reviewedScan = (body: string, key: string) => add2Scan(body, TOP + GEN, { ...LISTED, reviewedSites: { [key]: "reviewed in this fixture only" } });
+
+  it("ISS-1381 reviewed site: the entry covers its exact site", () => {
+    const key = siteKey();
+    const r = reviewedScan(MAP_BODY, key);
+    expect(generic(r)).toEqual([]);
+    expect(r.reviewedSites).toEqual([key]);
+    expect(r.errors.filter((e) => e.startsWith("stale reviewed site"))).toEqual([]);
+  });
+
+  it("ISS-1381 reviewed site: the same text on another line is still flagged", () => {
+    const key = siteKey();
+    const r = reviewedScan("void 0;\n    " + MAP_BODY, key);
+    expect(generic(r)).toHaveLength(1);
+    expect(r.reviewedSites).toEqual([]);
+  });
+
+  it("ISS-1381 reviewed site: changed text on the registered line is still flagged", () => {
+    const key = siteKey();
+    const r = reviewedScan("const m = new Map<number, Deps>();\n    void m;", key);
+    expect(generic(r)).toHaveLength(1);
+    expect(r.reviewedSites).toEqual([]);
+  });
+
+  it("ISS-1381 reviewed site: an entry that matches no finding is stale, and the failure names the fix", () => {
+    const key = siteKey();
+    const r = reviewedScan("void 0;", key);
+    expect(r.errors).toContain(STALE(key));
+  });
+
+  it("ISS-1381 rule I: a result walk that exhausts the budget is UNRESOLVED (fail closed)", () => {
+    const program = inMemoryProgram({
+      "/fx/session.ts": SESSION, "/fx/types.ts": TYPES, "/fx/project.ts": GOOD_CHAIN, "/fx/als.d.ts": NODE_ALS,
+      "/fx/user.ts": LOCK_IMPORTS + PROJECT_IMPORT + TOP + "export interface Wide { a: { b: { c: { d: number } } } }\nexport declare function make<T>(): T;\nexport const w = make<Wide>();\n",
+    });
+    const opts = {
+      base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", lockName: "withSessionLock",
+      registry: { ...EMPTY, ...CTX_REG, ...LISTED },
+      lockContext: { file: "types.ts", className: "StageContext", stageInterface: "WorkflowStage" },
+    };
+    expect(generic(scanStateWrites(program, opts))).toEqual([]);
+    expect(generic(scanStateWrites(program, { ...opts, reachBudget: 2 }))).toHaveLength(1);
+  });
+
+  // ISS-1381 conversion check: specializing a generic callable may not introduce a sensitive type.
+  it.each([
+    ["an annotated variable", "const m: () => Deps = make;\n    const deps = m();\n    void deps;", 0],
+    ["an object member", "const o: { m: () => Deps } = { m: make };\n    void o;", 0],
+    ["a callback argument", "const deps = useCb(make);\n    void deps;", 0],
+    ["an instantiation expression, assigned then invoked", "const m = make<Deps>;\n    const deps = m();\n    void deps;", 1],
+  ])("ISS-1381 conversion: %s is UNRESOLVED", (_n, body, results) => {
+    const r = gen(body);
+    expect(specialized(r)).toHaveLength(1);
+    expect(generic(r)).toHaveLength(results);
+  });
+
+  it("ISS-1381 conversion: a return statement is UNRESOLVED", () => {
+    expect(specialized(gen("void mk;", "export function mk(): () => Deps { return make; }\n"))).toHaveLength(1);
+  });
+
+  it("ISS-1381 conversion: `as () => Deps` is UNRESOLVED as a specialization and as an assertion", () => {
+    const r = gen("const m = make as () => Deps;\n    void m;");
+    expect(specialized(r)).toHaveLength(1);
+    expect(asserted(r)).toHaveLength(1);
+  });
+
+  it.each([
+    ["a plain target", "const m: () => number = make;\n    void m;"],
+    ["a generic identity where a generic identity is expected", "useId(id);"],
+    ["an identity specialized to (x: Deps) => Deps: Deps goes in", "const f: (x: Deps) => Deps = id;\n    void f;"],
+  ])("ISS-1381 conversion: %s passes", (_n, body) => {
+    expect(specialized(gen(body))).toEqual([]);
+  });
+
+  // ISS-1381: a callable cannot vouch for itself; input collection never descends into a signature.
+  it.each([
+    ["m.call", "const deps = m.call(undefined);"],
+    ["m.apply", "const deps = m.apply(undefined, []);"],
+  ])("ISS-1381: %s on a specialized generic is UNRESOLVED at the call and at its source", (_n, body) => {
+    const r = gen(`const m = make<Deps>;\n    ${body}\n    void deps;`);
+    expect(generic(r)).toHaveLength(1);
+    expect(specialized(r)).toHaveLength(1);
+  });
+
+  it("ISS-1381: m.bind on a specialized generic is UNRESOLVED", () => {
+    const r = gen("const m = make<Deps>;\n    const deps = m.bind(undefined)();\n    void deps;");
+    expect(generic(r).length).toBeGreaterThan(0);
+    expect(specialized(r)).toHaveLength(1);
+  });
+
+  it.each([
+    ["holder.m()", "holder.m()"],
+    ["holder?.m()", "holder?.m()"],
+    ["holder[\"m\"]()", "holder[\"m\"]()"],
+  ])("ISS-1381: %s with an untyped holder is UNRESOLVED at the call and at the instantiation", (_n, call) => {
+    const r = gen(`const holder = { m: make<Deps> };\n    const deps = ${call};\n    void deps;`);
+    expect(generic(r)).toHaveLength(1);
+    expect(specialized(r)).toHaveLength(1);
+  });
+
+  // ISS-1381 (Y2): a node_modules declaration is opaque only while nothing from src flows into it.
+  const BRIDGE = { "/fx/node_modules/bridge/index.d.ts": "import type { Deps } from \"../../user.js\";\nexport interface Box { value: Deps }\nexport interface GBox<T> { value: T; deps: Deps }\n" };
+  const BRIDGE_IMPORT = "import type { Box as XBox, GBox } from \"./node_modules/bridge/index.js\";\n";
+  const ext = (body: string, files: Record<string, string>, imports: string) => add2Scan(body, imports + TOP, LISTED, GOOD_CHAIN, files);
+  it.each([
+    ["an assertion (Y2 verbatim)", `const detach = ${P};\n    const box = { value: { withLockX: detach } } as XBox;\n    await take(d, ctx, box.value);`],
+    ["a generic external wrapper naming Deps in a fixed member", "const g = JSON.parse(\"{}\") as GBox<number>;\n    void g;"],
+  ])("ISS-1381 (Y2): %s is UNRESOLVED", (_n, body) => {
+    expect(asserted(ext(body, BRIDGE, BRIDGE_IMPORT))).toHaveLength(1);
+  });
+
+  it("ISS-1381 (Y2): a get-trap Proxy over an external Box naming Deps is UNRESOLVED", () => {
+    const body = `const detach = ${P};\n    const wrap = (b: XBox) => new Proxy(b, { get() { return { withLockX: detach }; } });\n    void wrap;`;
+    expect(proxyWhy(ext(body, BRIDGE, BRIDGE_IMPORT))).toHaveLength(1);
+  });
+
+  it("ISS-1381 (Y2): taint is transitive, two hops through node_modules", () => {
+    const files = { ...BRIDGE, "/fx/node_modules/outer/index.d.ts": "import type { Box } from \"../bridge/index.js\";\nexport interface Outer { inner: Box }\n" };
+    expect(asserted(ext("const o = JSON.parse(\"{}\") as Outer;\n    void o;", files, "import type { Outer } from \"./node_modules/outer/index.js\";\n"))).toHaveLength(1);
+  });
+
+  it("ISS-1381 (Y2): an inline import(\"...\") type naming Deps taints its file", () => {
+    const files = { "/fx/node_modules/inl/index.d.ts": "export interface IBox { value: import(\"../../user.js\").Deps }\n" };
+    expect(asserted(ext("const o = JSON.parse(\"{}\") as IBox;\n    void o;", files, "import type { IBox } from \"./node_modules/inl/index.js\";\n"))).toHaveLength(1);
+  });
+
+  it("ISS-1381 (Y2): a reference path to a global declared in terms of Deps taints the referencing file", () => {
+    const files = {
+      "/fx/node_modules/gbridge/index.d.ts": "type GlobalDeps = import(\"../../user.js\").Deps;\n",
+      "/fx/node_modules/refd/index.d.ts": "/// <reference path=\"../gbridge/index.d.ts\" />\nexport interface RBox { value: GlobalDeps }\n",
+    };
+    expect(asserted(ext("const o = JSON.parse(\"{}\") as RBox;\n    void o;", files, "import type { RBox } from \"./node_modules/refd/index.js\";\n"))).toHaveLength(1);
+  });
+
+  const LIB = { "/fx/node_modules/lib/index.d.ts": "export interface Plain { n: number; f(x: string): number }\nexport interface Wrap<T> { get(): T; n: number }\n" };
+  const LIB_IMPORT = "import type { Plain, Wrap } from \"./node_modules/lib/index.js\";\n";
+  it("ISS-1381 (Y2): an external type with no src edge passes, and a generic one is refused only through a sensitive argument", () => {
+    expect(asserted(ext("const p = JSON.parse(\"{}\") as Plain;\n    void p;", LIB, LIB_IMPORT))).toEqual([]);
+    expect(asserted(ext("const a = JSON.parse(\"{}\") as Wrap<number>;\n    void a;", LIB, LIB_IMPORT))).toEqual([]);
+    expect(asserted(ext("const a = JSON.parse(\"{}\") as Wrap<Deps>;\n    void a;", LIB, LIB_IMPORT))).toHaveLength(1);
+  });
+
+  it("ISS-1381 (Y2): a src module augmentation of a library type is a src declaration and is walked", () => {
+    const augment = "declare module \"./node_modules/lib/index.js\" { interface Plain { deps: Deps } }\n";
+    expect(asserted(ext("const p = JSON.parse(\"{}\") as Plain;\n    void p;", LIB, LIB_IMPORT + augment))).toHaveLength(1);
   });
 
   it("forwarding the dependency it was given is not a supply; an untyped provider fails closed", () => {

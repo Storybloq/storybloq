@@ -97,6 +97,15 @@ const CONTAINED_CATCHES: readonly string[] = [
   "src/mcp/index.ts#swapToFullSurface#catch#3",
 ];
 
+/**
+ * ISS-1381 pen ruling: reviewed generic-result sites, `file:line:trimmed source text` -> why nothing reaches a writer
+ * through it. Exact set; the line is in the key so an edit above the site forces a re-review.
+ */
+const REVIEWED_SITES: Readonly<Record<string, string>> = {
+  "src/autonomous/stages/registry.ts:7:new Map<string, WorkflowStage>()":
+    "an empty default-library Map with explicit type arguments; values enter only through stages.set(...), which rule I checks as a call carrying a WorkflowStage argument, so nothing reaches the writer through it",
+};
+
 let cached: ScanResult | undefined;
 function scan(): ScanResult {
   cached ??= scanStateWrites(srcProgram(), {
@@ -122,6 +131,7 @@ function scan(): ScanResult {
       contextParams: CONTEXT_PARAMS,
       testSeamSlots: TEST_SEAM_SLOTS,
       unfollowedSinkChains: UNFOLLOWED_SINK_CHAINS,
+      reviewedSites: REVIEWED_SITES,
     },
     lockContext: { file: "src/autonomous/stages/types.ts", className: "StageContext", stageInterface: "WorkflowStage" },
   });
@@ -153,6 +163,11 @@ describe("ISS-958 state-write enforcement over src", () => {
       expect(reason.trim().length).toBeGreaterThan(10);
     }
     expect(new Set(scan().unresolved.keys())).toEqual(new Set(Object.keys(STATE_WRITE_UNRESOLVED)));
+  }, 120_000);
+
+  it("ISS-1381: every reviewed generic-result site has a reason, and each one matched a finding", () => {
+    for (const reason of Object.values(REVIEWED_SITES)) expect(reason.trim().length).toBeGreaterThan(10);
+    expect(scan().reviewedSites).toEqual(Object.keys(REVIEWED_SITES).sort());
   }, 120_000);
 
   it("tier 3 is exactly the listed map and the context constructions are exactly the pinned set", () => {

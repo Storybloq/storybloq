@@ -75,6 +75,13 @@ export interface ScannerRegistry {
    * try with a catch encloses the slot's use, and the use is awaited or returned.
    */
   readonly unfollowedSinkChains?: Readonly<Record<string, readonly { readonly fn: string; readonly param: string }[]>>;
+  /**
+   * ISS-1381 pen ruling: reviewed generic-result sites (rule I and the never/any rule only; an assertion or a Proxy is
+   * never registrable), `file:line:trimmed source text` -> why nothing reaches a writer through it. Exact set: an
+   * unlisted site and a stale entry both fail. The line is part of the key on purpose: an edit above the site moves
+   * it and forces a re-review.
+   */
+  readonly reviewedSites?: Readonly<Record<string, string>>;
 }
 
 export interface ScanOptions {
@@ -110,6 +117,8 @@ export interface ScanOptions {
 
 export interface ScanResult {
   readonly errors: string[];
+  /** Generic-result findings a `reviewedSites` entry covers, by key. */
+  readonly reviewedSites: string[];
   /** Every key the scan required, with what it found there. */
   readonly found: Map<string, string>;
   /** Where each key sits, `file:line`, for reports (never for matching). */
@@ -153,6 +162,9 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   const rel = (sf: ts.SourceFile) => path.relative(opts.base, sf.fileName).split(path.sep).join("/");
   const lineOf = (n: ts.Node) => n.getSourceFile().getLineAndCharacterOfPosition(n.getStart()).line + 1;
   const where = (n: ts.Node) => `${rel(n.getSourceFile())}:${lineOf(n)}`;
+  /** ISS-1381 pen ruling: the reviewed generic-result sites, and the keys a finding matched (the rest are stale). */
+  const reviewedSites = opts.registry.reviewedSites ?? {};
+  const reviewedHit = new Set<string>();
   const external = (d: ts.Node) => !fileSet.has(d.getSourceFile());
 
   const resolve = (s: ts.Symbol | undefined): ts.Symbol | undefined =>
@@ -2642,7 +2654,11 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
    * R4-3's assertions and the Proxy ruling, the last two through R5-1 reachability.
    */
   /** R5-1 report aid; the budget bounds one reachability query's visits. */
-  const reach = { budget: opts.reachBudget ?? 5000, maxVisits: 0, exhausted: [] as string[], paths: {} as Record<string, string> };
+  const reach = {
+    budget: opts.reachBudget ?? 5000, maxVisits: 0, exhausted: [] as string[], paths: {} as Record<string, string>,
+    /** ISS-1381: external files edge-scanned and found tainted, generic calls seen, and those whose result carried a sensitive type. */
+    edgeScanned: 0, tainted: [] as string[], genericCalls: 0, sensitiveResults: 0,
+  };
   function launderingChecks(): void {
     /** Every named src type that is itself sensitive (any and unknown aliases aside): the targets R4-2 and R4-3 test against. */
     const sensitiveTypes: ts.Type[] = [];
@@ -2674,6 +2690,105 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
      */
     /** R5-1: a default-library or node_modules file; every other file of the program (a src .d.ts too) is src. */
     const notSrc = (sf: ts.SourceFile): boolean => program.isSourceFileDefaultLibrary(sf) || sf.fileName.includes("/node_modules/");
+    /**
+     * ISS-1381 (Y2): a node_modules file is opaque only while nothing from src flows into it. Its edges are the files
+     * declaring what its `import("...")` types, type references, heritage clauses and type queries name, through the
+     * checker. Import and export declarations and reference directives add no edge of their own: a type reference to
+     * a name they bring in already resolves to its declaring file (their mutants survived; pen ruling). It never opens
+     * a file by path. A file is tainted when a walk over those edges reaches a src file.
+     */
+    const edgeMemo = new Map<ts.SourceFile, ts.SourceFile[]>();
+    const taintMemo = new Map<ts.SourceFile, boolean>();
+    const nameNode = (n: ts.EntityName | ts.Expression): ts.Node =>
+      ts.isQualifiedName(n) ? n.right : ts.isPropertyAccessExpression(n) ? n.name : n;
+    function edgesOf(sf: ts.SourceFile): ts.SourceFile[] {
+      const memo = edgeMemo.get(sf);
+      if (memo) return memo;
+      reach.edgeScanned += 1;
+      const out = new Set<ts.SourceFile>();
+      const add = (sym: ts.Symbol | undefined): void => {
+        if (!sym) return;
+        const target = sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym;
+        for (const d of target.declarations ?? []) if (d.getSourceFile() !== sf) out.add(d.getSourceFile());
+      };
+      sf.forEachChild(function visit(n): void {
+        if (ts.isImportTypeNode(n)) {
+          if (ts.isLiteralTypeNode(n.argument)) add(checker.getSymbolAtLocation(n.argument.literal));
+          if (n.qualifier) add(checker.getSymbolAtLocation(nameNode(n.qualifier)));
+        } else if (ts.isTypeReferenceNode(n)) add(checker.getSymbolAtLocation(nameNode(n.typeName)));
+        else if (ts.isExpressionWithTypeArguments(n)) add(checker.getSymbolAtLocation(nameNode(n.expression)));
+        else if (ts.isTypeQueryNode(n)) add(checker.getSymbolAtLocation(nameNode(n.exprName)));
+        ts.forEachChild(n, visit);
+      });
+      const r = [...out];
+      edgeMemo.set(sf, r);
+      return r;
+    }
+    function tainted(sf: ts.SourceFile): boolean {
+      const memo = taintMemo.get(sf);
+      if (memo !== undefined) return memo;
+      const seen = new Set<ts.SourceFile>([sf]);
+      const queue = [sf];
+      let hit = false;
+      while (queue.length > 0 && !hit) {
+        const f = queue.shift()!;
+        const next = edgesOf(f);
+        for (const g of next) {
+          if (seen.has(g)) continue;
+          seen.add(g);
+          if (!notSrc(g)) { hit = true; break; }
+          if (!program.isSourceFileDefaultLibrary(g)) queue.push(g);
+        }
+      }
+      taintMemo.set(sf, hit);
+      if (hit) reach.tainted.push(rel(sf));
+      return hit;
+    }
+    /** A type whose own declarations are all in the default library or in untainted node_modules files is walked only through its type arguments. */
+    const opaque = (own: readonly ts.Declaration[]): boolean => own.length > 0 && own.every((d) => {
+      const sf = d.getSourceFile();
+      return program.isSourceFileDefaultLibrary(sf) || (notSrc(sf) && !tainted(sf));
+    });
+    /** A sensitive type's identity: the context, or the symbol owning the sensitive declaration. */
+    type SensitiveKey = ts.Symbol | "context" | "exhausted";
+    function sensitiveKey(t: ts.Type): SensitiveKey | null {
+      if (isCtxType(t)) return "context";
+      for (const sym of [t.getSymbol(), t.aliasSymbol]) if (sym && (sym.declarations ?? []).some((d) => sensitiveDecls.has(d))) return sym;
+      return null;
+    }
+    const keyName = (k: SensitiveKey): string => k === "context" ? "the context" : k === "exhausted" ? "a type not established (visit budget exhausted)" : k.name;
+    /**
+     * The steps of the R5-1 walk out of t, lazily and in order. `signatures` false is the input form (ISS-1381): a value
+     * carries a sensitive type through its own type, its properties, index signatures and type arguments, never
+     * through a function's return or parameters.
+     */
+    function* parts(t: ts.Type, signatures: boolean): Generator<[ts.Type, () => string]> {
+      if (t.isUnionOrIntersection()) {
+        for (const x of t.types) yield [x, () => ` ${t.isUnion() ? "|" : "&"} ${checker.typeToString(x)}`];
+        return;
+      }
+      if (t.flags & ts.TypeFlags.Instantiable) {
+        const c = checker.getBaseConstraintOfType(t);
+        if (c && c !== t) yield [c, () => " (constraint)"];
+        // ISS-1381 (Y1): `<T = Deps>() => T` forges Deps through the default as `<T extends Deps>` does through the constraint.
+        if (t.flags & ts.TypeFlags.TypeParameter) {
+          const df = checker.getDefaultFromTypeParameter(t);
+          if (df && df !== t) yield [df, () => " (default)"];
+        }
+      }
+      const args = [...(t.aliasTypeArguments ?? []), ...((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference ? checker.getTypeArguments(t as ts.TypeReference) : [])];
+      for (const [k, x] of args.entries()) yield [x, () => `<${k}>`];
+      if (!(t.flags & ts.TypeFlags.Object)) return;
+      if (opaque(t.getSymbol()?.declarations ?? [])) return;
+      if (signatures) {
+        for (const sig of [...t.getCallSignatures(), ...t.getConstructSignatures()]) {
+          yield [sig.getReturnType(), () => "()"];
+          for (const q of sig.getParameters()) yield [checker.getTypeOfSymbol(q), () => `(${q.name})`];
+        }
+      }
+      for (const ii of checker.getIndexInfosOfType(t)) yield [ii.type, () => "[index]"];
+      for (const m of checker.getPropertiesOfType(t)) yield [checker.getTypeOfSymbol(m), () => `.${m.name}`];
+    }
     const reachMemo = new Map<ts.Type, string | null>();
     function reachesSensitive(t0: ts.Type): string | null {
       if (reachMemo.has(t0)) return reachMemo.get(t0)!;
@@ -2684,31 +2799,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         if (seen.has(t)) return null;
         seen.add(t);
         if (++visits > reach.budget) return " (visit budget exhausted)";
-        const decls = [...(t.getSymbol()?.declarations ?? []), ...(t.aliasSymbol?.declarations ?? [])];
-        if (isCtxType(t) || decls.some((d) => sensitiveDecls.has(d))) return ` = ${checker.typeToString(t)}`;
-        const step = (x: ts.Type, at: () => string): string | null => {
-          const p = visit(x);
-          return p === null ? null : at() + p;
-        };
-        if (t.isUnionOrIntersection()) {
-          for (const x of t.types) { const p = step(x, () => ` ${t.isUnion() ? "|" : "&"} ${checker.typeToString(x)}`); if (p) return p; }
-          return null;
-        }
-        if (t.flags & ts.TypeFlags.Instantiable) {
-          const c = checker.getBaseConstraintOfType(t);
-          if (c && c !== t) { const p = step(c, () => " (constraint)"); if (p) return p; }
-        }
-        const args = [...(t.aliasTypeArguments ?? []), ...((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference ? checker.getTypeArguments(t as ts.TypeReference) : [])];
-        for (const [k, x] of args.entries()) { const p = step(x, () => `<${k}>`); if (p) return p; }
-        if (!(t.flags & ts.TypeFlags.Object)) return null;
-        const own = t.getSymbol()?.declarations ?? [];
-        if (own.length > 0 && own.every((d) => notSrc(d.getSourceFile()))) return null;
-        for (const sig of [...t.getCallSignatures(), ...t.getConstructSignatures()]) {
-          const r = step(sig.getReturnType(), () => "()"); if (r) return r;
-          for (const q of sig.getParameters()) { const p = step(checker.getTypeOfSymbol(q), () => `(${q.name})`); if (p) return p; }
-        }
-        for (const ii of checker.getIndexInfosOfType(t)) { const p = step(ii.type, () => "[index]"); if (p) return p; }
-        for (const m of checker.getPropertiesOfType(t)) { const p = step(checker.getTypeOfSymbol(m), () => `.${m.name}`); if (p) return p; }
+        if (sensitiveKey(t) !== null) return ` = ${checker.typeToString(t)}`;
+        for (const [x, at] of parts(t, true)) { const p = visit(x); if (p !== null) return at() + p; }
         return null;
       };
       const hit = visit(t0);
@@ -2717,6 +2809,40 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       if (visits > reach.budget) reach.exhausted.push(checker.typeToString(t0));
       reachMemo.set(t0, r);
       return r;
+    }
+    /**
+     * ISS-1381: every sensitive type reachable from t0, each with its first path, by the same walk and budget. A walk
+     * that exhausts the budget adds `exhausted`, which nothing matches (fail closed).
+     */
+    const setMemo = { true: new Map<ts.Type, Map<SensitiveKey, string>>(), false: new Map<ts.Type, Map<SensitiveKey, string>>() };
+    function sensitiveSet(t0: ts.Type, signatures: boolean): Map<SensitiveKey, string> {
+      const memo = setMemo[`${signatures}`].get(t0);
+      if (memo) return memo;
+      const out = new Map<SensitiveKey, string>();
+      const seen = new Set<ts.Type>();
+      let visits = 0;
+      const visit = (t: ts.Type, at: () => string): void => {
+        if (seen.has(t)) return;
+        seen.add(t);
+        if (++visits > reach.budget) {
+          if (!out.has("exhausted")) out.set("exhausted", at() + " (visit budget exhausted)");
+          return;
+        }
+        const key = sensitiveKey(t);
+        if (key !== null) {
+          if (!out.has(key)) out.set(key, `${at()} = ${checker.typeToString(t)}`);
+          return;
+        }
+        for (const [x, step] of parts(t, signatures)) {
+          visit(x, () => at() + step());
+          if (visits > reach.budget) return;
+        }
+      };
+      visit(t0, () => checker.typeToString(t0));
+      reach.maxVisits = Math.max(reach.maxVisits, visits);
+      if (visits > reach.budget) reach.exhausted.push(checker.typeToString(t0));
+      setMemo[`${signatures}`].set(t0, out);
+      return out;
     }
     // R4-3: an `as` or angle-bracket assertion into a type reaching a sensitive type (R5-1), from any other type, is UNRESOLVED
     // wherever it appears. `as const`, `!` and `satisfies` assert nothing new; satisfies stays a contextual flow.
@@ -2730,6 +2856,119 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
             reach.paths[where(n)] = path;
             errors.push(`UNRESOLVED assertion at ${where(n)} (asserted into a sensitive type)`);
           }
+        }
+        ts.forEachChild(n, visit);
+      });
+    }
+    // ISS-1381 rule I: a generic call whose computed result carries a sensitive type S passes only when one of its
+    // inputs (an argument, the receiver of a method call, a tagged template's substitution) carries the same S. It
+    // models no inference: both sides are types the checker already computed at the call. Known residual: a checked
+    // S in and a different, forged S of the same type out passes; the provider check governs where the S came from.
+    const hasTypeParams = (sig: ts.Signature | undefined): boolean => !!sig?.typeParameters?.length;
+    const signaturesOf = (t: ts.Type): ts.Signature[] => [...t.getCallSignatures(), ...t.getConstructSignatures()];
+    function genericCall(sig: ts.Signature): boolean {
+      if (hasTypeParams(sig) || hasTypeParams((sig as unknown as { target?: ts.Signature }).target)) return true;
+      const decl = sig.declaration;
+      return !!decl && !ts.isJSDocSignature(decl) && hasTypeParams(checker.getSignatureFromDeclaration(decl));
+    }
+    function inputsOf(node: ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression): ts.Expression[] {
+      const out: ts.Expression[] = [];
+      if (ts.isTaggedTemplateExpression(node)) {
+        if (ts.isTemplateExpression(node.template)) for (const span of node.template.templateSpans) out.push(span.expression);
+      } else {
+        for (const a of node.arguments ?? []) out.push(ts.isSpreadElement(a) ? a.expression : a);
+      }
+      // The receiver is an input; the callee itself never is.
+      const callee = skipOuter(ts.isTaggedTemplateExpression(node) ? node.tag : node.expression);
+      if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) out.push(callee.expression);
+      return out;
+    }
+    /**
+     * ISS-1381 conversion check: where a generic callable is specialized to a callable target, a sensitive type in a
+     * target signature's return is introduced by the specialization unless it is already in a source signature's
+     * declared return (walked through its type parameters' constraints and defaults) or, as in rule I, goes in through
+     * one of the target signature's parameters (input form: a parameter's own signatures never vouch).
+     */
+    function specialization(at: ts.Node, source: ts.Expression, target: ts.Type | undefined): void {
+      if (!target) return;
+      const generic = signaturesOf(checker.getTypeAtLocation(source)).filter(hasTypeParams);
+      if (generic.length === 0) return;
+      const targets = signaturesOf(target);
+      if (targets.length === 0) return;
+      const allowed = new Set<SensitiveKey>();
+      for (const g of generic) for (const k of sensitiveSet(checker.getReturnTypeOfSignature(g), true).keys()) allowed.add(k);
+      for (const sig of targets) {
+        const ins = sig.getParameters().map((q) => sensitiveSet(checker.getTypeOfSymbol(q), false));
+        for (const [k, p] of sensitiveSet(checker.getReturnTypeOfSignature(sig), true)) {
+          if (k !== "exhausted" && (allowed.has(k) || ins.some((m) => m.has(k)))) continue;
+          reach.paths[where(at)] = p;
+          const name = source.getText().replace(/\s+/g, " ");
+          errors.push(`UNRESOLVED generic specialization at ${where(at)} (${keyName(k)} introduced by specializing ${name.length > 60 ? `${name.slice(0, 57)}...` : name}; ${p})`);
+          return;
+        }
+      }
+    }
+    const propertyTarget = (n: ts.ShorthandPropertyAssignment): ts.Type | undefined => {
+      const ct = checker.getContextualType(n.parent);
+      const prop = ct && checker.getPropertyOfType(ct, n.name.text);
+      return prop && checker.getTypeOfSymbol(prop);
+    };
+    for (const sf of files) {
+      sf.forEachChild(function visit(n): void {
+        if (testOnlyInits.has(n)) return;
+        if (ts.isCallExpression(n) || ts.isNewExpression(n) || ts.isTaggedTemplateExpression(n)) {
+          const sig = checker.getResolvedSignature(n);
+          const siteKey = `${where(n)}:${n.getText().trim()}`;
+          const finding = (message: string): void => {
+            if (siteKey in reviewedSites) reviewedHit.add(siteKey);
+            else errors.push(message);
+          };
+          if (sig && genericCall(sig)) {
+            reach.genericCalls += 1;
+            const out = sensitiveSet(checker.getReturnTypeOfSignature(sig), true);
+            if (out.size > 0) {
+              reach.sensitiveResults += 1;
+              const ins = inputsOf(n).map((e) => sensitiveSet(checker.getTypeAtLocation(e), false));
+              for (const [k, p] of out) {
+                if (k !== "exhausted" && ins.some((m) => m.has(k))) continue;
+                reach.paths[where(n)] = p;
+                finding(`UNRESOLVED generic result at ${where(n)} (${keyName(k)} returned with no ${keyName(k)} argument; ${p})`);
+                break;
+              }
+            }
+          }
+          // ISS-1381 pen ruling (adds to v3): a computed result of never or any carries no S by type yet can deliver one,
+          // as `const deps: Deps = all([])` does. Flowing into a target whose declared type carries S, it is UNRESOLVED.
+          // An assertion's operand is left to R4-3, which already refuses an assertion into S.
+          const ret = sig && checker.getReturnTypeOfSignature(sig);
+          let up: ts.Node = n.parent;
+          while (ts.isParenthesizedExpression(up)) up = up.parent;
+          if (ret && ret.flags & (ts.TypeFlags.Never | ts.TypeFlags.Any) && !ts.isAsExpression(up) && !ts.isTypeAssertionExpression(up)) {
+            const target = checker.getContextualType(n);
+            const [hit] = target ? sensitiveSet(target, true) : [];
+            if (hit) {
+              reach.paths[where(n)] = hit[1];
+              finding(`UNRESOLVED generic result at ${where(n)} (${checker.typeToString(ret)} result flowing into ${keyName(hit[0])}; ${hit[1]})`);
+            }
+          }
+          if (!ts.isTaggedTemplateExpression(n)) {
+            for (const a of n.arguments ?? []) if (!ts.isSpreadElement(a)) specialization(a, a, checker.getContextualType(a));
+          }
+        } else if (ts.isVariableDeclaration(n) && n.type && n.initializer) {
+          specialization(n.initializer, n.initializer, checker.getTypeFromTypeNode(n.type));
+        } else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+          specialization(n.right, n.right, checker.getTypeAtLocation(n.left));
+        } else if (ts.isPropertyAssignment(n) && ts.isObjectLiteralExpression(n.parent)) {
+          specialization(n.initializer, n.initializer, checker.getContextualType(n.initializer));
+        } else if (ts.isShorthandPropertyAssignment(n)) {
+          specialization(n.name, n.name, propertyTarget(n));
+        } else if (ts.isReturnStatement(n) && n.expression) {
+          specialization(n.expression, n.expression, checker.getContextualType(n.expression));
+        } else if ((ts.isAsExpression(n) || ts.isTypeAssertionExpression(n) || ts.isSatisfiesExpression(n)) && !ts.isConstTypeReference(n.type)) {
+          specialization(n, n.expression, checker.getTypeFromTypeNode(n.type));
+        } else if (ts.isExpressionWithTypeArguments(n) && !ts.isHeritageClause(n.parent)) {
+          // An instantiation expression, `make<Deps>`: the instantiated signatures against the source's declared returns.
+          specialization(n, n.expression, checker.getTypeAtLocation(n));
         }
         ts.forEachChild(n, visit);
       });
@@ -2762,6 +3001,9 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     }
   }
   launderingChecks();
+  for (const key of Object.keys(reviewedSites)) {
+    if (!reviewedHit.has(key)) errors.push(`stale reviewed site ${key}: the line or text moved; re-review the site and update the key, or remove the entry`);
+  }
   const reviewed = opts.registry.unresolved ?? {};
   for (const [key, construct] of unresolved) {
     if (!(key in reviewed)) errors.push(`UNRESOLVED ${key} (${construct})`);
@@ -2775,7 +3017,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     return `${rel(d.getSourceFile())}#${name}`;
   }).sort();
   return {
-    errors, found, sites, unresolved, writers: writerNames,
+    errors, reviewedSites: [...reviewedHit].sort(), found, sites, unresolved, writers: writerNames,
     tiers: { structural: [...usedStructural].sort(), viaCaller: [...neededVia].sort() },
     constructions,
     chainMembers: [...chainMembers].sort(),

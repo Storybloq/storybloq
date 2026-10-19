@@ -19,7 +19,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { existsSync } from "node:fs";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import {
@@ -1129,15 +1129,14 @@ async function pointerFinding(root: string, p: SetupPayload, ptr: PointerPlan): 
 
 /**
  * Removes a pointer's proposal only while it holds the bytes its intent
- * recorded; a changed one stays, and the output says so. The file is moved
- * to a unique cleanup path, opened, and unlinked, and only then are its bytes
- * read through the held descriptor and checked: an edit or replacement after
- * the first check, or a write through a descriptor opened before it, is
- * never lost. Bytes that are not setup's are written back to the proposal
- * path, or, when something has taken that path, to a fresh cleanup path,
- * never over anything. Residual, accepted: a write through another
- * process's descriptor after that final read lands in an inode only that
- * writer still holds.
+ * recorded; a changed one stays, and the output says so. The last link is
+ * never removed before the bytes are verified: the file is moved to a unique
+ * cleanup path, opened, and read through the held descriptor; only bytes
+ * that are setup's are then unlinked. Anything else is linked back to the
+ * proposal path, never over what holds it now, or kept at the cleanup path;
+ * any error on the way keeps the cleanup path too, and the output names it.
+ * Nothing is written as a copy. Residual, accepted: a write that lands
+ * between the final read and the unlink of bytes found to be setup's.
  */
 async function tidyPointer(root: string, path: string, p: SetupPayload, out: string[]): Promise<void> {
   const intent = lastReceipt(p, `pointer-proposal:${path}`);
@@ -1158,27 +1157,36 @@ async function tidyPointer(root: string, path: string, p: SetupPayload, out: str
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   }
-  const held = await open(cleanup, "r");
-  let captured: string;
+  const keptAt = relative(root, cleanup).split(sep).join("/");
   try {
-    await setupApplySeams.fault(`pointer-tidy-held:${path}`);
-    await fencedUnlink(cleanup);
-    captured = await held.readFile("utf-8");
-  } finally {
-    await held.close();
-  }
-  if (sha256(captured) === intent.ownedPost) return;
-  await setupApplySeams.fault(`pointer-tidy-captured:${path}`);
-  try {
-    await writeFile(abs, captured, { flag: "wx" });
+    const held = await open(cleanup, "r");
+    let captured: string;
+    try {
+      await setupApplySeams.fault(`pointer-tidy-held:${path}`);
+      captured = await held.readFile("utf-8");
+    } finally {
+      await held.close();
+    }
+    await setupApplySeams.fault(`pointer-tidy-read:${path}`);
+    if (sha256(captured) === intent.ownedPost) {
+      await fencedUnlink(cleanup);
+      return;
+    }
+    await setupApplySeams.fault(`pointer-tidy-captured:${path}`);
+    try {
+      await setupApplySeams.fault(`pointer-tidy-restore:${path}`);
+      // link refuses to replace what now sits at the proposal path.
+      await link(cleanup, abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      out.push(`-> file · ${rel} changed while setup removed it; the bytes it held are kept at ${keptAt}`);
+      return;
+    }
+    await unlink(cleanup);
     out.push(notOurs);
-    return;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  } catch {
+    out.push(`-> file · ${rel} could not be removed safely; its bytes are kept at ${keptAt}`);
   }
-  const kept = `${abs}.cleanup-${randomBytes(6).toString("hex")}`;
-  await writeFile(kept, captured, { flag: "wx" });
-  out.push(`-> file · ${rel} changed while setup removed it; the bytes it held are kept at ${relative(root, kept).split(sep).join("/")}`);
 }
 
 // --- Resume classification (plan v5 1d, 2) ----------------------------------

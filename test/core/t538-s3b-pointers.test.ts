@@ -282,6 +282,23 @@ describe("proposal ownership", () => {
     expect((await readdir(root)).filter((f) => f.includes(".cleanup-"))).toEqual([]);
   });
 
+  for (const [when, point] of [["after the read and before the unlink", "pointer-tidy-read:CLAUDE.md"], ["in the restore", "pointer-tidy-restore:CLAUDE.md"]] as const) {
+    it(`an error ${when} keeps the cleanup path, names it, and loses no byte`, async () => {
+      const root = await stopped();
+      await writeFile(join(root, "CLAUDE.md"), await readFile(proposal(root, "CLAUDE.md"), "utf-8"));
+      setupApplySeams.fault = async (at) => {
+        if (at === "pointer-tidy:CLAUDE.md") await writeFile(proposal(root, "CLAUDE.md"), "the owner's own notes\n");
+        if (at === point) throw new Error(`injected fault at ${at}`);
+      };
+      const done = await resolve1(root, "CLAUDE.md", "applied");
+      expect(done.exitCode).toBe(0);
+      const kept = (await readdir(root)).filter((f) => f.startsWith(`CLAUDE.md.storybloq-${SID}.proposed.cleanup-`));
+      expect(kept).toHaveLength(1);
+      expect(await readFile(join(root, kept[0]!), "utf-8")).toBe("the owner's own notes\n");
+      expect(done.lines).toContain(`-> file · CLAUDE.md.storybloq-${SID}.proposed could not be removed safely; its bytes are kept at ${kept[0]}`);
+    });
+  }
+
   it("a crash between the receipt and the removal replays cleanly: the receipt holds and the proposal goes", async () => {
     const root = await stopped();
     await writeFile(join(root, "CLAUDE.md"), await readFile(proposal(root, "CLAUDE.md"), "utf-8"));

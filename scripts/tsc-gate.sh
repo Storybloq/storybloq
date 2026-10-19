@@ -12,13 +12,13 @@ set -euo pipefail
 # diagnostic, a complete "path(line,col): error TSnnnn:" line starting in
 # column 1. The ISS-928 filing's all-output-lines convention (299 lines = 108
 # diagnostics) is retired. Never compare this number with TEST_BASELINE.
-SRC_BASELINE=96
+SRC_BASELINE=95
 # test program (tsconfig.test.json: src + test). Counts test-anchored HEADS
 # only: lines starting "test/...(line,col): error TSnnnn:". Heads anchored in
 # src are the src program's business. A src-only change can move this count
 # (test fixtures going stale against src types): that is signal, not noise.
 # Never compare this number with SRC_BASELINE.
-TEST_BASELINE=928
+TEST_BASELINE=917
 
 HEAD_RE='^[^[:space:]].*\([0-9]+,[0-9]+\): error TS[0-9]+:'
 TEST_HEAD_RE='^test/.*\([0-9]+,[0-9]+\): error TS[0-9]+:'

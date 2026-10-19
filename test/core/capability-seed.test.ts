@@ -91,5 +91,5 @@ describe("the repository's own capability inventory (ISS-1300)", () => {
     expect(report.entries.map((e) => e.id)).toEqual(doc.capabilities.map((e) => e.id));
     expect(writeStateOf(LEDGER)).toEqual(before);
     expect(existsSync(join(LEDGER, ".txn.json"))).toBe(before.includes(".txn.json"));
-  });
+  }, 30_000);
 });

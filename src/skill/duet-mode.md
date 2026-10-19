@@ -27,11 +27,13 @@ Automatic is the default for a Claude pen whose task id resolves (`CLAUDE_CODE_S
 
 Interrupted spawns: every side effect is announced first in a journal under `.story/spawn/<name>.XXXXXX/<name>.json`, and `storybloq duet spawn --recover` lists each journal with two independent readings, launch (from the journal: not launched, UNKNOWN once the launcher was invoked, launched) and coordination (from the ledger: not started, started without receipt, receipt recorded, SUPERSEDED after a later rotation, UNRESOLVED when the runtime cannot be read, closed). A journal short of `launched` is a recovery candidate, never proof the worker is absent: a worker still loading `/story` has no receipt yet. The close command is offered only when the worker was not launched and the arrangement has no receipt.
 
-Spawning is still a subagent under the owner's rules: propose the name, model and role, and get the owner's yes before running it.
+Spawning is a subagent under the owner's rules: propose name, model and role, and get the owner's yes first.
 
 ## Dispatch and collect
 
 Before dispatch, persist an assignment with its ID, scope, allowed actions, acceptance criteria, manager return address, reply mode, and next gate. Carry its ID in every question and result. Arm the completion backstop for each dispatch. Every worker turn ends with a deliverable, a question, or the literal **"turn ending, continue needed"**. Workers with a sender deliver questions and results directly to the manager, then leave the same assignment ID in their final output. Give each result an immutable `reportId`, shared unchanged by its native message and final-output copies; reviews refer to that same report ID.
+
+**Report fields.** A result may carry `followUps`, `terms` and `capabilities` (name, summary, entryPoints, contract, evidence): agents report candidates; the pen files them after verifying at HEAD.
 
 **Seats on branches (ISS-1190).** If the worker creates items on its own branch/worktree, set `idAllocator: git-refs` before the first such dispatch (`storybloq team init && ...config set idAllocator git-refs`) -- local allocation mints the same next id on divergent branches. Name the allocator in the dispatch.
 
@@ -39,18 +41,18 @@ Before dispatch, persist an assignment with its ID, scope, allowed actions, acce
 
 The manager persists collection cursors and report identities, processes direct and collected copies once, and reviews evidence before resolving an assignment. A worker turn ending without a report triggers collection or a status demand; it does not resolve the assignment. Keep pending questions and owed/owing/resource-hold notes in the ledger. Carry unresolved work through interruptions without redispatching it under a new ID.
 
-While the manager is active, 60 minutes without meaningful worker activity calls for one status demand per silent interval. Polling is not worker activity. This procedure has no watchdog or timed recovery promise while the manager is idle.
+While the manager is active, 60 minutes without meaningful worker activity calls for one status demand per silent interval. Polling is not worker activity, and nothing here watches an idle manager.
 
 ### Liveness obligations (ISS-1137)
 
-A Claude Code session does not resume itself across a turn boundary: a turn that ends with a stated intention ("continuing with scope 2") ends, and nothing wakes it. Both sides therefore carry a numbered obligation.
+A Claude Code session does not resume itself across a turn boundary: a turn that ends with a stated intention ends, and nothing wakes it. Both sides therefore carry a numbered obligation.
 
 - **Worker, 30 minutes.** Never end a turn with an intention. A turn ends with the deliverable, a question for the manager, or the literal words "turn ending, continue needed" plus the current scope, so the manager's continue lands on a known state. Any stop longer than 30 minutes owes a message even when its whole content is "blocked on X" or "context exhausted". A dirty shared tree with no message is a duet failure, not a pause.
 - **Manager, 60 minutes and every dispatch.** The manager arms the harness's idle notification (`notify_when_idle: true` on Claude Code cross-session messaging) on every dispatch and on every reply while work is open, so the worker's next idle transition wakes the manager. On that notice, if the expected package or question has not arrived, the manager sends a continue. An idle notice is not a report. Sixty silent minutes while the manager is active is a status demand, as above.
 
 Cadence ruling: handover before auto-compaction, after a major item completes, and after a batch of issues or one big issue resolves; the pushed line is advice, not one handover per message; never stop at a percentage; one continue after a handover is allowed; no status demands to a worker above 90 percent.
 
-Every dispatch prompt states the worker obligation verbatim so the rule travels with the work rather than living only in this file.
+Every dispatch prompt states the worker obligation verbatim.
 
 ## Capacity
 
@@ -76,7 +78,7 @@ For separately created desktop tasks, discover the callable equivalents of `send
 
 The manager uses bounded `wait_threads` completion waits in **both** reply modes, retaining `afterCursor` across timeouts. A zero-timeout snapshot is observation, not armed supervision. Continue waiting while an assignment remains open; neither a timeout nor a worker's direct message discharges result review. Process incoming questions, then re-arm collection. Do not deliberately end the manager turn with open work and no active completion backstop. On interruption, record the continuation and collect it on re-entry before dispatching more work.
 
-Discover separately whether the current harness exposes an independently armed worker-turn-end notification. Native delivery that can start a manager turn does not prove such a notification exists. Record only the observed inventory; do not generalize absence to all Codex installations.
+Discover separately whether the current harness exposes an independently armed worker-turn-end notification. Native delivery that can start a manager turn does not prove such a notification exists. Record only the observed inventory.
 
 ## Claude Code
 

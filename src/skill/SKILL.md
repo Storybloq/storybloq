@@ -345,7 +345,7 @@ When structured interaction is available, offer at most three choices: `Open tas
 - **Handovers** are session continuity documents. Create one at the end of significant sessions.
 - **Recaps** show what changed since the last snapshot -- useful for understanding drift.
 
-**Never modify or overwrite existing handover files.** Handovers are append-only historical records. Always create new handover files -- never edit, replace, or write to an existing one. If you need to correct something from a previous session, create a new handover that references the correction. This prevents accidental data loss during sessions.
+**Never modify or overwrite existing handover files.** Handovers are append-only: to correct one, create a new handover that references the correction.
 
 Before writing a handover at the end of a session, run `storybloq snapshot` first. This ensures the next session's recap can show what changed. When client setup has installed hooks, a PreCompact hook prepares Storybloq state before context compaction.
 
@@ -370,7 +370,7 @@ Don't duplicate what's already in the handover -- lessons are structured, tagged
 
 **Issues** are discovered problems -- bugs, inconsistencies, gaps, risks found during work. If you're not sure whether something is a ticket or an issue, make it an issue. It can be promoted to a ticket later.
 
-When working on a task and you encounter a bug, inconsistency, or improvement opportunity that is out of scope for the current ticket, create an issue using `storybloq issue create` (CLI) with a clear title, severity, and impact description. Don't fix it in the current task, don't ignore it -- log it. This keeps the issue tracker growing organically and ensures nothing discovered during work is lost. When orchestrating (`/story orchestrate`), anything the orchestrator files for later execution must be portable enough for the lowest permitted execution tier, so every ticket or issue you file is born in the enrichment template documented in `orchestrator-mode.md`, not a bare paragraph.
+When working on a task and you encounter a bug, inconsistency, or improvement opportunity that is out of scope for the current ticket, create an issue using `storybloq issue create` (CLI) with a clear title, severity, and impact description. Don't fix it in the current task, don't ignore it -- log it. When orchestrating (`/story orchestrate`), anything the orchestrator files for later execution must be portable enough for the lowest permitted execution tier, so every ticket or issue you file is born in the enrichment template documented in `orchestrator-mode.md`, not a bare paragraph.
 
 **External and manual review filing:** Confirmed findings belong in the ledger directly, without a human copy/paste relay. Search for an existing issue first, then call `storybloq_issue_create` with reviewer attribution in `createdBy`, a stable retry identity in `dedupeKey`, and structured `sourceRefs` containing the review ID plus the reviewed path, line range, and revision when known. A good cross-agent key is `<review-id>:<finding-id>`; retries with the same key return the existing issue. Keep the new issue `open`. The implementing agent owns status and resolution. File uncertain design questions as notes or ask the owner instead of presenting them as confirmed defects. Never store source excerpts in custom metadata; Storybloq captures a line-range hash.
 
@@ -400,6 +400,10 @@ That gate checks the id is MENTIONED. It does not check that the plan follows th
 **Proposing, accepting, withdrawing.** `storybloq ruling propose --text "<verbatim>" --attribution <source> --date <YYYY-MM-DD> --for T-123` records a proposal: it binds nothing, no item cites it and no gate enforces it; agents working the item see it beside their citations, marked not enforced. `storybloq ruling accept <id> --revision <digest> --attribution <source> --date <YYYY-MM-DD>` records who ruled and cites the ruling from every `--for` item in one transaction; the digest comes from `ruling get` and is the payload as reviewed, not proof of who approved, so an edited proposal is refused. `storybloq ruling withdraw <id>` retires a proposal; an accepted ruling is superseded, never withdrawn. A proposal that names `--proposes-to-supersede` revokes nothing until accepted. Narrative flags (`--context`, `--alternatives`, `--consequences`, `--reconsider-when`) are recorded beside the verbatim text, never inside it. Boundary for 1.15 readers: they parse every record but show a proposal as an ordinary current ruling and cannot see acceptance, withdrawal or narrative; a team project refuses ruling writes until `storybloq team setup` runs on a 1.16 CLI.
 
 **Checking coverage.** `storybloq validate` reports, as info, every current ruling that no ticket or issue cites: it will never reach an agent working an item. When the ruling scan or the item load was incomplete it says so and claims nothing either way, rather than guessing from a partial picture.
+
+## Capabilities
+
+The inventory (`.story/capabilities.json`) records what the project can already DO: entry points, contract, surfaces. Consult it before claiming a line is missing and before adding a capability that may already exist: `storybloq_capability_match` with the paths and title, then `storybloq_capability_get`. A match is changed, never duplicated. Agents report candidates; the pen files them after verifying at HEAD.
 
 ## Managing Tickets and Issues
 

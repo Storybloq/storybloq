@@ -575,6 +575,29 @@ Full type definitions ship with the package (`exports.types`).
 
 The glossary is one file, `{ "version": 1, "terms": [...] }`, unlike tickets and issues which are a file per record: it is read whole or not at all, and a single file is what lets one word belong to one entry. It is ADVISORY. A term match suggests the definition a brief should carry and never renames an item, rewrites a description or refuses a write; nothing in Storybloq consults it as a rule. Ownership is compared case-insensitively under Unicode NFKC across both `term` and `aliases`, so `term add` refuses a name another entry already owns and names that entry rather than letting two definitions share a word. An entry with no `distinction` or no `capabilities` link is THIN: `storybloq term check` and `storybloq validate` report it as a warning, never an error. `core` makes a term eligible for the digest a session load takes once the glossary is over its cap of 40 names; the digest stays capped, and core terms beyond it are counted in `omittedCore` rather than listed.
 
+**Capability entry** (one entry of `capabilities` in `.story/capabilities.json`):
+
+```json
+{
+  "id": "cap-rulings",
+  "name": "Rulings",
+  "summary": "Record decisions, cite them from items, and deliver them to reviewers.",
+  "surfaces": { "cli": ["ruling create", "ruling get"], "mcp": ["storybloq_ruling_get"] },
+  "entryPoints": ["src/core/ruling.ts", "src/cli/commands/ruling.ts"],
+  "contract": "A cited ruling reaches every review of the item that cites it.",
+  "example": "storybloq ruling create --text \"...\" --cites T-123",
+  "rulings": ["r-h12pxrb38g7asdxs"],
+  "items": ["T-523"],
+  "terms": ["term-pen"],
+  "checkedAt": { "sha": "8443ad8711f5d2c33c1b0a4e5f6a7b8c9d0e1f2a", "date": "2026-10-18" },
+  "status": "current"
+}
+```
+
+The inventory is one file, `{ "version": 1, "capabilities": [...] }`, and records what the project can already DO. `example`, `rulings`, `items`, `terms` and `pendingNote` are optional. The stored status (`current` or `review`) is what the file says; the effective status is what every read reports, and it is `review` when the stored status is `review`, when a nonblank `pendingNote` is set (`capability defer`), or when the check returns any result: a structural finding (a missing entry point, a dangling ruling, item or term reference), a freshness finding, or an incomplete or unverifiable checkpoint. Freshness compares the tree of the checkpoint commit in `checkedAt` with HEAD's, for the paths under the entry points; it never looks at uncommitted content. `--skip-check` skips only that comparison, and the output says so.
+
+The pen inspects the entry points and confirms the contract, then runs `storybloq capability check --stamp <id>`, which records HEAD and the date in `checkedAt` and sets the stored status to `current`. Freshness findings are stampable, since the stamp is what re-certifies a moved entry; a structural or incomplete result blocks the stamp. A pending note blocks it separately unless `--clear-pending` comes with the stamp once the deferred work is done, and that flag bypasses no other check. Agents report capability candidates; the pen files them after verifying at HEAD.
+
 Each record is its own file. Legacy records keep display-ID filenames such as `T-001.json`; newer records use canonical hash filenames such as `t-*.json` with a separate `displayId`. Both forms coexist and are updated in place. Display IDs are sequential within type, but concurrent branches can collide and need reconciliation. Use `git status --porcelain .story/` to identify files to stage. Relationships are single-canonical-owner: a ticket's `blockedBy` field points at blocker tickets, and the reverse (who-blocks-me) is derived by scanning.
 
 Create operations are safe to run in parallel. ID assignment and the create write happen together under a project lock, so concurrent creators are serialized and each receives a distinct sequential ID. A create can never silently overwrite an existing record; under heavy simultaneous contention a creator fails loudly with an error rather than colliding.

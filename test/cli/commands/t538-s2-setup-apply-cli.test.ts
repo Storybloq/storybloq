@@ -189,7 +189,10 @@ describe("storybloq setup-report (plan v5 6c)", () => {
     const live = await handleSetupReport(io(root), { setup: SID });
     expect(live.exitCode).toBe(0);
     expect(linesOf(live.stdout)).toContain('First story: T-001 "Sign in"');
-    expect(live.stdout).toBe(historical.stdout);
+    // T-538 S3b: the live report adds its state lines; the rest is the frozen report line for line.
+    const stateLine = (l: string) => l.startsWith("Verification: ") || l.startsWith("Checkpoint: ");
+    expect(linesOf(live.stdout).filter((l) => !stateLine(l))).toEqual(linesOf(historical.stdout));
+    expect(linesOf(historical.stdout).filter(stateLine)).toEqual([]);
 
     await complete(root, await idOf(root, "K2"));
     const after = await handleSetupReport(io(root), { setup: SID });

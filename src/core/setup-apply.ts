@@ -1648,9 +1648,10 @@ function liveLines(state: ProjectState, p: SetupPayload, ledgerOn: (stage: strin
     const status = now !== "pending" ? (now ?? "unrecognized") : checkpointReady(state, ticket) ? "ready" : `waiting on ${waiting.join(", ")}`;
     lines.push(`Checkpoint: ${cp.title} (${cp.kind}, owner ${owner}): ${status}`);
   }
+  // A setup with nothing to establish writes no record; its payload's evidence is then the whole story.
   const read = readRecord(state.config);
-  if (read.kind !== "ok" || read.record.setupId !== p.setupId) return lines;
-  const record = read.record;
+  const record = read.kind === "absent" ? activationInput(p) : read.kind === "ok" && read.record.setupId === p.setupId ? read.record : null;
+  if (record === null) return lines;
   for (const stage of STAGES_USED[record.level]) {
     if (stage === "VERIFY" && !record.verifyApplies) {
       lines.push("Verification: VERIFY: off (level)");

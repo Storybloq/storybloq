@@ -5,6 +5,11 @@
  *
  *   npx tsx scripts/onboarding-eval-run.ts --client claude|codex --fixture <name>
  *     [--variant none|reviewer-unavailable|degraded|approval-boundary] [--model <m>] --out <dir> --raw-out <dir>
+ *     [--variant interrupted|interrupted-edited --fault <point[#n]>] [--variant milestone-demo|empty-idea-verify|restart]
+ *
+ * The session variants (T-538 S5a, onboarding-eval-sessions.ts) run the setup
+ * as the `none` variant, then each later session as a fresh client. `--fault`
+ * sets STORYBLOQ_EVAL_FAULT for the first session only.
  *
  * Run it only inside a box lease. The client works on a standalone copy of the
  * fixture in a scratch directory, with a fresh config that carries THIS
@@ -62,6 +67,12 @@ import { applySetupReviewChecks, STORE_COPY } from "./onboarding-eval-checkset6.
 import { applySetupRunChecks, cs7FinalLedger, type Cs7FinalLedger, type FollowUp } from "./onboarding-eval-checkset7.js";
 import type { InvocationMapping } from "./onboarding-eval-checkset7-events.js";
 import { buildEval, EVAL_DIST } from "./build-eval.mjs";
+import {
+  applySessionChecks, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, observeEvidence, OBSERVATIONS_RAW, ownerEdits, sessionScript,
+  sessionSpans, SESSIONS_RAW, sessionsText, setupIdOf, storeRevisionCount, SESSION_VARIANTS, variantFixture, type HarnessFacts, type SessionVariant,
+} from "./onboarding-eval-sessions.js";
+import { cs7SnapshotLedger, type EvidenceObservation } from "./onboarding-eval-checkset7.js";
+import { readEventsLog } from "./onboarding-eval-checkset7-events.js";
 import { EVENTS_RAW, INVOCATIONS_RAW, runRegrade, SNAPSHOT_RAW, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,7 +86,9 @@ export { approvalProbeFinding } from "./onboarding-eval-drive.js";
 interface Options {
   readonly client: Client;
   readonly fixture: string;
-  readonly variant: Variant;
+  readonly variant: Variant | SessionVariant;
+  /** The session variants' fault selector for the first session, or null. */
+  readonly fault: string | null;
   readonly model: string;
   readonly out: string;
   readonly rawOut: string;
@@ -92,19 +105,30 @@ function parseArgs(argv: readonly string[]): Options {
   if (client !== "claude" && client !== "codex") throw new Error("--client must be claude or codex");
   const fixture = get("fixture") ?? "";
   if (!/^[a-z-]+$/.test(fixture) || !existsSync(join(FIXTURES, fixture, "rubric.json"))) throw new Error(`--fixture ${fixture} is not a fixture under ${FIXTURES}`);
-  const variant = (get("variant", "none") ?? "none") as Variant;
-  if (!["none", "reviewer-unavailable", "degraded", "approval-boundary"].includes(variant)) throw new Error("--variant must be none, reviewer-unavailable, degraded or approval-boundary");
+  const variant = (get("variant", "none") ?? "none") as Variant | SessionVariant;
+  if (!["none", "reviewer-unavailable", "degraded", "approval-boundary", ...SESSION_VARIANTS].includes(variant)) throw new Error(`--variant must be none, reviewer-unavailable, degraded, approval-boundary or ${SESSION_VARIANTS.join(", ")}`);
+  const fault = faultFor(variant, get("fault") ?? null);
+  const fixed = isSessionVariant(variant) ? variantFixture(variant) : null;
+  if (fixed !== null && fixture !== fixed) throw new Error(`--variant ${variant} runs on fixture ${fixed}`);
   // Codex has no way to start a session with the MCP tools deferred, so the degraded condition cannot be produced there.
   if (variant === "degraded" && client !== "claude") throw new Error("--variant degraded is supported for --client claude only");
   const out = get("out"); const rawOut = get("raw-out");
   if (!out || !rawOut) throw new Error("--out and --raw-out are required");
   return {
-    client, fixture, variant,
+    client, fixture, variant, fault,
     model: get("model", client === "claude" ? "claude-opus-5-5" : "gpt-6-astra")!,
     out: resolve(out), rawOut: resolve(rawOut),
     timeoutMs: Number(get("timeout-ms", String(40 * 60_000))),
     maxBudgetUsd: Number(get("max-budget-usd", "15")),
   };
+}
+
+/** The fault selector a variant takes: `--fault` is refused for any variant but interrupted*, and those require one. */
+export function faultFor(variant: string, fault: string | null): string | null {
+  if (fault !== null && !isFaultVariant(variant)) throw new Error(`--fault is refused for --variant ${variant}: only interrupted and interrupted-edited take one`);
+  if (fault === null && isFaultVariant(variant)) throw new Error(`--variant ${variant} needs --fault <point[#n]>`);
+  if (fault !== null && !/^[a-z][a-z0-9:_.\/-]*(#[1-9][0-9]*)?$/i.test(fault)) throw new Error(`--fault ${fault} is not a point or point#n`);
+  return fault;
 }
 
 /** Scripted owner turns, read from the fixture's owner-answers.md sections. */
@@ -423,7 +447,10 @@ async function main(): Promise<void> {
   const fixtureDir = join(FIXTURES, o.fixture);
   const rubric = rubricFor(JSON.parse(readFileSync(join(fixtureDir, "rubric.json"), "utf-8")) as Record<string, unknown>, CHECK_SET_VERSION) as unknown as FixtureRubric;
   const script = ownerScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8"));
-  const afterPackage = packageTurns(o.variant, script); // throws before anything is spawned when the variant's sections are missing
+  const variant = baseVariant(o.variant);
+  const afterPackage = packageTurns(variant, script);
+  // A session variant's later turns are checked the same way, before anything is spawned.
+  if (isSessionVariant(o.variant)) laterSessions(o.variant, "/story", sessionScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8")), "T-0"); // throws before anything is spawned when the variant's sections are missing
   const firstPrompt = firstPromptFor(o.client, readFileSync(join(fixtureDir, "opening-prompt.txt"), "utf-8"));
 
   const runId = `${o.client}-${o.fixture}-${o.variant}-${new Date().toISOString().replace(/[:.]/g, "")}`;
@@ -463,12 +490,12 @@ async function main(): Promise<void> {
     const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { storybloq: { command: process.execPath, args: [mcp.path, ...mcp.args] } } }, null, 2));
     claudeArgs = ["--model", o.model, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--strict-mcp-config", "--mcp-config", mcpConfig, "--max-budget-usd", String(o.maxBudgetUsd)];
-    if (o.variant === "reviewer-unavailable") claudeArgs.push("--disallowedTools", "Agent", "Task");
-    if (o.variant === "degraded") env.ENABLE_TOOL_SEARCH = "true";
+    if (variant === "reviewer-unavailable") claudeArgs.push("--disallowedTools", "Agent", "Task");
+    if (variant === "degraded") env.ENABLE_TOOL_SEARCH = "true";
     // A Codex reviewer the model launches from its shell gets auth and nothing else.
-    env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "reviewer", o.variant);
+    env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "reviewer", variant);
   } else {
-    env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "client", o.variant);
+    env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "client", variant);
   }
   const isolation = isolationProblems(env, work, o.client);
   if (isolation.length > 0) throw new Error(`onboarding-eval: client environment is not isolated: ${isolation.join("; ")}`);
@@ -476,7 +503,7 @@ async function main(): Promise<void> {
   const effective = spawnSync("/bin/sh", ["-c", 'printf "%s\\n%s\\n%s\\n" "$HOME" "${CODEX_HOME-}" "${CLAUDE_CONFIG_DIR-}"'], { env, encoding: "utf-8" }).stdout.split("\n");
   const effectivePaths = { home: effective[0] ?? "", codexHome: effective[1] ?? "", claudeConfigDir: effective[2] ?? "" };
   if (effectivePaths.home !== env.HOME || effectivePaths.codexHome !== env.CODEX_HOME) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
-  if (o.variant === "reviewer-unavailable") {
+  if (variant === "reviewer-unavailable") {
     // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin.
     const reviewers = hiddenReviewers(CHECK_SET_VERSION);
     env.PATH = pathWithout(env.PATH ?? "", join(work, "bin"), reviewers);
@@ -498,9 +525,66 @@ async function main(): Promise<void> {
   const state = newDriveState(CHECK_SET_VERSION);
   let turnNo = 0;
   // The owner's side of the conversation; each step spawns one turn and records its raw output.
-  const flow = driveFlow({ variant: o.variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion }, state);
+  // T-538 S5a: the session variants' later sessions and what the harness does and sees around them.
+  const session = isSessionVariant(o.variant) ? o.variant : null;
+  const facts: { -readonly [K in keyof HarnessFacts]: HarnessFacts[K] } = { ...NO_FACTS, fault: o.fault };
+  const observations: EvidenceObservation[] = [];
+  const snapshotFile = `${eventsFile}.setup-snapshot.json`;
+  const snapshotTickets = (): readonly object[] => (existsSync(snapshotFile) ? cs7SnapshotLedger(readFileSync(snapshotFile, "utf-8")).tickets : []);
+  const later = session === null ? undefined : () => {
+    if (session === "milestone-demo") facts.dependent = rubric.followUp === undefined ? null : gatedTicket(snapshotTickets(), rubric.followUp.checkpoint);
+    return laterSessions(session, o.client === "claude" ? "/story" : "$story", sessionScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8")), facts.dependent);
+  };
+  if (o.fault !== null) env.STORYBLOQ_EVAL_FAULT = o.fault;
+  // The harness's own CLI calls log to their own file, never the run's events.
+  const harnessEnv = (): NodeJS.ProcessEnv => {
+    const e: NodeJS.ProcessEnv = { ...env, STORYBLOQ_EVAL_EVENTS: join(work, "eval-events", "harness-events.jsonl") };
+    delete e.STORYBLOQ_EVAL_FAULT;
+    return e;
+  };
+  const harnessCli = (args: readonly string[]): string => {
+    const r = spawnSync(launcher, args, { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
+    if (r.status !== 0) throw new Error(`onboarding-eval: harness step storybloq ${args.join(" ")} failed (${r.status ?? r.signal}): ${(r.stderr ?? "").trim()}`);
+    return r.stdout ?? "";
+  };
+  let current = 1;
+  const beforeTurn = (n: number, label: string): void => {
+    if (session === null) return;
+    if (n !== current) {
+      // A fresh client: no resume, a new session id.
+      ctx.sessionId = o.client === "claude" ? randomUUID() : null;
+      ctx.first = true;
+      if (current === 1) {
+        if (o.fault !== null) facts.fired = existsSync(`${eventsFile}.fired`);
+        delete env.STORYBLOQ_EVAL_FAULT;
+        if (session === "interrupted-edited") {
+          const edits = ownerEdits(cs7FinalLedger(diskReader(join(project, ".story"))).tickets);
+          if (edits !== null) {
+            harnessCli(["ticket", "update", edits.edgeTicket, "--add-blocked-by", edits.blocker]);
+            harnessCli(["ticket", "update", edits.describedTicket, "--description", edits.description]);
+          }
+          facts.edits = edits;
+        }
+        if (session === "restart") {
+          const id = setupIdOf(readEventsLog(existsSync(eventsFile) ? readFileSync(eventsFile, "utf-8") : null).log);
+          facts.report = id === null ? null : harnessCli(["setup-report", "--setup", id]).split("\n").map((l) => l.trim()).filter((l) => l !== "");
+        }
+      }
+      current = n;
+    }
+    if (session === "milestone-demo" && label === "demo-approval") {
+      const demo = rubric.demo;
+      if (demo !== undefined) {
+        const r = spawnSync("/bin/sh", ["-c", demo.command], { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
+        facts.demo = { command: demo.command, expected: demo.stdout, stdout: r.stdout ?? "" };
+      }
+    }
+    if (session === "milestone-demo" && n >= 2) observations.push(...observeEvidence(project, { kind: "turn", index: state.turns.length }));
+  };
+  const flow = driveFlow({ variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion, ...(later !== undefined ? { later } : {}) }, state);
   for (let step = flow.next(); !step.done;) {
     const request = step.value;
+    beforeTurn(request.session ?? 1, request.label);
     const r = runTurn(o, ctx, request.prompt);
     const stem = join(rawDir, `turn-${String(++turnNo).padStart(2, "0")}-${request.label}`);
     writeFileSync(`${stem}.jsonl`, r.raw);
@@ -508,8 +592,10 @@ async function main(): Promise<void> {
     const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, treeDigest(project), exclusion) };
     step = flow.next(response);
   }
+  // The evidence as the last session left it.
+  if (session === "milestone-demo") observations.push(...observeEvidence(project, { kind: "turn", index: state.turns.length }));
   if (CHECK_SET_VERSION >= 6) {
-    applySetupReviewChecks(state, setupReviewStore, o.variant);
+    applySetupReviewChecks(state, setupReviewStore, variant);
     // Always present for check set 6, empty when nothing ran, so a missing copy is a loss the regrade names.
     if (existsSync(setupReviewStore)) cpSync(setupReviewStore, join(rawDir, STORE_COPY), { recursive: true, verbatimSymlinks: true });
     else mkdirSync(join(rawDir, STORE_COPY));
@@ -530,7 +616,7 @@ async function main(): Promise<void> {
       approval: afterPackage.find((x) => x.label === "approve")?.prompt ?? "",
       projectRoot: project,
       contract: recipeContract(rubric.expectedRecipe),
-      observations: null,
+      observations: session === "milestone-demo" ? observations : null,
       followUp: followUpOf(rubric),
     });
     const invocations = invocationsText(project, r.invocations);
@@ -540,6 +626,26 @@ async function main(): Promise<void> {
       { path: INVOCATIONS_RAW, sha256: sha256(invocations) },
       ...(snapshot !== null ? [{ path: SNAPSHOT_RAW, sha256: sha256(snapshot) }] : []),
     ];
+    if (session !== null) {
+      const log = readEventsLog(events === null ? null : events.toString("utf-8")).log;
+      const id = setupIdOf(log);
+      if (session === "interrupted-edited") facts.storeRevisions = id === null ? 0 : storeRevisionCount(setupReviewStore, id);
+      if (session === "empty-idea-verify") facts.testEnabled = existsSync(join(story, "config.json")) && (JSON.parse(readFileSync(join(story, "config.json"), "utf-8")) as { recipeOverrides?: { stages?: { TEST?: { enabled?: unknown } } } }).recipeOverrides?.stages?.TEST?.enabled === true;
+      const sessionsFile = sessionsText({ sessions: sessionSpans(state.turns), harness: facts });
+      writeFileSync(join(rawDir, SESSIONS_RAW), sessionsFile);
+      replayInputs.push({ path: SESSIONS_RAW, sha256: sha256(sessionsFile) });
+      if (session === "milestone-demo") {
+        const observed = observationsText(observations);
+        writeFileSync(join(rawDir, OBSERVATIONS_RAW), observed);
+        replayInputs.push({ path: OBSERVATIONS_RAW, sha256: sha256(observed) });
+      }
+      applySessionChecks(state, {
+        variant: session, harness: facts, log, mapping: r.invocations,
+        tickets: existsSync(story) ? cs7FinalLedger(diskReader(story)).tickets : [],
+        ticketsAtSetup: snapshot === null ? [] : cs7SnapshotLedger(snapshot.toString("utf-8")).tickets,
+        present: (name) => existsSync(join(rawDir, name)),
+      });
+    }
   }
   const { turns, failures, reviewSkipped } = state;
   const evidence = finishDrive(state, REVIEW_LINE);
@@ -547,7 +653,7 @@ async function main(): Promise<void> {
   const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"), CHECK_SET_VERSION, evidence.reviewLines, evidence.judgeLines ?? []);
 
   const story = join(project, ".story");
-  const { inspection, ledgerRecords } = inspectAfter(state, diskReader(story), rubric, () => JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>, o.variant);
+  const { inspection, ledgerRecords } = inspectAfter(state, diskReader(story), rubric, () => JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>, variant);
 
   // The fixture project as the owner supplied it (no .story): the briefs, and every other file as the
   // implementation evidence any "already built" or "working" claim must rest on.
@@ -567,7 +673,7 @@ async function main(): Promise<void> {
     semanticLines, bound, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
     // Check set 5: the fixture contract's reviewer paths, citations outside the package, and the client's instruction context (B3).
     ...(CHECK_SET_VERSION >= 5 ? {
-      reviewerInventory: inventoryFor(o.variant), skillCitations: evidence.skillCitations ?? [],
+      reviewerInventory: inventoryFor(variant), skillCitations: evidence.skillCitations ?? [],
       instructionContext: ctx.sessionId !== null && ctx.env.CODEX_HOME ? rolloutInstructions(rolloutLines(ctx.env.CODEX_HOME, ctx.sessionId)) : { status: "unknown" },
     } : {}),
     // Check set 7: the raw inputs the regrade must find unchanged, each with its sha256.
@@ -582,7 +688,11 @@ async function main(): Promise<void> {
 }
 
 /** A fixture's rubric as the drive reads it, after the check set projection (lib `rubricFor`). */
-type FixtureRubric = { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] }; followUp?: FollowUp };
+type FixtureRubric = {
+  class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] }; followUp?: FollowUp;
+  /** T-538 S5a, milestone-demo: the command the harness runs after the milestone and the stdout it must print. */
+  demo?: { command: string; stdout: string };
+};
 
 const EMPTY_LEDGER: Cs7FinalLedger = { tickets: [], issues: [], notes: [], phases: [], rulings: [] };
 
@@ -757,7 +867,9 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
   const story = join(rawDir, "project.after", ".story");
   const storeCopy = join(rawDir, STORE_COPY);
   const evidence = fixtureEvidence(join(fixtureDir, "project"));
-  const afterPackage = packageTurns(record.variant as Variant, script);
+  const afterPackage = packageTurns(baseVariant(record.variant as Variant | SessionVariant), script);
+  // T-538 S5a: a session variant's later turns read the same owner script.
+  const sessions = isSessionVariant(String(record.variant)) ? { sessionScript: sessionScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, checkSet)), "utf-8")) } : {};
   // Check set 7 also reads the fixture's own ledger; pinned only from 7 on, so older records keep their manifests.
   const set7 = checkSet >= 7 ? { baseline: fixtureBaseline(fixtureDir, pinned), approval: afterPackage.find((x) => x.label === "approve")?.prompt ?? "" } : {};
   return {
@@ -774,6 +886,7 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
       files: [...files, ...evidence.hashes.map((h) => ({ path: `fixture/${h.path}`, sha256: h.sha256 }))],
       checkSet,
       ...set7,
+      ...sessions,
     },
     reviewLine: REVIEW_LINE,
     semanticLines: runSemanticLines,

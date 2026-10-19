@@ -23,7 +23,11 @@ import {
 } from "./onboarding-eval-lib.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
 import { applySetupReviewChecks, STORE_COPY, STORE_COPY_MISSING } from "./onboarding-eval-checkset6.js";
-import { applySetupRunChecks, cs7FinalLedger, type FollowUp } from "./onboarding-eval-checkset7.js";
+import { applySetupRunChecks, cs7FinalLedger, cs7SnapshotLedger, type EvidenceObservation, type FollowUp } from "./onboarding-eval-checkset7.js";
+import {
+  applySessionChecks, baseVariant, gatedTicket, isSessionVariant, laterSessions, NO_FACTS, OBSERVATIONS_RAW, parseSessionsFile, sessionSpans, SESSIONS_RAW, SessionsError,
+  type HarnessFacts, type SessionScript, type SessionsFile,
+} from "./onboarding-eval-sessions.js";
 import { EventsLogError, parseEventsLog } from "./onboarding-eval-checkset7-events.js";
 import {
   inventoryFor,
@@ -78,6 +82,8 @@ export interface FixtureInputs {
   readonly baseline?: { readonly baselineIds: readonly string[]; readonly baselinePhases: readonly string[] };
   /** Check set 7: the owner's approval, as the variant's script sends it. */
   readonly approval?: string;
+  /** T-538 S5a: a session variant's later owner turns, from the same owner script. */
+  readonly sessionScript?: SessionScript;
 }
 
 /** Check set 7's raw inputs, by their names in the raw directory (run.ts writes them). */
@@ -175,6 +181,9 @@ function recordingReader(inner: StoryBytes, seen: Map<string, string>): StoryRea
 const EMPTY_STORY: StoryReader = { exists: () => false, read: () => refuse("the run has no .story/ copy"), list: () => [] };
 
 interface Set7Inputs {
+  /** T-538 S5a: a session variant's sessions file and (milestone-demo) evidence observations, as read; null otherwise. */
+  readonly sessions: string | null;
+  readonly observations: readonly EvidenceObservation[] | null;
   readonly events: string;
   readonly snapshot: string | null;
   readonly projectRoot: string;
@@ -228,13 +237,27 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
     { path: INVOCATIONS_RAW, sha256: sha256(invocationsBytes) },
     ...(snapshotBytes !== null ? [{ path: SNAPSHOT_RAW, sha256: sha256(snapshotBytes) }] : []),
   ];
+  // T-538 S5a: the session variants' own inputs, required by the variant.
+  const variant = String(record.variant);
+  const sessionsBytes = isSessionVariant(variant) ? read(SESSIONS_RAW, true) : null;
+  const observationsBytes = variant === "milestone-demo" ? read(OBSERVATIONS_RAW, true) : null;
+  let observations: EvidenceObservation[] | null = null;
+  if (observationsBytes !== null) {
+    try { observations = JSON.parse(observationsBytes.toString("utf-8")) as EvidenceObservation[]; } catch { return refuse(`replay input ${OBSERVATIONS_RAW} is malformed`); }
+    if (!Array.isArray(observations) || observations.some((x) => x === null || typeof x !== "object" || typeof x.ref !== "string" || typeof x.sha256 !== "string" || x.at === null || typeof x.at !== "object" || !Number.isInteger(x.at.index))) refuse(`replay input ${OBSERVATIONS_RAW} is malformed`);
+    entries.push({ path: OBSERVATIONS_RAW, sha256: sha256(observationsBytes) });
+  }
+  if (sessionsBytes !== null) entries.push({ path: SESSIONS_RAW, sha256: sha256(sessionsBytes) });
   for (const name of hashOf.keys()) if (!entries.some((e) => e.path === name)) refuse(`the record names replay input ${name}, which check set 7 does not read`);
-  return { events, snapshot: snapshotBytes === null ? null : snapshotBytes.toString("utf-8"), projectRoot: invocations.projectRoot as string, mapping: invocations.mapping, entries };
+  return {
+    events, snapshot: snapshotBytes === null ? null : snapshotBytes.toString("utf-8"), projectRoot: invocations.projectRoot as string, mapping: invocations.mapping, entries,
+    sessions: sessionsBytes === null ? null : sessionsBytes.toString("utf-8"), observations,
+  };
 }
 
 interface RecordTurn {
   label: string; prompt: string; stop: StopCheck | null; stopText: string; models: string[]; exitCode: number | null;
-  infraFailure: string | null; treeChanges: string[]; callRange: [number, number]; unparsed?: unknown;
+  infraFailure: string | null; treeChanges: string[]; callRange: [number, number]; unparsed?: unknown; session?: unknown; afterSetup?: unknown;
 }
 
 /** An infrastructure failure the record states for a turn, checked against the turn's terminal in the runner's precedence. */
@@ -292,7 +315,9 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   let record: Record<string, unknown>;
   try { record = JSON.parse(recordText) as Record<string, unknown>; } catch { return refuse("record.json is not JSON"); }
   const runId = String(record.runId);
-  const variant = record.variant as Variant;
+  const recordVariant = String(record.variant);
+  const session = isSessionVariant(recordVariant) ? recordVariant : null;
+  const variant = baseVariant(recordVariant as Variant);
   const client = String(record.client);
   const turns = record.turns as RecordTurn[] | undefined;
   if (!Array.isArray(turns) || turns.length === 0) refuse("the record has no turns");
@@ -334,7 +359,21 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   // Replay through the runner's own flow.
   const exclusion = record.treeExclusion as RuntimeExclusion;
   const state = newDriveState(cs);
-  const flow = driveFlow({ variant, firstPrompt: input.fixture.firstPrompt, discoveryPrompt: input.fixture.discoveryPrompt, afterPackage: input.fixture.afterPackage, exclusion }, state);
+  // T-538 S5a: the later sessions, from the recorded harness facts; their spans are checked against the replay below.
+  const readSessions = (): SessionsFile => {
+    try {
+      const v = JSON.parse(set7!.sessions!) as { harness?: Partial<HarnessFacts> };
+      if (v === null || typeof v !== "object" || v.harness === null || typeof v.harness !== "object") throw new SessionsError("has no harness facts");
+      return { sessions: [], harness: { ...NO_FACTS, ...v.harness } };
+    } catch (err) {
+      return refuse(`replay input ${SESSIONS_RAW} is malformed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const later = session === null ? undefined : () => {
+    if (input.fixture.sessionScript === undefined) refuse("a session variant needs the fixture's owner script for its later sessions");
+    return laterSessions(session, client === "claude" ? "/story" : "$story", input.fixture.sessionScript!, readSessions().harness.dependent);
+  };
+  const flow = driveFlow({ variant, firstPrompt: input.fixture.firstPrompt, discoveryPrompt: input.fixture.discoveryPrompt, afterPackage: input.fixture.afterPackage, exclusion, ...(later !== undefined ? { later } : {}) }, state);
   let consumed = 0;
   for (let step = flow.next(); !step.done;) {
     const request = step.value;
@@ -370,10 +409,27 @@ function regradeOrThrow(input: RegradeInput): Regraded {
       eventsText: set7.events, snapshotText: set7.snapshot,
       final: cs7FinalLedger(input.story === null ? EMPTY_STORY : recordingReader(input.story, seen7)),
       baselineIds: fixture.baseline!.baselineIds, baselinePhases: fixture.baseline!.baselinePhases, approval: fixture.approval!,
-      projectRoot: set7.projectRoot, contract: recipeContract(fixture.rubric.expectedRecipe), observations: null,
+      projectRoot: set7.projectRoot, contract: recipeContract(fixture.rubric.expectedRecipe), observations: set7.observations,
       followUp: (fixture.rubric as { followUp?: FollowUp }).followUp ?? null,
     });
     if (!same(r.invocations, set7.mapping)) refuse(`${INVOCATIONS_RAW} differs from the mapping the replayed run produces`);
+    if (session !== null) {
+      // A run whose setup never reached approval asked for no later session; its sessions file is still read whole.
+      let parsed: SessionsFile;
+      try { parsed = parseSessionsFile(set7.sessions!, state.turns.length, state.allCalls.length); } catch (err) {
+        if (err instanceof SessionsError) return refuse(`replay input ${SESSIONS_RAW} is malformed: ${err.message}`);
+        throw err;
+      }
+      if (!same(parsed.sessions, sessionSpans(state.turns))) refuse(`${SESSIONS_RAW} differs from the sessions the replayed run produces`);
+      const atSetup = set7.snapshot === null ? [] : cs7SnapshotLedger(set7.snapshot).tickets;
+      const followUp = (fixture.rubric as { followUp?: FollowUp }).followUp;
+      if (session === "milestone-demo" && parsed.harness.dependent !== (followUp === undefined ? null : gatedTicket(atSetup, followUp.checkpoint))) refuse(`${SESSIONS_RAW} names a dependent the setup snapshot does not gate`);
+      applySessionChecks(state, {
+        variant: session, harness: parsed.harness, log: parseEventsLog(set7.events), mapping: r.invocations,
+        tickets: input.story === null ? [] : cs7FinalLedger(recordingReader(input.story, seen7)).tickets, ticketsAtSetup: atSetup,
+        present: (name) => input.rawNames.includes(name),
+      });
+    }
     manifest.push(...set7.entries);
     for (const [k, v] of [...seen7].sort(([a], [b]) => a.localeCompare(b))) manifest.push({ path: `project.after/.story#cs7:${k}`, sha256: v });
   }
@@ -401,7 +457,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   if (!same(state.failures, recFailures)) refuse("the record's failures differ from the replayed run's (a failure was added, removed, reordered or changed)");
   state.turns.forEach((t, i) => {
     const r = recTurns[i]!;
-    for (const k of ["label", "prompt", "stop", "stopText", "exitCode", "infraFailure", "treeChanges", "callRange"] as const) {
+    for (const k of ["label", "prompt", "stop", "stopText", "exitCode", "infraFailure", "treeChanges", "callRange", "session", "afterSetup"] as const) {
       if (!same(t[k], r[k])) refuse(`turn ${i} (${t.label}): the recorded ${k} differs from the replayed one`);
     }
     if ("unparsed" in r) {

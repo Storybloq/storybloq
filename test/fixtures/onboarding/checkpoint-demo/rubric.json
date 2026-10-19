@@ -1,0 +1,25 @@
+{
+  "fixture": "checkpoint-demo",
+  "class": "empty",
+  "requirements": [
+    { "id": "R1", "text": "node rota.js prints the rota line", "source": "owner answer: first version" },
+    { "id": "R2", "text": "the rota rotates through the four gardeners by weekday", "source": "owner answer: first version" },
+    { "id": "R3", "text": "the owner approves a demo of the printed line before the rotation is built", "source": "owner answer: milestone" },
+    { "id": "C1", "text": "Node.js only, no dependencies, no network", "source": "owner answer: constraints", "constraint": true }
+  ],
+  "unresolvedGaps": ["users", "first version", "milestone", "constraints", "existing material"],
+  "answeredInMaterial": [],
+  "expectedRecipe": { "testStages": "disabled" },
+  "rules": [
+    "the demo of the printed line is an owner checkpoint in the first milestone, and it gates the weekday rotation",
+    "no dependency or network call is introduced"
+  ],
+  "followUp": {
+    "titlePattern": "^Add tap to rota line",
+    "checkpoint": { "kind": "acceptance", "owner": "Robin", "titlePattern": "[Ww]atering [Rr]ota [Dd]emo" }
+  },
+  "demo": { "command": "node rota.js", "stdout": "Today: Sam waters beds 1-4" },
+  "checkSet2": {
+    "expectedRecipe": { "testStages": "components", "components": {}, "pendingComponents": ["."] }
+  }
+}

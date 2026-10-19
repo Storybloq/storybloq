@@ -13,6 +13,7 @@ import {
 } from "./onboarding-eval-lib.js";
 import { sha256 } from "./continuity-lib.js";
 import { citingLines, findSkillCitations } from "./onboarding-eval-corpus-5.js";
+import type { LaterSession } from "./onboarding-eval-sessions.js";
 
 export const MAX_DISCOVERY_ROUNDS = 3;
 
@@ -32,6 +33,8 @@ export interface TurnRequest {
   readonly label: string;
   readonly prompt: string;
   readonly expected: readonly StopKind[] | null;
+  /** T-538 S5a: the session the turn belongs to, from 2 on; a new number starts a fresh client. Absent in session 1. */
+  readonly session?: number;
 }
 
 /** What came back for a requested turn. `treeChanges` is read only when the turn is a stop. */
@@ -56,6 +59,10 @@ export interface DriveTurn {
   callRange: [number, number];
   /** The turn's unparsed shell constructs, in call order, when it is a stop; its stop reason joins them. Absent in records before the regrade existed. */
   unparsed?: string[];
+  /** T-538 S5a: the session, from 2 on; absent in session 1. */
+  session?: number;
+  /** T-538 S5a: the turn belongs to a session after the setup, which the setup's own checks never read. */
+  afterSetup?: true;
 }
 
 export interface DriveState {
@@ -101,12 +108,14 @@ export interface DriveOptions {
   readonly exclusion: RuntimeExclusion;
   /** Check set 5: the reviewer paths the fixture contract establishes; `inventoryFor(variant)` when absent. */
   readonly reviewerInventory?: ReviewerInventory;
+  /** T-538 S5a: the sessions after the first, asked for once the owner approved; read only then, since they may depend on what the setup left. */
+  readonly later?: () => readonly LaterSession[];
 }
 
 /** The producer of one failure. `turn` is the index of the turn it belongs to. */
 export type FailureSource =
   | { readonly kind: "infrastructure" | "stop" | "tree" | "tail" | "closing"; readonly turn: number }
-  | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" | "review" | "pending" | "setup" };
+  | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" | "review" | "pending" | "setup" | "variant" };
 
 function fail(s: DriveState, source: FailureSource, text: string): void {
   s.failures.push(text);
@@ -145,9 +154,9 @@ export function preApprovalStops(variant: Variant): readonly StopKind[] {
  * separate counters: a review-unavailable stop spends the guard, not a round.
  */
 export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnRequest, void, TurnResponse> {
-  function* send(label: string, prompt: string, expected: readonly StopKind[] | null): Generator<TurnRequest, EvalTurn | null, TurnResponse> {
+  function* send(label: string, prompt: string, expected: readonly StopKind[] | null, later?: { readonly session: number; readonly setup: boolean }): Generator<TurnRequest, EvalTurn | null, TurnResponse> {
     if (s.infraFailed) return null;
-    const r = yield { label, prompt, expected };
+    const r = yield { label, prompt, expected, ...(later !== undefined ? { session: later.session } : {}) };
     if (s.initTools === null && r.turn.initTools !== null) s.initTools = r.turn.initTools;
     const from = s.allCalls.length;
     s.allCalls.push(...r.turn.calls);
@@ -172,13 +181,16 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
     if (shows && s.checkSet >= 4 && !hasFixedLine(r.turn.stopText, s.checkSet)) {
       fail(s, { kind: "closing", turn: s.turns.length }, `the package does not carry the fixed line above the question (${label})`);
     }
-    // Check set 5: a package never cites the setup skill; a citation anywhere else is recorded, never failed.
-    if (s.checkSet >= 5) {
+    // Check set 5: a package never cites the setup skill; a citation anywhere else is recorded, never failed. A session after the setup is not read.
+    if (s.checkSet >= 5 && later?.setup !== false) {
       if (shows) {
         if (findSkillCitations(r.turn.stopText).length > 0) fail(s, { kind: "closing", turn: s.turns.length }, `the package cites the setup skill (${label})`);
       } else for (const line of skillCitationLines(r.turn.stopText)) s.skillCitations.push({ turn: label, line });
     }
-    s.turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, s.allCalls.length], unparsed });
+    s.turns.push({
+      label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, s.allCalls.length], unparsed,
+      ...(later !== undefined ? { session: later.session, ...(later.setup ? {} : { afterSetup: true as const }) } : {}),
+    });
     return r.turn;
   }
 
@@ -214,7 +226,23 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
         if (finding !== null) fail(s, { kind: "probe" }, finding);
       }
     }
+    // T-538 S5a: each later session is a fresh client; its turns are owner prompts, never stops.
+    const later = s.infraFailed || o.later === undefined ? [] : o.later();
+    for (const [i, session] of later.entries()) {
+      for (const turn of session.turns) yield* send(turn.label, turn.prompt, null, { session: i + 2, setup: session.setup });
+    }
   }
+}
+
+/**
+ * The run as the setup's own checks read it: every turn before the first
+ * session after the setup, and their calls. A run with no such session is
+ * itself. Failures go to the run's own lists.
+ */
+export function setupView(s: DriveState): DriveState {
+  const after = s.turns.findIndex((t) => t.afterSetup === true);
+  if (after < 0) return s;
+  return { ...s, turns: s.turns.slice(0, after), allCalls: s.allCalls.slice(0, s.turns[after]!.callRange[0]) };
 }
 
 export interface ReviewEvidence {
@@ -243,7 +271,9 @@ export interface DriveEvidence {
 }
 
 /** Evidence and the whole-run checks after the flow, appended to the failures in the runner's order. */
-export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
+export function finishDrive(run: DriveState, reviewLine: string): DriveEvidence {
+  // T-538 S5a: the sessions after the setup are build work; the setup's checks read the setup alone.
+  const s = setupView(run);
   const cs = s.checkSet;
   const { turns, allCalls } = s;
   // Every proposal the owner was shown, by turn, with a hash the evidence below is linked to.
@@ -619,4 +649,7 @@ export function packetText(p: {
 }
 
 /** The whole-run count of write calls, as the record states it. */
-export const writesAfterApprovalOf = (s: DriveState): number => analyseCalls(s.allCalls, s.turns, s.checkSet).writes.length;
+export const writesAfterApprovalOf = (run: DriveState): number => {
+  const s = setupView(run);
+  return analyseCalls(s.allCalls, s.turns, s.checkSet).writes.length;
+};

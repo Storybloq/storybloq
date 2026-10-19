@@ -368,12 +368,15 @@ describe("check set 7 rule 8: checkpoints and evidence", () => {
 });
 
 describe("check set 7 rule 9: follow-up rulings", () => {
-  const followUp = { titlePattern: "^Follow up", checkpointKey: "K4" };
-  const cp = (rulingId?: string) => ({ id: "T-003", title: "Accept", setup: { setupId: SID, key: "K4" }, ownerCheckpoint: { resolution: rulingId === undefined ? { response: "ok" } : { response: "ok", rulingId } } });
+  const followUp = { titlePattern: "^Follow up", checkpoint: { kind: "acceptance" as const, owner: "Robin" } };
+  const cp = (rulingId?: string, over: { id?: string; key?: string; kind?: string; owner?: string; title?: string } = {}) => ({
+    id: over.id ?? "T-003", title: over.title ?? "Accept", setup: { setupId: SID, key: over.key ?? "K4" },
+    ownerCheckpoint: { kind: over.kind ?? "acceptance", owner: over.owner ?? "Robin", resolution: rulingId === undefined ? { response: "ok" } : { response: "ok", rulingId } },
+  });
   const atBoundary = { tickets: [cp()], issues: [], phases: [] };
   const final = (tickets: object[], rulings: string[]): Cs7FinalLedger => ({ tickets, issues: [], phases: [], notes: [], rulings });
 
-  it("one follow-up citing the ruling on its checkpoint passes", () => {
+  it("one follow-up citing the ruling on the one matching checkpoint passes", () => {
     expect(rule9(followUp, atBoundary, final([cp("r-1"), { id: "T-009", title: "Follow up on sign in", citesRulings: ["r-1"] }], ["r-1"]), [])).toEqual([]);
   });
 
@@ -382,6 +385,23 @@ describe("check set 7 rule 9: follow-up rulings", () => {
     expect(rule9(followUp, atBoundary, final([cp("r-1"), { id: "T-009", title: "Follow up", citesRulings: ["r-1"] }], []), [])).toEqual(["rule 9: ruling r-1, recorded on T-003, does not exist"]);
     expect(rule9(followUp, atBoundary, final([cp("r-1"), { id: "T-009", title: "Follow up", citesRulings: ["r-2"] }], ["r-1", "r-2"]), [])).toEqual(["rule 9: T-009 does not cite r-1, the ruling on T-003"]);
     expect(rule9(followUp, atBoundary, final([cp(), { id: "T-009", title: "Follow up", citesRulings: [] }], []), [])).toEqual(["rule 9: checkpoint T-003 (key K4) records no ruling"]);
+  });
+
+  it("the checkpoint is found by kind and owner in the snapshot: zero and two matches each fail by name, never the first", () => {
+    const follow = { id: "T-009", title: "Follow up", citesRulings: ["r-1"] };
+    const none = { tickets: [cp(undefined, { owner: "Sam" })], issues: [], phases: [] };
+    expect(rule9(followUp, none, final([cp("r-1", { owner: "Sam" }), follow], ["r-1"]), [])).toEqual(["rule 9: no checkpoint matches (acceptance, owner Robin)"]);
+    const two = { tickets: [cp(), cp(undefined, { id: "T-005", key: "K6" })], issues: [], phases: [] };
+    expect(rule9(followUp, two, final([cp("r-1"), cp("r-1", { id: "T-005", key: "K6" }), follow], ["r-1"]), [])).toEqual(["rule 9: 2 checkpoints match (acceptance, owner Robin)"]);
+  });
+
+  it("a title is a second filter only: a title match with the wrong kind fails, and the title separates two of the right kind", () => {
+    const titled = { titlePattern: "^Follow up", checkpoint: { kind: "acceptance" as const, owner: "Robin", titlePattern: "demo" } };
+    const follow = { id: "T-009", title: "Follow up", citesRulings: ["r-1"] };
+    const wrongKind = { tickets: [cp(undefined, { kind: "decision", title: "Rota demo" })], issues: [], phases: [] };
+    expect(rule9(titled, wrongKind, final([cp("r-1", { kind: "decision", title: "Rota demo" }), follow], ["r-1"]), [])).toEqual(["rule 9: no checkpoint matches (acceptance, owner Robin, title /demo/)"]);
+    const two = { tickets: [cp(undefined, { title: "Rota demo" }), cp(undefined, { id: "T-005", key: "K6", title: "Release sign-off" })], issues: [], phases: [] };
+    expect(rule9(titled, two, final([cp("r-1", { title: "Rota demo" }), cp(undefined, { id: "T-005", key: "K6" }), follow], ["r-1"]), [])).toEqual([]);
   });
 });
 

@@ -421,10 +421,41 @@ export interface EvidenceObservation {
   readonly at: { readonly kind: "event" | "turn"; readonly index: number };
 }
 
+/**
+ * The checkpoint a fixture means, by structure: its kind and owner, as setup
+ * records them, and optionally a title pattern as a second filter (never the
+ * only one). The model chooses setup keys, so a fixture can never name one.
+ */
+export interface CheckpointSpec {
+  readonly kind: "decision" | "acceptance";
+  readonly owner: string;
+  readonly titlePattern?: string;
+}
+
 /** The fixture's follow-up assertion: one ticket after the boundary, citing the ruling on this checkpoint. */
 export interface FollowUp {
   readonly titlePattern: string;
-  readonly checkpointKey: string;
+  readonly checkpoint: CheckpointSpec;
+}
+
+const specText = (s: CheckpointSpec): string => `${s.kind}, owner ${s.owner}${s.titlePattern !== undefined ? `, title /${s.titlePattern}/` : ""}`;
+
+/**
+ * The one live keyed setup checkpoint a spec matches among `tickets` (the
+ * setup snapshot's), or the failure naming zero or several matches. Never the
+ * first of several.
+ */
+export function findCheckpoint(tickets: readonly object[], spec: CheckpointSpec): { readonly ticket: object } | { readonly failure: string } {
+  const title = spec.titlePattern === undefined ? null : new RegExp(spec.titlePattern);
+  const matches = tickets.filter((t) => {
+    const meta = parseSetupMeta("ticket", t);
+    const cp = (t as { ownerCheckpoint?: { kind?: unknown; owner?: unknown } | null }).ownerCheckpoint;
+    if (cp === undefined || cp === null || typeof cp !== "object" || meta.kind !== "item" || meta.meta.supersededBy !== undefined) return false;
+    return cp.kind === spec.kind && cp.owner === spec.owner && (title === null || title.test((t as { title?: string }).title ?? ""));
+  });
+  if (matches.length === 0) return { failure: `no checkpoint matches (${specText(spec)})` };
+  if (matches.length > 1) return { failure: `${matches.length} checkpoints match (${specText(spec)})` };
+  return { ticket: matches[0]! };
 }
 
 /** The ledger after the run, with the notes the archived payload lives in and the rulings' ids. */
@@ -532,13 +563,15 @@ export function rule9(followUp: FollowUp, atBoundary: Cs7Ledger, final: Cs7Final
   const matches = final.tickets.filter((t) => !before.has((t as { id: string }).id) && pattern.test((t as { title?: string }).title ?? ""));
   if (matches.length !== 1) return [`rule 9: ${matches.length} tickets created after the setup match /${followUp.titlePattern}/; expected exactly one`];
   const ticket = matches[0] as { id: string; citesRulings?: string[] };
-  const cp = final.tickets.find((t) => {
-    const meta = parseSetupMeta("ticket", t);
-    return (t as { ownerCheckpoint?: unknown }).ownerCheckpoint !== undefined && meta.kind === "item" && meta.meta.key === followUp.checkpointKey && meta.meta.supersededBy === undefined;
-  }) as { id: string; ownerCheckpoint: { resolution?: { rulingId?: unknown } } } | undefined;
-  if (cp === undefined) return [`rule 9: no checkpoint carries key ${followUp.checkpointKey}`];
-  const rulingId = cp.ownerCheckpoint.resolution?.rulingId;
-  if (typeof rulingId !== "string") return [`rule 9: checkpoint ${cp.id} (key ${followUp.checkpointKey}) records no ruling`];
+  // The checkpoint is resolved by structure in the setup snapshot; its resolution is read from the final ledger.
+  const found = findCheckpoint(atBoundary.tickets, followUp.checkpoint);
+  if ("failure" in found) return [`rule 9: ${found.failure}`];
+  const id = (found.ticket as { id: string }).id;
+  const key = (parseSetupMeta("ticket", found.ticket) as { meta: { key: string } }).meta.key;
+  const cp = final.tickets.find((t) => (t as { id: string }).id === id) as { id: string; ownerCheckpoint?: { resolution?: { rulingId?: unknown } } | null } | undefined;
+  if (cp === undefined) return [`rule 9: checkpoint ${id} (key ${key}) is not in the final ledger`];
+  const rulingId = cp.ownerCheckpoint?.resolution?.rulingId;
+  if (typeof rulingId !== "string") return [`rule 9: checkpoint ${cp.id} (key ${key}) records no ruling`];
   const failures: string[] = [];
   if (!(ticket.citesRulings ?? []).includes(rulingId)) failures.push(`rule 9: ${ticket.id} does not cite ${rulingId}, the ruling on ${cp.id}`);
   if (!final.rulings.includes(rulingId)) failures.push(`rule 9: ruling ${rulingId}, recorded on ${cp.id}, does not exist`);

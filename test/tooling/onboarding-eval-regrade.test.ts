@@ -327,6 +327,8 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
   const heredoc = `storybloq setup-apply <<'STORYBLOQ_SETUP'\n${JSON.stringify(payload)}\nSTORYBLOQ_SETUP`;
   const resume = `storybloq setup-apply --resume --setup ${SID}`;
   class Killed extends Error {}
+  /** The package with its plan marked, so rule 3 sees the plan the approval approves. */
+  const PACKAGE7 = "Here is the package.\nPlan, revision 0123456789ab:\nTicket: Sign in\nEnd of plan, revision 0123456789ab\n- Approve setup\n- Adjust the plan\n- Inspect details";
 
   /** The log as a SIGKILL at `point` leaves it: nothing of that attempt after the point's line. */
   function cutAfter(text: string, point: string): string {
@@ -355,7 +357,7 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     expect(resumed).toContain(`Setup applied: ${SID}`);
     const events = readFileSync(eventsPath, "utf-8");
     const snapshot = readFileSync(`${eventsPath}.setup-snapshot.json`, "utf-8");
-    const script: SynthTurn[] = [{ text: PACKAGE }, { text: PACKAGE }, { text: PACKAGE }, { text: resumed, commands: [{ command: heredoc, output: "" }, { command: resume, output: resumed }] }];
+    const script: SynthTurn[] = [{ text: PACKAGE7 }, { text: PACKAGE7 }, { text: PACKAGE7 }, { text: resumed, commands: [{ command: heredoc, output: "" }, { command: resume, output: resumed }] }];
     return { s: synth("none", script, join(root, ".story"), { store }, { events, snapshot, projectRoot: root }), events, snapshot };
   }
 
@@ -381,7 +383,8 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     expect(refused(withRaw(s.input, "events.jsonl", events.replace(SID, "SS-ffffffff")))).toBe("replay input events.jsonl does not match its recorded sha256");
     expect(refused(withRaw(s.input, "events.jsonl", "", true))).toMatch(/^replay input events\.jsonl is malformed or incomplete: /);
     expect(refused(withRaw(s.input, "events.jsonl", `${events.split("\n").slice(1).join("\n")}`, true))).toMatch(/^replay input events\.jsonl is malformed or incomplete: /);
-    const uncommitted = `${events.split("\n").filter((l) => l !== "" && !l.includes('"point":"archive-committed"')).join("\n")}\n`;
+    // The kill left no step:archive, so the archive's commit line is turned into one: a step:archive with no commit.
+    const uncommitted = events.replace('"point":"archive-committed"', '"point":"step:archive"');
     expect(refused(withRaw(s.input, "events.jsonl", uncommitted, true))).toBe("replay input events.jsonl is incomplete: step:archive with no archive-committed");
   });
 

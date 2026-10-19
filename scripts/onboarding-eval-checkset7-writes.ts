@@ -35,6 +35,8 @@ const DESCRIPTOR = /^&?-?\d*-?$/;
 const mentions = (text: string) => text.includes(".story");
 const baseName = (w: string) => w.replace(/^.*\//, "");
 const expands = (w: string) => /[$`]/.test(w);
+/** An operation's words as a finding prints them: an empty word shows as '', so no argument vanishes. */
+const shown = (words: readonly string[]) => words.map((w) => (w === "" ? "''" : w)).join(" ");
 
 /** Paths compared without the macOS `/private` prefix, so /tmp and /private/tmp are one place. */
 const canonical = (p: string) => posix.normalize(p).replace(/^\/private(?=\/)/, "");
@@ -119,14 +121,16 @@ function judge(cmd: ShellCommand, argv: readonly string[], context: string, inSt
   }
   if (bin === "storybloq") return { reason: null, entersStory: false };
   if (isReader(withoutRedirects(argv))) return { reason: null, entersStory: false };
-  if (pipedInto && risky && !QUIET.has(bin)) return { reason: "a pipe into a command that is not a pure reader, in a call that names .story", entersStory: false };
-  if (inStory && !QUIET.has(bin)) return { reason: `${bin} after a cd into .story`, entersStory: false };
-  if (WRITERS.has(bin) || inPlace(bin, args)) {
+  // A writer naming .story is reported as that write, ahead of the pipe and cd rules it may also break.
+  const writer = WRITERS.has(bin) || inPlace(bin, args);
+  if (writer) {
     const named = args.find((w) => mentions(w) || (bin === "dd" && /^of=.*\.story/.test(w)));
     if (named !== undefined) return { reason: `${bin}${inPlace(bin, args) ? " -i" : ""} on ${named}`, entersStory: false };
     if (args.some(expands) && risky) return { reason: `${bin} on an expansion, in a call that names .story`, entersStory: false };
-    return { reason: null, entersStory: false };
   }
+  if (pipedInto && risky && !QUIET.has(bin)) return { reason: "a pipe into a command that is not a pure reader, in a call that names .story", entersStory: false };
+  if (inStory && !QUIET.has(bin)) return { reason: `${bin} after a cd into .story`, entersStory: false };
+  if (writer) return { reason: null, entersStory: false };
   const family = interpreter(bin);
   if (family !== null) {
     const flag = INLINE[family]!;
@@ -160,7 +164,7 @@ function shellFindings(text: string, root: string, depth = 0): string[] {
       else if (mentions(u.inner)) findings.push("a nested shell too deep to read, in a call that names .story");
     } else {
       const j = judge(cmd, u.argv.length > 0 ? u.argv : cmd.words.filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)), context, inStory, pipedInto, root, text);
-      if (j.reason !== null) findings.push(`${j.reason}: ${cmd.words.join(" ")}`);
+      if (j.reason !== null) findings.push(`${j.reason}: ${shown(cmd.words)}`);
       if (j.entersStory) inStory = true;
     }
     for (const live of cmd.live) if (mentions(live)) findings.push(...shellFindings(live, root, depth + 1));

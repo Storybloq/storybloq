@@ -132,7 +132,7 @@ function inputs(root: string, events: string, over: Partial<Cs7RunInputs> = {}):
     baselinePhases: [],
     approval: APPROVE,
     projectRoot: root,
-    contract: { established: { "": ["npm test"] }, pending: [""] },
+    contract: { established: { "": ["npm test"] }, pending: [] },
     observations: null,
     followUp: null,
     ...over,

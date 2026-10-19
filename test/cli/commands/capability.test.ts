@@ -421,6 +421,35 @@ describe("capability check and stamping", () => {
   });
 });
 
+// ISS-1280: in a treeless clone the freshness diff needs trees the clone does
+// not hold. The check no longer fetches them by itself, so the entry cannot be
+// verified, and stamping it is refused; --fetch is the one way to stamp there.
+describe("capability check --fetch in a treeless clone (ISS-1280)", () => {
+  it("refuses the stamp without --fetch and stamps with it", async () => {
+    const origin = await newRepo();
+    await handleCapabilityAdd(BASE, "md", origin);
+    writeFileSync(join(origin, "src", "core", "thing.ts"), "export const a = 2;\n");
+    git(origin, "add", "-A");
+    git(origin, "commit", "-qm", "change");
+    git(origin, "config", "uploadpack.allowFilter", "true");
+    git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+    const parent = mkdtempSync(join(tmpdir(), "cap-cli-treeless-"));
+    roots.push(parent);
+    execFileSync("git", ["clone", "-q", "--filter=tree:0", `file://${origin}`, "clone"], { cwd: parent });
+    const root = join(parent, "clone");
+    const checkpoint = stored(root)[0]!.checkedAt.sha;
+
+    const refused = await handleCapabilityCheck({ stamp: ["cap-thing"] }, "md", root, ctxFor(root));
+    expect(refused.output).toContain("Refused to stamp cap-thing");
+    expect(refused.output).toContain("capability check --fetch");
+    expect(stored(root)[0]!.checkedAt.sha).toBe(checkpoint);
+
+    const res = await handleCapabilityCheck({ stamp: ["cap-thing"], fetch: true }, "md", root, ctxFor(root));
+    expect(res.output).toContain("Stamped 1");
+    expect(stored(root)[0]!.checkedAt.sha).toBe(git(root, "rev-parse", "HEAD"));
+  });
+});
+
 describe("validate carries the inventory's findings", () => {
   it("reports a missing entry point as an ERROR, the same as any other dangling reference", async () => {
     const root = await newRepo();

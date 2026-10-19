@@ -971,11 +971,19 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
 
   // Both filters. blob:none is the one CI checkouts use; the two agree today,
   // which is no promise that a later git keeps them agreeing.
-  it.each(["blob:none", "tree:0"])("a checkpoint past the shallow boundary of a FILTERED clone (%s) stays stampable", async (filter) => {
+  //
+  // ISS-1280: --fetch opens only the diff, so the resolve stays local and the
+  // row reads the same with it on.
+  it.each([
+    ["blob:none", false],
+    ["tree:0", false],
+    ["blob:none", true],
+    ["tree:0", true],
+  ] as const)("a checkpoint past the shallow boundary of a FILTERED clone (%s, fetch %s) stays stampable", async (filter, fetch) => {
     const { origin, base } = originWithHistory();
     const root = cloneOf(origin, ["--depth", "1", `--filter=${filter}`]);
     const report = await withOriginGone(origin, () =>
-      checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })]),
+      checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })], null, { fetch }),
     );
     expect(codesFor(report, "cap-core")).toEqual(["capability_unverifiable_checkpoint"]);
     expect(report.entries[0]!.results[0]!.detail).toContain(`git could not find checkpoint ${base}`);
@@ -986,10 +994,15 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
   // up in /usr/bin:/bin, so the resolve quietly runs a different git without
   // the caller's HOME, config or GIT_* variables. A recording `git` first on
   // PATH makes that visible, and shows which calls carry the variable.
-  it("the resolve runs in the caller's environment plus the one variable, and the diff keeps lazy fetch", async () => {
+  //
+  // ISS-1280: every call is local by default, the diff included; under fetch
+  // only the diff may fetch, with git terminal prompts disabled. A checkpoint
+  // naming a tree drives the type probe, so it is recorded too.
+  it.each([false, true])("every call runs in the caller's environment plus the lazy-fetch variable (fetch %s)", async (fetch) => {
     const root = newRepo();
     write(root, "src/core/a.ts", "one");
     const base = commit(root, "base");
+    const tree = git(root, ["rev-parse", "HEAD^{tree}"]).trim();
     write(root, "src/core/a.ts", "two");
     commit(root, "edit");
     const bin = mkdtempSync(join(tmpdir(), "capability-bin-"));
@@ -998,27 +1011,44 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
     const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
     writeFileSync(
       join(bin, "git"),
-      `#!/bin/sh\nprintf '%s|%s|%s\\n' "\${CAPABILITY_TEST_MARK:-unset}" "\${GIT_NO_LAZY_FETCH:-unset}" "$*" >> '${log}'\nexec '${realGit}' "$@"\n`,
+      `#!/bin/sh\nprintf '%s|%s|%s|%s\\n' "\${CAPABILITY_TEST_MARK:-unset}" "\${GIT_NO_LAZY_FETCH:-unset}" "\${GIT_TERMINAL_PROMPT:-unset}" "$*" >> '${log}'\nexec '${realGit}' "$@"\n`,
       { mode: 0o755 },
     );
-    const saved = { path: process.env.PATH, mark: process.env.CAPABILITY_TEST_MARK, lazy: process.env.GIT_NO_LAZY_FETCH };
+    const saved = { path: process.env.PATH, mark: process.env.CAPABILITY_TEST_MARK, lazy: process.env.GIT_NO_LAZY_FETCH, prompt: process.env.GIT_TERMINAL_PROMPT };
     process.env.PATH = `${bin}:${saved.path ?? ""}`;
     process.env.CAPABILITY_TEST_MARK = "inherited";
-    // The diff's row is asserted as `unset`, which is a claim about the
-    // AMBIENT environment: a developer or CI with GIT_NO_LAZY_FETCH exported
+    // The prompt rows are asserted as `unset`, which is a claim about the
+    // AMBIENT environment: a developer or CI with either variable exported
     // would see the recorder print it and the test would fail for a reason
     // that has nothing to do with the code.
     delete process.env.GIT_NO_LAZY_FETCH;
+    delete process.env.GIT_TERMINAL_PROMPT;
     try {
-      const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })]);
+      const report = await checkCapabilities(
+        root,
+        [
+          capability({ checkedAt: { sha: base, date: "2026-09-20" } }),
+          capability({ id: "cap-tree", checkedAt: { sha: tree, date: "2026-09-20" } }),
+        ],
+        null,
+        { fetch },
+      );
       expect(codesFor(report, "cap-core")).toEqual(["capability_changed"]);
+      expect(codesFor(report, "cap-tree")).toEqual(["capability_unverifiable_checkpoint"]);
       const calls = readFileSync(log, "utf-8").trim().split("\n");
-      const resolve = calls.filter((c) => c.includes("rev-parse --verify --quiet"));
-      const diff = calls.filter((c) => c.includes(" diff --no-renames "));
-      expect(resolve).toHaveLength(1);
-      expect(resolve[0]!.startsWith("inherited|1|")).toBe(true);
-      expect(diff).toHaveLength(1);
-      expect(diff[0]!.startsWith("inherited|unset|")).toBe(true);
+      const kinds = {
+        head: calls.filter((c) => c.includes("rev-parse --verify HEAD^{commit}")),
+        resolve: calls.filter((c) => c.includes("rev-parse --verify --quiet")),
+        probe: calls.filter((c) => c.includes(" cat-file -t ")),
+        ancestor: calls.filter((c) => c.includes(" merge-base --is-ancestor ")),
+        diff: calls.filter((c) => c.includes(" diff --no-renames ")),
+      };
+      expect(Object.values(kinds).map((k) => k.length)).toEqual([1, 2, 1, 1, 1]);
+      expect(calls).toHaveLength(6);
+      for (const call of [...kinds.head, ...kinds.resolve, ...kinds.probe, ...kinds.ancestor]) {
+        expect(call.startsWith("inherited|1|unset|")).toBe(true);
+      }
+      expect(kinds.diff[0]!.startsWith(fetch ? "inherited|0|0|" : "inherited|1|unset|")).toBe(true);
     } finally {
       // Assigning an undefined value writes the STRING "undefined", which is a
       // PATH of one nonexistent directory; the variable has to be deleted.
@@ -1028,6 +1058,8 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
       else process.env.CAPABILITY_TEST_MARK = saved.mark;
       if (saved.lazy === undefined) delete process.env.GIT_NO_LAZY_FETCH;
       else process.env.GIT_NO_LAZY_FETCH = saved.lazy;
+      if (saved.prompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+      else process.env.GIT_TERMINAL_PROMPT = saved.prompt;
     }
   });
 
@@ -1056,6 +1088,120 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
     } finally {
       chmodSync(obj, 0o444);
     }
+  });
+
+  // ISS-1280: the freshness diff is the one call that needs objects a partial
+  // clone may lack: a treeless clone holds no old trees. By default it no
+  // longer fetches them, so the entry is incomplete with git's evidence and a
+  // likely cause; `fetch` lets it fetch. Every row pins the classification and
+  // whether the object store changed, never a spawn count.
+  describe("the freshness diff fetches only when asked (ISS-1280)", () => {
+    const objectFiles = (root: string): string[] =>
+      (readdirSync(join(root, ".git", "objects"), { recursive: true }) as string[]).sort();
+    const LIKELY = "in this partial clone the likely cause is that the checkpoint's trees are not stored locally";
+    const REMEDY = "run `storybloq capability check --fetch`";
+    const failedDiff = (args: readonly string[]): GitOutcome | null =>
+      args[0] === "diff" ? { ok: true, stdout: "", stderr: "fatal: unable to read tree (abc123)\n", exitCode: 128 } : null;
+
+    it("a treeless clone with a LIVE origin: incomplete with git's evidence, and nothing fetched", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=tree:0"]);
+      const before = objectFiles(root);
+      const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })]);
+      expect(codesFor(report, "cap-core")).toEqual(["capability_check_incomplete"]);
+      const detail = report.entries[0]!.results[0]!.detail;
+      expect(detail).toContain(`could not diff ${base}..HEAD for this entry's paths: git said "`);
+      expect(detail).toContain(LIKELY);
+      expect(detail).toContain(REMEDY);
+      expect(isStampable(report.entries[0]!)).toBe(false);
+      expect(objectFiles(root)).toEqual(before);
+    });
+
+    it("a treeless clone with the origin gone: incomplete with git's evidence, and nothing fetched", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=tree:0"]);
+      const before = objectFiles(root);
+      const report = await withOriginGone(origin, () =>
+        checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })]),
+      );
+      expect(codesFor(report, "cap-core")).toEqual(["capability_check_incomplete"]);
+      expect(report.entries[0]!.results[0]!.detail).toContain(': git said "');
+      expect(objectFiles(root)).toEqual(before);
+    });
+
+    it("with fetch, a treeless clone fetches the trees and reads the change", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=tree:0"]);
+      const before = objectFiles(root);
+      const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })], null, { fetch: true });
+      expect(codesFor(report, "cap-core")).toEqual(["capability_changed"]);
+      expect(report.entries[0]!.results[0]!.detail).toContain("src/core/a.ts");
+      expect(objectFiles(root).length).toBeGreaterThan(before.length);
+    });
+
+    it("with fetch, an inherited GIT_NO_LAZY_FETCH=1 does not defeat the opt-in", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=tree:0"]);
+      const saved = process.env.GIT_NO_LAZY_FETCH;
+      process.env.GIT_NO_LAZY_FETCH = "1";
+      try {
+        const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })], null, { fetch: true });
+        expect(codesFor(report, "cap-core")).toEqual(["capability_changed"]);
+      } finally {
+        if (saved === undefined) delete process.env.GIT_NO_LAZY_FETCH;
+        else process.env.GIT_NO_LAZY_FETCH = saved;
+      }
+    });
+
+    it("with fetch and the origin gone: the fetch-enabled diff failed, with evidence and no --fetch remedy", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=tree:0"]);
+      const before = objectFiles(root);
+      const report = await withOriginGone(origin, () =>
+        checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })], null, { fetch: true }),
+      );
+      expect(codesFor(report, "cap-core")).toEqual(["capability_check_incomplete"]);
+      const detail = report.entries[0]!.results[0]!.detail;
+      expect(detail.startsWith(`the fetch-enabled diff of ${base}..HEAD failed: git said "`)).toBe(true);
+      expect(detail).not.toContain("--fetch");
+      expect(detail).not.toContain(LIKELY);
+      expect(objectFiles(root)).toEqual(before);
+    });
+
+    it("a blobless clone never needed the network: the change is read and nothing is fetched", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=blob:none"]);
+      const before = objectFiles(root);
+      const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })]);
+      expect(codesFor(report, "cap-core")).toEqual(["capability_changed"]);
+      expect(objectFiles(root)).toEqual(before);
+    });
+
+    it("a failed diff outside a partial clone carries git's evidence and claims no cause", async () => {
+      const root = newRepo();
+      write(root, "src/core/a.ts", "one");
+      const base = commit(root, "base");
+      write(root, "src/core/a.ts", "two");
+      commit(root, "edit");
+      const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })], null, {
+        runGit: controlledGit(failedDiff).run,
+      });
+      expect(report.entries[0]!.results.map((r) => r.detail)).toEqual([
+        `could not diff ${base}..HEAD for this entry's paths: git said "fatal: unable to read tree (abc123)"`,
+      ]);
+    });
+
+    it("a failed diff in a partial clone names the likely cause beside git's evidence", async () => {
+      const { origin, base } = originWithHistory();
+      const root = cloneOf(origin, ["--filter=blob:none"]);
+      const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })], null, {
+        runGit: controlledGit(failedDiff).run,
+      });
+      const detail = report.entries[0]!.results[0]!.detail;
+      expect(detail).toContain(`could not diff ${base}..HEAD for this entry's paths: git said "fatal: unable to read tree (abc123)"`);
+      expect(detail).toContain(LIKELY);
+      expect(detail).toContain(REMEDY);
+    });
   });
 });
 

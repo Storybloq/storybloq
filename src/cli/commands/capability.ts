@@ -756,6 +756,11 @@ export interface CapabilityCheckInput {
    * has done, and a stamp says somebody looked.
    */
   readonly clearPending?: boolean;
+  /**
+   * ISS-1280: let the freshness diff fetch a partial clone's missing trees.
+   * CLI only; every other caller of the check stays local.
+   */
+  readonly fetch?: boolean;
 }
 
 /**
@@ -785,6 +790,7 @@ export async function handleCapabilityCheck(
   const report = await checkCapabilities(root, doc.capabilities, ctx.state, {
     conflictedIds: scope.conflictedIds,
     problemIds: scope.problemIds,
+    fetch: input.fetch === true,
   });
   const storedById = new Map(doc.capabilities.map((c) => [c.id, c]));
 

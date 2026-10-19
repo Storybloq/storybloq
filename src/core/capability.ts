@@ -142,6 +142,12 @@ export interface CheckOptions {
    * `head` the report returns and the commit a stamp would certify.
    */
   readonly headOid?: string;
+  /**
+   * ISS-1280: let the freshness diff fetch missing trees from a partial
+   * clone's promisor remote. Off by default, so a check never reaches the
+   * network unless the user asked; only `capability check --fetch` sets it.
+   */
+  readonly fetch?: boolean;
 }
 
 const FRESHNESS_CODES: ReadonlySet<CapabilityCheckCode> = new Set([
@@ -189,7 +195,9 @@ export interface GitOutcome {
  * `lazyFetch: false` asks git about THIS repository's objects only. In a
  * partial clone git otherwise fetches a missing object from the promisor
  * remote on demand, so a lookup can reach the network and write the store.
- * The runner owns how that is spelled; callers do not pass environment.
+ * `lazyFetch: true` allows that fetch explicitly, with git terminal prompts
+ * disabled; omitted keeps whatever the inherited environment says. The runner
+ * owns how that is spelled; callers do not pass environment.
  */
 export interface GitCallOptions {
   readonly lazyFetch?: boolean;
@@ -221,7 +229,18 @@ async function runGit(root: string, args: readonly string[], signal: AbortSignal
       // fetching. MERGED into the inherited environment, never a replacement:
       // a replaced one loses PATH and HOME and every call fails, which reads as
       // "incomplete" everywhere rather than as a bug.
-      ...(options.lazyFetch === false ? { env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } } : {}),
+      //
+      // An explicit true sets the variable to 0, so an inherited
+      // GIT_NO_LAZY_FETCH=1 cannot silently defeat an opt-in. It also disables
+      // git terminal prompts: a remote that asks for a username fails the call
+      // instead of holding it until the deadline. A configured credential
+      // helper or askpass program may still interact; the variable governs
+      // only git's own terminal prompt.
+      ...(options.lazyFetch === false
+        ? { env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } }
+        : options.lazyFetch === true
+          ? { env: { ...process.env, GIT_NO_LAZY_FETCH: "0", GIT_TERMINAL_PROMPT: "0" } }
+          : {}),
     });
     return { ok: true, stdout, stderr, exitCode: 0 };
   } catch (err: unknown) {
@@ -689,10 +708,47 @@ const NON_COMMIT_TYPES: ReadonlySet<string> = new Set(["tree", "blob", "tag"]);
  * not have the object either, its refusal lands on stderr, which the
  * classification below would read as a failure to read, turning a confirmed
  * absence into an incomplete, unstampable entry. On a git too old to know the
- * variable that still happens; it is no worse than without it (ISS-1280). The
- * diff keeps lazy fetch: a treeless clone needs the old trees to answer at all.
+ * variable that still happens; it is no worse than without it, and that
+ * residual is accepted (ISS-1280).
+ *
+ * ISS-1280: every git call in the check uses it, the HEAD resolve, merge-base
+ * and the diff included, so a read-only check never reaches the network. The
+ * diff is the one call that may need objects a partial clone lacks (a treeless
+ * clone holds no old trees); it fetches them only under `--fetch`, through
+ * FETCH_ALLOWED, and the resolve and the probe stay local even then, so a
+ * checkpoint past a shallow boundary is never fetched into a false "not an
+ * ancestor" (T-523).
  */
 const LOCAL_OBJECTS_ONLY: GitCallOptions = { lazyFetch: false };
+const FETCH_ALLOWED: GitCallOptions = { lazyFetch: true };
+
+/** How the diff runs, and whether this repository is a partial clone, asked at most once per check. */
+interface DiffMode {
+  readonly fetch: boolean;
+  readonly isPartialClone: () => Promise<boolean>;
+}
+
+/** Config values git reads as true. */
+const GIT_TRUE: ReadonlySet<string> = new Set(["true", "yes", "on", "1"]);
+
+/**
+ * True when the repository has a promisor remote: `remote.<name>.promisor`,
+ * which is what git 2.54's `clone --filter` writes, or the older
+ * `extensions.partialclone`. A failed read is false, so the detail falls back
+ * to plain evidence rather than naming a cause it did not see.
+ */
+async function readPartialClone(root: string, signal: AbortSignal, countCall: () => void, runGit: GitRunner): Promise<boolean> {
+  countCall();
+  const out = await runGit(root, ["config", "--get-regexp", "^(remote\\..*\\.promisor|extensions\\.partialclone)$"], signal, LOCAL_OBJECTS_ONLY);
+  if (!out.ok || out.exitCode !== 0) return false;
+  return out.stdout.split("\n").some((line) => {
+    const space = line.indexOf(" ");
+    if (space < 0) return false;
+    const key = line.slice(0, space);
+    const value = line.slice(space + 1).trim();
+    return key === "extensions.partialclone" ? value.length > 0 : GIT_TRUE.has(value.toLowerCase());
+  });
+}
 
 /**
  * Why a checkpoint did not resolve, claiming only what git said.
@@ -751,7 +807,7 @@ async function classifyUnresolved(
 /**
  * Three subprocesses per DISTINCT checkpoint, whatever the entry count: resolve
  * the checkpoint, prove it is an ancestor, diff the union of the group's entry
- * points. A failed resolve costs at most one more. A tree diff between two commits is independent of commit order,
+ * points. A failed resolve costs at most one more, and so does a failed diff. A tree diff between two commits is independent of commit order,
  * branch topology and merge commits, which is why this is a diff rather than a
  * log walk: a change introduced by a merge resolution shows up here and would
  * not show up in a first-parent log.
@@ -763,6 +819,7 @@ async function checkGroup(
   signal: AbortSignal,
   countCall: () => void,
   runGit: GitRunner,
+  mode: DiffMode,
 ): Promise<GroupOutcome> {
   countCall();
   const resolved = await runGit(root, ["rev-parse", "--verify", "--quiet", `${group.sha}^{commit}`], signal, LOCAL_OBJECTS_ONLY);
@@ -774,7 +831,7 @@ async function checkGroup(
   }
 
   countCall();
-  const ancestor = await runGit(root, ["merge-base", "--is-ancestor", oid, headOid], signal);
+  const ancestor = await runGit(root, ["merge-base", "--is-ancestor", oid, headOid], signal, LOCAL_OBJECTS_ONLY);
   if (!ancestor.ok) return { kind: "incomplete", detail: `could not test whether ${group.sha} is an ancestor of HEAD` };
   // `merge-base --is-ancestor` answers with its exit code: 0 is yes, 1 is NO,
   // and anything else (128 for an unreadable object or a broken repository) is
@@ -802,9 +859,24 @@ async function checkGroup(
     root,
     ["diff", "--no-renames", "--name-only", "-z", oid, headOid, "--", ...group.paths.map(literalPathspec)],
     signal,
+    mode.fetch ? FETCH_ALLOWED : LOCAL_OBJECTS_ONLY,
   );
   if (!diff.ok || diff.exitCode !== 0) {
-    return { kind: "incomplete", detail: `could not diff ${group.sha}..HEAD for this entry's paths` };
+    // ISS-1280: git's own evidence always, and a cause only as likely: a
+    // partial clone's config does not prove the trees are missing, since a
+    // corrupt object or a killed call fails the same way. Under --fetch the
+    // network may have been used, so the flag is not offered again.
+    if (mode.fetch) {
+      return { kind: "incomplete", detail: `the fetch-enabled diff of ${group.sha}..HEAD failed${gitEvidence(diff)}` };
+    }
+    const detail = `could not diff ${group.sha}..HEAD for this entry's paths${gitEvidence(diff)}`;
+    if (await mode.isPartialClone()) {
+      return {
+        kind: "incomplete",
+        detail: `${detail}; in this partial clone the likely cause is that the checkpoint's trees are not stored locally, and the check does not fetch them: run \`storybloq capability check --fetch\` to let git fetch them`,
+      };
+    }
+    return { kind: "incomplete", detail };
   }
   return { kind: "ok", changed: parseNulList(diff.stdout) };
 }
@@ -889,7 +961,7 @@ export async function checkCapabilities(
       // "could not be read", never a diff against a string git rejects.
       // An option-shaped oid is refused outright rather than handed to git.
       const target = options.headOid === undefined ? "HEAD^{commit}" : options.headOid.startsWith("-") ? null : `${options.headOid}^{commit}`;
-      const headOut = target === null ? null : await git(root, ["rev-parse", "--verify", target], controller.signal);
+      const headOut = target === null ? null : await git(root, ["rev-parse", "--verify", target], controller.signal, LOCAL_OBJECTS_ONLY);
       head = headOut !== null && headOut.ok && headOut.exitCode === 0 ? headOut.stdout.trim() || null : null;
 
       const groups = groupByCheckpoint(entries);
@@ -904,12 +976,17 @@ export async function checkCapabilities(
         }
       } else {
         const headOid = head;
+        let partialClone: Promise<boolean> | null = null;
+        const mode: DiffMode = {
+          fetch: options.fetch === true,
+          isPartialClone: () => (partialClone ??= readPartialClone(root, controller.signal, countCall, git)),
+        };
         deadlineHit = await runPool(
           groups,
           CHECK_CONCURRENCY,
           pastDeadline,
           async (group) => {
-            const outcome = await checkGroup(root, group, headOid, controller.signal, countCall, git);
+            const outcome = await checkGroup(root, group, headOid, controller.signal, countCall, git, mode);
             for (const entry of group.entries) {
               const results = perEntry.get(entry.id)!;
               if (outcome.kind === "unverifiable") {

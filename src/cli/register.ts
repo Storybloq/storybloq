@@ -6766,7 +6766,8 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
               arrayOptions(
                 y2
                   .option("stamp-all", { type: "boolean", describe: "Re-stamp every entry whose only findings are freshness findings" })
-                  .option("clear-pending", { type: "boolean", describe: "Clear the pending note in the same write as the stamp (a stamp alone is refused while a note is set)" }),
+                  .option("clear-pending", { type: "boolean", describe: "Clear the pending note in the same write as the stamp (a stamp alone is refused while a note is set)" })
+                  .option("fetch", { type: "boolean", describe: "Let git fetch a partial clone's missing trees from its promisor remote for the freshness diff (git terminal prompts disabled)" }),
                 { stamp: { ...SPLIT_LIST, describe: "Capability ID to re-stamp after re-reading it (repeatable)" } },
               ),
             ),
@@ -6782,6 +6783,7 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
                   stamp: argv.stamp as string[] | undefined,
                   stampAll: argv["stamp-all"] as boolean | undefined,
                   clearPending: argv["clear-pending"] as boolean | undefined,
+                  fetch: argv.fetch as boolean | undefined,
                 },
                 format,
                 ctx.root,

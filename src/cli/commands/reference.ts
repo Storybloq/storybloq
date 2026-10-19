@@ -362,9 +362,9 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "capability check",
-    description: "Check every capability against HEAD; --stamp re-records the checkpoint after re-reading an entry. Refused for a structural finding, which a new sha would hide rather than fix",
-    usage: "storybloq capability check [--stamp <value>] [--stamp-all] [--clear-pending] [--format <json|md>]",
-    flags: ["--stamp", "--stamp-all", "--clear-pending", "--format"],
+    description: "Check every capability against HEAD; --stamp re-records the checkpoint after re-reading an entry. Refused for a structural finding, which a new sha would hide",
+    usage: "storybloq capability check [--stamp <value>] [--stamp-all] [--clear-pending] [--fetch] [--format <json|md>]",
+    flags: ["--stamp", "--stamp-all", "--clear-pending", "--fetch", "--format"],
   },
   {
     name: "capability defer",

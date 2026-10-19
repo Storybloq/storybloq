@@ -480,7 +480,7 @@ function establishedStageProblem(p: SetupPayload, comp: SetupPayload["quality"][
   if (p.quality.level !== "full") return `which only the full level runs (this setup is ${p.quality.level})`;
   if (stage === "build") return null;
   if (!p.quality.verifyApplies) return "but VERIFY does not apply to this project";
-  return readinessEndpoint(comp.verify!.readinessUrl) === null ? `whose readiness URL ${comp.verify!.readinessUrl} is not http://127.0.0.1:<port>/<path>` : null;
+  return readinessEndpoint(comp.verify!.readinessUrl) === null ? `whose readiness URL ${comp.verify!.readinessUrl} is not http://127.0.0.1:<port>/<path> or http://localhost:<port>/<path>` : null;
 }
 
 /**
@@ -489,12 +489,13 @@ function establishedStageProblem(p: SetupPayload, comp: SetupPayload["quality"][
  * fragment). Anything else is null: setup-verify checks listener ownership
  * for that exact endpoint only.
  */
-export function readinessEndpoint(url: string): { port: number; path: string } | null {
-  const m = /^http:\/\/127\.0\.0\.1:(\d{1,5})(\/[^\s#]*)?$/.exec(url);
+export function readinessEndpoint(url: string): { host: "127.0.0.1"; port: number; path: string } | null {
+  // `localhost`, in any case, is read as 127.0.0.1 here and nowhere resolved: no DNS, no hosts file.
+  const m = /^http:\/\/(127\.0\.0\.1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]):(\d{1,5})(\/[^\s#]*)?$/.exec(url);
   if (!m) return null;
-  const port = Number(m[1]);
-  if (port < 1 || port > 65535 || m[1]!.startsWith("0")) return null;
-  return { port, path: m[2] ?? "/" };
+  const port = Number(m[2]);
+  if (port < 1 || port > 65535 || m[2]!.startsWith("0")) return null;
+  return { host: "127.0.0.1", port, path: m[3] ?? "/" };
 }
 
 /** Whether a payload establishes any stage: only then are the verification record and metadata written. */

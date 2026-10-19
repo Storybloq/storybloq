@@ -67,9 +67,9 @@ describe("the BUILD and VERIFY establishment payload", () => {
   });
 
   it("refuses a readiness URL setup-verify cannot own", () => {
-    for (const url of ["http://localhost:4310/health", "https://127.0.0.1:4310/", "http://127.0.0.1/health", "http://127.0.0.1:0/", "http://127.0.0.1:04310/", "http://127.0.0.1:65536/", "http://127.0.0.1:4310/a#b", "http://0.0.0.0:4310/"]) {
+    for (const url of ["http://localhost.example:4310/health", "http://[::1]:4310/health", "http://::1:4310/", "https://127.0.0.1:4310/", "http://127.0.0.1/health", "http://127.0.0.1:0/", "http://127.0.0.1:04310/", "http://127.0.0.1:65536/", "http://127.0.0.1:4310/a#b", "http://0.0.0.0:4310/"]) {
       const component = { ...comp(), build: BUILD_PENDING, verify: VERIFY_PENDING(url) };
-      expect(refusal(full("verify", { component })), url).toMatch(/whose readiness URL .* is not http:\/\/127\.0\.0\.1:<port>\/<path>/);
+      expect(refusal(full("verify", { component })), url).toMatch(/whose readiness URL .* is not http:\/\/127\.0\.0\.1:<port>\/<path> or http:\/\/localhost:<port>\/<path>/);
     }
   });
 
@@ -86,9 +86,11 @@ describe("the BUILD and VERIFY establishment payload", () => {
   });
 
   it("reads a readiness endpoint, defaulting the path to /", () => {
-    expect(readinessEndpoint("http://127.0.0.1:4310/health?x=1")).toEqual({ port: 4310, path: "/health?x=1" });
-    expect(readinessEndpoint("http://127.0.0.1:1")).toEqual({ port: 1, path: "/" });
-    expect(readinessEndpoint("http://127.0.0.1:65535/")).toEqual({ port: 65535, path: "/" });
+    expect(readinessEndpoint("http://127.0.0.1:4310/health?x=1")).toEqual({ host: "127.0.0.1", port: 4310, path: "/health?x=1" });
+    expect(readinessEndpoint("http://127.0.0.1:1")).toEqual({ host: "127.0.0.1", port: 1, path: "/" });
+    expect(readinessEndpoint("http://127.0.0.1:65535/")).toEqual({ host: "127.0.0.1", port: 65535, path: "/" });
+    expect(readinessEndpoint("http://localhost:3000/health")).toEqual({ host: "127.0.0.1", port: 3000, path: "/health" });
+    expect(readinessEndpoint("http://LOCALHOST:3000/")).toEqual({ host: "127.0.0.1", port: 3000, path: "/" });
   });
 });
 
@@ -124,6 +126,15 @@ describe("a setup that establishes BUILD or VERIFY", () => {
     const setup = (await ticketFile(root, "T-002")).setup as { establishes: unknown; verification: { spec: unknown } };
     expect(setup.establishes).toEqual({ component: "app", stage: "build", scaffold: "K2" });
     expect(setup.verification.spec).toEqual({ setupId: SID, component: "app", stage: "build", workdir: ".", command: "npm run build", timeoutMs: VERIFICATION_TIMEOUT_MS });
+  });
+
+  it("stores a localhost readiness URL as 127.0.0.1, in any case", async () => {
+    for (const url of ["http://localhost:3000/health", "http://LOCALHOST:3000/health"]) {
+      const root = await folder();
+      expect((await setupApply(root, full("verify", { component: { ...comp(), build: BUILD_PENDING, verify: VERIFY_PENDING(url) } }))).exitCode).toBe(0);
+      const spec = ((await ticketFile(root, "T-002")).setup as { verification: { spec: Record<string, unknown> } }).verification.spec;
+      expect([spec.host, spec.port, spec.readinessPath]).toEqual(["127.0.0.1", 3000, "/health"]);
+    }
   });
 
   it("creates the VERIFY establishment with the endpoint from its readiness URL", async () => {

@@ -187,7 +187,7 @@ export function verificationSpec(p: SetupPayload, t: SetupPayload["tickets"][num
       return { ...base, stage: "build", command: comp.build!.command, timeoutMs: VERIFICATION_TIMEOUT_MS };
     case "verify": {
       const at = readinessEndpoint(comp.verify!.readinessUrl)!;
-      return { ...base, stage: "verify", command: comp.verify!.startCommand, host: "127.0.0.1", port: at.port, readinessPath: at.path, startupTimeoutMs: VERIFY_STARTUP_TIMEOUT_MS, shutdownTimeoutMs: VERIFY_SHUTDOWN_TIMEOUT_MS };
+      return { ...base, stage: "verify", command: comp.verify!.startCommand, host: at.host, port: at.port, readinessPath: at.path, startupTimeoutMs: VERIFY_STARTUP_TIMEOUT_MS, shutdownTimeoutMs: VERIFY_SHUTDOWN_TIMEOUT_MS };
     }
   }
 }

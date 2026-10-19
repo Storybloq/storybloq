@@ -288,16 +288,37 @@ async function underHeldLock(
   let ran = false;
   let settled = false;
   const update = start(() => { ran = true; }).finally(() => { settled = true; });
-  await new Promise((r) => setTimeout(r, 400));
-  expect(settled).toBe(false);
-  expect(ran).toBe(false);
-
-  await whileHeld();
-  release();
+  // ISS-1412: a failure while the lock is held still releases it and lets the
+  // update settle, so the test reports its own error, not a hang behind the lock.
+  try {
+    await new Promise((r) => setTimeout(r, 400));
+    expect(settled).toBe(false);
+    expect(ran).toBe(false);
+    await whileHeld();
+  } finally {
+    release();
+    await Promise.allSettled([holder, update]);
+  }
   await holder;
   await update;
   expect(ran).toBe(true);
 }
+
+describe("ISS-1412 underHeldLock", () => {
+  it("H1: a throw while the lock is held reports that error, frees the lock and settles the update", async () => {
+    const root = await project();
+    let updateSettled = false;
+
+    await expect(underHeldLock(
+      root,
+      (precondition) => withProjectLock(root, { strict: true }, async () => { precondition(); })
+        .finally(() => { updateSettled = true; }),
+      async () => { throw new Error("boom while held"); },
+    )).rejects.toThrow("boom while held");
+
+    expect(updateSettled).toBe(true);
+  });
+});
 
 describe("ISS-1397 --keep-absent: presence is decided under the lock", () => {
   it("K9: a key added while the update waits is present under the lock, so 0 is written", async () => {

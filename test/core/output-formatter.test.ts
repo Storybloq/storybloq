@@ -25,7 +25,7 @@ import {
   formatRecommendations,
 } from "../../src/core/output-formatter.js";
 import { makeTicket, makeIssue, makeNote, makeLesson, makeState, makeRoadmap, makePhase } from "./test-factories.js";
-import type { NextTicketOutcome, NextTicketsOutcome } from "../../src/core/queries.js";
+import type { NextTicketOutcome, NextTicketsOutcome, WaitingInventory } from "../../src/core/queries.js";
 import type { RecommendResult } from "../../src/core/recommend.js";
 import type { TrajectoryEntry } from "../../src/core/markdown-sections.js";
 import type { ValidationResult, ValidationFinding } from "../../src/core/validation.js";
@@ -759,6 +759,8 @@ describe("all format functions produce valid JSON", () => {
 });
 
 describe("formatRecommendations", () => {
+  // T-481: recommend always reports the waiting inventory; these cases have none.
+  const NO_WAITING: WaitingInventory = { owner: [], external: [] };
   const populatedState = makeState({ tickets: [makeTicket({ id: "T-001" })] });
 
   it("markdown numbered list with reason lines", () => {
@@ -771,6 +773,7 @@ describe("formatRecommendations", () => {
       excludedCount: 0,
       excluded: [],
       unreadableHandoverCount: 0,
+      waiting: NO_WAITING,
     };
     const md = formatRecommendations(result, populatedState, "md");
     expect(md).toContain("# Recommendations");
@@ -781,14 +784,14 @@ describe("formatRecommendations", () => {
   });
 
   it("empty + populated → 'complete or blocked' message", () => {
-    const result: RecommendResult = { recommendations: [], totalCandidates: 0, excludedCount: 0, excluded: [], unreadableHandoverCount: 0 };
+    const result: RecommendResult = { recommendations: [], totalCandidates: 0, excludedCount: 0, excluded: [], unreadableHandoverCount: 0, waiting: NO_WAITING };
     const md = formatRecommendations(result, populatedState, "md");
     expect(md).toContain("No recommendations");
     expect(md).toContain("complete or blocked");
   });
 
   it("empty + empty scaffold → setup message", () => {
-    const result: RecommendResult = { recommendations: [], totalCandidates: 0, excludedCount: 0, excluded: [], unreadableHandoverCount: 0 };
+    const result: RecommendResult = { recommendations: [], totalCandidates: 0, excludedCount: 0, excluded: [], unreadableHandoverCount: 0, waiting: NO_WAITING };
     const scaffoldState = makeState();
     const md = formatRecommendations(result, scaffoldState, "md");
     expect(md).toContain("No recommendations yet");
@@ -804,6 +807,7 @@ describe("formatRecommendations", () => {
       excludedCount: 0,
       excluded: [],
       unreadableHandoverCount: 0,
+      waiting: NO_WAITING,
     };
     const json = formatRecommendations(result, populatedState, "json");
     const parsed = JSON.parse(json);
@@ -814,7 +818,7 @@ describe("formatRecommendations", () => {
   });
 
   it("JSON envelope includes isEmptyScaffold: true for scaffold", () => {
-    const result: RecommendResult = { recommendations: [], totalCandidates: 0, excludedCount: 0, excluded: [], unreadableHandoverCount: 0 };
+    const result: RecommendResult = { recommendations: [], totalCandidates: 0, excludedCount: 0, excluded: [], unreadableHandoverCount: 0, waiting: NO_WAITING };
     const scaffoldState = makeState();
     const json = formatRecommendations(result, scaffoldState, "json");
     const parsed = JSON.parse(json);
@@ -830,6 +834,7 @@ describe("formatRecommendations", () => {
       excludedCount: 0,
       excluded: [],
       unreadableHandoverCount: 0,
+      waiting: NO_WAITING,
     };
     const md = formatRecommendations(result, populatedState, "md");
     expect(md).toContain("Showing 1 of 8 candidates.");
@@ -864,6 +869,7 @@ describe("formatRecommendations", () => {
         excludedCount: 2,
         excluded: [excludedEntry("ISS-001"), excludedEntry("ISS-002")],
         unreadableHandoverCount: 1,
+        waiting: NO_WAITING,
       };
       const withoutFlag = formatRecommendations(result, populatedState, "md");
       const resultNoExtras: RecommendResult = { ...result, excludedCount: 0, excluded: [], unreadableHandoverCount: 0 };
@@ -880,6 +886,7 @@ describe("formatRecommendations", () => {
         excludedCount: 0,
         excluded: [],
         unreadableHandoverCount: 0,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).toContain("(actionable -- open, no blocking signal)");
@@ -892,6 +899,7 @@ describe("formatRecommendations", () => {
         excludedCount: 2,
         excluded: [excludedEntry("ISS-001"), excludedEntry("ISS-002")],
         unreadableHandoverCount: 0,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).toContain("## Excluded (2)");
@@ -906,6 +914,7 @@ describe("formatRecommendations", () => {
         excludedCount: 5,
         excluded: [excludedEntry("ISS-001")],
         unreadableHandoverCount: 0,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).toContain("## Excluded (5 total, showing 1)");
@@ -918,6 +927,7 @@ describe("formatRecommendations", () => {
         excludedCount: 2,
         excluded: [excludedEntry("ISS-001"), excludedEntry("ISS-002")],
         unreadableHandoverCount: 0,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).not.toContain("No recommendations");
@@ -931,6 +941,7 @@ describe("formatRecommendations", () => {
         excludedCount: 0,
         excluded: [],
         unreadableHandoverCount: 3,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).toContain("3 handover file(s) could not be read");
@@ -943,6 +954,7 @@ describe("formatRecommendations", () => {
         excludedCount: 0,
         excluded: [],
         unreadableHandoverCount: null,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).toContain("handover history could not be listed");
@@ -955,6 +967,7 @@ describe("formatRecommendations", () => {
         excludedCount: 0,
         excluded: [],
         unreadableHandoverCount: null,
+        waiting: NO_WAITING,
       };
       const md = formatRecommendations(result, populatedState, "md", true);
       expect(md).not.toContain("No recommendations");

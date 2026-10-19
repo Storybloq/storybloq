@@ -171,7 +171,7 @@ describe("handleBlockerClear", () => {
 
 // T-481 T8: blocker list names what waits on a role, from the waiting inventory.
 describe("T-481 T8: handleBlockerList lists waiting tickets and issues with their role", () => {
-  const w = (extra: Record<string, unknown>) => extra as never;
+  const w = (extra: { waitingOn: unknown }) => extra;
   const state = () => makeState({
     tickets: [
       makeTicket({ id: "T-001", ...w({ waitingOn: "owner" }) }),

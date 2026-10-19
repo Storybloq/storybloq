@@ -887,7 +887,7 @@ describe("ISS-1112: unphased fall-through", () => {
 // once the field is cleared.
 describe("T-481 T5: the next-ticket candidate filters skip waiting tickets", () => {
   const roadmap2 = () => makeRoadmap([makePhase({ id: "p1" }), makePhase({ id: "p2" })]);
-  const w = (extra: Record<string, unknown>) => extra as never;
+  const w = (extra: { waitingOn: unknown }) => extra;
 
   for (const wait of ["owner", "external"] as const) {
     it(`nextTicket, phased (${wait}): skips the waiting ticket, offers the control, and offers it once cleared`, () => {
@@ -945,7 +945,7 @@ describe("T-481 T5: the next-ticket candidate filters skip waiting tickets", () 
 // unfinished item that waits, with no regard to blockers, phases, claims,
 // earmarks, in-progress status or the requested count.
 describe("T-481 T5i: waitingInventory and the ticket next listing", () => {
-  const w = (extra: Record<string, unknown>) => extra as never;
+  const w = (extra: { waitingOn: unknown }) => extra;
   const ids = (xs: readonly { id: string }[]) => xs.map((x) => x.id).sort();
   const earmark = {
     stage: "assigned", holderRole: "worker", holderSession: "11111111-1111-4111-8111-111111111111",

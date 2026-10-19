@@ -1933,7 +1933,7 @@ describe("T-481 B7: computeActionability tier-1 precedence on overlapping states
 describe("T-481 T6: waiting items in recommend", () => {
   const noDispositions = new Map<string, TrajectoryDisposition>();
   const ctx = (state: ProjectState) => ({ state, crossNodeRefStatuses: undefined, latestDispositionById: noDispositions });
-  const w = (extra: Record<string, unknown>) => extra as never;
+  const w = (extra: { waitingOn: unknown }) => extra;
   const earmark = {
     stage: "assigned", holderRole: "worker", holderSession: "11111111-1111-4111-8111-111111111111",
     reservedBy: { client: "claude", id: "test-session" }, arrangementId: "a-0123456789abcdef",

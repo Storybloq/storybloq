@@ -24,7 +24,7 @@ function prior(extra: Rec = {}): Rec {
 
 describe("T-481 T2: touchUpdated", () => {
   it("a changed field stamps the given date", () => {
-    expect(touchUpdated({ ...prior(), title: "New" }, prior(), DAY).updatedDate).toBe(DAY);
+    expect(touchUpdated<Rec>({ ...prior(), title: "New" }, prior(), DAY).updatedDate).toBe(DAY);
   });
 
   it("a no-op write does not stamp", () => {
@@ -82,7 +82,7 @@ describe("T-481 T2: touchUpdated", () => {
   });
 
   it("returns a copy and leaves its inputs alone", () => {
-    const next = { ...prior(), title: "New" };
+    const next: Rec = { ...prior(), title: "New" };
     const out = touchUpdated(next, prior(), DAY);
     expect(next.updatedDate).toBe("2020-01-01");
     expect(out).not.toBe(next);

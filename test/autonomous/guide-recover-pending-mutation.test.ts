@@ -850,7 +850,7 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
       const conflicts = eventsOfType(pick.sessDir, "mutation_conflict");
       expect(conflicts.length).toBe(1);
       // Refused as malformed at recognition, never reaching the replay.
-      expect((conflicts[0].data as Record<string, unknown>).reason).toBe("malformed-marker");
+      expect((conflicts[0]!.data as Record<string, unknown>).reason).toBe("malformed-marker");
     });
   }
 
@@ -869,7 +869,7 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
       expect(hoisted.writeIssueCalls.length).toBe(0);
       const conflicts = eventsOfType(pick.sessDir, "mutation_conflict");
       expect(conflicts.length).toBe(1);
-      expect((conflicts[0].data as Record<string, unknown>).reason).toBe("malformed-marker");
+      expect((conflicts[0]!.data as Record<string, unknown>).reason).toBe("malformed-marker");
     });
   }
 

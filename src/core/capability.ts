@@ -775,8 +775,19 @@ async function readPartialClone(root: string, signal: AbortSignal, countCall: ()
  * permanently unstampable for that user. It is the safe direction, and the
  * detail quotes the warning so they can see the cause.
  *
- * Residual (ISS-1279): an unreadable pack file is byte-identical to an absent
- * object at git's interface, so it still reads as absent.
+ * Exit 1 with EMPTY stderr is not yet proof of absence (ISS-1279): an
+ * unreadable pack file answers the resolve exactly as an absent object does.
+ * `rev-parse --disambiguate=<sha>` separates them, from the indexes alone: it
+ * lists an object whose pack data cannot be opened, and lists nothing for an
+ * absent sha, a shallow boundary or a never-fetched partial-clone object. It
+ * never fetches. Absence therefore needs the listing to have run, exited 0,
+ * printed nothing on stderr (tested for presence only: the handler ignores the
+ * enumeration's own return value, so trouble can still exit 0) and listed no
+ * object with the checkpoint's prefix. A listed object is incomplete.
+ *
+ * Residual: a pack whose .idx is unreadable is invisible to every git command
+ * (git treats the pack as not there), so only a direct object-store probe
+ * could see it, and that probe is rejected: it makes absence a claim we own.
  */
 async function classifyUnresolved(
   root: string,
@@ -790,6 +801,18 @@ async function classifyUnresolved(
     return { kind: "incomplete", detail: `git could not read checkpoint ${sha} (exit ${resolved.exitCode})${gitEvidence(resolved)}` };
   }
   if (resolved.stderr.length === 0) {
+    countCall();
+    const listed = await runGit(root, ["rev-parse", `--disambiguate=${sha}`], signal, LOCAL_OBJECTS_ONLY);
+    if (!listed.ok || listed.exitCode !== 0 || listed.stderr.length > 0) {
+      const exit = listed.exitCode === null || listed.exitCode === 0 ? "" : ` (exit ${listed.exitCode})`;
+      return { kind: "incomplete", detail: `git could not list checkpoint ${sha} in its object store${exit}${gitEvidence(listed)}` };
+    }
+    if (listed.stdout.split("\n").some((line) => line.trim().startsWith(sha))) {
+      return {
+        kind: "incomplete",
+        detail: `git lists checkpoint ${sha} in its object store but cannot read it (an unreadable pack file looks like this)`,
+      };
+    }
     return {
       kind: "unverifiable",
       detail: `git could not find checkpoint ${sha} in this repository (a shallow clone, or a commit rebased away and garbage-collected, looks like this): re-inspect and re-stamp`,
@@ -807,7 +830,7 @@ async function classifyUnresolved(
 /**
  * Three subprocesses per DISTINCT checkpoint, whatever the entry count: resolve
  * the checkpoint, prove it is an ancestor, diff the union of the group's entry
- * points. A failed resolve costs at most one more, and so does a failed diff. A tree diff between two commits is independent of commit order,
+ * points. A failed resolve costs at most one more (a listing or a type probe), and so does a failed diff. A tree diff between two commits is independent of commit order,
  * branch topology and merge commits, which is why this is a diff rather than a
  * log walk: a change introduced by a merge resolution shows up here and would
  * not show up in a first-parent log.

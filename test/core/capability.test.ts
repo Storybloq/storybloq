@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, renameSync, unlinkSync, chmodSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import {
   checkCapabilities,
   matchCapabilities,
@@ -746,7 +746,7 @@ describe("checkCapabilities: a checkpoint that does not resolve claims only what
     return { report, entry: report.entries[0]!, detail: report.entries[0]!.results[0]?.detail };
   }
 
-  it("git finding no such object is unverifiable and stampable, and costs one resolve", async () => {
+  it("git finding no such object is unverifiable and stampable, and costs one resolve and one listing", async () => {
     const { root } = twoCommits();
     const absent = "d".repeat(40);
     const { report, entry, detail } = await checkAt(root, absent);
@@ -756,7 +756,8 @@ describe("checkCapabilities: a checkpoint that does not resolve claims only what
     );
     expect(isStampable(entry)).toBe(true);
     expect(report.unchecked).toEqual([]);
-    expect(report.gitCalls).toBe(2);
+    // HEAD, the resolve, and the listing that proves the absence (ISS-1279).
+    expect(report.gitCalls).toBe(3);
   });
 
   it("an abbreviated sha git cannot find is the same finding", async () => {
@@ -859,6 +860,109 @@ describe("checkCapabilities: a checkpoint that does not resolve claims only what
     }
   });
 
+  // ISS-1279. An unreadable PACK answers the resolve exactly as an absent
+  // object does (exit 1, empty stderr). The checkpoint gets a pack of its own
+  // and HEAD another, so only the checkpoint's pack is made unreadable; each
+  // row asserts HEAD still resolves, or the row would prove the HEAD branch.
+  function splitPacks(): { root: string; base: string; basePack: string } {
+    const root = newRepo();
+    write(root, "src/core/a.ts", "one");
+    const base = commit(root, "base");
+    git(root, ["repack", "-a", "-d", "-q"]);
+    write(root, "src/core/a.ts", "two");
+    commit(root, "edit");
+    git(root, ["repack", "-d", "-q"]);
+    const packDir = join(root, ".git", "objects", "pack");
+    const holding = readdirSync(packDir)
+      .filter((f) => f.endsWith(".idx"))
+      .filter((f) => execFileSync("git", ["-C", root, "show-index"], { input: readFileSync(join(packDir, f)), env: GIT_ENV, encoding: "utf-8", stdio: "pipe" }).includes(base));
+    expect(holding).toHaveLength(1);
+    return { root, base, basePack: join(packDir, holding[0]!.replace(/\.idx$/, ".pack")) };
+  }
+
+  /** A clone that reads every object through an alternate pointing at `origin`. */
+  function sharedClone(origin: string): string {
+    const parent = mkdtempSync(join(tmpdir(), "capability-alt-"));
+    roots.push(parent);
+    git(parent, ["clone", "-q", "--shared", origin, "clone"]);
+    return join(parent, "clone");
+  }
+
+  async function withUnreadable<T>(pack: string, headRoot: string, body: () => Promise<T>, env: Record<string, string> = {}): Promise<T> {
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    chmodSync(pack, 0o000);
+    Object.assign(process.env, env);
+    try {
+      execFileSync("git", ["-C", headRoot, "rev-parse", "--verify", "HEAD^{commit}"], { env: { ...GIT_ENV, ...env }, stdio: "pipe" });
+      return await body();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      chmodSync(pack, 0o444);
+    }
+  }
+
+  function expectListedButUnreadable(report: Awaited<ReturnType<typeof checkCapabilities>>, base: string): void {
+    const entry = report.entries[0]!;
+    expect(codesFor(report, "cap-core")).toEqual(["capability_check_incomplete"]);
+    expect(entry.results[0]!.detail).toBe(
+      `git lists checkpoint ${base} in its object store but cannot read it (an unreadable pack file looks like this)`,
+    );
+    expect(isStampable(entry)).toBe(false);
+    expect(report.unchecked).toEqual(["cap-core"]);
+  }
+
+  skipIfRoot("a checkpoint in a pack this process cannot read is incomplete, not absent", async () => {
+    const { root, base, basePack } = splitPacks();
+    const { report } = await withUnreadable(basePack, root, () => checkAt(root, base));
+    expectListedButUnreadable(report, base);
+  });
+
+  skipIfRoot("the same through a multi-pack-index", async () => {
+    const { root, base, basePack } = splitPacks();
+    git(root, ["multi-pack-index", "write"]);
+    expect(readdirSync(join(root, ".git", "objects", "pack"))).toContain("multi-pack-index");
+    const { report } = await withUnreadable(basePack, root, () => checkAt(root, base));
+    expectListedButUnreadable(report, base);
+  });
+
+  skipIfRoot("the same through an absolute alternate", async () => {
+    const { root: origin, base, basePack } = splitPacks();
+    const root = sharedClone(origin);
+    expect(readFileSync(join(root, ".git", "objects", "info", "alternates"), "utf-8").trim()).toMatch(/^\/.*\.git\/objects$/);
+    const { report } = await withUnreadable(basePack, root, () => checkAt(root, base));
+    expectListedButUnreadable(report, base);
+  });
+
+  skipIfRoot("the same through a relative alternate", async () => {
+    const { root: origin, base, basePack } = splitPacks();
+    const root = sharedClone(origin);
+    const objects = join(root, ".git", "objects");
+    writeFileSync(join(objects, "info", "alternates"), `${relative(objects, join(origin, ".git", "objects"))}\n`);
+    const { report } = await withUnreadable(basePack, root, () => checkAt(root, base));
+    expectListedButUnreadable(report, base);
+  });
+
+  skipIfRoot("the same through GIT_ALTERNATE_OBJECT_DIRECTORIES", async () => {
+    const { root: origin, base, basePack } = splitPacks();
+    const root = sharedClone(origin);
+    unlinkSync(join(root, ".git", "objects", "info", "alternates"));
+    const env = { GIT_ALTERNATE_OBJECT_DIRECTORIES: join(origin, ".git", "objects") };
+    const { report } = await withUnreadable(basePack, root, () => checkAt(root, base), env);
+    expectListedButUnreadable(report, base);
+  });
+
+  skipIfRoot("the same through GIT_OBJECT_DIRECTORY", async () => {
+    const { root: origin, base, basePack } = splitPacks();
+    const root = sharedClone(origin);
+    unlinkSync(join(root, ".git", "objects", "info", "alternates"));
+    const env = { GIT_OBJECT_DIRECTORY: join(origin, ".git", "objects") };
+    const { report } = await withUnreadable(basePack, root, () => checkAt(root, base), env);
+    expectListedButUnreadable(report, base);
+  });
+
   function resolveAnswering(resolve: GitOutcome, probe?: GitOutcome): { run: GitRunner; probes: () => number } {
     let probes = 0;
     const git = controlledGit((args) => {
@@ -898,6 +1002,26 @@ describe("checkCapabilities: a checkpoint that does not resolve claims only what
       const { report } = await checkAt(root, base, git.run);
       expect(codesFor(report, "cap-core")).toEqual(["capability_check_incomplete"]);
       expect(git.probes()).toBe(1);
+    }
+  });
+
+  it("a listing that fails, is killed, or prints on stderr is incomplete, never absent (ISS-1279)", async () => {
+    const { root, base } = twoCommits();
+    for (const listing of [outcome(128, "", "fatal: bad object store"), outcome(null), outcome(0, "", "warning: trouble while listing")]) {
+      let listings = 0;
+      const run = controlledGit((args) => {
+        if (args[0] === "rev-parse" && args.includes("--quiet")) return outcome(1);
+        if (args[0] === "rev-parse" && args[1]?.startsWith("--disambiguate=")) {
+          listings += 1;
+          return listing;
+        }
+        return null;
+      }).run;
+      const { report, entry, detail } = await checkAt(root, base, run);
+      expect(codesFor(report, "cap-core")).toEqual(["capability_check_incomplete"]);
+      expect(detail).toContain(`git could not list checkpoint ${base} in its object store`);
+      expect(isStampable(entry)).toBe(false);
+      expect(listings).toBe(1);
     }
   });
 
@@ -956,6 +1080,26 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
       renameSync(away, origin);
     }
   }
+
+  // ISS-1279: the listing that proves absence never asks the promisor. The
+  // origin stays reachable here, so a fetch would succeed and show up in the
+  // object counts.
+  it("a checkpoint commit missing from a shallow partial clone is absent and stampable, and nothing is fetched", async () => {
+    const { origin, base } = originWithHistory();
+    const root = cloneOf(origin, ["--depth", "1", "--filter=blob:none"]);
+    const local = { ...GIT_ENV, GIT_NO_LAZY_FETCH: "1" };
+    expect(() => execFileSync("git", ["-C", root, "cat-file", "-e", base], { env: local, stdio: "pipe" })).toThrow();
+    const counts = (): string =>
+      execFileSync("git", ["-C", root, "count-objects", "-v"], { env: local, encoding: "utf-8" })
+        .split("\n")
+        .filter((l) => /^(count|in-pack|packs):/.test(l))
+        .join(",");
+    const before = counts();
+    const report = await checkCapabilities(root, [capability({ checkedAt: { sha: base, date: "2026-09-20" } })]);
+    expect(codesFor(report, "cap-core")).toEqual(["capability_unverifiable_checkpoint"]);
+    expect(isStampable(report.entries[0]!)).toBe(true);
+    expect(counts()).toBe(before);
+  });
 
   it("an absent checkpoint in a partial clone is unverifiable and stampable, never incomplete", async () => {
     const { origin } = originWithHistory();
@@ -1029,12 +1173,14 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
         [
           capability({ checkedAt: { sha: base, date: "2026-09-20" } }),
           capability({ id: "cap-tree", checkedAt: { sha: tree, date: "2026-09-20" } }),
+          capability({ id: "cap-absent", checkedAt: { sha: "d".repeat(40), date: "2026-09-20" } }),
         ],
         null,
         { fetch },
       );
       expect(codesFor(report, "cap-core")).toEqual(["capability_changed"]);
       expect(codesFor(report, "cap-tree")).toEqual(["capability_unverifiable_checkpoint"]);
+      expect(codesFor(report, "cap-absent")).toEqual(["capability_unverifiable_checkpoint"]);
       const calls = readFileSync(log, "utf-8").trim().split("\n");
       const kinds = {
         head: calls.filter((c) => c.includes("rev-parse --verify HEAD^{commit}")),
@@ -1042,10 +1188,11 @@ describe("checkCapabilities: the checkpoint resolve never asks a promisor remote
         probe: calls.filter((c) => c.includes(" cat-file -t ")),
         ancestor: calls.filter((c) => c.includes(" merge-base --is-ancestor ")),
         diff: calls.filter((c) => c.includes(" diff --no-renames ")),
+        listing: calls.filter((c) => c.includes(" rev-parse --disambiguate=")),
       };
-      expect(Object.values(kinds).map((k) => k.length)).toEqual([1, 2, 1, 1, 1]);
-      expect(calls).toHaveLength(6);
-      for (const call of [...kinds.head, ...kinds.resolve, ...kinds.probe, ...kinds.ancestor]) {
+      expect(Object.values(kinds).map((k) => k.length)).toEqual([1, 3, 1, 1, 1, 1]);
+      expect(calls).toHaveLength(8);
+      for (const call of [...kinds.head, ...kinds.resolve, ...kinds.probe, ...kinds.ancestor, ...kinds.listing]) {
         expect(call.startsWith("inherited|1|unset|")).toBe(true);
       }
       expect(kinds.diff[0]!.startsWith(fetch ? "inherited|0|0|" : "inherited|1|unset|")).toBe(true);

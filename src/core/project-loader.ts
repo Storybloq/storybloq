@@ -12,7 +12,7 @@ import {
   mkdir,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync, constants as fsConstants } from "node:fs";
+import { existsSync, lstatSync, realpathSync, constants as fsConstants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
 import { recordBoardTarget } from "./board-write-recorder.js";
@@ -51,7 +51,7 @@ import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthor
 import { assertVerificationWriteAllowed, type VerificationWriteAuthority } from "./setup-verification-guard.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { applyTicketIdentityPolicy, type TicketIdentityReport } from "./ticket-counts.js";
-import { assertResolutionMetadataWrite, assertTicketResolutionWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
+import { assertResolutionMetadataWrite, assertTicketResolutionWrite, createResolutionWriteContext, misnamedOnly, ResolutionWriteContextError, type MisnamedDir, type ResolutionWriteContext } from "./resolution-write-guard.js";
 import { assertWithdrawable } from "./ticket-withdrawal.js";
 import type { ZodType } from "zod";
 
@@ -85,6 +85,11 @@ export interface LoadResult {
   readonly state: ProjectState;
   readonly warnings: readonly LoadWarning[];
   readonly fileClassifications: ReadonlyMap<string, "legacy" | "team">;
+  /**
+   * ISS-1405: for every ticket or issue id that a misnamed file claims, keyed
+   * `<dir>/<id>`, every loaded file claiming it (relative to the root, sorted).
+   */
+  readonly misnamedFiles: ReadonlyMap<string, readonly string[]>;
 }
 
 // --- Read Operations ---
@@ -246,6 +251,7 @@ export async function loadProject(
 
   // 6. Load tickets (best-effort)
   const fileClassifications = new Map<string, "legacy" | "team">();
+  const misnamedFiles = new Map<string, readonly string[]>();
   const omittedTickets: OmittedTicketRecord[] = [];
   const tickets = await loadDirectory<Ticket>(
     join(wrapDir, "tickets"),
@@ -254,7 +260,7 @@ export async function loadProject(
     warnings,
     "ticket",
     fileClassifications,
-    { omitted: omittedTickets },
+    { omitted: omittedTickets, misnamed: misnamedFiles },
   );
 
   // 7. Load issues (best-effort)
@@ -265,6 +271,7 @@ export async function loadProject(
     warnings,
     "issue",
     fileClassifications,
+    { misnamed: misnamedFiles },
   );
 
   // 7b. Load notes (best-effort)
@@ -343,7 +350,7 @@ export async function loadProject(
     }
   }
 
-  return { state, warnings, fileClassifications };
+  return { state, warnings, fileClassifications, misnamedFiles };
 }
 
 // --- Write Operations ---
@@ -426,11 +433,73 @@ export function filenameIdMismatchMessage(stem: string, id: string): string {
  * canonical file and move the redundant copy out of the directory.
  */
 export function duplicateIdMessage(id: string, dir: string, files: readonly string[]): string {
+  return `Id "${id}" is claimed by ${files.length} files: ${files.join(", ")}; only the first loads by id. ` + duplicateRecovery(id, dir);
+}
+
+function duplicateRecovery(id: string, dir: string): string {
   return (
-    `Id "${id}" is claimed by ${files.length} files: ${files.join(", ")}; only the first loads by id. ` +
     `Inspect each copy and keep what is intended: merge it into .story/${dir}/${id}.json, then move the redundant copy out of .story/${dir}/. ` +
     "Renaming a file inside the directory does not resolve a duplicate."
   );
+}
+
+/**
+ * ISS-1405: one argument for a POSIX shell, single-quoted, with an embedded
+ * `'` written as `'\''`. Nothing here runs it; the refusal prints it.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.split("'").join("'\\''")}'`;
+}
+
+/**
+ * ISS-1405: the refusal for a write to a record whose only file is misnamed
+ * and whose canonical file is absent. The rename is the whole repair, and the
+ * command is safe to paste from the project root. Exported because the Mac
+ * writer matches these bytes.
+ */
+export function misnamedRecordMessage(id: string, dir: string, file: string): string {
+  return (
+    `${id} is stored in ${file}, whose name does not match its id. Rename it, then retry. ` +
+    `From the project root: git mv -- ${shellQuote(file)} ${shellQuote(`.story/${dir}/${id}.json`)}`
+  );
+}
+
+/**
+ * ISS-1405: the refusal when a misnamed file claims an id that another file
+ * (another misnamed one, or the canonical file) is involved in too. A rename
+ * would collide or settle nothing, so no command is offered: every path is
+ * named, with the duplicate recovery.
+ */
+export function misnamedCollisionMessage(id: string, dir: string, files: readonly string[]): string {
+  return (
+    `${id} is stored in a file whose name does not match its id, and ${files.length} files are involved: ${files.join(", ")}. ` +
+    duplicateRecovery(id, dir)
+  );
+}
+
+/**
+ * ISS-1405: refuses a write or delete of `id` while a misnamed file claims it.
+ * The writers target `<id>.json`, so going ahead would leave the misnamed copy
+ * behind (a second claimant: ISS-1404's duplicate) or delete nothing. Runs
+ * before anything is written; the answer comes from the lock holder's load,
+ * or from one directory read when the writer holds only the lock.
+ */
+function assertNotMisnamed(ctx: ResolutionWriteContext, dir: MisnamedDir, id: string, target: string): void {
+  const claimants = ctx.misnamedClaimants(dir, id);
+  if (claimants.length === 0) return;
+  const canonical = `.story/${dir}/${id}.json`;
+  // Absent only on ENOENT: a probe that fails otherwise must not earn a rename hint.
+  let canonicalPresent = true;
+  try {
+    lstatSync(target);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") canonicalPresent = false;
+  }
+  if (claimants.length === 1 && !canonicalPresent) {
+    throw new ProjectLoaderError("conflict", misnamedRecordMessage(id, dir, claimants[0]!));
+  }
+  const files = canonicalPresent && !claimants.includes(canonical) ? [...claimants, canonical].sort() : claimants;
+  throw new ProjectLoaderError("conflict", misnamedCollisionMessage(id, dir, files));
 }
 
 export async function prepareTicketWrite(
@@ -449,6 +518,7 @@ export async function prepareTicketWrite(
   const wrapDir = resolve(root, ".story");
   const target = ticketFilePath(root, unstamped.id);
   await ensureEntityDir(target, wrapDir);
+  assertNotMisnamed(heldResolutionContext(root, options?.resolutionContext), "tickets", unstamped.id, target);
   const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${unstamped.id}.json`);
   const parsed = date === null ? unstamped : touchUpdated(unstamped, prior, date);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
@@ -570,6 +640,7 @@ export async function prepareIssueWrite(
   const wrapDir = resolve(root, ".story");
   const target = issueFilePath(root, unstamped.id);
   await ensureEntityDir(target, wrapDir);
+  assertNotMisnamed(heldResolutionContext(root, options?.resolutionContext), "issues", unstamped.id, target);
   // Codex F1: the read comes first, and nothing awaits between obtaining the
   // context and the decision, so the lock cannot be released in between.
   const priorText = await prepareIssueWriteSeams.readPrior(target);
@@ -933,6 +1004,7 @@ export async function deleteTicket(
 
   return withLock(wrapDir, async () => {
     await assertNoConflictsFromDisk(root);
+    assertNotMisnamed(heldResolutionContext(root, undefined), "tickets", id, targetPath);
 
     // T-537: retirement is the only way out of an owner checkpoint. Soft,
     // hard and forced deletion are all refused, whatever the mode.
@@ -1036,6 +1108,7 @@ export async function deleteIssue(
 
   return withLock(wrapDir, async () => {
     await assertNoConflictsFromDisk(root);
+    assertNotMisnamed(heldResolutionContext(root, undefined), "issues", id, targetPath);
 
     const teamModeResult = options?.hard ? false : await isTeamMode(root);
     if (teamModeResult === "error" && !options?.hard) {
@@ -1347,6 +1420,8 @@ async function withProjectLockInternal(
     }
     assertTeamWriteCapabilities(config);
     heldResolutionContext(absRoot, undefined).bindConfig(config);
+    // ISS-1405: the writers' misnamed-file check reads what this load saw.
+    heldResolutionContext(absRoot, undefined).bindMisnamed(result.misnamedFiles);
 
     if (options.strict) {
       const integrityWarning = result.warnings.find((w) =>
@@ -2076,14 +2151,15 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const roadmap = await loadSingletonFile<Roadmap>("roadmap.json", wrapDir, absRoot, RoadmapSchema);
   const warnings: LoadWarning[] = [];
   const fileClassifications = new Map<string, "legacy" | "team">();
+  const misnamedFiles = new Map<string, readonly string[]>();
   const omittedTickets: OmittedTicketRecord[] = [];
-  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets });
-  const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications);
+  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets, misnamed: misnamedFiles });
+  const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications, { misnamed: misnamedFiles });
   const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings, "note", fileClassifications);
   const lessons = await loadDirectory<Lesson>(join(wrapDir, "lessons"), absRoot, LessonSchema, warnings, "lesson", fileClassifications);
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
   const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames, omittedTickets });
-  return { state, warnings, fileClassifications };
+  return { state, warnings, fileClassifications, misnamedFiles };
 }
 
 // --- Filename Classification ---
@@ -2188,7 +2264,7 @@ async function loadDirectory<T>(
   warnings: LoadWarning[],
   entityType: EntityType,
   classifications: Map<string, "legacy" | "team">,
-  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[] } = {},
+  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[]; misnamed?: Map<string, readonly string[]> } = {},
 ): Promise<T[]> {
   extras.signal?.throwIfAborted();
   if (!existsSync(dirPath)) return [];
@@ -2294,6 +2370,8 @@ async function loadDirectory<T>(
     const message = duplicateIdMessage(id, entityDir, sorted);
     for (const file of sorted) warnings.push({ file, message, type: "duplicate_id" });
   }
+  // ISS-1405: the ids a misnamed file claims, for the writers' refusal.
+  if (extras.misnamed) for (const [id, files] of misnamedOnly(claimants)) extras.misnamed.set(`${entityDir}/${id}`, files);
 
   return results;
 }

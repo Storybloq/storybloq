@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,7 @@ import {
   authoriseTicketBytes,
   invalidateResolutionWriteContext,
   loadProject,
+  misnamedCollisionMessage,
   prepareTicketWrite,
   runTransactionUnlocked,
   serializeJSON,
@@ -35,6 +36,8 @@ import { handleResolve } from "../../src/cli/commands/conflicts.js";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { todayISO } from "../../src/cli/helpers.js";
 import type { Ticket } from "../../src/models/ticket.js";
+import { withdrawalRefusals } from "../../src/core/ticket-withdrawal.js";
+import { makeState, makeTicket } from "./test-factories.js";
 
 // --- boards (same shape as ticket-resolution-kind.test.ts) -------------------
 
@@ -99,6 +102,8 @@ const ticketPath = (root: string, file: string) => join(root, ".story", "tickets
 const writeRaw = (root: string, t: Record<string, unknown>, file = String(t.id)) => writeFileSync(ticketPath(root, file), serializeJSON(t));
 const bytes = (root: string, file: string) => readFileSync(ticketPath(root, file), "utf-8");
 const readTicket = (root: string, file: string) => JSON.parse(bytes(root, file)) as Record<string, unknown>;
+const ticketTree = (root: string) =>
+  Object.fromEntries(readdirSync(join(root, ".story", "tickets")).sort().map((f) => [f, bytes(root, f)]));
 const noJournal = (root: string) => expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
 
 async function refused(root: string, file: string, run: () => Promise<unknown>): Promise<Error> {
@@ -200,13 +205,34 @@ describe("T-486 U2-6 ledger refusals", () => {
     expect(err.message).toContain("T-012 blockedBy umbrella T-002 (ancestor of T-004)");
   });
 
-  it("F6: another file claiming the withdrawn ticket's id keeps its edge to the umbrella ancestor", async () => {
+  // ISS-1405: a second file claiming the same id is misnamed, so the write is
+  // refused before the withdrawal check runs (project-loader.ts, prepareTicketWrite).
+  // The identity skip's same-id case is pinned below the write path, on the graph.
+  it("F6: a misnamed claimant pre-empts the withdrawal", async () => {
     const root = await board("non-team", [t("T-002"), done("T-004", { parentTicket: "T-002" })]);
     writeRaw(root, t("T-004", { blockedBy: ["T-002"] }), "T-004-b");
+    const before = ticketTree(root);
     const err = await refused(root, "T-004", () =>
       withProjectLock(root, { strict: false }, () =>
         writeTicketUnlocked(withdrawn("T-004", "Superseded", { parentTicket: "T-002" }) as unknown as Ticket, root)));
+    expect(err.message).toBe(misnamedCollisionMessage("T-004", "tickets", [".story/tickets/T-004-b.json", ".story/tickets/T-004.json"]));
+    expect(ticketTree(root)).toEqual(before);
+  });
+
+  it("a second record with the same display id keeps its edges", async () => {
+    const hashId = "t-0000000000000e06";
+    const root = await board("non-team", [t("T-002"), done("T-004", { parentTicket: "T-002" })]);
+    writeRaw(root, t(hashId, { displayId: "T-004", blockedBy: ["T-002"] }));
+    const err = await refused(root, "T-004", () =>
+      writeTicket(withdrawn("T-004", "Superseded", { parentTicket: "T-002" }) as unknown as Ticket, root));
     expect(err.message).toContain("T-004 blockedBy umbrella T-002 (ancestor of T-004)");
+  });
+
+  it("only the record being withdrawn is skipped: another record with the same id keeps its edge", () => {
+    const withdrawing = makeTicket({ id: "T-004", status: "complete", completedDate: DAY, parentTicket: "T-002" });
+    const other = makeTicket({ id: "T-004", blockedBy: ["T-002"] });
+    const graph = makeState({ tickets: [makeTicket({ id: "T-002" }), withdrawing, other] });
+    expect(withdrawalRefusals(graph, withdrawing)).toEqual(["T-004 blockedBy umbrella T-002 (ancestor of T-004)"]);
   });
 
   it("D3: a deleted dependent does not block", async () => {

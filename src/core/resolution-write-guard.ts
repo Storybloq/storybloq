@@ -30,8 +30,8 @@
  * `git config` read per driver name and one `git check-attr` per path.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Config } from "../models/config.js";
 import { ProjectLoaderError } from "./errors.js";
@@ -78,7 +78,17 @@ export interface ResolutionWriteContext {
   readiness(relPath: string): ReturnType<typeof resolutionWritesReadiness>;
   /** The lock holder's loaded config replaces the lazy read (A4). */
   bindConfig(config: Pick<Config, "team">): void;
-  /** Drops the config and every git answer: the operation changed what they were derived from. */
+  /**
+   * ISS-1405: every file claiming `id` in `.story/<dir>/` (relative to the
+   * root, sorted) when at least one of them is misnamed; empty otherwise.
+   * Throws when the directory or one of its records cannot be read, because
+   * then the answer is unknown and a write must not guess. The one exception
+   * is a ticket's own unparseable file, which priorForGuard refuses instead.
+   */
+  misnamedClaimants(dir: MisnamedDir, id: string): readonly string[];
+  /** The lock holder's loaded map (`<dir>/<id>` to claimants) replaces the lazy directory read. */
+  bindMisnamed(map: ReadonlyMap<string, readonly string[]>): void;
+  /** Drops the config, the misnamed-file answers and every git answer: the operation changed what they were derived from. */
   invalidate(): void;
   /** Marks the context released. Called by the lock in its finally, before the lock is released. */
   release(): void;
@@ -93,6 +103,9 @@ export interface ResolutionWriteContext {
  * was released or no longer owns `.story/.lock`. `stale`: the answers the
  * decision read were dropped by `invalidate`.
  */
+/** ISS-1405: the ledger directories whose writers target `<id>.json`. */
+export type MisnamedDir = "tickets" | "issues";
+
 export type PreparedVerdict = "current" | "missing" | "released" | "changed" | "stale";
 
 interface PreparedToken {
@@ -124,6 +137,7 @@ interface SharedState {
   generation: number;
   ownsLock: () => boolean;
   config: { value: Pick<Config, "team"> | null } | null;
+  misnamed: { bound: ReadonlyMap<string, readonly string[]> } | { read: Map<MisnamedDir, MisnamedRead> };
   memo: Map<string, { out: string } | { err: unknown }>;
 }
 
@@ -134,7 +148,7 @@ interface SharedState {
  * `withLock`). Nothing is read unless a kind actually changes.
  */
 export function createResolutionWriteContext(root: string, git: GitRead = gitRead, ownsLock: () => boolean = () => true): ResolutionWriteContext {
-  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, memo: new Map() }, git);
+  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, misnamed: { read: new Map() }, memo: new Map() }, git);
 }
 
 function contextOver(root: string, shared: SharedState, git: GitRead): ResolutionWriteContext {
@@ -199,14 +213,34 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     bindConfig(config) {
       shared.config = { value: config };
     },
+    misnamedClaimants(dir, id) {
+      if ("bound" in shared.misnamed) return shared.misnamed.bound.get(`${dir}/${id}`) ?? [];
+      let read = shared.misnamed.read.get(dir);
+      if (read === undefined) {
+        read = readMisnamedForGuard(root, dir);
+        shared.misnamed.read.set(dir, read);
+      }
+      // A ticket's own file (<id>.json) that does not parse is left to priorForGuard, which every ticket write and
+      // delete runs on its target and which refuses it with the repair hint. Tickets only: the issue paths have no
+      // own-file refusal, so there an unparseable own file still makes the answer unknown.
+      const own = `${id}.json`;
+      const bad = read.unparseable.find((u) => !(dir === "tickets" && u.entry === own));
+      if (bad) throw unknownMisnamed(dir, `cannot read or parse ${bad.relPath}`, bad.err);
+      return read.claimants.get(id) ?? [];
+    },
+    bindMisnamed(map) {
+      shared.misnamed = { bound: map };
+    },
     invalidate() {
       shared.config = null;
+      shared.misnamed = { read: new Map() };
       shared.memo.clear();
       shared.generation += 1;
     },
     release() {
       shared.released = true;
       shared.config = null;
+      shared.misnamed = { read: new Map() };
       shared.memo.clear();
     },
     withGit(next) {
@@ -223,6 +257,74 @@ function readConfigForGuard(root: string): Pick<Config, "team"> | null {
   } catch {
     return null;
   }
+}
+
+interface MisnamedRead {
+  readonly claimants: ReadonlyMap<string, readonly string[]>;
+  /** Records that were read but do not parse; which ids they make unknown is decided per id. */
+  readonly unparseable: readonly { entry: string; relPath: string; err: unknown }[];
+}
+
+const unknownMisnamed = (dir: MisnamedDir, what: string, err: unknown) =>
+  new ProjectLoaderError(
+    "io_error",
+    `Cannot tell whether a misnamed file in .story/${dir}/ claims this id: ${what}; the write is refused until it can be read`,
+    err,
+  );
+
+/**
+ * ISS-1405: the unbound answer for one directory, read the way the loader
+ * reads it (dot files and non-JSON skipped). Unlike `readConfigForGuard` it
+ * never reads a failure as "nothing there": a missing directory is empty,
+ * and any other failure to enumerate or read refuses, naming the cause. A
+ * record that does not parse is kept, and `misnamedClaimants` decides which
+ * ids it makes unknown. A record the loader's schema would refuse still
+ * claims its id here, which can only refuse more.
+ */
+function readMisnamedForGuard(root: string, dir: MisnamedDir): MisnamedRead {
+  const dirPath = join(root, ".story", dir);
+  const unknown = (what: string, err: unknown) => unknownMisnamed(dir, what, err);
+  let entries: string[];
+  try {
+    entries = readdirSync(dirPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { claimants: new Map(), unparseable: [] };
+    throw unknown(`cannot enumerate .story/${dir}`, err);
+  }
+  const claimants = new Map<string, string[]>();
+  const unparseable: { entry: string; relPath: string; err: unknown }[] = [];
+  for (const entry of entries.sort()) {
+    if (entry.startsWith(".") || extname(entry) !== ".json") continue;
+    const relPath = relative(root, join(dirPath, entry));
+    let text: string;
+    try {
+      text = readFileSync(join(dirPath, entry), "utf-8");
+    } catch (err) {
+      throw unknown(`cannot read or parse ${relPath}`, err);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      unparseable.push({ entry, relPath, err });
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null || typeof (parsed as Loose).id !== "string") continue;
+    const id = (parsed as Loose).id as string;
+    const files = claimants.get(id);
+    if (files) files.push(relPath);
+    else claimants.set(id, [relPath]);
+  }
+  return { claimants: misnamedOnly(claimants), unparseable };
+}
+
+/** ISS-1405: the claimants of every id at least one of whose files is misnamed, keyed by id, each list sorted. */
+export function misnamedOnly(claimants: ReadonlyMap<string, readonly string[]>): Map<string, readonly string[]> {
+  const out = new Map<string, readonly string[]>();
+  for (const [id, files] of claimants) {
+    if (files.some((f) => basename(f, ".json") !== id)) out.set(id, [...files].sort());
+  }
+  return out;
 }
 
 const has = (o: Loose, k: string) => Object.prototype.hasOwnProperty.call(o, k);

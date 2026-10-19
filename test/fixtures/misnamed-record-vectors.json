@@ -1,0 +1,289 @@
+{
+  "comment": "ISS-1405: shared with the Mac writer. Each case lists the files of one ledger directory and the record a write or delete targets (`target`, the canonical id; `ref`, the id or display id a user passes). `hint`: refused with misnamedRecordMessage(target, dir, files[0]). `collision`: refused with misnamedCollisionMessage(target, dir, files). `allowed`: the write goes ahead. `duplicate`: the load also carries ISS-1404's duplicate_id, so a strict lock refuses first with that message. The unknown case (a directory or record that cannot be read) refuses too; it is built by the test, not listed here.",
+  "cases": [
+    {
+      "name": "legacy ticket under another name",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "T-001 old.json",
+          "id": "T-001"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/tickets/T-001 old.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "legacy issue under another name",
+      "dir": "issues",
+      "files": [
+        {
+          "name": "ISS-001 old.json",
+          "id": "ISS-001"
+        }
+      ],
+      "target": "ISS-001",
+      "ref": "ISS-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/issues/ISS-001 old.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "hash ticket under another hash name, by display id",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "t-0000000000000009.json",
+          "id": "t-0000000000000001",
+          "displayId": "T-001"
+        }
+      ],
+      "target": "t-0000000000000001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/tickets/t-0000000000000009.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "hash issue under another hash name, by display id",
+      "dir": "issues",
+      "files": [
+        {
+          "name": "i-0000000000000009.json",
+          "id": "i-0000000000000001",
+          "displayId": "ISS-001"
+        }
+      ],
+      "target": "i-0000000000000001",
+      "ref": "ISS-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/issues/i-0000000000000009.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "a space in the name",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "T-001 a b.json",
+          "id": "T-001"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/tickets/T-001 a b.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "a single quote in the name",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "T-001 it's.json",
+          "id": "T-001"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/tickets/T-001 it's.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "a command substitution in the name",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "T-001 $(echo INJECTED).json",
+          "id": "T-001"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/tickets/T-001 $(echo INJECTED).json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "a semicolon in the name",
+      "dir": "issues",
+      "files": [
+        {
+          "name": "ISS-001; echo INJECTED.json",
+          "id": "ISS-001"
+        }
+      ],
+      "target": "ISS-001",
+      "ref": "ISS-001",
+      "expected": {
+        "verdict": "hint",
+        "files": [
+          ".story/issues/ISS-001; echo INJECTED.json"
+        ]
+      },
+      "duplicate": false
+    },
+    {
+      "name": "two misnamed files, no canonical file",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "a.json",
+          "id": "T-001"
+        },
+        {
+          "name": "b.json",
+          "id": "T-001"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "collision",
+        "files": [
+          ".story/tickets/a.json",
+          ".story/tickets/b.json"
+        ]
+      },
+      "duplicate": true
+    },
+    {
+      "name": "a misnamed file beside the canonical one",
+      "dir": "issues",
+      "files": [
+        {
+          "name": "ISS-001.json",
+          "id": "ISS-001"
+        },
+        {
+          "name": "old.json",
+          "id": "ISS-001"
+        }
+      ],
+      "target": "ISS-001",
+      "ref": "ISS-001",
+      "expected": {
+        "verdict": "collision",
+        "files": [
+          ".story/issues/ISS-001.json",
+          ".story/issues/old.json"
+        ]
+      },
+      "duplicate": true
+    },
+    {
+      "name": "hash misnamed beside the canonical hash file",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "t-0000000000000001.json",
+          "id": "t-0000000000000001",
+          "displayId": "T-001"
+        },
+        {
+          "name": "t-0000000000000009.json",
+          "id": "t-0000000000000001",
+          "displayId": "T-001"
+        }
+      ],
+      "target": "t-0000000000000001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "collision",
+        "files": [
+          ".story/tickets/t-0000000000000001.json",
+          ".story/tickets/t-0000000000000009.json"
+        ]
+      },
+      "duplicate": true
+    },
+    {
+      "name": "legacy ticket correctly named",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "T-001.json",
+          "id": "T-001"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "allowed",
+        "files": []
+      },
+      "duplicate": false
+    },
+    {
+      "name": "hash issue correctly named, by display id",
+      "dir": "issues",
+      "files": [
+        {
+          "name": "i-0000000000000001.json",
+          "id": "i-0000000000000001",
+          "displayId": "ISS-001"
+        }
+      ],
+      "target": "i-0000000000000001",
+      "ref": "ISS-001",
+      "expected": {
+        "verdict": "allowed",
+        "files": []
+      },
+      "duplicate": false
+    },
+    {
+      "name": "another record misnamed, this one correctly named",
+      "dir": "tickets",
+      "files": [
+        {
+          "name": "T-001.json",
+          "id": "T-001"
+        },
+        {
+          "name": "old.json",
+          "id": "T-002"
+        }
+      ],
+      "target": "T-001",
+      "ref": "T-001",
+      "expected": {
+        "verdict": "allowed",
+        "files": []
+      },
+      "duplicate": false
+    }
+  ]
+}

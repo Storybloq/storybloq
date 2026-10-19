@@ -160,6 +160,65 @@ describe("a VERIFY that does not verify writes nothing and prints its run", () =
     await fails(root, new RegExp(`^Verification failed: app verify: not ready: no 2xx from http://127\\.0\\.0\\.1:${port}/health within 700 ms\\.`));
   });
 
+  /** A run with slow lsof and ps from `slowFrom` on, Q = 1000 ms and a 1500 ms startup; returns the outcome and ms from the port check to the shutdown. */
+  async function overtaken(port: number, root: string, at: "observation-1" | "observation-2" | "after-2"): Promise<{ lines: string[]; ms: number }> {
+    const fast = join(root, "fast-lsof");
+    await writeFile(join(root, "slow-lsof"), `#!/bin/sh\nsleep 0.5\nexec ${REAL.lsofPath} "$@"\n`, { mode: 0o755 });
+    await writeFile(join(root, "slow-ps"), `#!/bin/sh\nsleep 2\nexec ${REAL.psPath} "$@"\n`, { mode: 0o755 });
+    await writeFile(fast, `#!/bin/sh\nexec ${REAL.lsofPath} "$@"\n`, { mode: 0o755 });
+    serveSeams.lsofPath = fast;
+    serveSeams.ownershipQueryMs = 1000;
+    await editSpec(root, { startupTimeoutMs: 1500 });
+    let t0 = 0;
+    let t1 = 0;
+    const slow = async (): Promise<void> => {
+      await new Promise((r) => setTimeout(r, Math.max(0, t0 + 1450 - Date.now())));
+      serveSeams.lsofPath = join(root, "slow-lsof");
+      serveSeams.psPath = join(root, "slow-ps");
+    };
+    serveSeams.afterPortCheck = () => { t0 = Date.now(); };
+    if (at === "observation-1") serveSeams.beforeOwnership1 = slow;
+    if (at === "observation-2") serveSeams.afterResponse = slow;
+    if (at === "after-2") serveSeams.afterOwnership2 = async () => { await new Promise((r) => setTimeout(r, Math.max(0, t0 + 1600 - Date.now()))); };
+    serveSeams.duringShutdown = () => { t1 = Date.now(); };
+    const lines = await fails(root, new RegExp(`^Verification failed: app verify: not ready: no 2xx from http://127\\.0\\.0\\.1:${port}/health within 1500 ms\\.`));
+    return { lines, ms: t1 - t0 };
+  }
+
+  it("an observation the deadline overtakes is not-ready, and readiness ends by the startup timeout plus one observation bound", async () => {
+    const port = await freePort();
+    const { ms } = await overtaken(port, await ready(port), "observation-1");
+    expect(ms).toBeLessThanOrEqual(1500 + 1000 + 300);
+  });
+
+  it("a 2xx in time whose second observation the deadline overtakes is not-ready, within the same bound", async () => {
+    const port = await freePort();
+    const { ms } = await overtaken(port, await ready(port), "observation-2");
+    expect(ms).toBeLessThanOrEqual(1500 + 1000 + 300);
+  });
+
+  it("a 2xx in time confirmed only after the deadline is not-ready", async () => {
+    const port = await freePort();
+    await overtaken(port, await ready(port), "after-2");
+  });
+
+  it("a launcher that leaves its server behind and exits is exited-early, though the server answers", async () => {
+    const port = await freePort();
+    await fails(await ready(port, `${serve(port)} & exit 0`), /^Verification failed: app verify: exited early: it exited with code 0 before answering\./);
+    await listen(port, "127.0.0.1");
+  });
+
+  it("a leader that dies between the 2xx and the second observation is exited-early, though its server still owns the port", async () => {
+    const port = await freePort();
+    const root = await ready(port, `${serve(port)} & echo $$ > leader.pid; wait`);
+    serveSeams.afterResponse = async () => {
+      process.kill(Number(await readFile(join(root, "leader.pid"), "utf-8")), "SIGKILL");
+      await new Promise((r) => setTimeout(r, 200));
+    };
+    await fails(root, /^Verification failed: app verify: exited early: it ended by SIGKILL before its answer was confirmed\./);
+    await listen(port, "127.0.0.1");
+  });
+
   it("a listener outside the group is foreign-listener, and is never signalled", async () => {
     const port = await freePort();
     const root = await ready(port, "sleep 30");

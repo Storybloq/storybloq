@@ -6,7 +6,7 @@
  */
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { claudeArgs, codexArgs, parseReviewerOutput, probeBackend, reviewerEnv, runReviewer, SETUP_REVIEW_SCHEMA } from "../../src/core/setup-review-backends.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, scratchDirsCreated } from "../helpers/setup-review-fakes.js";
 import { execFileSync, spawn } from "node:child_process";
@@ -20,23 +20,50 @@ const codexHelp = readFileSync(join(FIXTURES, "codex-exec-help-0.163.0.txt"), "u
 // ISS-1392: every fake bin, project and store this file makes goes through the
 // helper's registry and is removed after each test, so a run leaves nothing in
 // the OS tmpdir. The tests that start worker processes wait for them first.
+// The absence check passes on an empty registry, so a filtered run that
+// allocates nothing is not a failure; registration is pinned by its own test.
 afterEach(removeScratchDirs);
 afterAll(() => {
-  const made = scratchDirsCreated();
-  expect(made.length).toBeGreaterThan(0);
-  expect(made.filter((dir) => existsSync(dir))).toEqual([]);
+  expect(scratchDirsCreated().filter((dir) => existsSync(dir))).toEqual([]);
 });
 
 /**
  * The barrier before afterEach removes a test's directories: the worker has
- * closed and the process it owned is gone, each bounded so a stuck process
- * fails the absence check rather than hanging the file.
+ * closed and the process it owned is gone. Each wait is bounded, and running
+ * out of either bound fails the test rather than letting cleanup race a live
+ * process or hanging the file.
  */
-async function settled(closed: Promise<void>, gone: () => boolean): Promise<void> {
-  await Promise.race([closed, new Promise((r) => setTimeout(r, 5_000))]);
-  const end = Date.now() + 5_000;
+async function settled(closed: Promise<void>, gone: () => boolean, ms = 5_000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([closed, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`the worker did not close within ${ms} ms`)), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+  const end = Date.now() + ms;
   while (!gone() && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+  if (!gone()) throw new Error(`the worker's process was still alive ${ms} ms after it closed`);
 }
+
+describe("the worker barrier and the scratch registry (ISS-1392)", () => {
+  it("passes once the worker has closed and its process is gone", async () => {
+    await expect(settled(Promise.resolve(), () => true, 50)).resolves.toBeUndefined();
+  });
+
+  it("fails when the worker never closes", async () => {
+    await expect(settled(new Promise<void>(() => {}), () => true, 50)).rejects.toThrow("did not close within 50 ms");
+  });
+
+  it("fails when the worker's process never goes away", async () => {
+    await expect(settled(Promise.resolve(), () => false, 50)).rejects.toThrow("still alive 50 ms after it closed");
+  });
+
+  it("records the root of every fake bin, so the absence check covers it", () => {
+    const bin = makeFakeBin(["codex"]);
+    expect(scratchDirsCreated()).toContain(dirname(bin.dir));
+    expect(basename(dirname(bin.dir)).startsWith("sr-fakes-")).toBe(true);
+  });
+});
 
 it("allocates every scratch directory through the helper's registry (ISS-1392)", () => {
   // Spelled in two parts so this test's own source does not match itself.

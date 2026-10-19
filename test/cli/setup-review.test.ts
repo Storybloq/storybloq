@@ -99,11 +99,11 @@ afterEach(() => {
 });
 
 // ISS-1392: the fake reviewers' directories went to the OS tmpdir and stayed.
-// Checked as absence, after every test's cleanup, and never vacuously.
+// Checked as absence, after every test's cleanup. An empty registry passes, so
+// a filtered run that allocates nothing is not a failure; the backends suite
+// pins that makeFakeBin registers its root.
 afterAll(() => {
-  const made = scratchDirsCreated();
-  expect(made.length).toBeGreaterThan(0);
-  expect(made.filter((dir) => existsSync(dir))).toEqual([]);
+  expect(scratchDirsCreated().filter((dir) => existsSync(dir))).toEqual([]);
 });
 
 describe("gate (T-536)", () => {

@@ -121,7 +121,7 @@ describe("a run that does not verify writes nothing", () => {
     ["vitest", "vitest-none", 1, /^Verification failed: app test \(vitest\): exited with code 1; 0 run, 0 failed\. T-002 stays as it was\.$/],
     ["vitest", "vitest-none-pass", 1, /^Verification found no tests: app test \(vitest\) ran 0 tests\. T-002 stays as it was\.$/],
     ["go", "go-build", 1, /^Verification failed: app test \(go\): the run reported an error/],
-    ["vitest", "jest-pass", 4, /^Setup-verify stopped: the evidence of T-002's run cannot be read; nothing was written\.$/],
+    ["vitest", "jest-pass", 4, /^Setup-verify stopped: the evidence of T-002's run cannot be read; nothing was written \(run [0-9a-f]{16}\)\.$/],
   ])("%s replaying %s exits %i", async (runner, name, code, first) => {
     const root = await ready(replay(name), runner);
     const before = await files(root);

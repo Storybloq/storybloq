@@ -37,7 +37,7 @@ import { checkpointState, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import type { CompletionGuardOptions } from "./claims.js";
-import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type SetupItemMeta, type TestSpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
+import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type EstablishableStage, type ParsedSetupMeta, type SetupItemMeta, type TestSpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
 import { VERIFICATION_RESULT_AUTHORITY } from "./setup-verification-guard.js";
 import { readRecord, recordActivation, type RecordComponent, type SetupVerificationRecord } from "./setup-verification-record.js";
 import { establishStage, SERVES, type StagesConfig } from "./verification-activation.js";
@@ -64,6 +64,8 @@ export interface SetupVerifyInput {
   readonly argv?: readonly string[];
   readonly drop?: readonly string[];
   readonly ownerWords?: string;
+  /** The run a resolution answers: the 16 hex its stopped run printed. */
+  readonly run?: string;
   readonly reopen?: boolean;
 }
 
@@ -100,6 +102,8 @@ interface Checked {
   /** The workdir's real path, where the command runs. */
   readonly workdir: string;
   readonly digest: string;
+  /** What a later --resolve names the run by: see `runToken`. */
+  readonly token: string;
 }
 
 const label = (t: Ticket): string => displayIdOf(t);
@@ -273,7 +277,7 @@ async function check(root: string, state: ProjectState, ref: string, env: Readon
   const guard = await ownership(root);
   assertMayComplete(ticket, guard);
 
-  const digest = createHash("sha256").update(JSON.stringify({
+  const fields = {
     id: ticket.id,
     setupId: meta.setupId,
     key: meta.key,
@@ -288,9 +292,53 @@ async function check(root: string, state: ProjectState, ref: string, env: Readon
     stages: servedStages(state.config),
     decision: meta.verification.decision ?? null,
     guard,
-    env,
-  })).digest("hex");
-  return { ticket, meta, record, component, guard, workdir, digest };
+  };
+  const digest = stageDigest(spec.stage, { ...fields, env });
+  return { ticket, meta, record, component, guard, workdir, digest, token: runToken(stageDigest(spec.stage, { ...fields, env: tokenEnv(env) })) };
+}
+
+/**
+ * One canonical digest per stage (T-538 S3b): what a run and every outcome
+ * written after it depend on. The second hold of a run must reproduce it, and
+ * a resolution must reproduce the token of the run it answers.
+ */
+export function stageDigest(stage: EstablishableStage, fields: Readonly<Record<string, unknown>>): string {
+  return createHash("sha256").update(JSON.stringify({ stage, ...fields })).digest("hex");
+}
+
+/** The first 16 hex of a stage digest: printed by every outcome a resolution may answer, and required back with --run. */
+export function runToken(digest: string): string {
+  return digest.slice(0, 16);
+}
+
+/**
+ * The variables a run token binds: the ones setup-verify sets or reads for
+ * its evidence. The rest of the caller's environment differs between any two
+ * shells, so a resolution from a later shell could never name the run; the
+ * run's own second hold still binds the whole environment.
+ */
+const TOKEN_ENV = ["CI", "NO_COLOR", "FORCE_COLOR", "PYTEST_ADDOPTS", "GOFLAGS"] as const;
+
+function tokenEnv(env: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(TOKEN_ENV.filter((k) => env[k] !== undefined).map((k) => [k, env[k]!]));
+}
+
+/**
+ * The environment a test run gets, and the same with the report path as a
+ * placeholder for the digest; or why the inherited options cannot coexist
+ * with the evidence. A resolution computes it with the placeholder as the
+ * path, which gives the run's digest environment.
+ */
+function runEnvironment(meta: ParsedSetupMeta, base: NodeJS.ProcessEnv, junitPath: string): { env: Record<string, string> | null; digestEnv: Record<string, string>; incompatible: string | null } {
+  const spec = meta.kind === "item" ? meta.meta.verification?.spec : undefined;
+  const runner = spec?.stage === "test" ? spec.runner : undefined;
+  const adapter = meta.kind === "item" ? meta.meta.verification?.decision?.adapter : undefined;
+  const built = runner === undefined ? { env: {} } : evidenceEnv(runner, withoutDropped(base, adapter), junitPath);
+  if ("incompatible" in built) return { env: null, digestEnv: {}, incompatible: built.incompatible };
+  const env = built.env;
+  // The report path differs on every run, so the digest reads it as a placeholder.
+  const digestEnv = { ...env, ...(env.PYTEST_ADDOPTS === undefined ? {} : { PYTEST_ADDOPTS: env.PYTEST_ADDOPTS.replace(junitPath, "<report>") }) };
+  return { env, digestEnv, incompatible: null };
 }
 
 /**
@@ -418,16 +466,10 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     let incompatible: string | null = null;
     try {
       await withProjectLock(absRoot, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
-        const pre = findTicket(state, input.ticket);
-        const meta = parseSetupMeta("ticket", pre);
-        const preSpec = meta.kind === "item" ? meta.meta.verification?.spec : undefined;
-        const runner = preSpec?.stage === "test" ? preSpec.runner : undefined;
-        const adapter = meta.kind === "item" ? meta.meta.verification?.decision?.adapter : undefined;
-        const built = runner === undefined ? { env: {} } : evidenceEnv(runner, withoutDropped(options.env ?? process.env, adapter), junitPath);
-        if ("incompatible" in built) incompatible = built.incompatible;
-        else env = built.env;
-        // The report path differs on every run, so the digest reads it as a placeholder.
-        digestEnv = env === null ? {} : { ...env, ...(env.PYTEST_ADDOPTS === undefined ? {} : { PYTEST_ADDOPTS: env.PYTEST_ADDOPTS.replace(junitPath, "<report>") }) };
+        const built = runEnvironment(parseSetupMeta("ticket", findTicket(state, input.ticket)), options.env ?? process.env, junitPath);
+        env = built.env;
+        digestEnv = built.digestEnv;
+        incompatible = built.incompatible;
         first = await check(absRoot, state, input.ticket, digestEnv);
       });
     } catch (err) {
@@ -436,7 +478,7 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     }
     const checked = first as unknown as Checked;
     const spec = checked.meta.verification.spec;
-    if (incompatible !== null) return unreadable(checked.ticket, spec.runner, incompatible, "");
+    if (incompatible !== null) return unreadable(checked, spec.runner, incompatible, "");
 
     // Outside the lock: the command in its own process group, read as it streams.
     // The owner's adapter runs its argv with no shell; otherwise the spec's command runs through the shell.
@@ -467,7 +509,7 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     if (evidence.kind === "no-tests") {
       return { exitCode: 1, lines: [`Verification found no tests: ${spec.component} test (${spec.runner}) ran 0 tests. ${label(checked.ticket)} stays as it was.`, ...tailLines(facts.tail)] };
     }
-    if (evidence.kind === "unrecognized") return unreadable(checked.ticket, spec.runner, evidence.reason, facts.tail);
+    if (evidence.kind === "unrecognized") return unreadable(checked, spec.runner, evidence.reason, facts.tail);
 
     try {
       return await commit(absRoot, input.ticket, checked, digestEnv, evidence, facts.tail, options);
@@ -480,11 +522,11 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
   }
 }
 
-function unreadable(ticket: Ticket, runner: TestRunner, reason: string, tail: string): SetupVerifyResult {
+function unreadable({ ticket, token }: Checked, runner: TestRunner, reason: string, tail: string): SetupVerifyResult {
   return {
     exitCode: 4,
     lines: [
-      `Setup-verify stopped: the evidence of ${label(ticket)}'s run cannot be read; nothing was written.`,
+      `Setup-verify stopped: the evidence of ${label(ticket)}'s run cannot be read; nothing was written (run ${token}).`,
       ambiguityLine({ class: "verification evidence unreadable", target: label(ticket), observed: reason, expected: `one ${runner} summary`, resolutions: ["adapter", "leave-off", "stop"] }),
       ...tailLines(tail),
     ],
@@ -498,6 +540,8 @@ function inputShape(input: SetupVerifyInput): string | null {
   if (resolving && !["adapter", "leave-off", "stop"].includes(input.resolve!)) return `--resolve takes adapter, leave-off or stop, not ${input.resolve}.`;
   if (resolving && (input.ownerWords === undefined || input.ownerWords.trim() === "")) return "a resolution records the owner's words: pass --owner-words.";
   if (!resolving && input.ownerWords !== undefined) return "--owner-words goes with --resolve.";
+  if (!resolving && input.run !== undefined) return "--run goes with --resolve.";
+  if (input.run !== undefined && !/^[0-9a-f]{16}$/.test(input.run)) return `--run takes the 16 hex a stopped run printed, not ${input.run}.`;
   if (input.resolve !== "adapter" && (input.argv !== undefined || input.drop !== undefined)) return "--argv and --drop go with --resolve adapter.";
   if (input.resolve === "adapter") {
     if (input.argv === undefined || input.argv.length === 0) return "an adapter needs a command: pass --argv with at least one word.";
@@ -517,9 +561,11 @@ async function record(root: string, input: SetupVerifyInput, options: SetupVerif
   let result: SetupVerifyResult | null = null;
   await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
     const found = identify(state, input.ticket);
-    result = input.reopen === true
-      ? await reopen(root, found)
-      : await resolveWith(root, state, found, input, options.env ?? process.env);
+    if (input.reopen === true) {
+      result = await reopen(root, found);
+      return;
+    }
+    result = await resolveWith(root, state, found, input, options.env ?? process.env);
   });
   return result!;
 }
@@ -527,6 +573,7 @@ async function record(root: string, input: SetupVerifyInput, options: SetupVerif
 async function resolveWith(root: string, state: ProjectState, found: Identified, input: SetupVerifyInput, env: NodeJS.ProcessEnv): Promise<SetupVerifyResult> {
   assertOpen(found);
   const { ticket, meta, record } = found;
+  if (input.run === undefined) throw refuse(`a resolution answers one stopped run: pass --run with the value in the first line of ${label(ticket)}'s stopped run.`);
   const spec = meta.verification.spec;
   workdirOf(root, spec.workdir);
   const kind = input.resolve!;
@@ -544,8 +591,10 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
   }
   const decision: VerificationDecision = { kind, ...(adapter ? { adapter } : {}), ownerWords: input.ownerWords!.trim(), at };
 
-  const guard = await ownership(root);
-  assertMayComplete(ticket, guard);
+  // The run it answers: everything that run depended on must be as it was (refusals first, as for a run, then staleness).
+  const now = await check(root, state, input.ticket, runEnvironment(parseSetupMeta("ticket", ticket), env, "<report>").digestEnv);
+  if (now.token !== input.run) return stale(ticket, `the ticket, its prerequisites, the record, the stages or the ownership changed since run ${input.run}`);
+  const guard = now.guard;
 
   const setup = { ...(ticket as Ticket & { setup: Record<string, unknown> }).setup };
   const leaveOff = kind === "leave-off";

@@ -16,9 +16,9 @@ const { folder } = pinEnvironment("t538-s3a2rep");
 const REPLAY = join(import.meta.dirname, "fixtures", "t538-replay.sh");
 const COMMAND = `sh ${REPLAY} vitest-pass`;
 
-async function ready(): Promise<string> {
+async function ready(command = COMMAND): Promise<string> {
   const root = await folder();
-  expect((await setupApply(root, payload({ components: [comp({ command: COMMAND })] }))).exitCode).toBe(0);
+  expect((await setupApply(root, payload({ components: [comp({ command })] }))).exitCode).toBe(0);
   await editTicket(root, "T-001", (r) => { r.status = "complete"; r.completedDate = "2026-10-18"; });
   return root;
 }
@@ -43,10 +43,15 @@ describe("the live report's pending lines", () => {
   });
 
   it("a left-off component says the owner left it off", async () => {
-    const root = await ready();
+    // A resolution answers a stopped run (T-538 S3b): this command's output is unreadable as vitest's.
+    const unreadable = `sh ${REPLAY} jest-pass`;
+    const root = await ready(unreadable);
     const before = await frozen(root);
-    expect((await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "later" })).exitCode).toBe(0);
-    expect(pendingOf(await live(root))).toEqual([`Pending: TEST: ${COMMAND} (pending: left off by the owner)`]);
+    const stopped = await setupVerify(root, { ticket: "T-002" });
+    expect(stopped.exitCode).toBe(4);
+    const run = /\(run ([0-9a-f]{16})\)\.$/.exec(stopped.lines[0]!)![1]!;
+    expect((await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "later", run })).exitCode).toBe(0);
+    expect(pendingOf(await live(root))).toEqual([`Pending: TEST: ${unreadable} (pending: left off by the owner)`]);
     expect(await frozen(root)).toEqual(before);
   });
 

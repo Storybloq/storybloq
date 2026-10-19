@@ -130,7 +130,7 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
       "each component whose test stage is pending gets exactly one establishment ticket: a task with `\"establishes\": {\"component\": \"<id>\", \"stage\": \"test\", \"scaffold\": \"<key>\"}`, no `status`, and `blockedBy` its scaffold alone",
       "Its description owes one minimal real test of the scaffold, then `storybloq setup-verify --ticket <id>`, which alone completes it. Work that needs the tests waits on it.",
       "is the owner's to answer: an adapter (an argv run with no shell; show the owner any `--drop` and what replaces it), leave-off or stop",
-      "`storybloq setup-verify --ticket <id> --resolve <adapter|leave-off|stop> --owner-words '<the owner's words>'`",
+      "`storybloq setup-verify --ticket <id> --resolve <adapter|leave-off|stop> --owner-words '<the owner's words>' --run <hex>`, `<hex>` being the `(run <hex>)` the stop printed",
     ]) expect(flow).toContain(line);
   });
 

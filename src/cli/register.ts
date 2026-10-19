@@ -5623,6 +5623,7 @@ export function registerSetupVerifyCommand(yargs: Argv): Argv {
         .option("ticket", { type: "string", demandOption: true, describe: "The establishment ticket (T-...)" })
         .option("resolve", { type: "string", choices: ["adapter", "leave-off", "stop"], describe: "Record the owner's answer to an unreadable run" })
         .option("owner-words", { type: "string", describe: "The owner's words for the resolution" })
+        .option("run", { type: "string", describe: "The run a resolution answers (the 16 hex its stopped run printed)" })
         .option("reopen", { type: "boolean", describe: "Reopen a ticket closed without a verification result" }),
       {
         // Each word is passed whole (a comma is part of it) and an empty word reaches setup-verify's own refusal.
@@ -5640,6 +5641,7 @@ export function registerSetupVerifyCommand(yargs: Argv): Argv {
           argv: argv.argv as string[] | undefined,
           drop: argv.drop as string[] | undefined,
           ownerWords: argv["owner-words"] as string | undefined,
+          run: argv.run as string | undefined,
           reopen: argv.reopen as boolean | undefined,
         });
         process.stdout.write(result.stdout);

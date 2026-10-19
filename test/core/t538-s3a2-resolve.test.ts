@@ -40,6 +40,18 @@ function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 
 const OWNER = "the summary is hidden by our script; run vitest directly";
 
+/** The run token a stopped (exit 4) run printed in its first line: a resolution names the run it answers (T-538 S3b). */
+const tokenOf = (r: { exitCode: number; lines: string[] }): string => {
+  expect(r.exitCode).toBe(4);
+  return /\(run ([0-9a-f]{16})\)\.?$/.exec(r.lines[0]!)![1]!;
+};
+
+/** A run that stops unreadable, and its token. */
+const stoppedRun = async (root: string, env?: NodeJS.ProcessEnv): Promise<string> => tokenOf(await setupVerify(root, { ticket: "T-002" }, env === undefined ? {} : { env }));
+
+/** A well-formed token no run printed, for refusals that come before the token is compared. */
+const NO_RUN = "0000000000000000";
+
 const files = async (root: string) => ({
   ticket: await ticketBytes(root, "T-002"),
   config: await readFile(join(root, ".story", "config.json"), "utf-8"),
@@ -100,7 +112,7 @@ describe("the adapter evidence contract, with real runners", () => {
     expect(plain.exitCode).toBe(4);
     expect(plain.lines[1]).toContain("observed PYTEST_ADDOPTS already names a JUnit report (--junitxml);");
 
-    const decided = await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["pytest"], drop: ["PYTEST_ADDOPTS"], ownerWords: "drop our report option" }, { env });
+    const decided = await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["pytest"], drop: ["PYTEST_ADDOPTS"], ownerWords: "drop our report option", run: tokenOf(plain) }, { env });
     expect(decided).toEqual({ exitCode: 0, lines: [`Decision recorded for T-002: adapter. The next storybloq setup-verify --ticket T-002 runs ["pytest"] in . with no shell; PYTEST_ADDOPTS (${JSON.stringify(`--junitxml=${elsewhere}`)}) is dropped and replaced by PYTEST_ADDOPTS=--junitxml='<report>'.`] });
     expect((await ticketFile(root, "T-002")).status).toBe("open");
 
@@ -116,8 +128,8 @@ describe("the adapter evidence contract, with real runners", () => {
     await goProject(root);
     await ready("go test ./...", "go", "none", root);
     const env = cleanEnv({ GOFLAGS: "-json" });
-    expect((await setupVerify(root, { ticket: "T-002" }, { env })).exitCode).toBe(4);
-    const decided = await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["go", "test", "./..."], drop: ["GOFLAGS"], ownerWords: "our GOFLAGS asks for json" }, { env });
+    const run = await stoppedRun(root, env);
+    const decided = await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["go", "test", "./..."], drop: ["GOFLAGS"], ownerWords: "our GOFLAGS asks for json", run }, { env });
     expect(decided.lines[0]).toBe(`Decision recorded for T-002: adapter. The next storybloq setup-verify --ticket T-002 runs ["go","test","./..."] in . with no shell; GOFLAGS ("-json") is dropped and replaced by GOFLAGS=-v.`);
     expect(await setupVerify(root, { ticket: "T-002" }, { env })).toEqual({ exitCode: 0, lines: ["Verified: app test (go, 2 tests); stages on: TEST"] });
   });
@@ -130,7 +142,7 @@ describe("the adapter evidence contract, with real runners", () => {
     const plain = await setupVerify(root, { ticket: "T-002" }, { env });
     expect(plain.exitCode).toBe(4);
     expect(plain.lines).toContain("  | tests done");
-    expect((await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["npx", "vitest", "run"], ownerWords: OWNER }, { env })).lines[0])
+    expect((await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["npx", "vitest", "run"], ownerWords: OWNER, run: tokenOf(plain) }, { env })).lines[0])
       .toBe(`Decision recorded for T-002: adapter. The next storybloq setup-verify --ticket T-002 runs ["npx","vitest","run"] in . with no shell.`);
     expect(await setupVerify(root, { ticket: "T-002" }, { env })).toEqual({ exitCode: 0, lines: ["Verified: app test (vitest, 2 tests); stages on: TEST"] });
     expect((await configOf(root)).recipeOverrides.stages.TEST).toMatchObject({ command: "npm test" });
@@ -195,8 +207,9 @@ describe("resolutions", () => {
   it("adapter and stop record the decision on both records and leave the ticket open and the stages as they were", async () => {
     for (const kind of ["adapter", "stop"] as const) {
       const root = await ready(replay("jest-pass"));
+      const run = await stoppedRun(root);
       const before = await configOf(root);
-      const input: SetupVerifyInput = kind === "adapter" ? { ticket: "T-002", resolve: kind, argv: ["sh", REPLAY, "vitest-pass"], ownerWords: OWNER } : { ticket: "T-002", resolve: kind, ownerWords: "  not now  " };
+      const input: SetupVerifyInput = kind === "adapter" ? { ticket: "T-002", resolve: kind, argv: ["sh", REPLAY, "vitest-pass"], ownerWords: OWNER, run } : { ticket: "T-002", resolve: kind, ownerWords: "  not now  ", run };
       expect((await setupVerify(root, input)).exitCode).toBe(0);
       const t = await ticketFile(root, "T-002");
       const after = await configOf(root);
@@ -213,25 +226,28 @@ describe("resolutions", () => {
 
   it("the adapter's argv runs with no shell, and the next plain run uses it", async () => {
     const root = await ready(replay("jest-pass"));
-    expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(4);
+    const run = await stoppedRun(root);
     // The fixture checks it received the literal $HOME and exits 97 before any evidence otherwise; a shell would have expanded it.
     const literal = ["sh", REPLAY, "vitest-pass", "expect-literal", "$HOME"];
     expect(spawnSync("sh", ["-c", literal.map((w) => (w === "$HOME" ? w : `'${w}'`)).join(" ")], { env: { PATH: "/usr/bin:/bin", HOME: "/home/someone" } }).status).toBe(97);
-    expect((await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: literal, ownerWords: OWNER })).exitCode).toBe(0);
+    expect((await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: literal, ownerWords: OWNER, run })).exitCode).toBe(0);
     expect(await setupVerify(root, { ticket: "T-002" })).toEqual({ exitCode: 0, lines: ["Verified: app test (vitest, 2 tests); stages on: TEST"] });
     expect((await configOf(root)).recipeOverrides.stages.TEST).toMatchObject({ command: replay("jest-pass") });
   });
 
   it("stop records the decision only: a later run still runs", async () => {
-    const root = await ready(replay("vitest-pass"));
-    expect((await setupVerify(root, { ticket: "T-002", resolve: "stop", ownerWords: "later" })).lines).toEqual(["Decision recorded for T-002: stop. Nothing else changed."]);
-    expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(0);
+    const root = await ready(replay("jest-pass"));
+    const run = await stoppedRun(root);
+    expect((await setupVerify(root, { ticket: "T-002", resolve: "stop", ownerWords: "later", run })).lines).toEqual(["Decision recorded for T-002: stop. Nothing else changed."]);
+    // It runs again and stops again, under a new token: the decision is part of what the run depends on.
+    expect(await stoppedRun(root)).not.toBe(run);
   });
 
   it("leave-off closes the ticket with result left-off, leaves the component off and the stages unchanged", async () => {
     const root = await ready(replay("jest-pass"));
+    const run = await stoppedRun(root);
     const before = await configOf(root);
-    expect(await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "no tests for now" }))
+    expect(await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "no tests for now", run }))
       .toEqual({ exitCode: 0, lines: ["Left off: app test; T-002 is complete and the stages are unchanged."] });
     const t = await ticketFile(root, "T-002");
     const after = await configOf(root);
@@ -246,14 +262,17 @@ describe("resolutions", () => {
 
   it("is the same through the CLI and MCP", async () => {
     const cliRoot = await ready(replay("jest-pass"));
-    const cli = await handleSetupVerify({ cwd: cliRoot, env: process.env }, { ticket: "T-002", resolve: "leave-off", ownerWords: "skip" });
+    const cli = await handleSetupVerify({ cwd: cliRoot, env: process.env }, { ticket: "T-002", resolve: "leave-off", ownerWords: "skip", run: await stoppedRun(cliRoot, process.env) });
     expect([cli.exitCode, cli.stdout.split("\n")[0]]).toEqual([0, "Left off: app test; T-002 is complete and the stages are unchanged."]);
 
     const mcpRoot = await ready(replay("jest-pass"));
     const { tools, server } = makeRegistry();
     registerAllTools(server, mcpRoot);
     const tool = tools.get("storybloq_setup_verify")!;
-    const out = await tool.handler({ ticket: "T-002", resolve: "adapter", argv: ["sh", REPLAY, "vitest-pass"], ownerWords: OWNER });
+    const stopped = (await tool.handler({ ticket: "T-002" })).content[0]!.text.split("\n");
+    expect(stopped[0]).toBe("[exit 4]");
+    const run = /\(run ([0-9a-f]{16})\)\.?$/.exec(stopped[1]!)![1]!;
+    const out = await tool.handler({ ticket: "T-002", resolve: "adapter", argv: ["sh", REPLAY, "vitest-pass"], ownerWords: OWNER, run });
     expect(out.content[0]!.text.split("\n")[0]).toBe("[exit 0]");
     expect((await tool.handler({ ticket: "T-002" })).content[0]!.text.split("\n").slice(0, 2)).toEqual(["[exit 0]", "Verified: app test (vitest, 2 tests); stages on: TEST"]);
     expect(verificationOf(await ticketFile(mcpRoot, "T-002")).decision).toMatchObject({ kind: "adapter" });
@@ -284,7 +303,10 @@ async function runCli(root: string, args: string[]): Promise<{ stdout: string; e
 describe("the CLI flags", () => {
   it("--resolve adapter with repeated --argv (a dash word by =), --owner-words, then --reopen", async () => {
     const root = await ready(replay("jest-pass"));
-    const r = await runCli(root, ["setup-verify", "--ticket", "T-002", "--resolve", "adapter", "--argv", "sh", `--argv=${REPLAY}`, "--argv=vitest-pass", "--argv=-x", "--owner-words", "run it directly"]);
+    const first = await runCli(root, ["setup-verify", "--ticket", "T-002"]);
+    expect(first.exitCode).toBe(4);
+    const run = /\(run ([0-9a-f]{16})\)\.?$/.exec(first.stdout.split("\n")[0]!)![1]!;
+    const r = await runCli(root, ["setup-verify", "--ticket", "T-002", "--resolve", "adapter", "--argv", "sh", `--argv=${REPLAY}`, "--argv=vitest-pass", "--argv=-x", "--owner-words", "run it directly", "--run", run]);
     expect(r.exitCode).toBe(0);
     expect(verificationOf(await ticketFile(root, "T-002")).decision).toMatchObject({ kind: "adapter", adapter: { argv: ["sh", REPLAY, "vitest-pass", "-x"], drop: [] }, ownerWords: "run it directly" });
     const verified = await runCli(root, ["setup-verify", "--ticket", "T-002"]);
@@ -324,15 +346,15 @@ describe("resolution refusals (exit 2, nothing written)", () => {
   });
 
   it("a drop of a variable the spec's runner does not read", async () => {
-    await refused(await ready(replay("pytest-pass"), "pytest"), { ticket: "T-002", resolve: "adapter", argv: ["pytest"], drop: ["GOFLAGS"], ownerWords: "x" },
+    await refused(await ready(replay("pytest-pass"), "pytest"), { ticket: "T-002", resolve: "adapter", argv: ["pytest"], drop: ["GOFLAGS"], ownerWords: "x", run: NO_RUN },
       "Setup-verify refused: --drop names GOFLAGS, which pytest does not read; a pytest adapter drops only PYTEST_ADDOPTS.");
-    await refused(await ready(replay("jest-pass")), { ticket: "T-002", resolve: "adapter", argv: ["npx"], drop: ["PYTEST_ADDOPTS"], ownerWords: "x" },
+    await refused(await ready(replay("jest-pass")), { ticket: "T-002", resolve: "adapter", argv: ["npx"], drop: ["PYTEST_ADDOPTS"], ownerWords: "x", run: NO_RUN },
       "Setup-verify refused: --drop names PYTEST_ADDOPTS, which vitest does not read; a vitest adapter drops nothing.");
   });
 
   it("a drop when the unreadable run did not come from an incompatible inherited option", async () => {
     const root = await ready(replay("pytest-pass"), "pytest");
-    await refused(root, { ticket: "T-002", resolve: "adapter", argv: ["pytest"], drop: ["PYTEST_ADDOPTS"], ownerWords: "x" },
+    await refused(root, { ticket: "T-002", resolve: "adapter", argv: ["pytest"], drop: ["PYTEST_ADDOPTS"], ownerWords: "x", run: NO_RUN },
       "Setup-verify refused: --drop PYTEST_ADDOPTS: PYTEST_ADDOPTS does not conflict with the evidence options here, so the unreadable run did not come from it; drop nothing.",
       { ...process.env, PYTEST_ADDOPTS: "-q" });
   });
@@ -349,8 +371,8 @@ describe("resolution refusals (exit 2, nothing written)", () => {
   });
 
   it("left-off is terminal: a run, a resolution and reopen are refused", async () => {
-    const root = await ready(replay("vitest-pass"));
-    expect((await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x" })).exitCode).toBe(0);
+    const root = await ready(replay("jest-pass"));
+    expect((await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x", run: await stoppedRun(root) })).exitCode).toBe(0);
     await refused(root, { ticket: "T-002" }, "Setup-verify refused: app's test stage is already left off.");
     await refused(root, { ticket: "T-002", resolve: "stop", ownerWords: "x" }, "Setup-verify refused: app's test stage is already left off.");
     await refused(root, { ticket: "T-002", reopen: true }, "Setup-verify refused: T-002 is already left off.");
@@ -420,9 +442,9 @@ describe("resolution refusals (exit 2, nothing written)", () => {
       const root = await ready(replay("jest-pass"));
       await editTicket(root, "T-002", (r) => { r.status = "inprogress"; r.claim = { user: "rival@example.com", branch: "rival", since: "2026-10-18" }; });
       for (const input of [
-        { ticket: "T-002", resolve: "leave-off", ownerWords: "x" },
-        { ticket: "T-002", resolve: "adapter", argv: ["npx"], ownerWords: "x" },
-        { ticket: "T-002", resolve: "stop", ownerWords: "x" },
+        { ticket: "T-002", resolve: "leave-off", ownerWords: "x", run: NO_RUN },
+        { ticket: "T-002", resolve: "adapter", argv: ["npx"], ownerWords: "x", run: NO_RUN },
+        { ticket: "T-002", resolve: "stop", ownerWords: "x", run: NO_RUN },
       ] as SetupVerifyInput[]) {
         await asSam(() => refused(root, input, "Setup-verify refused: Cannot complete T-002: it is claimed by rival@example.com and this caller cannot prove ownership."));
       }
@@ -431,7 +453,7 @@ describe("resolution refusals (exit 2, nothing written)", () => {
     it("a foreign session stamp is refused for leave-off", async () => {
       const root = await ready(replay("jest-pass"));
       await editTicket(root, "T-002", (r) => { r.status = "inprogress"; r.claim = { user: "sam@example.com", branch: "main", since: "2026-10-18" }; r.claimedBySession = "11111111-2222-3333-4444-555555555555"; });
-      await asSam(() => refused(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x" }, /^Setup-verify refused: Cannot complete T-002: /));
+      await asSam(() => refused(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x", run: NO_RUN }, /^Setup-verify refused: Cannot complete T-002: /));
     });
 
     it("a malformed session store fails closed for leave-off and reopen", async () => {
@@ -439,7 +461,7 @@ describe("resolution refusals (exit 2, nothing written)", () => {
       const dir = join(root, ".story", "sessions", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "state.json"), "{ not json");
-      await refused(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x" }, /^Setup-verify refused: ownership cannot be verified: /);
+      await refused(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x", run: NO_RUN }, /^Setup-verify refused: ownership cannot be verified: /);
       await closeOutside(root);
       const before = await files(root);
       expect((await setupVerify(root, { ticket: "T-002", reopen: true })).lines[0]).toMatch(/^Setup-verify refused: ownership cannot be verified: /);

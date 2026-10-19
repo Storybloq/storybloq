@@ -3072,6 +3072,7 @@ export function registerSetupVerifyTool(server: McpServer, root: string) {
       argv: z.array(z.string()).optional().describe("Adapter command words, run with no shell"),
       drop: z.array(z.string()).optional().describe("Inherited variables the adapter drops"),
       ownerWords: z.string().optional().describe("The owner's words; required with resolve"),
+      run: z.string().optional().describe("The stopped run's 16 hex; required with resolve"),
       reopen: z.boolean().optional().describe("Reopen a ticket closed without a result"),
     },
   }, async (args) => {

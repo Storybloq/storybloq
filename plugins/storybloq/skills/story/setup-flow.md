@@ -199,7 +199,7 @@ For an `interrupted` scaffold nothing changes: the engine keeps its config and p
 
    Exit 5 never comes from setup-apply.
 
-   After setup, `storybloq setup-verify --ticket <id>` exit 4 (`verification evidence unreadable`) is the owner's to answer: an adapter (an argv run with no shell; show the owner any `--drop` and what replaces it), leave-off or stop, sent as `storybloq setup-verify --ticket <id> --resolve <adapter|leave-off|stop> --owner-words '<the owner's words>'`, an adapter adding `--argv <word>` per word and any `--drop <variable>`.
+   After setup, `storybloq setup-verify --ticket <id>` exit 4 (`verification evidence unreadable`) is the owner's to answer: an adapter (an argv run with no shell; show the owner any `--drop` and what replaces it), leave-off or stop, sent as `storybloq setup-verify --ticket <id> --resolve <adapter|leave-off|stop> --owner-words '<the owner's words>' --run <hex>`, `<hex>` being the `(run <hex>)` the stop printed (a changed ticket or record makes it stale, exit 5: run again), an adapter adding `--argv <word>` per word and any `--drop <variable>`.
 
 **The payload**, one JSON object: `{"version": 1, "setupId", "review", "ownerLabel", "project", "quality", "governance", "git", "phases", "tickets", "checkpoints", "issues", "coverage"}`. `setupId` is the gate's `SS-` id. Every phase, ticket, checkpoint and issue has its own `key` (`K1` upwards), and references use keys, never ids.
 

@@ -298,3 +298,134 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     });
   });
 }
+
+// --- An owned group around a body (T-538 S3b) ----------------------------------
+
+/** Why no owned group can be run here, or null: Windows has no process group to own, so BUILD and VERIFY are unsupported there. */
+export function ownedGroupUnsupported(): string | null {
+  return processGroupSeams.ownGroup ? null : "this platform has no process groups to own (Windows)";
+}
+
+export interface OwnedGroupOptions {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  /** From the first signal of the stop until SIGKILL. */
+  readonly shutdownTimeoutMs: number;
+  readonly onData: (chunk: Buffer) => void;
+}
+
+/** The group while the body runs: its pgid, captured at spawn, and the leader's exit as it happens. */
+export interface OwnedGroup {
+  readonly pgid: number;
+  /** The leader's exit, or null while it runs. */
+  exited(): { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null;
+  /** Settles when the leader exits. */
+  readonly exit: Promise<void>;
+  /** Whether a pid in the group outlived the leader, seen at the leader's exit; null while the leader runs. */
+  leftAtLeaderExit(): boolean | null;
+  /** Whether any pid in the group is alive now: "alive", "gone", or the probe's other answer. */
+  probe(): "gone" | "alive" | string;
+}
+
+export type OwnedGroupRun<T> =
+  | { readonly kind: "spawn-error"; readonly reason: string }
+  | {
+      readonly kind: "ran";
+      readonly value: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+      readonly cleanup: "confirmed" | "unconfirmed";
+      readonly cleanupDetail: string | null;
+    };
+
+/**
+ * Spawns `command` in its own process group, captures the pgid, and runs
+ * `body` with it. Whatever the body does or throws, an unconditional finally
+ * stops the group: nothing when the probe already finds it gone, otherwise
+ * SIGTERM to `-pgid`, SIGKILL once `shutdownTimeoutMs` passes with the group
+ * still present, then a bounded confirmation (every 50 ms for at most 2 s)
+ * that `kill(-pgid, 0)` answers ESRCH. The group is followed by its pgid,
+ * never by whether the leader lives. While it is live the ISS-1391 signal
+ * handler kills it if setup-verify itself is signalled. Callers check
+ * `ownedGroupUnsupported()` first: on a platform without groups this throws.
+ */
+export async function runOwnedGroup<T>(opts: OwnedGroupOptions, body: (group: OwnedGroup) => Promise<T>): Promise<OwnedGroupRun<T>> {
+  const unsupported = ownedGroupUnsupported();
+  if (unsupported !== null) throw new Error(`runOwnedGroup: ${unsupported}`);
+  let child: ChildProcess;
+  try {
+    child = processGroupSeams.spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  } catch (e) {
+    return { kind: "spawn-error", reason: (e as Error).message };
+  }
+  const started = await new Promise<{ ok: true } | { ok: false; reason: string }>((resolve) => {
+    child.once("spawn", () => resolve({ ok: true }));
+    child.once("error", (e) => resolve({ ok: false, reason: e.message }));
+  });
+  if (!started.ok || child.pid === undefined) {
+    release(child);
+    return { kind: "spawn-error", reason: started.ok ? "no process id" : started.reason };
+  }
+  const pgid = child.pid;
+  const stopOnExit = (): void => signalGroup(child, "SIGKILL", true);
+  process.once("exit", stopOnExit);
+  trackGroup(child);
+  child.stdout!.on("data", (c: Buffer) => opts.onData(c));
+  child.stderr!.on("data", (c: Buffer) => opts.onData(c));
+
+  let leaderExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+  let leftOver: boolean | null = null;
+  const exit = new Promise<void>((resolve) => {
+    child.once("exit", (code, signal) => {
+      // The leader is reaped by now, so a pid the probe still finds is one it left behind (EPERM, darwin's answer for a group of zombies, counts too).
+      leftOver = probeGroup(pgid) !== "gone";
+      leaderExit = { code, signal };
+      resolve();
+    });
+  });
+  const group: OwnedGroup = {
+    pgid,
+    exited: () => leaderExit,
+    exit,
+    leftAtLeaderExit: () => leftOver,
+    probe: () => probeGroup(pgid),
+  };
+
+  // Whatever the body returns or throws, the stop below runs: the body's outcome is only held until then.
+  let value: { ok: true; value: T } | { ok: false; error: unknown };
+  try {
+    value = { ok: true, value: await body(group) };
+  } catch (error) {
+    value = { ok: false, error };
+  }
+  const stopped = await stopOwned(child, pgid, opts.shutdownTimeoutMs);
+  process.removeListener("exit", stopOnExit);
+  untrackGroup(child);
+  release(child);
+  return { kind: "ran", value, ...stopped };
+}
+
+const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** SIGTERM, SIGKILL after the shutdown timeout, then the bounded ESRCH confirmation. */
+async function stopOwned(child: ChildProcess, pgid: number, shutdownTimeoutMs: number): Promise<{ cleanup: "confirmed" | "unconfirmed"; cleanupDetail: string | null }> {
+  if (probeGroup(pgid) !== "gone") {
+    signalGroup(child, "SIGTERM", true);
+    const termAt = Date.now();
+    while (probeGroup(pgid) !== "gone" && Date.now() - termAt < shutdownTimeoutMs) await pause(CONFIRM_POLL_MS);
+    if (probeGroup(pgid) !== "gone") signalGroup(child, "SIGKILL", true);
+  }
+  const confirmAt = Date.now();
+  let answer = probeGroup(pgid);
+  while (answer !== "gone" && Date.now() - confirmAt < CONFIRM_BOUND_MS) {
+    await pause(CONFIRM_POLL_MS);
+    answer = probeGroup(pgid);
+  }
+  if (answer === "gone") return { cleanup: "confirmed", cleanupDetail: null };
+  return {
+    cleanup: "unconfirmed",
+    cleanupDetail: answer === "alive"
+      ? `process group ${pgid} still present ${CONFIRM_BOUND_MS} ms after the last signal`
+      : `kill(-${pgid}, 0) answered ${answer} ${CONFIRM_BOUND_MS} ms after the last signal`,
+  };
+}

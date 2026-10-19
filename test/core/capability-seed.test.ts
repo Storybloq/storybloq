@@ -36,10 +36,20 @@ const LEDGER = join(REPO, ".story");
 function isWriteState(name: string): boolean {
   return name === ".txn.json" || name.startsWith(".lock") || name.endsWith(".lock");
 }
-const SKIPPED_DIRS: ReadonlySet<string> = new Set(["sessions", "snapshots"]);
+/**
+ * What loadProject reads: the two singletons and the four record folders. It only
+ * lists handovers (absent reads as none), and checkCapabilities reads tickets and
+ * issues alone. Copying the whole ledger took 30.1 s of a 40.2 s run at suite start,
+ * from file-system contention, against about 1 s alone.
+ */
+const COPIED: readonly string[] = ["config.json", "roadmap.json", "tickets", "issues", "notes", "lessons"];
 
 function writeStateOf(dir: string): string[] {
   return readdirSync(dir).filter(isWriteState).sort();
+}
+
+function jsonCount(dir: string): number {
+  return readdirSync(dir).filter((f) => f.endsWith(".json")).length;
 }
 
 const temps: string[] = [];
@@ -51,15 +61,13 @@ afterAll(() => {
 function ledgerCopy(): string {
   const root = mkdtempSync(join(tmpdir(), "capability-seed-"));
   temps.push(root);
-  cpSync(LEDGER, join(root, ".story"), {
-    recursive: true,
-    filter: (src) => {
-      if (src === LEDGER) return true;
-      const name = basename(src);
-      if (isWriteState(name)) return false;
-      return !(dirname(src) === LEDGER && SKIPPED_DIRS.has(name));
-    },
-  });
+  for (const name of COPIED) {
+    if (!existsSync(join(LEDGER, name))) continue;
+    cpSync(join(LEDGER, name), join(root, ".story", name), {
+      recursive: true,
+      filter: (src) => !isWriteState(basename(src)),
+    });
+  }
   return root;
 }
 
@@ -80,7 +88,13 @@ describe("the repository's own capability inventory (ISS-1300)", () => {
   it("passes the structural check against the real ledger and reference registry, with no git call", async () => {
     const before = writeStateOf(LEDGER);
     const { doc } = capabilityCatalog.load(REPO);
-    const { state } = await loadProject(ledgerCopy());
+    const copy = ledgerCopy();
+    for (const dir of ["tickets", "issues"]) {
+      expect(jsonCount(join(copy, ".story", dir))).toBe(jsonCount(join(LEDGER, dir)));
+    }
+    const { state } = await loadProject(copy);
+    expect(state.tickets.length).toBe(jsonCount(join(LEDGER, "tickets")));
+    expect(state.issues.length).toBe(jsonCount(join(LEDGER, "issues")));
     const report = await checkCapabilities(REPO, doc.capabilities, state, { skipFreshness: true });
     expect(report.gitCalls).toBe(0);
     expect(report.head).toBeNull();

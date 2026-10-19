@@ -274,6 +274,23 @@ describe("readJunit", () => {
     for (const name of ["pytest-pass", "pytest-fail", "pytest-none"]) expect(readJunit(junitOf(name)!), name).not.toBeNull();
   });
 
+  it("reads only XML 1.0 characters: every reference and literal character in the Char ranges, and no ]]> in character data", () => {
+    const passing = scan([recorded("pytest-pass")]);
+    const suite = (out: string, name = "a") => `<testsuite name="${name}" tests="1"><system-out>${out}</system-out></testsuite>`;
+    for (const [why, xml] of [
+      ["a NUL reference", suite("&#0;")],
+      ["a surrogate reference", suite("&#xD800;")],
+      ["a reference past U+10FFFF", suite("&#x110000;")],
+      ["a literal NUL", suite("a\u0000b")],
+      ["a literal U+0001 in an attribute", suite("ok", "a\u0001")],
+      ["]]> in character data", suite("a ]]> b")],
+    ] as const) {
+      expect(readJunit(xml), why).toBeNull();
+      expect(classifyEvidence("pytest", ended(0), passing, xml, 1), why).toEqual({ kind: "unrecognized", reason: "pytest's JUnit report does not read" });
+    }
+    expect(readJunit(suite("&#x1F600;\t\u{1F600}", "tab\there"))).toEqual({ executed: 1, failed: 0, errors: 0 });
+  });
+
   it("a missing optional count is zero, unlike an invalid one", () => {
     expect(readJunit('<testsuite name="a" tests="2"/>')).toEqual({ executed: 2, failed: 0, errors: 0 });
     expect(readJunit('<testsuite name="a" tests="2" skipped="x"/>')).toBeNull();

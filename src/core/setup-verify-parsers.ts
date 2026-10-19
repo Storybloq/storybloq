@@ -242,7 +242,27 @@ const JUNIT_COUNTS = ["tests", "failures", "errors", "skipped"] as const;
 const XML_NAME = /[A-Za-z_:][-\w.:]*/y;
 const XML_SPACE = /[ \t\r\n]*/y;
 /** Only the predefined entities and character references: nothing is declared, so nothing else is defined. */
-const XML_TEXT_OK = /^[^&<]*(?:&(?:lt|gt|amp|quot|apos|#\d+|#x[0-9A-Fa-f]+);[^&<]*)*$/;
+const XML_REFS = /^[^&<]*(?:&(?:lt|gt|amp|quot|apos|#\d+|#x[0-9A-Fa-f]+);[^&<]*)*$/;
+
+/** The XML 1.0 Char production: a tab, a newline, a carriage return, and the ranges past the controls and surrogates. */
+function xmlChar(cp: number): boolean {
+  return cp === 0x9 || cp === 0xa || cp === 0xd || (cp >= 0x20 && cp <= 0xd7ff) || (cp >= 0xe000 && cp <= 0xfffd) || (cp >= 0x10000 && cp <= 0x10ffff);
+}
+
+/**
+ * Character data (`text`) or an attribute value: only the predefined
+ * entities and character references, every reference decoding to an XML
+ * Char, every literal character an XML Char, and no `]]>` in character data.
+ */
+function xmlTextOk(s: string, text: boolean): boolean {
+  if (!XML_REFS.test(s)) return false;
+  if (text && s.includes("]]>")) return false;
+  for (const m of s.matchAll(/&#(x?)([0-9A-Fa-f]+);/g)) {
+    if (!xmlChar(parseInt(m[2]!, m[1] === "x" ? 16 : 10))) return false;
+  }
+  for (const ch of s) if (!xmlChar(ch.codePointAt(0)!)) return false;
+  return true;
+}
 
 /**
  * Every element of a whole, well-formed XML document, in document order, or
@@ -275,7 +295,7 @@ function xmlElements(xml: string): Array<{ name: string; attrs: Map<string, stri
   while (i < doc.length) {
     const lt = doc.indexOf("<", i);
     const text = doc.slice(i, lt < 0 ? doc.length : lt);
-    if (stack.length === 0 ? !/^[ \t\r\n]*$/.test(text) : !XML_TEXT_OK.test(text)) return null;
+    if (stack.length === 0 ? !/^[ \t\r\n]*$/.test(text) : !xmlTextOk(text, true)) return null;
     if (lt < 0) break;
     i = lt;
     if (doc.startsWith("<!--", i)) {
@@ -326,7 +346,7 @@ function xmlElements(xml: string): Array<{ name: string; attrs: Map<string, stri
       const close = doc.indexOf(q, i + 1);
       if (close < 0) return null;
       const value = doc.slice(i + 1, close);
-      if (!XML_TEXT_OK.test(value)) return null;
+      if (!xmlTextOk(value, false)) return null;
       attrs.set(a, value);
       i = close + 1;
     }

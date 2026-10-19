@@ -2,10 +2,12 @@
 # T-538 S3a-2: replay.sh <name> [touch|seen] prints a recorded runner output
 # (__fixtures__/t538-runner-output/<name>.txt) and exits with its recorded
 # code. `touch` first creates ./ran; `seen` first writes the evidence
-# variables it was given to ./seen.
+# variables it was given to ./seen; `expect-literal` exits 97 unless its next
+# argument is the literal text $HOME (no shell expanded it).
 dir="$(dirname "$0")/../__fixtures__/t538-runner-output"
 case "$2" in
   touch) : > ran ;;
+  expect-literal) [ "$3" = '$HOME' ] || { echo "replay: expected the literal \$HOME, got $3" >&2; exit 97; } ;;
   seen) printf '%s|%s|%s|%s\n' "$CI" "$NO_COLOR" "$FORCE_COLOR" "$GOFLAGS" > seen ;;
 esac
 cat "$dir/$1.txt"

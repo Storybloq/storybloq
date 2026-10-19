@@ -214,8 +214,10 @@ describe("resolutions", () => {
   it("the adapter's argv runs with no shell, and the next plain run uses it", async () => {
     const root = await ready(replay("jest-pass"));
     expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(4);
-    // A shell would expand $HOME; with no shell the word reaches the script verbatim and is ignored.
-    expect((await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: ["sh", REPLAY, "vitest-pass", "$HOME"], ownerWords: OWNER })).exitCode).toBe(0);
+    // The fixture checks it received the literal $HOME and exits 97 before any evidence otherwise; a shell would have expanded it.
+    const literal = ["sh", REPLAY, "vitest-pass", "expect-literal", "$HOME"];
+    expect(spawnSync("sh", ["-c", literal.map((w) => (w === "$HOME" ? w : `'${w}'`)).join(" ")], { env: { PATH: "/usr/bin:/bin", HOME: "/home/someone" } }).status).toBe(97);
+    expect((await setupVerify(root, { ticket: "T-002", resolve: "adapter", argv: literal, ownerWords: OWNER })).exitCode).toBe(0);
     expect(await setupVerify(root, { ticket: "T-002" })).toEqual({ exitCode: 0, lines: ["Verified: app test (vitest, 2 tests); stages on: TEST"] });
     expect((await configOf(root)).recipeOverrides.stages.TEST).toMatchObject({ command: replay("jest-pass") });
   });

@@ -76,9 +76,11 @@ export interface SetupVerifyOptions {
   readonly lockDeadlineMs?: number;
 }
 
-/** Test seam: runs between the command's end and the second lock hold. Not reachable through any CLI or MCP input. */
-export const setupVerifySeams: { afterRun: () => void | Promise<void> } = {
+/** Test seams, not reachable through any CLI or MCP input. `afterRun` runs between the command's end and the second lock hold. */
+export const setupVerifySeams: { afterRun: () => void | Promise<void>; buildExitObserved: () => void } = {
   afterRun: () => {},
+  /** Called, synchronously, where a BUILD's exit is observed and before it is held to the deadline. */
+  buildExitObserved: () => {},
 };
 
 /** How many of the kept tail's last lines a failed or unreadable run prints. */
@@ -583,7 +585,9 @@ function unreadable({ ticket, token }: Checked, runner: TestRunner, reason: stri
 
 /**
  * A BUILD run (T-538 S3b): the approved command in its own process group,
- * against the spec's deadline. Verified is exit 0 within the deadline with no
+ * against the spec's deadline, absolute and taken before the spawn. An exit
+ * counts when it is observed by then: one the event loop delivers after the
+ * deadline is a timeout, whichever settled first. Verified is exit 0 within the deadline with no
  * pid left in the group when the command exited and the group confirmed gone;
  * a pid left behind is cleanup-failed even when the stop then removes it.
  * Every other outcome writes nothing and prints the run token, so the owner
@@ -593,15 +597,18 @@ async function runBuild(root: string, ref: string, checked: Checked, spec: Build
   const why = ownedGroupUnsupported();
   if (why !== null) return unsupported(checked, why);
   const scanner = new EvidenceScanner();
+  const deadline = Date.now() + spec.timeoutMs;
   const run = await runOwnedGroup(
     { command: "/bin/sh", args: ["-c", spec.command], cwd: checked.workdir, env, shutdownTimeoutMs: KILL_GRACE_MS, onData: (c) => scanner.feed(c) },
     async (group) => {
-      let timer: NodeJS.Timeout | undefined;
-      const timedOut = await Promise.race([
-        group.exit.then(() => false),
-        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), spec.timeoutMs); }),
-      ]);
-      clearTimeout(timer);
+      const timedOut = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(true), Math.max(0, deadline - Date.now()));
+        void group.exit.then(() => {
+          setupVerifySeams.buildExitObserved();
+          clearTimeout(timer);
+          resolve(Date.now() > deadline);
+        });
+      });
       return { timedOut, exited: group.exited(), left: group.leftAtLeaderExit() };
     },
   );
@@ -711,9 +718,18 @@ async function record(root: string, input: SetupVerifyInput, options: SetupVerif
 }
 
 async function resolveWith(root: string, state: ProjectState, found: Identified, input: SetupVerifyInput, env: NodeJS.ProcessEnv): Promise<SetupVerifyResult> {
-  assertOpen(found);
   const { ticket, meta, record } = found;
-  if (input.run === undefined) throw refuse(`a resolution answers one stopped run: pass --run with the value in the first line of ${label(ticket)}'s stopped run.`);
+  if (input.run === undefined) {
+    assertOpen(found);
+    throw refuse(`a resolution answers one stopped run: pass --run with the value in the first line of ${label(ticket)}'s stopped run.`);
+  }
+  // The run printed its token only after these checks passed, so a refusal from them now is a change since that run: stale, as in a run's second hold.
+  try {
+    assertOpen(found);
+  } catch (err) {
+    if (err instanceof Refusal) return stale(ticket, err.lines.join(" "));
+    throw err;
+  }
   const spec = meta.verification.spec;
   workdirOf(root, spec.workdir);
   const kind = input.resolve!;
@@ -732,8 +748,14 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
   }
   const decision: VerificationDecision = { kind, ...(adapter ? { adapter } : {}), ownerWords: input.ownerWords!.trim(), at };
 
-  // The run it answers: everything that run depended on must be as it was (refusals first, as for a run, then staleness).
-  const now = await check(root, state, input.ticket, runEnvironment(parseSetupMeta("ticket", ticket), env, "<report>").digestEnv);
+  // The run it answers: everything that run depended on must be as it was.
+  let now: Checked;
+  try {
+    now = await check(root, state, input.ticket, runEnvironment(parseSetupMeta("ticket", ticket), env, "<report>").digestEnv);
+  } catch (err) {
+    if (err instanceof Refusal) return stale(ticket, err.lines.join(" "));
+    throw err;
+  }
   if (now.token !== input.run) return stale(ticket, `the ticket, its prerequisites, the record, the stages or the ownership changed since run ${input.run}`);
   const guard = now.guard;
 

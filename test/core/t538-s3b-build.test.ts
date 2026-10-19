@@ -23,6 +23,7 @@ const realOwn = processGroupSeams.ownGroup;
 afterEach(() => {
   processGroupSeams.ownGroup = realOwn;
   setupVerifySeams.afterRun = () => {};
+  setupVerifySeams.buildExitObserved = () => {};
 });
 
 const TOKEN = /\(run ([0-9a-f]{16})\)\.$/;
@@ -115,6 +116,19 @@ describe("a BUILD that does not verify writes nothing and prints its run", () =>
     expect(await files(root)).toEqual(before);
   });
 
+  it("an exit observed after the deadline is a timeout, even an exit 0 that came first", async () => {
+    const root = await ready("exit 0");
+    await setTimeoutMs(root, 300);
+    setupVerifySeams.buildExitObserved = () => {
+      const until = Date.now() + 400;
+      while (Date.now() < until) { /* the event loop is held across the deadline */ }
+    };
+    const before = await files(root);
+    const r = await setupVerify(root, { ticket: "T-002" });
+    expect(r.lines[0]).toMatch(/^Verification failed: app build: timed out after 300 ms\. T-002 stays as it was \(run [0-9a-f]{16}\)\.$/);
+    expect(await files(root)).toEqual(before);
+  });
+
   it("a pid left in the group at exit is cleanup-failed, even though the stop then removes it", async () => {
     const root = await ready("sleep 30 & echo $! > left.pid; exit 0");
     const before = await files(root);
@@ -152,6 +166,28 @@ describe("resolving a BUILD", () => {
     const stale = TOKEN.exec((await setupVerify(other, { ticket: "T-002" })).lines[0]!)![1]!;
     await editTicket(other, "T-002", (r) => { r.status = "inprogress"; });
     expect((await setupVerify(other, { ticket: "T-002", resolve: "stop", ownerWords: "x", run: stale })).exitCode).toBe(5);
+  });
+
+  it("with --run, a prerequisite reopened since the run is stale (exit 5), not a refusal, and nothing is written", async () => {
+    const root = await ready("exit 1");
+    const run = TOKEN.exec((await setupVerify(root, { ticket: "T-002" })).lines[0]!)![1]!;
+    await editTicket(root, "T-001", (r) => { r.status = "open"; r.completedDate = null; });
+    const before = await files(root);
+    const r = await setupVerify(root, { ticket: "T-002", resolve: "stop", ownerWords: "x", run });
+    expect(r.exitCode).toBe(5);
+    expect(r.lines[0]).toMatch(/^Setup-verify stale: .*T-002 waits on T-001, which is not complete\..*; nothing was written\./);
+    expect(await files(root)).toEqual(before);
+  });
+
+  it("with --run, a ticket that became terminal since the run is stale (exit 5), not a refusal, and nothing is written", async () => {
+    const root = await ready("exit 1");
+    const run = TOKEN.exec((await setupVerify(root, { ticket: "T-002" })).lines[0]!)![1]!;
+    await editTicket(root, "T-002", (r) => { r.status = "complete"; r.completedDate = "2026-10-19"; });
+    const before = await files(root);
+    const r = await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "x", run });
+    expect(r.exitCode).toBe(5);
+    expect(r.lines[0]).toMatch(/^Setup-verify stale: .*T-002 is complete without a verification result.*; nothing was written\./);
+    expect(await files(root)).toEqual(before);
   });
 
   it("refuses an adapter by name: BUILD has no evidence to adapt", async () => {

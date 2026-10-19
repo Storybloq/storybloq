@@ -9,7 +9,7 @@ import {
 } from "../../core/issue-create-input.js";
 import { inferIssuePhase } from "../../autonomous/issue-create-preparation.js";
 import { validateProject } from "../../core/validation.js";
-import { resolveAndNormalizeTicketRef, resolveAndNormalizeIssueRef, RefResolutionError } from "../../core/ref-normalization.js";
+import { resolveAndNormalizeTicketRef, resolveAndNormalizeIssueRef, RefResolutionError, ambiguousRefMessage } from "../../core/ref-normalization.js";
 import { ProjectState, isDeleted } from "../../core/project-state.js";
 import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
 import type { IssueUpdateInput } from "../../core/update-inputs.js";
@@ -227,9 +227,8 @@ export function handleIssueGet(
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveIssueRef(id);
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
     return {
-      output: formatError("invalid_input", `Ref "${id}" is ambiguous (matches: ${ids})`, ctx.format),
+      output: formatError("invalid_input", ambiguousRefMessage(ctx.state, "issues", id, result.matches), ctx.format),
       exitCode: ExitCode.USER_ERROR,
       errorCode: "invalid_input",
     };
@@ -256,9 +255,8 @@ export function handleIssueMetaGet(
 ): CommandResult {
   const result = ctx.state.resolveIssueRef(id);
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
     return {
-      output: formatError("invalid_input", `Ref "${id}" is ambiguous (matches: ${ids})`, ctx.format),
+      output: formatError("invalid_input", ambiguousRefMessage(ctx.state, "issues", id, result.matches), ctx.format),
       exitCode: ExitCode.USER_ERROR,
       errorCode: "invalid_input",
     };

@@ -1,5 +1,26 @@
 import type { ProjectState } from "./project-state.js";
 
+export type RefDir = "tickets" | "issues" | "notes" | "lessons";
+
+/**
+ * ISS-1418: the message for a ref that matches more than one record. Distinct ids keep the list. Records that share
+ * one id are a duplicate (ISS-1404), where the list would repeat that id, so the message names the claiming files and
+ * the recovery, in the loader's own duplicate_id words.
+ */
+export function ambiguousRefMessage(
+  state: Pick<ProjectState, "duplicateMessageOf">,
+  dir: RefDir,
+  ref: string,
+  matches: readonly { readonly id: string }[],
+): string {
+  const ids = matches.map((m) => m.id);
+  const id = ids[0];
+  if (id === undefined || ids.some((x) => x !== id)) return `Ref "${ref}" is ambiguous (matches: ${ids.join(", ")})`;
+  const duplicate = state.duplicateMessageOf(dir, id);
+  return `Ref "${ref}" is ambiguous: its ${ids.length} records share one id, ${id}. ` +
+    (duplicate ?? "Run `storybloq validate` to list the files that claim it.");
+}
+
 export class RefResolutionError extends Error {
   constructor(
     public readonly reason: "missing" | "ambiguous",
@@ -23,8 +44,7 @@ export function resolveAndNormalizeTicketRef(
     return result.item.id;
   }
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
-    throw new RefResolutionError("ambiguous", `Ref "${ref}" is ambiguous (matches: ${ids})`);
+    throw new RefResolutionError("ambiguous", ambiguousRefMessage(state, "tickets", ref, result.matches));
   }
   throw new RefResolutionError("missing", `Ref "${ref}" not found`);
 }
@@ -54,8 +74,7 @@ export function resolveAndNormalizeIssueRef(
     return result.item.id;
   }
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
-    throw new RefResolutionError("ambiguous", `Ref "${ref}" is ambiguous (matches: ${ids})`);
+    throw new RefResolutionError("ambiguous", ambiguousRefMessage(state, "issues", ref, result.matches));
   }
   throw new RefResolutionError("missing", `Ref "${ref}" not found`);
 }
@@ -73,8 +92,7 @@ export function resolveAndNormalizeNoteRef(
     return result.item.id;
   }
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
-    throw new RefResolutionError("ambiguous", `Ref "${ref}" is ambiguous (matches: ${ids})`);
+    throw new RefResolutionError("ambiguous", ambiguousRefMessage(state, "notes", ref, result.matches));
   }
   throw new RefResolutionError("missing", `Ref "${ref}" not found`);
 }
@@ -92,8 +110,7 @@ export function resolveAndNormalizeLessonRef(
     return result.item.id;
   }
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
-    throw new RefResolutionError("ambiguous", `Ref "${ref}" is ambiguous (matches: ${ids})`);
+    throw new RefResolutionError("ambiguous", ambiguousRefMessage(state, "lessons", ref, result.matches));
   }
   throw new RefResolutionError("missing", `Ref "${ref}" not found`);
 }

@@ -3,7 +3,7 @@ import { nextTicket, nextTickets, blockedTickets, currentPhase, waitingInventory
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
-import { resolveAndNormalizeTicketRef, RefResolutionError } from "../../core/ref-normalization.js";
+import { resolveAndNormalizeTicketRef, RefResolutionError, ambiguousRefMessage } from "../../core/ref-normalization.js";
 import {
   clearClaimOnComplete,
   guardCompletedTicketMutation,
@@ -173,9 +173,8 @@ export function handleTicketGet(
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveTicketRef(id);
   if (result.kind === "ambiguous") {
-    const ids = result.matches.map((m) => m.id).join(", ");
     return {
-      output: formatError("invalid_input", `Ref "${id}" is ambiguous (matches: ${ids})`, ctx.format),
+      output: formatError("invalid_input", ambiguousRefMessage(ctx.state, "tickets", id, result.matches), ctx.format),
       exitCode: ExitCode.USER_ERROR,
       errorCode: "invalid_input",
     };
@@ -202,9 +201,8 @@ export function handleTicketMetaGet(
 ): CommandResult {
   const resolved = ctx.state.resolveTicketRef(id);
   if (resolved.kind === "ambiguous") {
-    const ids = resolved.matches.map((m) => m.id).join(", ");
     return {
-      output: formatError("invalid_input", `Ref "${id}" is ambiguous (matches: ${ids})`, ctx.format),
+      output: formatError("invalid_input", ambiguousRefMessage(ctx.state, "tickets", id, resolved.matches), ctx.format),
       exitCode: ExitCode.USER_ERROR,
       errorCode: "invalid_input",
     };

@@ -260,6 +260,7 @@ export async function loadProject(
   const misnamedFiles = new Map<string, readonly string[]>();
   const misnamedUnverified = new Set<string>();
   const omittedTickets: OmittedTicketRecord[] = [];
+  const duplicates = new Map<string, string>();
   const tickets = await loadDirectory<Ticket>(
     join(wrapDir, "tickets"),
     absRoot,
@@ -267,7 +268,7 @@ export async function loadProject(
     warnings,
     "ticket",
     fileClassifications,
-    { omitted: omittedTickets, misnamed: misnamedFiles, misnamedUnverified },
+    { omitted: omittedTickets, misnamed: misnamedFiles, misnamedUnverified, duplicates },
   );
 
   // 7. Load issues (best-effort)
@@ -278,7 +279,7 @@ export async function loadProject(
     warnings,
     "issue",
     fileClassifications,
-    { misnamed: misnamedFiles, misnamedUnverified },
+    { misnamed: misnamedFiles, misnamedUnverified, duplicates },
   );
 
   // 7b. Load notes (best-effort)
@@ -289,6 +290,7 @@ export async function loadProject(
     warnings,
     "note",
     fileClassifications,
+    { duplicates },
   );
 
   // 7c. Load lessons (best-effort -- empty array if directory absent)
@@ -299,6 +301,7 @@ export async function loadProject(
     warnings,
     "lesson",
     fileClassifications,
+    { duplicates },
   );
 
   // 8. List handovers
@@ -332,6 +335,7 @@ export async function loadProject(
     config,
     handoverFilenames,
     omittedTickets,
+    duplicates,
   });
 
   // 11. ISS-730: opt-in continuous cross-reference integrity check. When
@@ -2237,12 +2241,13 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const misnamedFiles = new Map<string, readonly string[]>();
   const misnamedUnverified = new Set<string>();
   const omittedTickets: OmittedTicketRecord[] = [];
-  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets, misnamed: misnamedFiles, misnamedUnverified });
-  const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications, { misnamed: misnamedFiles, misnamedUnverified });
-  const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings, "note", fileClassifications);
-  const lessons = await loadDirectory<Lesson>(join(wrapDir, "lessons"), absRoot, LessonSchema, warnings, "lesson", fileClassifications);
+  const duplicates = new Map<string, string>();
+  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets, misnamed: misnamedFiles, misnamedUnverified, duplicates });
+  const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications, { misnamed: misnamedFiles, misnamedUnverified, duplicates });
+  const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings, "note", fileClassifications, { duplicates });
+  const lessons = await loadDirectory<Lesson>(join(wrapDir, "lessons"), absRoot, LessonSchema, warnings, "lesson", fileClassifications, { duplicates });
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
-  const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames, omittedTickets });
+  const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames, omittedTickets, duplicates });
   return { state, warnings, fileClassifications, misnamedFiles, misnamedUnverified };
 }
 
@@ -2348,7 +2353,7 @@ async function loadDirectory<T>(
   warnings: LoadWarning[],
   entityType: EntityType,
   classifications: Map<string, "legacy" | "team">,
-  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[]; misnamed?: Map<string, readonly string[]>; misnamedUnverified?: Set<string> } = {},
+  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[]; misnamed?: Map<string, readonly string[]>; misnamedUnverified?: Set<string>; duplicates?: Map<string, string> } = {},
 ): Promise<T[]> {
   extras.signal?.throwIfAborted();
   if (!existsSync(dirPath)) return [];
@@ -2455,6 +2460,8 @@ async function loadDirectory<T>(
     const sorted = [...files].sort();
     const message = duplicateIdMessage(id, entityDir, sorted);
     for (const file of sorted) warnings.push({ file, message, type: "duplicate_id" });
+    // ISS-1418: the same text for an ambiguous ref, which otherwise could only repeat the shared id.
+    extras.duplicates?.set(`${entityDir}/${id}`, message);
   }
   // ISS-1405: the ids a misnamed file claims, for the writers' refusal.
   if (extras.misnamed) for (const [id, files] of misnamedOnly(claimants)) extras.misnamed.set(`${entityDir}/${id}`, files);

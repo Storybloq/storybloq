@@ -58,6 +58,8 @@ export class ProjectState {
   readonly roadmap: Readonly<Roadmap>;
   readonly config: Readonly<Config>;
   readonly handoverFilenames: readonly string[];
+  /** ISS-1418: see `duplicateMessageOf`. */
+  private readonly duplicates: ReadonlyMap<string, string>;
   /** T-486 U2-4 (B1): ticket files the loader could not accept; each holds the releases it could affect. */
   readonly omittedTickets: readonly OmittedTicketRecord[];
 
@@ -148,6 +150,8 @@ export class ProjectState {
     handoverFilenames: string[];
     /** T-486 U2-4 (B1): ticket files the loader could not accept. */
     omittedTickets?: readonly OmittedTicketRecord[];
+    /** ISS-1418: the loader's duplicate_id message, keyed `<dir>/<id>`, for each id claimed by two or more files. */
+    duplicates?: ReadonlyMap<string, string>;
   }) {
     this.tickets = input.tickets;
     this.omittedTickets = input.omittedTickets ?? [];
@@ -157,6 +161,7 @@ export class ProjectState {
     this.roadmap = input.roadmap;
     this.config = input.config;
     this.handoverFilenames = input.handoverFilenames;
+    this.duplicates = input.duplicates ?? new Map();
 
     // Step 0: Lifecycle filtering (deleted and archived items excluded from active views)
     this.activeTickets = input.tickets.filter((t) => isActiveLifecycle(t));
@@ -647,6 +652,14 @@ export class ProjectState {
   }
 
   // --- Resolver ---
+
+  /**
+   * ISS-1418: the loader's duplicate_id message for an id two or more files in `dir` claim, naming the files and
+   * the recovery; undefined when the id is not duplicated or the state was not built by the loader.
+   */
+  duplicateMessageOf(dir: "tickets" | "issues" | "notes" | "lessons", id: string): string | undefined {
+    return this.duplicates.get(`${dir}/${id}`);
+  }
 
   resolveTicketRef(ref: string): ResolveResult<Ticket> {
     return resolveRef(ref, this.ticketsByID, this.ticketsByDisplayID, this.tickets, this.ticketsByPrevDisplayID);

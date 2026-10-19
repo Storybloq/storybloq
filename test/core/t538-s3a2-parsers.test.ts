@@ -214,6 +214,20 @@ describe("an oversized line", () => {
     expect(classifyEvidence("vitest", ended(0), facts, null, 1).kind).toBe("unrecognized");
   });
 
+  describe("a completed line over the bound is unreadable however its newline arrives", () => {
+    const big = "w".repeat(TAIL_BYTES + 100);
+    const summary = "      Tests  1 passed (1)\n";
+    const unreadable = (chunks: string[]) => {
+      const facts = scan(chunks.map((c) => Buffer.from(c)));
+      expect(facts.oversizedLine).toBe(true);
+      expect(classifyEvidence("vitest", ended(0), facts, null, 1)).toEqual({ kind: "unrecognized", reason: `a line of the output is longer than ${TAIL_BYTES} bytes, so part of it was never read` });
+    };
+    it("(a) in one feed with its newline", () => unreadable([`${big}\n`, summary]));
+    it("(b) a buffered prefix under the bound, then the rest and the newline in the next feed", () => unreadable([big.slice(0, 40_000), `${big.slice(40_000)}\n`, summary]));
+    it("(c) split before the newline, the newline alone in the last feed", () => unreadable([big.slice(0, 40_000), big.slice(40_000), "\n", summary]));
+    it("(d) followed by a passing summary in the same feed", () => unreadable([`${big}\n${summary}`]));
+  });
+
   it("a line just within the bound is read whole", () => {
     const facts = scan(chunked(Buffer.from(`${"z".repeat(TAIL_BYTES - 1)}\n      Tests  1 passed (1)\n`), 1000));
     expect(facts.oversizedLine).toBe(false);

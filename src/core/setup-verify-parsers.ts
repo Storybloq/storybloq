@@ -104,7 +104,14 @@ export class EvidenceScanner {
     }
     const parts = (this.partial + rest).split(/\r\n|\r|\n/);
     this.partial = parts.pop()!;
-    for (const p of parts) this.line(p);
+    for (const p of parts) {
+      // A completed line is measured too: whether its delimiter arrived in the same feed must not decide the verdict.
+      if (Buffer.byteLength(p, "utf-8") > TAIL_BYTES) {
+        this.oversized = true;
+        continue;
+      }
+      this.line(p);
+    }
     if (Buffer.byteLength(this.partial, "utf-8") > TAIL_BYTES) {
       this.partial = "";
       this.discarding = true;

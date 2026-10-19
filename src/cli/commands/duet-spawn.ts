@@ -255,7 +255,18 @@ export function reconcileSpawnJournal(root: string, journal: Record<string, unkn
   if (cleanup) recommendation = `arrangement ${arrangementId} ${coordText}, worker ${workerTaskId ?? "?"} ${launchText}: ${CLOSE(arrangementId!)} or run the printed command by hand.`;
   else if (launch === "manual") recommendation = `${launchText}; ${arrangementId ? `arrangement ${arrangementId} ${coordText}; ` : ""}check \`storybloq roster list\` for claude:${workerTaskId ?? "?"} and wait for the nonce echo before closing the arrangement.`;
   else if (launch === "unknown") recommendation = `${launchText}; ${arrangementId ? `arrangement ${arrangementId} ${coordText}; ` : ""}check \`storybloq roster list\` for claude:${workerTaskId ?? "?"} and wait for the nonce echo before closing the arrangement or spawning again.`;
-  else if (launch === "launched") recommendation = `${launchText}; ${arrangementId ? `arrangement ${arrangementId} ${coordText}.` : coordText + "."}`;
+  else if (launch === "launched") {
+    // ISS-1294: the echo is awaited only while the handshake is open. A
+    // launched worker holds the nonce, so an unreadable runtime is uncertain,
+    // not settled; every other state has no echo coming for this journal.
+    const head = coordination === "not-started" || coordination === "started-no-receipt" ? launchText
+      : coordination === "receipt" ? "launched; handshake complete"
+      : coordination === "unresolved" ? "launched; handshake status unknown, an echo may still arrive"
+      : coordination === "superseded" ? "launched; the spawn challenge is superseded"
+      : "launched";
+    const tail = coordination === "closed" ? "; this journal is historical and can be deleted" : "";
+    recommendation = `${head}; ${arrangementId ? `arrangement ${arrangementId} ${coordText}` : coordText}${tail}.`;
+  }
   else if (coordination === "no-arrangement" || coordination === "none-requested") recommendation = `${launchText}; ${coordText}.`;
   else recommendation = `${launchText}; arrangement ${arrangementId} ${coordText}; inspect before acting.`;
   return { name, workerTaskId, stage, launch, coordination, arrangementId, cleanup, recommendation };

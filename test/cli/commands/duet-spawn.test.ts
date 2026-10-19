@@ -353,6 +353,9 @@ describe("T-530: storybloq duet spawn creates the arrangement, starts coordinati
       expect(line("done")).not.toContain("--lifecycle closed");
       expect(line("receipted")).toContain("receipt recorded");
       expect(line("receipted")).not.toContain("--lifecycle closed");
+      // ISS-1294: a receipted launch has no echo left to await.
+      expect(line("receipted")).toContain("launched; handshake complete");
+      expect(line("receipted")).not.toContain("await the echo");
       // structured view of one candidate
       const j = readSpawnJournal(journals(dir).find((p) => p.includes("w-launchatt"))!)!;
       const rec = reconcileSpawnJournal(dir, j);
@@ -388,7 +391,51 @@ describe("T-530: storybloq duet spawn creates the arrangement, starts coordinati
       expect(line("garbage")).not.toContain("--lifecycle closed");
       expect(line("closed")).toContain("nothing to close");
       expect(line("closed")).not.toContain("--lifecycle closed");
+      // ISS-1294: a launched worker on a closed arrangement awaits nothing; the journal is history.
+      expect(line("closed")).not.toContain("await the echo");
+      expect(line("closed")).toContain("this journal is historical and can be deleted");
+      // A launched worker holds the nonce, so a runtime corrupted before any receipt is uncertain, not settled.
+      expect(line("garbage")).toContain("launched; handshake status unknown, an echo may still arrive");
       expect(out).not.toMatch(/orphan/i);
+    });
+
+    it("ISS-1294: a launched worker awaits the echo only while its handshake is open, and is never cleanup-eligible", async () => {
+      const dir = await newProject();
+      const done = (await spawnWith(dir, {}, "w-open")) as Record<string, any>;
+      const open = readSpawnJournal(done.journalPath)!;
+      const opened = reconcileSpawnJournal(dir, open);
+      expect(opened).toMatchObject({ launch: "launched", coordination: "started-no-receipt", cleanup: false });
+      expect(opened.recommendation).toContain("launched; await the echo");
+
+      // A replacement session with no receipt: this journal's challenge is obsolete, the replacement unverified.
+      const rep = (await spawnWith(dir, {}, "w-replaced")) as Record<string, any>;
+      const ra = arrangements(dir).find((a) => a.id === rep.arrangement.id)!;
+      await coordinateDuet(dir, { action: "start", id: ra.id, expectedRevision: 1, expectedSessionId: ra.currentCoordinationSessionId!, newSessionId: randomUUID(), mode: "native-return", clientTaskId: PEN });
+      const replaced = reconcileSpawnJournal(dir, readSpawnJournal(rep.journalPath)!);
+      expect(replaced).toMatchObject({ launch: "launched", coordination: "superseded", cleanup: false });
+      expect(replaced.recommendation).toContain("launched; the spawn challenge is superseded");
+      expect(replaced.recommendation).toContain("SUPERSEDED");
+      expect(replaced.recommendation).not.toContain("handshake complete");
+
+      // The runtime corrupted after the launch, before any receipt.
+      const cor = (await spawnWith(dir, {}, "w-corrupt")) as Record<string, any>;
+      writeFileSync(join(dir, ".story", "duet-sessions", cor.arrangement.id, "state.json"), "{garbage");
+      const corrupt = reconcileSpawnJournal(dir, readSpawnJournal(cor.journalPath)!);
+      expect(corrupt).toMatchObject({ launch: "launched", coordination: "unresolved", cleanup: false });
+      expect(corrupt.recommendation).toContain("launched; handshake status unknown, an echo may still arrive");
+
+      // No arrangement requested, and none bearing the worker id: nothing echoes to this journal.
+      const none = reconcileSpawnJournal(dir, { ...open, arrangementMode: "manual" });
+      const stray = reconcileSpawnJournal(dir, { ...open, workerTaskId: "00000000-0000-4000-8000-000000000000" });
+      expect(none).toMatchObject({ launch: "launched", coordination: "none-requested", cleanup: false });
+      expect(stray).toMatchObject({ launch: "launched", coordination: "no-arrangement", cleanup: false });
+
+      for (const rec of [replaced, corrupt, none, stray]) {
+        expect(rec.recommendation).not.toContain("await the echo");
+      }
+      for (const rec of [opened, replaced, corrupt, none, stray]) {
+        expect(rec.recommendation).not.toContain("--lifecycle closed");
+      }
     });
 
     it("a journal with a missing, null or unrecognised stage reads UNKNOWN and never offers cleanup, even with a live worker identity (byte-review F2)", async () => {

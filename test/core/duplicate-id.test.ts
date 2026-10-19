@@ -19,12 +19,12 @@ import { handleTicketUpdate } from "../../src/cli/commands/ticket.js";
 import { handleReconcile } from "../../src/cli/commands/reconcile.js";
 import { handleValidate } from "../../src/cli/commands/validate.js";
 import { writeRulingUnlocked } from "../../src/core/ruling-loader.js";
-import { makeRuling } from "./test-factories.js";
+import { makeLesson, makeNote, makeRuling } from "./test-factories.js";
 
 interface VectorFile { readonly name: string; readonly id: string; readonly displayId?: string }
 interface Vector {
   readonly name: string;
-  readonly dir: "tickets" | "issues";
+  readonly dir: "tickets" | "issues" | "notes" | "lessons";
   readonly files: readonly VectorFile[];
   readonly duplicates: readonly { readonly id: string; readonly files: readonly string[] }[];
   readonly writesRefused: boolean;
@@ -50,21 +50,23 @@ const issue = (id: string, title: string, order: number, displayId?: string) => 
   id, ...(displayId ? { displayId } : {}), title, status: "open", severity: "medium", components: [], impact: "x",
   resolution: null, location: [], discoveredDate: "2026-01-01", resolvedDate: null, relatedTickets: [], order, phase: null,
 });
+const note = (id: string, title: string, _order: number, displayId?: string) => ({ ...makeNote({ id, title }), ...(displayId ? { displayId } : {}) });
+const lesson = (id: string, title: string, _order: number, displayId?: string) => ({ ...makeLesson({ id, title }), ...(displayId ? { displayId } : {}) });
+const RECORD = { tickets: ticket, issues: issue, notes: note, lessons: lesson } as const;
 
 /** A team-mode project (reconcile needs it), with one directory holding `files`. */
 function project(dir: Vector["dir"], files: readonly VectorFile[]): string {
   const root = mkdtempSync(join(tmpdir(), "duplicate-id-"));
   roots.push(root);
   const story = join(root, ".story");
-  for (const d of ["tickets", "issues", "notes"]) mkdirSync(join(story, d), { recursive: true });
+  for (const d of ["tickets", "issues", "notes", "lessons"]) mkdirSync(join(story, d), { recursive: true });
   writeJson(join(story, "config.json"), {
     version: 2, schemaVersion: 2, project: "test", type: "app", language: "typescript",
     features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true }, team: { enabled: true },
   });
   writeJson(join(story, "roadmap.json"), { title: "Test", date: "2026-05-26", phases: [{ id: "p1", label: "P1", name: "Phase 1", description: "" }], blockers: [] });
   files.forEach((f, i) => {
-    const make = dir === "tickets" ? ticket : issue;
-    writeJson(join(story, dir, f.name), make(f.id, `${f.name} copy`, 10 * (i + 1), f.displayId));
+    writeJson(join(story, dir, f.name), RECORD[dir](f.id, `${f.name} copy`, 10 * (i + 1), f.displayId));
   });
   return root;
 }
@@ -76,7 +78,10 @@ function bytesOf(root: string, dir: string, files: readonly VectorFile[]): strin
 describe("duplicate ids (ISS-1404)", () => {
   it("has vectors, so an emptied fixture fails loudly", () => {
     expect(VECTORS.length).toBeGreaterThan(0);
-    expect(VECTORS.some((v) => v.duplicates.length > 0)).toBe(true);
+    // A duplicate case in every directory the loader reads by id.
+    for (const dir of ["tickets", "issues", "notes", "lessons"]) {
+      expect(VECTORS.some((v) => v.dir === dir && v.duplicates.length > 0), dir).toBe(true);
+    }
   });
 
   it.each(VECTORS.map((v) => [v.name, v] as const))("%s: the warnings the vector names, and no others", async (_name, v) => {
@@ -87,7 +92,7 @@ describe("duplicate ids (ISS-1404)", () => {
     );
     expect(warnings.filter((w) => w.type === "duplicate_id")).toEqual(expected);
     // What loads is unchanged: every record stays in the arrays.
-    const loaded = v.dir === "tickets" ? state.tickets : state.issues;
+    const loaded = { tickets: state.tickets, issues: state.issues, notes: state.notes, lessons: state.lessons }[v.dir];
     expect(loaded).toHaveLength(v.files.length);
   });
 

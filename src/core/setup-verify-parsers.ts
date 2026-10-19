@@ -239,38 +239,133 @@ export interface JunitCounts { readonly executed: number; readonly failed: numbe
 
 const JUNIT_COUNTS = ["tests", "failures", "errors", "skipped"] as const;
 
+const XML_NAME = /[A-Za-z_:][-\w.:]*/y;
+const XML_SPACE = /[ \t\r\n]*/y;
+/** Only the predefined entities and character references: nothing is declared, so nothing else is defined. */
+const XML_TEXT_OK = /^[^&<]*(?:&(?:lt|gt|amp|quot|apos|#\d+|#x[0-9A-Fa-f]+);[^&<]*)*$/;
+
+/**
+ * Every element of a whole, well-formed XML document, in document order, or
+ * null. A strict minimal pass, never a general parser: one stack over every
+ * element, attributes in either quote style with no duplicates, comments,
+ * CDATA and processing instructions skipped as non-markup, any other
+ * declaration (DOCTYPE, ENTITY) refused, only the predefined entities, and
+ * exactly one root with nothing but whitespace or comments after it.
+ */
+function xmlElements(xml: string): Array<{ name: string; attrs: Map<string, string> }> | null {
+  const doc = xml.startsWith("\uFEFF") ? xml.slice(1) : xml;
+  const out: Array<{ name: string; attrs: Map<string, string> }> = [];
+  const stack: string[] = [];
+  let rooted = false;
+  let i = 0;
+  const name = (): string | null => {
+    XML_NAME.lastIndex = i;
+    const m = XML_NAME.exec(doc);
+    if (!m) return null;
+    i = XML_NAME.lastIndex;
+    return m[0];
+  };
+  const space = (): number => {
+    XML_SPACE.lastIndex = i;
+    XML_SPACE.exec(doc);
+    const n = XML_SPACE.lastIndex - i;
+    i = XML_SPACE.lastIndex;
+    return n;
+  };
+  while (i < doc.length) {
+    const lt = doc.indexOf("<", i);
+    const text = doc.slice(i, lt < 0 ? doc.length : lt);
+    if (stack.length === 0 ? !/^[ \t\r\n]*$/.test(text) : !XML_TEXT_OK.test(text)) return null;
+    if (lt < 0) break;
+    i = lt;
+    if (doc.startsWith("<!--", i)) {
+      const close = doc.indexOf("-->", i + 4);
+      if (close < 0 || doc.slice(i + 4, close).includes("--")) return null;
+      i = close + 3;
+      continue;
+    }
+    if (doc.startsWith("<![CDATA[", i)) {
+      const close = doc.indexOf("]]>", i + 9);
+      if (close < 0 || stack.length === 0) return null;
+      i = close + 3;
+      continue;
+    }
+    if (doc.startsWith("<?", i)) {
+      const close = doc.indexOf("?>", i + 2);
+      // A processing instruction is skipped inside the root or before it; after it, nothing but whitespace or comments.
+      if (close < 0 || (rooted && stack.length === 0)) return null;
+      i = close + 2;
+      continue;
+    }
+    // Any other declaration, a DOCTYPE or an ENTITY above all, is refused: nothing is ever resolved.
+    if (doc.startsWith("<!", i)) return null;
+    if (doc.startsWith("</", i)) {
+      i += 2;
+      const n = name();
+      space();
+      if (n === null || doc[i] !== ">" || stack.pop() !== n) return null;
+      i += 1;
+      continue;
+    }
+    i += 1;
+    const n = name();
+    if (n === null) return null;
+    if (stack.length === 0 && (rooted || (n !== "testsuite" && n !== "testsuites"))) return null;
+    const attrs = new Map<string, string>();
+    for (;;) {
+      const gap = space();
+      if (doc.startsWith("/>", i) || doc[i] === ">") break;
+      const a = gap > 0 ? name() : null;
+      if (a === null || attrs.has(a)) return null;
+      space();
+      if (doc[i] !== "=") return null;
+      i += 1;
+      space();
+      const q = doc[i];
+      if (q !== '"' && q !== "'") return null;
+      const close = doc.indexOf(q, i + 1);
+      if (close < 0) return null;
+      const value = doc.slice(i + 1, close);
+      if (!XML_TEXT_OK.test(value)) return null;
+      attrs.set(a, value);
+      i = close + 1;
+    }
+    out.push({ name: n, attrs });
+    if (stack.length === 0) rooted = true;
+    if (doc.startsWith("/>", i)) {
+      i += 2;
+    } else {
+      i += 1;
+      stack.push(n);
+    }
+  }
+  return rooted && stack.length === 0 ? out : null;
+}
+
 /**
  * The counts in a JUnit XML report, summed over its testsuite elements; null
- * when the report does not read. It reads only when it is whole: every
- * testsuite and testsuites element closed in order, nothing after the root,
- * and no DTD (entities are never resolved). Every count attribute present is
- * a non-negative integer: a missing optional count is zero, an invalid one
- * makes the report unreadable, and `tests` is required.
+ * when the report does not read. It reads only when the whole document passes
+ * the well-formedness pass above (entities are never resolved), and the counts
+ * come only from real testsuite elements, never from text in a comment or
+ * CDATA. Every count attribute present is a non-negative integer: a missing
+ * optional count is zero, an invalid one makes the report unreadable, and
+ * `tests` is required.
  */
 export function readJunit(xml: string): JunitCounts | null {
-  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) return null;
-  const body = xml.trim();
-  if (!body.endsWith(">") || body.lastIndexOf("<") > body.lastIndexOf(">")) return null;
-  const open: string[] = [];
-  let roots = 0;
+  const elements = xmlElements(xml);
+  if (elements === null) return null;
   let executed = 0;
   let failed = 0;
   let errors = 0;
   let suites = 0;
-  for (const m of body.matchAll(/<(\/?)(testsuites?)(?=[\s/>])([^>]*?)(\/?)>/g)) {
-    const [, closing, name, attrs, selfClosing] = m;
-    if (closing === "/") {
-      if (open.pop() !== name) return null;
-      continue;
-    }
-    if (open.length === 0 && ++roots > 1) return null;
-    if (selfClosing !== "/") open.push(name!);
-    if (name !== "testsuite") continue;
+  for (const el of elements) {
+    if (el.name !== "testsuite") continue;
     const counts = new Map<string, number>();
-    for (const a of attrs!.matchAll(/\s([A-Za-z_][-\w.:]*)="([^"]*)"/g)) {
-      if (!(JUNIT_COUNTS as readonly string[]).includes(a[1]!)) continue;
-      if (!/^\d+$/.test(a[2]!)) return null;
-      counts.set(a[1]!, Number(a[2]));
+    for (const c of JUNIT_COUNTS) {
+      const v = el.attrs.get(c);
+      if (v === undefined) continue;
+      if (!/^\d+$/.test(v)) return null;
+      counts.set(c, Number(v));
     }
     const tests = counts.get("tests");
     if (tests === undefined) return null;
@@ -281,11 +376,7 @@ export function readJunit(xml: string): JunitCounts | null {
     failed += f + e;
     errors += e;
   }
-  if (open.length > 0 || suites === 0) return null;
-  // Nothing may follow the root's close: the last tag in the report is it.
-  const last = [...body.matchAll(/<[^>]*>/g)].pop()![0];
-  if (!/^<\/testsuites?>$/.test(last) && !/^<testsuite\b[^>]*\/>$/.test(last)) return null;
-  return { executed, failed, errors };
+  return suites === 0 ? null : { executed, failed, errors };
 }
 
 export interface RunEnd {

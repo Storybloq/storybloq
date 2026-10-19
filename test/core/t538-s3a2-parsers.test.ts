@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { EvidenceScanner, TAIL_BYTES, classifyEvidence, readJunit, type Evidence, type RunEnd, type StreamFacts, type TestRunner } from "../../src/core/setup-verify-parsers.js";
+import { EvidenceScanner, TAIL_BYTES, classifyEvidence, readJunit, type Evidence, type JunitCounts, type RunEnd, type StreamFacts, type TestRunner } from "../../src/core/setup-verify-parsers.js";
 
 const FX = join(import.meta.dirname, "__fixtures__", "t538-runner-output");
 const exits = JSON.parse(readFileSync(join(FX, "exits.json"), "utf-8")) as Record<string, number>;
@@ -255,6 +255,23 @@ describe("readJunit", () => {
     ] as const) {
       expect(readJunit(xml), why).toBeNull();
     }
+  });
+
+  it("reads only a well-formed document: every element closed in order, either quote style, comments and CDATA never markup", () => {
+    const passing = scan([recorded("pytest-pass")]);
+    const rows: Array<[string, string, JunitCounts | null]> = [
+      ["an unclosed child element", '<testsuite tests="1"><testcase></testsuite>', null],
+      ["a mismatched child tag", '<testsuite tests="1"><testcase></testcases></testsuite>', null],
+      ["a single-quoted count", `<testsuite tests="1" failures='1'/>`, { executed: 1, failed: 1, errors: 0 }],
+      ["suite text inside a comment", '<testsuite tests="1"><!-- <testsuite tests="5" failures="3"/> --></testsuite>', { executed: 1, failed: 0, errors: 0 }],
+      ["suite text inside CDATA", '<testsuite tests="1"><system-out><![CDATA[<testsuite tests="9" failures="9">]]></system-out></testsuite>', { executed: 1, failed: 0, errors: 0 }],
+      ["a DOCTYPE", '<!DOCTYPE testsuite><testsuite tests="1"/>', null],
+      ["content after the root", '<testsuite tests="1"/>trailing', null],
+      ["two roots", '<testsuite tests="1"/><testsuite tests="1"/>', null],
+    ];
+    for (const [why, xml, counts] of rows) expect(readJunit(xml), why).toEqual(counts);
+    expect(classifyEvidence("pytest", ended(0), passing, `<testsuite tests="1" failures='1'/>`, 1)).toMatchObject({ kind: "failed" });
+    for (const name of ["pytest-pass", "pytest-fail", "pytest-none"]) expect(readJunit(junitOf(name)!), name).not.toBeNull();
   });
 
   it("a missing optional count is zero, unlike an invalid one", () => {

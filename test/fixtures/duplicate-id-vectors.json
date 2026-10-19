@@ -1,0 +1,10 @@
+{
+  "comment": "ISS-1404: shared with the Mac loader. Each case lists the files of one ledger directory and the duplicate_id warnings the loader must emit (one per claiming file, the exported duplicateIdMessage bytes). A display-id collision is not a duplicate: reconcile fixes it, and writes stay allowed.",
+  "cases": [
+    { "name": "two ticket files, one id", "dir": "tickets", "files": [{ "name": "T-001.json", "id": "T-001" }, { "name": "T-001 copy.json", "id": "T-001" }], "duplicates": [{ "id": "T-001", "files": [".story/tickets/T-001 copy.json", ".story/tickets/T-001.json"] }], "writesRefused": true },
+    { "name": "three issue files, one id", "dir": "issues", "files": [{ "name": "ISS-001.json", "id": "ISS-001" }, { "name": "a.json", "id": "ISS-001" }, { "name": "b.json", "id": "ISS-001" }], "duplicates": [{ "id": "ISS-001", "files": [".story/issues/ISS-001.json", ".story/issues/a.json", ".story/issues/b.json"] }], "writesRefused": true },
+    { "name": "one misnamed file, no duplicate", "dir": "tickets", "files": [{ "name": "old.json", "id": "T-001" }], "duplicates": [], "writesRefused": false },
+    { "name": "hash pair sharing a display id", "dir": "tickets", "files": [{ "name": "t-0000000000000001.json", "id": "t-0000000000000001", "displayId": "T-001" }, { "name": "t-0000000000000002.json", "id": "t-0000000000000002", "displayId": "T-001" }], "duplicates": [], "writesRefused": false },
+    { "name": "legacy and hash sharing a display id", "dir": "tickets", "files": [{ "name": "T-001.json", "id": "T-001" }, { "name": "t-0000000000000002.json", "id": "t-0000000000000002", "displayId": "T-001" }], "duplicates": [], "writesRefused": false }
+  ]
+}

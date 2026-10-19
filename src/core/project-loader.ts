@@ -417,6 +417,22 @@ export function filenameIdMismatchMessage(stem: string, id: string): string {
   return `Filename stem "${stem}" does not match content id "${id}"`;
 }
 
+/**
+ * ISS-1404: the `duplicate_id` warning text, exported because the Mac loader
+ * matches these bytes. `files` are relative to the project root, sorted.
+ *
+ * The loader cannot tell which copy is stale, and renaming a file does not
+ * change the id inside it, so the recovery is to inspect each copy, merge into the
+ * canonical file and move the redundant copy out of the directory.
+ */
+export function duplicateIdMessage(id: string, dir: string, files: readonly string[]): string {
+  return (
+    `Id "${id}" is claimed by ${files.length} files: ${files.join(", ")}; only the first loads by id. ` +
+    `Inspect each copy and keep what is intended: merge it into .story/${dir}/${id}.json, then move the redundant copy out of .story/${dir}/. ` +
+    "Renaming a file inside the directory does not resolve a duplicate."
+  );
+}
+
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
@@ -2193,6 +2209,10 @@ async function loadDirectory<T>(
 
   const entityDir = basename(dirPath);
   const results: T[] = [];
+  // ISS-1404: which files claimed each canonical id, in load order. Keyed by
+  // `id`, never `displayId`: a display-id collision is reconcile's to fix and
+  // must not block the strict lock reconcile itself takes.
+  const claimants = new Map<string, string[]>();
   for (const entry of entries) {
     if (entry.startsWith(".")) continue;
     if (extname(entry) !== ".json") continue;
@@ -2249,6 +2269,11 @@ async function loadDirectory<T>(
       }
       results.push(result.data);
       extras.files?.push(relPath);
+      if (typeof data.id === "string") {
+        const files = claimants.get(data.id);
+        if (files) files.push(relPath);
+        else claimants.set(data.id, [relPath]);
+      }
     } catch (err) {
       warnings.push({
         file: relPath,
@@ -2257,6 +2282,17 @@ async function loadDirectory<T>(
       });
       extras.omitted?.push({ file: relPath, reason: stage, parentage: "unknown" });
     }
+  }
+
+  // ISS-1404: after the whole directory, so each warning names every claimant.
+  // What loads is unchanged (both records stay; ProjectState indexes
+  // first-wins, the Swift parity contract); the warning is an integrity type,
+  // so strict writes refuse until the duplicate is resolved.
+  for (const [id, files] of claimants) {
+    if (files.length < 2) continue;
+    const sorted = [...files].sort();
+    const message = duplicateIdMessage(id, entityDir, sorted);
+    for (const file of sorted) warnings.push({ file, message, type: "duplicate_id" });
   }
 
   return results;

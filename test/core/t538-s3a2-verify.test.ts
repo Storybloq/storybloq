@@ -299,7 +299,6 @@ describe("freshness: a change during the run is exit 5 with nothing written", ()
       await rm(join(root, ".story", "tickets", "T-002.json"));
       await writeFile(join(root, ".story", "tickets", "t-abcdef1234567890.json"), JSON.stringify({ ...raw, id: "t-abcdef1234567890", displayId: "T-002" }, null, 2) + "\n");
     }],
-    ["the ticket's setup key", (root) => editTicket(root, "T-002", (r) => { (r.setup as { key: string }).key = "K3-renamed"; })],
     ["the ticket's claim", (root) => editTicket(root, "T-002", (r) => { r.claim = { user: "rival@example.com", branch: "b", since: "2026-10-18" }; })],
     ["a dependency", (root) => editTicket(root, "T-002", (r) => { r.blockedBy = ["T-001", "T-003"]; })],
     ["a prerequisite's status", (root) => editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; })],
@@ -345,6 +344,17 @@ describe("freshness: a change during the run is exit 5 with nothing written", ()
     const t = JSON.parse(after.ticket) as { status: string; setup: { verification: Record<string, unknown> } };
     expect(t.setup.verification.result).toBeUndefined();
     expect(JSON.parse(after.config).setupVerification.components[0].test.status).toBe("pending");
+  });
+
+  it("the ticket's setup key, changed to another valid unused key so only the digest can see it", async () => {
+    const root = await ready(replay("vitest-pass"));
+    const before = await files(root);
+    setupVerifySeams.afterRun = () => editTicket(root, "T-002", (r) => { (r.setup as { key: string }).key = "K42"; });
+    const r = await setupVerify(root, { ticket: "T-002" });
+    expect([r.exitCode, r.lines[0]]).toEqual([5, "Setup-verify stale: the ticket, its prerequisites, the record, the stages or the ownership changed during the run; nothing was written. Run storybloq setup-verify --ticket T-002 again."]);
+    const t = JSON.parse((await files(root)).ticket) as { setup: { key: string; verification: Record<string, unknown> } };
+    expect([t.setup.key, t.setup.verification.result]).toEqual(["K42", undefined]);
+    expect((await files(root)).config).toBe(before.config);
   });
 });
 

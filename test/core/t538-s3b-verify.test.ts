@@ -150,6 +150,16 @@ describe("a VERIFY that does not verify writes nothing and prints its run", () =
     await fails(root, new RegExp(`^Verification failed: app verify: not ready: no 2xx from http://127\\.0\\.0\\.1:${port}/health within 1500 ms\\.`));
   });
 
+  it("an ownership query the deadline overtakes is not-ready, not ownership-unknown: each query has its own bound", async () => {
+    const port = await freePort();
+    const root = await ready(port, serve(port, "status-500"));
+    const slow = join(root, "slow-lsof");
+    await writeFile(slow, `#!/bin/sh\nsleep 0.5\nexec ${REAL.lsofPath} "$@"\n`, { mode: 0o755 });
+    serveSeams.lsofPath = slow;
+    await editSpec(root, { startupTimeoutMs: 700 });
+    await fails(root, new RegExp(`^Verification failed: app verify: not ready: no 2xx from http://127\\.0\\.0\\.1:${port}/health within 700 ms\\.`));
+  });
+
   it("a listener outside the group is foreign-listener, and is never signalled", async () => {
     const port = await freePort();
     const root = await ready(port, "sleep 30");

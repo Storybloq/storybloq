@@ -14,7 +14,9 @@
  *    report IPV6_V6ONLY) must belong to the group, and at least one must be
  *    there; a foreign pid is `foreign-listener`, a query that fails, times
  *    out, prints what it should not, or names a pid ps then cannot find is
- *    `ownership-unknown`;
+ *    `ownership-unknown`. Each query has its own bound, never the time left
+ *    to the startup deadline, so a deadline that passes during a query reads
+ *    as `not-ready`, not as a query that timed out;
  * 4. the group is stopped whatever happened, and the port must then be free
  *    (else `shutdown-failed`; a foreign process holding it is never signalled,
  *    because signals go only to the group).
@@ -158,14 +160,13 @@ async function groupsOf(pids: readonly number[], timeoutMs: number): Promise<Que
 type Ownership = { readonly kind: "owned" } | { readonly kind: "none" } | { readonly kind: "foreign"; readonly detail: string } | { readonly kind: "unknown"; readonly detail: string };
 
 /** One observation: every listener that could accept 127.0.0.1:port is the group's, and there is at least one. */
-async function observe(port: number, pgid: number, remaining: number): Promise<Ownership> {
-  const bound = Math.min(remaining, OWNERSHIP_QUERY_MS);
-  const found = await listenersOn(port, bound);
+async function observe(port: number, pgid: number): Promise<Ownership> {
+  const found = await listenersOn(port, OWNERSHIP_QUERY_MS);
   if (!found.ok) return { kind: "unknown", detail: found.why };
   const eligible = found.value.filter((l) => acceptsLoopback(l.host));
   if (eligible.length === 0) return { kind: "none" };
   const pids = [...new Set(eligible.map((l) => l.pid))];
-  const groups = await groupsOf(pids, bound);
+  const groups = await groupsOf(pids, OWNERSHIP_QUERY_MS);
   if (!groups.ok) return { kind: "unknown", detail: groups.why };
   const foreign = pids.filter((p) => groups.value.get(p) !== pgid);
   if (foreign.length > 0) return { kind: "foreign", detail: `pid ${foreign.join(", ")} outside the group listens on ${port}` };
@@ -204,7 +205,7 @@ type Readiness = { readonly kind: "ready"; readonly status: number } | { readonl
 /** Runs the VERIFY launch, readiness and shutdown. The caller checked the capability first. */
 export async function runServe(spec: ServeSpec): Promise<ServeOutcome> {
   const deadline = Date.now() + spec.startupTimeoutMs;
-  const before = await listenersOn(spec.port, Math.min(spec.startupTimeoutMs, OWNERSHIP_QUERY_MS));
+  const before = await listenersOn(spec.port, OWNERSHIP_QUERY_MS);
   if (!before.ok) return { kind: "ownership-unknown", detail: before.why, tail: "" };
   if (before.value.length > 0) return { kind: "port-occupied", detail: `pid ${[...new Set(before.value.map((l) => l.pid))].join(", ")} already listens on ${spec.port}`, tail: "" };
   await serveSeams.afterPortCheck();
@@ -223,14 +224,14 @@ export async function runServe(spec: ServeSpec): Promise<ServeOutcome> {
           return { kind: "exited-early", detail: exit === null ? "its process group is gone" : exit.signal !== null ? `it ended by ${exit.signal} before answering` : `it exited with code ${exit.code} before answering` };
         }
         await serveSeams.beforeOwnership1();
-        const first = await observe(spec.port, group.pgid, deadline - Date.now());
+        const first = await observe(spec.port, group.pgid);
         if (first.kind === "foreign") return { kind: "foreign-listener", detail: first.detail };
         if (first.kind === "unknown") return { kind: "ownership-unknown", detail: first.detail };
         if (first.kind === "owned") {
           const status = await request(url, deadline - Date.now());
           if (status !== null && status >= 200 && status < 300) {
             await serveSeams.afterResponse();
-            const second = await observe(spec.port, group.pgid, deadline - Date.now());
+            const second = await observe(spec.port, group.pgid);
             await serveSeams.afterOwnership2();
             if (second.kind === "owned") return { kind: "ready", status };
             if (second.kind === "foreign") return { kind: "foreign-listener", detail: second.detail };

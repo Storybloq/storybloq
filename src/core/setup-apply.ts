@@ -19,7 +19,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { existsSync } from "node:fs";
-import { link, mkdir, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import {
@@ -1129,10 +1129,15 @@ async function pointerFinding(root: string, p: SetupPayload, ptr: PointerPlan): 
 
 /**
  * Removes a pointer's proposal only while it holds the bytes its intent
- * recorded; a changed one stays, and the output says so. The file is first
- * moved to a unique cleanup path and the bytes captured there are checked,
- * so an edit or replacement after the first check is never deleted: it is
- * put back when nothing has taken its place, else kept at the cleanup path.
+ * recorded; a changed one stays, and the output says so. The file is moved
+ * to a unique cleanup path, opened, and unlinked, and only then are its bytes
+ * read through the held descriptor and checked: an edit or replacement after
+ * the first check, or a write through a descriptor opened before it, is
+ * never lost. Bytes that are not setup's are written back to the proposal
+ * path, or, when something has taken that path, to a fresh cleanup path,
+ * never over anything. Residual, accepted: a write through another
+ * process's descriptor after that final read lands in an inode only that
+ * writer still holds.
  */
 async function tidyPointer(root: string, path: string, p: SetupPayload, out: string[]): Promise<void> {
   const intent = lastReceipt(p, `pointer-proposal:${path}`);
@@ -1153,21 +1158,27 @@ async function tidyPointer(root: string, path: string, p: SetupPayload, out: str
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   }
-  const captured = await readOrNull(cleanup);
-  if (captured !== null && sha256(captured) === intent.ownedPost) {
+  const held = await open(cleanup, "r");
+  let captured: string;
+  try {
+    await setupApplySeams.fault(`pointer-tidy-held:${path}`);
     await fencedUnlink(cleanup);
-    return;
+    captured = await held.readFile("utf-8");
+  } finally {
+    await held.close();
   }
+  if (sha256(captured) === intent.ownedPost) return;
   await setupApplySeams.fault(`pointer-tidy-captured:${path}`);
   try {
-    // link refuses to replace what now sits at the proposal path.
-    await link(cleanup, abs);
-  } catch {
-    out.push(`-> file · ${rel} changed while setup removed it; the bytes it held are kept at ${relative(root, cleanup).split(sep).join("/")}`);
+    await writeFile(abs, captured, { flag: "wx" });
+    out.push(notOurs);
     return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
-  await unlink(cleanup);
-  out.push(notOurs);
+  const kept = `${abs}.cleanup-${randomBytes(6).toString("hex")}`;
+  await writeFile(kept, captured, { flag: "wx" });
+  out.push(`-> file · ${rel} changed while setup removed it; the bytes it held are kept at ${relative(root, kept).split(sep).join("/")}`);
 }
 
 // --- Resume classification (plan v5 1d, 2) ----------------------------------

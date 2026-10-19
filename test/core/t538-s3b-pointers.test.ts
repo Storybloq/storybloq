@@ -8,7 +8,7 @@
  * pointer drift, and a waived one is never checked.
  */
 import { describe, it, expect, vi } from "vitest";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { open, readdir, readFile, writeFile, type FileHandle } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -261,6 +261,25 @@ describe("proposal ownership", () => {
     expect(kept).toHaveLength(1);
     expect(await readFile(join(root, kept[0]!), "utf-8")).toBe("the owner's own notes\n");
     expect(done.lines).toContain(`-> file · CLAUDE.md.storybloq-${SID}.proposed changed while setup removed it; the bytes it held are kept at ${kept[0]}`);
+  });
+
+  it("a write through a descriptor opened before the cleanup is read back after the unlink, kept and reported, never deleted", async () => {
+    const root = await stopped();
+    await writeFile(join(root, "CLAUDE.md"), await readFile(proposal(root, "CLAUDE.md"), "utf-8"));
+    let fd: FileHandle | null = null;
+    setupApplySeams.fault = async (point) => {
+      if (point === "pointer-tidy:CLAUDE.md") fd = await open(proposal(root, "CLAUDE.md"), "r+");
+      if (point === "pointer-tidy-held:CLAUDE.md") {
+        await fd!.truncate(0);
+        await fd!.write("the owner's late edit\n", 0);
+      }
+    };
+    const done = await resolve1(root, "CLAUDE.md", "applied");
+    await (fd as FileHandle | null)?.close();
+    expect(done.exitCode).toBe(0);
+    expect(done.lines).toContain(`-> file · CLAUDE.md.storybloq-${SID}.proposed is not setup's proposal; left as it is`);
+    expect(await readFile(proposal(root, "CLAUDE.md"), "utf-8")).toBe("the owner's late edit\n");
+    expect((await readdir(root)).filter((f) => f.includes(".cleanup-"))).toEqual([]);
   });
 
   it("a crash between the receipt and the removal replays cleanly: the receipt holds and the proposal goes", async () => {

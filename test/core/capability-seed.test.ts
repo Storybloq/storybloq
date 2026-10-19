@@ -14,8 +14,9 @@
  *
  * Nothing here writes to the repository. `loadProject` can (with a transaction
  * journal present it takes the project lock and runs recovery), so it runs on a
- * temporary copy of the ledger, and the test asserts afterwards that the real
- * journal and lock files are as they were.
+ * temporary copy of the ledger that carries no journal and no lock, which the
+ * test asserts before loading. The real ledger's journal and locks are not
+ * compared: another session may legitimately write them while the test runs.
  */
 
 import { describe, it, expect, afterAll } from "vitest";
@@ -32,7 +33,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, "..", "..", "..");
 const LEDGER = join(REPO, ".story");
 
-/** What loadProject must never touch on the real ledger: the journal and every lock. */
+/** What would make loadProject write: the journal and every lock. */
 function isWriteState(name: string): boolean {
   return name === ".txn.json" || name.startsWith(".lock") || name.endsWith(".lock");
 }
@@ -44,12 +45,14 @@ function isWriteState(name: string): boolean {
  */
 const COPIED: readonly string[] = ["config.json", "roadmap.json", "tickets", "issues", "notes", "lessons"];
 
-function writeStateOf(dir: string): string[] {
-  return readdirSync(dir).filter(isWriteState).sort();
+/** Every journal or lock under dir, at any depth. */
+function writeStateUnder(dir: string): string[] {
+  return (readdirSync(dir, { recursive: true }) as string[]).filter((rel) => isWriteState(basename(rel))).sort();
 }
 
+/** The records loadDirectory reads: `.json` files that are not dot-files. */
 function jsonCount(dir: string): number {
-  return readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+  return readdirSync(dir).filter((f) => !f.startsWith(".") && f.endsWith(".json")).length;
 }
 
 const temps: string[] = [];
@@ -86,15 +89,17 @@ describe("the repository's own capability inventory (ISS-1300)", () => {
   });
 
   it("passes the structural check against the real ledger and reference registry, with no git call", async () => {
-    const before = writeStateOf(LEDGER);
     const { doc } = capabilityCatalog.load(REPO);
     const copy = ledgerCopy();
-    for (const dir of ["tickets", "issues"]) {
-      expect(jsonCount(join(copy, ".story", dir))).toBe(jsonCount(join(LEDGER, dir)));
-    }
+    expect(writeStateUnder(join(copy, ".story"))).toEqual([]);
+    // Captured before the await, so a concurrent ledger write after this point cannot move the comparison.
+    const tickets = jsonCount(join(copy, ".story", "tickets"));
+    const issues = jsonCount(join(copy, ".story", "issues"));
+    expect(tickets).toBe(jsonCount(join(LEDGER, "tickets")));
+    expect(issues).toBe(jsonCount(join(LEDGER, "issues")));
     const { state } = await loadProject(copy);
-    expect(state.tickets.length).toBe(jsonCount(join(LEDGER, "tickets")));
-    expect(state.issues.length).toBe(jsonCount(join(LEDGER, "issues")));
+    expect(state.tickets.length).toBe(tickets);
+    expect(state.issues.length).toBe(issues);
     const report = await checkCapabilities(REPO, doc.capabilities, state, { skipFreshness: true });
     expect(report.gitCalls).toBe(0);
     expect(report.head).toBeNull();
@@ -103,7 +108,5 @@ describe("the repository's own capability inventory (ISS-1300)", () => {
     );
     expect(findings).toEqual({});
     expect(report.entries.map((e) => e.id)).toEqual(doc.capabilities.map((e) => e.id));
-    expect(writeStateOf(LEDGER)).toEqual(before);
-    expect(existsSync(join(LEDGER, ".txn.json"))).toBe(before.includes(".txn.json"));
   }, 30_000);
 });

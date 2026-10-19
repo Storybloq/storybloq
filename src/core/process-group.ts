@@ -11,9 +11,9 @@ export const KILL_GRACE_MS = 5000;
 
 export const OWN_GROUP = process.platform !== "win32";
 
-export function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+export function signalGroup(child: ChildProcess, signal: NodeJS.Signals, own: boolean = OWN_GROUP): void {
   try {
-    if (OWN_GROUP && child.pid !== undefined) process.kill(-child.pid, signal);
+    if (own && child.pid !== undefined) process.kill(-child.pid, signal);
     else child.kill(signal);
   } catch {
     /* already gone */
@@ -103,9 +103,15 @@ export function escalate(child: ChildProcess, timeoutMs: number, graceMs: number
 export const CONFIRM_POLL_MS = 50;
 export const CONFIRM_BOUND_MS = 2000;
 
-/** Test seam: the liveness probe, `kill(-pgid, 0)`. Not reachable through any CLI or MCP input. */
-export const processGroupSeams: { probe: (pgid: number) => void } = {
+/**
+ * Test seams, not reachable through any CLI or MCP input: the liveness probe
+ * `kill(-pgid, 0)`, whether runs get their own group (false is the Windows
+ * path, provable on any platform with a fake child), and spawn itself.
+ */
+export const processGroupSeams: { probe: (pgid: number) => void; ownGroup: boolean; spawn: typeof spawn } = {
   probe: (pgid) => process.kill(-pgid, 0),
+  ownGroup: OWN_GROUP,
+  spawn,
 };
 
 /** "gone" on ESRCH, "alive" when the probe succeeds, and the error code for anything else (EPERM included). */
@@ -150,20 +156,26 @@ export interface GroupRun {
  * for at most 2 s; a group not seen gone (ESRCH) by the bound, whether the
  * probe still finds it or answers anything else (EPERM included), leaves the
  * cleanup unconfirmed.
+ *
+ * Without process groups (Windows) there is no group to probe: at the
+ * deadline the child itself gets SIGTERM, SIGKILL after the grace period,
+ * and the run settles when it has exited and closed, or after the same 2 s
+ * bound, unconfirmed if it never exited.
  */
 export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
   const grace = opts.killGraceMs ?? KILL_GRACE_MS;
+  const own = processGroupSeams.ownGroup;
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], detached: OWN_GROUP });
+      child = processGroupSeams.spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], detached: own });
     } catch (e) {
       resolve({ exitCode: null, signal: null, timedOut: false, spawnError: (e as Error).message, cleanup: "confirmed", cleanupDetail: null });
       return;
     }
     const timers: NodeJS.Timeout[] = [];
     const later = (fn: () => void, ms: number): void => { timers.push(setTimeout(fn, ms)); };
-    const stopOnExit = (): void => signalGroup(child, "SIGKILL");
+    const stopOnExit = (): void => signalGroup(child, "SIGKILL", own);
     process.once("exit", stopOnExit);
     trackGroup(child);
     let timedOut = false;
@@ -214,16 +226,40 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
 
     const kill = (): void => {
       if (phase === "confirming") return;
-      signalGroup(child, "SIGKILL");
+      signalGroup(child, "SIGKILL", own);
       confirm();
+    };
+
+    // No group (Windows): the child alone, SIGTERM then SIGKILL, then wait for it to exit and close within the bound. Never a negative-pid probe.
+    const stopChild = (): void => {
+      if (phase !== "running") return;
+      phase = "terming";
+      signalGroup(child, "SIGTERM", false);
+      later(() => {
+        if (settled) return;
+        phase = "confirming";
+        signalGroup(child, "SIGKILL", false);
+        const started = Date.now();
+        const tick = (): void => {
+          if (settled) return;
+          if (exited && closed) return finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
+          if (Date.now() - started >= CONFIRM_BOUND_MS) {
+            if (exited) return finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
+            return finish({ spawnError: null, cleanup: "unconfirmed", cleanupDetail: `process ${child.pid} still running ${CONFIRM_BOUND_MS} ms after the last signal` });
+          }
+          later(tick, CONFIRM_POLL_MS);
+        };
+        tick();
+      }, grace);
     };
 
     // SIGTERM, then SIGKILL after the grace period unless the group is gone first.
     const stop = (): void => {
+      if (!own) return stopChild();
       if (phase !== "running") return;
       if (probeGroup(child.pid!) === "gone") return confirm();
       phase = "terming";
-      signalGroup(child, "SIGTERM");
+      signalGroup(child, "SIGTERM", own);
       const started = Date.now();
       const wait = (): void => {
         if (phase !== "terming" || settled) return;
@@ -238,25 +274,26 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     later(() => {
       timedOut = true;
       if (phase === "running") stop();
-      else if (phase === "terming") kill();
+      else if (phase === "terming" && own) kill();
     }, opts.timeoutMs);
 
     child.stdout!.on("data", (c: Buffer) => opts.onData(c));
     child.stderr!.on("data", (c: Buffer) => opts.onData(c));
     child.on("error", (e) => {
       // No process was started (a missing cwd or executable): nothing to stop.
-      if (child.pid === undefined || !OWN_GROUP) finish({ spawnError: e.message, cleanup: "confirmed", cleanupDetail: null });
+      if (child.pid === undefined || !own) finish({ spawnError: e.message, cleanup: "confirmed", cleanupDetail: null });
     });
     child.on("close", () => {
       closed = true;
-      if (!OWN_GROUP) finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
+      if (!own && exited) finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
     });
     child.on("exit", (code, sig) => {
       exited = true;
       exitCode = code;
       signal = sig;
       // Whatever the leader left behind in its group is stopped.
-      if (OWN_GROUP && phase === "running") stop();
+      if (own && phase === "running") stop();
+      else if (!own && closed) finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
     });
   });
 }

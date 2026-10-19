@@ -2090,11 +2090,13 @@ describe("ISS-1311: a board card never draws an empty title", () => {
     expect(wide.children[3].bold).toBe(true);
   });
 
-  it("the placeholder fits a two-cell room and is cut like any title", () => {
-    const cut = truncate("(untitled)", 2);
-    expect(cut.startsWith("(")).toBe(true);
-    expect(cut).not.toBe("(u");
-    expect(cellWidth(cut)).toBe(2);
+  it("the placeholder fits a two-cell room and is cut like any title, still dim, inside a 15-cell row", async () => {
+    const h = await booted("");
+    const row = findUi(draw(h, 15), "ticket:T-001");
+    expect(runText(row.children[3])).toBe("(\u2026");
+    expect(row.children[3]).toMatchObject({ dimColor: true });
+    expect(row.children[3].bold).toBeFalsy();
+    expect(cellWidth(textOf(row))).toBeLessThanOrEqual(15);
   });
 
   it("the placeholder never shimmers: on an active frame it is one dim run, while a titled card shimmers", async () => {

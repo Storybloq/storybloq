@@ -18,11 +18,13 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { join } from "node:path";
 
 import {
-  claudeTurn, codexTurn, KNOWN_CHECK_SETS, runVerdict, stopRuleFor, subshellOnly, treeDigest, writeRuleFor,
+  claudeTurn, codexTurn, KNOWN_CHECK_SETS, recipeContract, runVerdict, stopRuleFor, subshellOnly, treeDigest, writeRuleFor,
   type EvalTurn, type JudgeLine, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
 import { applySetupReviewChecks, STORE_COPY, STORE_COPY_MISSING } from "./onboarding-eval-checkset6.js";
+import { applySetupRunChecks, cs7FinalLedger, type FollowUp } from "./onboarding-eval-checkset7.js";
+import { EventsLogError, parseEventsLog } from "./onboarding-eval-checkset7-events.js";
 import {
   inventoryFor,
   driveFlow, finishDrive, inspectAfter, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
@@ -72,7 +74,16 @@ export interface FixtureInputs {
   readonly files: readonly ManifestEntry[];
   /** The check set the rubric was projected and the owner script chosen for; it must be the record's. */
   readonly checkSet: number;
+  /** Check set 7: the fixture's own ledger before the run, read from pinned files. */
+  readonly baseline?: { readonly baselineIds: readonly string[]; readonly baselinePhases: readonly string[] };
+  /** Check set 7: the owner's approval, as the variant's script sends it. */
+  readonly approval?: string;
 }
+
+/** Check set 7's raw inputs, by their names in the raw directory (run.ts writes them). */
+export const EVENTS_RAW = "events.jsonl";
+export const SNAPSHOT_RAW = "setup-snapshot.json";
+export const INVOCATIONS_RAW = "invocations.json";
 
 /** Read access to the raw `.story/` copy as bytes: every file is hashed as stored and decoded from those same bytes. */
 export interface StoryBytes {
@@ -163,6 +174,62 @@ function recordingReader(inner: StoryBytes, seen: Map<string, string>): StoryRea
 
 const EMPTY_STORY: StoryReader = { exists: () => false, read: () => refuse("the run has no .story/ copy"), list: () => [] };
 
+interface Set7Inputs {
+  readonly events: string;
+  readonly snapshot: string | null;
+  readonly projectRoot: string;
+  readonly mapping: unknown;
+  readonly entries: readonly ManifestEntry[];
+}
+
+/**
+ * Check set 7's raw inputs, refused by name when one the record requires is
+ * missing, malformed, not the bytes its recorded hash names, or incomplete. A
+ * file's absence never skips a rule: the run is not regraded at all.
+ */
+function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7Inputs {
+  const pinned = record.replayInputs;
+  if (!Array.isArray(pinned) || pinned.some((e) => e === null || typeof e !== "object" || typeof (e as ManifestEntry).path !== "string" || typeof (e as ManifestEntry).sha256 !== "string")) {
+    return refuse("the check set 7 record names no replay inputs");
+  }
+  const hashOf = new Map((pinned as ManifestEntry[]).map((e) => [e.path, e.sha256]));
+  const read = (name: string, required: boolean): Buffer | null => {
+    const recorded = hashOf.get(name);
+    const present = input.rawNames.includes(name);
+    if (!present) return required || recorded !== undefined ? refuse(`replay input ${name} is missing`) : null;
+    if (recorded === undefined) return refuse(`replay input ${name} is not named in the record's replay inputs`);
+    const bytes = input.readRaw(name);
+    if (sha256(bytes) !== recorded) refuse(`replay input ${name} does not match its recorded sha256`);
+    return bytes;
+  };
+  const eventsBytes = read(EVENTS_RAW, true)!;
+  const events = eventsBytes.toString("utf-8");
+  let log: ReturnType<typeof parseEventsLog>;
+  try {
+    log = parseEventsLog(events);
+  } catch (err) {
+    if (err instanceof EventsLogError) return refuse(`replay input ${EVENTS_RAW} is malformed or incomplete: ${err.message}`);
+    throw err;
+  }
+  const archive = log.events.find((e) => e.point === "archive-committed");
+  const stepArchive = log.events.find((e) => e.point === "step:archive");
+  if (stepArchive !== undefined && archive === undefined) refuse(`replay input ${EVENTS_RAW} is incomplete: step:archive with no archive-committed`);
+  if (stepArchive !== undefined && archive !== undefined && stepArchive.snapshotSha256 !== archive.snapshotSha256) refuse(`replay input ${EVENTS_RAW} is incomplete: step:archive and archive-committed name different snapshots`);
+  const snapshotBytes = read(SNAPSHOT_RAW, archive !== undefined);
+  if (snapshotBytes !== null && archive !== undefined && sha256(snapshotBytes) !== archive.snapshotSha256) refuse(`replay input ${SNAPSHOT_RAW} is not the snapshot archive-committed names`);
+  const invocationsBytes = read(INVOCATIONS_RAW, true)!;
+  let invocations: { projectRoot?: unknown; mapping?: unknown };
+  try { invocations = JSON.parse(invocationsBytes.toString("utf-8")) as typeof invocations; } catch { return refuse(`replay input ${INVOCATIONS_RAW} is malformed`); }
+  if (typeof invocations.projectRoot !== "string" || !Array.isArray(invocations.mapping)) refuse(`replay input ${INVOCATIONS_RAW} is malformed`);
+  const entries: ManifestEntry[] = [
+    { path: EVENTS_RAW, sha256: sha256(eventsBytes) },
+    { path: INVOCATIONS_RAW, sha256: sha256(invocationsBytes) },
+    ...(snapshotBytes !== null ? [{ path: SNAPSHOT_RAW, sha256: sha256(snapshotBytes) }] : []),
+  ];
+  for (const name of hashOf.keys()) if (!entries.some((e) => e.path === name)) refuse(`the record names replay input ${name}, which check set 7 does not read`);
+  return { events, snapshot: snapshotBytes === null ? null : snapshotBytes.toString("utf-8"), projectRoot: invocations.projectRoot as string, mapping: invocations.mapping, entries };
+}
+
 interface RecordTurn {
   label: string; prompt: string; stop: StopCheck | null; stopText: string; models: string[]; exitCode: number | null;
   infraFailure: string | null; treeChanges: string[]; callRange: [number, number]; unparsed?: unknown;
@@ -245,10 +312,13 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   const recFailures = failures!;
   // Check set 6: rule 2 reads the store the run's turns wrote, so the run's copy of it is an input.
   if (cs >= 6 && (input.setupReviewStore ?? null) === null) refuse(STORE_COPY_MISSING);
+  // Check set 7: the events log, the invocation mapping and (once the archive committed) its snapshot, checked before any replay.
+  const set7 = cs >= 7 ? set7Inputs(input, record) : null;
 
   // Turn identity: position is identity, the file name is fixed by it, and nothing else may sit beside them.
   const manifest: ManifestEntry[] = [];
   const expected = new Set<string>(cs >= 6 ? ["project.after", STORE_COPY] : ["project.after"]);
+  if (set7 !== null) for (const e of set7.entries) expected.add(e.path);
   recTurns.forEach((t, i) => {
     if (typeof t.label !== "string" || !/^[a-z0-9-]+$/.test(t.label)) refuse(`turn ${i} has no valid label`);
     const f = turnFile(i, t.label);
@@ -289,6 +359,21 @@ function regradeOrThrow(input: RegradeInput): Regraded {
     const store = input.setupReviewStore!;
     applySetupReviewChecks(state, store, variant);
     for (const [k, v] of Object.entries(treeDigest(store)).sort(([a], [b]) => a.localeCompare(b))) manifest.push({ path: `${STORE_COPY}/${k}`, sha256: v });
+  }
+  if (set7 !== null) {
+    const fixture = input.fixture;
+    if (fixture.baseline === undefined || fixture.approval === undefined) refuse("check set 7 needs the fixture's baseline ledger and approval");
+    const seen7 = new Map<string, string>();
+    const r = applySetupRunChecks(state, {
+      eventsText: set7.events, snapshotText: set7.snapshot,
+      final: cs7FinalLedger(input.story === null ? EMPTY_STORY : recordingReader(input.story, seen7)),
+      baselineIds: fixture.baseline!.baselineIds, baselinePhases: fixture.baseline!.baselinePhases, approval: fixture.approval!,
+      projectRoot: set7.projectRoot, contract: recipeContract(fixture.rubric.expectedRecipe), observations: null,
+      followUp: (fixture.rubric as { followUp?: FollowUp }).followUp ?? null,
+    });
+    if (!same(r.invocations, set7.mapping)) refuse(`${INVOCATIONS_RAW} differs from the mapping the replayed run produces`);
+    manifest.push(...set7.entries);
+    for (const [k, v] of [...seen7].sort(([a], [b]) => a.localeCompare(b))) manifest.push({ path: `project.after/.story#cs7:${k}`, sha256: v });
   }
 
   const evidence = finishDrive(state, input.reviewLine);

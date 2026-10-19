@@ -772,7 +772,7 @@ function skipOptions(words: readonly string[], i: number, spec: WrapperSpec): { 
   return { next: i, unknown };
 }
 
-interface Unwrapped {
+export interface Unwrapped {
   readonly argv: readonly string[];
   /** A command string run by a nested shell (`sh -c`) or split by `env -S`; scanned in its place. */
   readonly inner: string | null;
@@ -785,7 +785,7 @@ interface Unwrapped {
 }
 
 /** Strip assignments, reserved words and wrappers (`env`, `timeout 5`, `nohup` ...) down to the executable and its arguments. */
-function unwrap(words: readonly string[]): Unwrapped {
+export function unwrap(words: readonly string[]): Unwrapped {
   let i = 0;
   let ambiguous: string | null = null;
   let chdir = false;
@@ -2462,6 +2462,56 @@ export function pendingFindings(summary: string, inventory: readonly { readonly 
   return findings;
 }
 
+/** Check set 7 (T-538 S5a): one `Pending: STAGE (component): command (pending: reason)` line, as the engine prints it. */
+export interface EnginePendingLine { readonly stage: string; readonly component: string | null; readonly merged: boolean; readonly line: string }
+
+const ENGINE_PENDING_LINE = /^Pending: (.+?)(?: \(([^()]+)\))?: (.+) \(pending: (.+)\)\.?$/;
+
+/** Every engine pending line in a text, list markers and emphasis stripped. */
+export function enginePendingLines(text: string): EnginePendingLine[] {
+  const out: EnginePendingLine[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim().replace(LIST_MARKER, "").replace(/^(?:\*\*|__)|(?:\*\*|__)$/g, "").replace(/`/g, "").trim();
+    const m = ENGINE_PENDING_LINE.exec(line);
+    if (m === null) continue;
+    const stages = m[1]!.match(STAGE_NAMES) ?? [];
+    out.push({ stage: m[1]!.trim(), component: m[2]?.trim() ?? null, merged: stages.length > 1, line });
+  }
+  return out;
+}
+
+/**
+ * The engine pending lines a summary owes: one per pending component and stage the level uses, each component under
+ * the payload's own id when the payload has several components (the engine names none when it has one), never "".
+ */
+export function enginePendingInventory(contract: RecipeContract, level: QualityLevel, components: readonly { readonly id: string; readonly workdir: string }[]): { readonly stage: string; readonly component: string | null }[] {
+  const several = components.length > 1;
+  return contract.pending.flatMap((dir) => {
+    const named = components.find((c) => componentKey(c.workdir) === dir);
+    const component = several ? named?.id ?? `no payload component at ${componentName(dir)}` : null;
+    return stagesUsed(level).map((stage) => ({ stage, component }));
+  });
+}
+
+/** Each inventory line exactly once; no line naming more than one stage. */
+export function enginePendingFindings(summary: string, inventory: readonly { readonly stage: string; readonly component: string | null }[]): string[] {
+  const lines = enginePendingLines(summary);
+  const findings: string[] = [];
+  for (const l of lines) if (l.merged) findings.push(`pending line names more than one stage: ${l.line}`);
+  for (const item of inventory) {
+    const n = lines.filter((l) => !l.merged && l.stage === item.stage && l.component === item.component).length;
+    const name = `${item.stage}${item.component !== null ? ` (${item.component})` : ""}`;
+    if (n === 0) findings.push(`pending line missing: ${name}`);
+    if (n > 1) findings.push(`pending line repeated: ${name} appears ${n} times`);
+  }
+  return findings;
+}
+
+/** The text's `Created:` lines, list markers and emphasis stripped. */
+export function createdLines(text: string): string[] {
+  return text.split("\n").map((raw) => raw.trim().replace(LIST_MARKER, "").replace(/^(?:\*\*|__)|(?:\*\*|__)$/g, "").replace(/`/g, "").trim()).filter((l) => l.startsWith("Created: "));
+}
+
 // --- check set 2: the review status line --------------------------------------------------
 
 export type ReviewStatus =
@@ -2755,9 +2805,12 @@ export function setupRecordText(storyDir: string): string {
  * The check set a run is graded under. Version 1 is every record written before check set 2 existed (they carry no
  * version); a replay runs each record under its own version, so a record never meets checks it was not graded by.
  */
-export const CHECK_SET_VERSION = 6;
-/** Check set 6 (T-536) replays from the run's copy of its setup review store, and is refused without it. */
-export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4, 5, 6];
+export const CHECK_SET_VERSION = 7;
+/**
+ * Check set 6 (T-536) replays from the run's copy of its setup review store, and is refused without it. Check set 7
+ * (T-538 S5a) also replays from the run's events log, its invocation mapping and its setup snapshot.
+ */
+export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4, 5, 6, 7];
 
 /**
  * A fixture rubric as a check set reads it. Check set 1 drops the `checkSet2` overlay, so the rubric serialises

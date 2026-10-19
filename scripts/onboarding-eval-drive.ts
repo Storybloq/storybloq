@@ -106,7 +106,7 @@ export interface DriveOptions {
 /** The producer of one failure. `turn` is the index of the turn it belongs to. */
 export type FailureSource =
   | { readonly kind: "infrastructure" | "stop" | "tree" | "tail" | "closing"; readonly turn: number }
-  | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" | "review" | "pending" };
+  | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" | "review" | "pending" | "setup" };
 
 function fail(s: DriveState, source: FailureSource, text: string): void {
   s.failures.push(text);
@@ -566,11 +566,14 @@ export function inspectAfter(
   } else if (!/review/i.test(record) || /review[^.\n]{0,40}\bpending\b/i.test(record)) {
     fail(s, { kind: "inspection" }, "no completed review outcome recorded");
   }
-  if (contract !== null) {
-    if (level !== null) for (const f of pendingFindings(t.stopText, pendingInventory(contract, level))) fail(s, { kind: "pending" }, f);
-  } else if (stages.kind === "disabled" && !t.stopText.includes("Verification tooling to establish")) fail(s, { kind: "inspection" }, "pending verification tooling not listed in the summary");
-  if (counts.tickets !== null && counts.tickets !== tickets.length) fail(s, { kind: "inspection" }, `summary says ${counts.tickets} tickets, disk has ${tickets.length}`);
-  if (counts.phases !== null && counts.phases !== createdPhases) fail(s, { kind: "inspection" }, `summary says ${counts.phases} phases, disk has ${createdPhases} created`);
+  // Check set 7 (T-538 S5a) reads the engine's own pending grammar and its Created: line instead (checkset7.ts).
+  if (s.checkSet < 7) {
+    if (contract !== null) {
+      if (level !== null) for (const f of pendingFindings(t.stopText, pendingInventory(contract, level))) fail(s, { kind: "pending" }, f);
+    } else if (stages.kind === "disabled" && !t.stopText.includes("Verification tooling to establish")) fail(s, { kind: "inspection" }, "pending verification tooling not listed in the summary");
+    if (counts.tickets !== null && counts.tickets !== tickets.length) fail(s, { kind: "inspection" }, `summary says ${counts.tickets} tickets, disk has ${tickets.length}`);
+    if (counts.phases !== null && counts.phases !== createdPhases) fail(s, { kind: "inspection" }, `summary says ${counts.phases} phases, disk has ${createdPhases} created`);
+  }
   if (rubric.scaffold) {
     const before = beforeConfig();
     if (roadmap.phases[0]?.id !== rubric.scaffold.keepPhase) fail(s, { kind: "inspection" }, `scaffold: ${rubric.scaffold.keepPhase} is not the first phase`);

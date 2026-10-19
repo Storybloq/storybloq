@@ -35,8 +35,8 @@ const mcp = (name: string, input: unknown, output: string): Cs7Call => ({ name: 
 
 const item = (id: string, title: string, key?: string, extra: Record<string, unknown> = {}) => ({ id, title, ...(key ? { setup: { setupId: SID, key, ...extra } } : {}) });
 const checkpoint = (id: string, title: string, key: string) => ({ ...item(id, title, key), ownerCheckpoint: { kind: "acceptance" } });
-const LEDGER = { tickets: [item("T-001", "Sign in", "K2"), item("T-002", "Profile", "K3"), checkpoint("T-003", "Accept sign in", "K4")], issues: [] };
-const opts = (over: Partial<Cs7Options> = {}): Cs7Options => ({ ledger: LEDGER, baselineIds: [], approval: APPROVE, ...over });
+const LEDGER = { tickets: [item("T-001", "Sign in", "K2"), item("T-002", "Profile", "K3"), checkpoint("T-003", "Accept sign in", "K4")], issues: [], phases: [] };
+const opts = (over: Partial<Cs7Options> = {}): Cs7Options => ({ ledger: LEDGER, baselineIds: [], baselinePhases: [], approval: APPROVE, ...over });
 
 function run(applyTurn: Partial<Cs7Turn> = {}, extra: Cs7Turn[] = [], before: Cs7Turn[] = []): Cs7Turn[] {
   return [
@@ -67,6 +67,7 @@ describe("check set 7", () => {
     const ledger = {
       tickets: [item("T-001", "Log in", "K2"), item("T-002", "Profile", "K3"), item("T-005", "Profile", "K3"), item("T-009", "Mine"), item("T-010", "Fixture's")],
       issues: [],
+      phases: [],
     };
     const failures = checkSetupApply(run(), opts({ ledger, baselineIds: ["T-010"] })).failures;
     expect(failures).toEqual([
@@ -78,17 +79,40 @@ describe("check set 7", () => {
   });
 
   it("rule 2: a superseded duplicate is not counted, and a key the owner resolved may keep the owner's title", () => {
-    const ledger = { tickets: [item("T-001", "Log in", "K2"), item("T-004", "Sign in", "K2", { supersededBy: "T-001" }), ...LEDGER.tickets.slice(1)], issues: [] };
-    const stop = `Ambiguity: owned field edited · K2 (T-001) · observed title; expected title · resolutions: accept-current | restore-planned | stop\nSetup stopped: the owner must resolve owned field edited at K2 (T-001).`;
+    const ledger = { tickets: [item("T-001", "Log in", "K2"), item("T-004", "Sign in", "K2", { supersededBy: "T-001" }), ...LEDGER.tickets.slice(1)], issues: [], phases: [] };
+    // T-538 S5a: the superseded record is backed by the duplicate's accepted keep resolution.
+    const stop = [
+      "Ambiguity: owned field edited · K2 (T-001) · observed title; expected title · resolutions: accept-current | restore-planned | stop",
+      "Ambiguity: key on two items · K2 (T-001, T-004) · observed 2 items carry K2; expected one item per key · resolutions: keep T-001 | keep T-004 | stop",
+      "Setup stopped: the owner must resolve owned field edited at K2 (T-001).",
+    ].join("\n");
+    const resolve = `[{"target":"K2 (T-001)","resolution":"accept-current","ownerWords":"keep my title"},{"target":"K2 (T-001, T-004)","resolution":"keep T-001","ownerWords":"keep my title"}]`;
     const turns = run(
       { calls: [shell(heredoc(payload), stop)], text: stop },
-      [{ owner: "keep my title", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":"K2 (T-001)","resolution":"accept-current","ownerWords":"keep my title"}]'`, `-> storybloq · resolved K2 (T-001): accept-current\nSetup applied: ${SID}`)], text: `Setup applied: ${SID}` }],
+      [{ owner: "keep my title", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '${resolve}'`, `-> storybloq · resolved K2 (T-001): accept-current\n-> storybloq · resolved K2 (T-001, T-004): keep T-001\nSetup applied: ${SID}`)], text: `Setup applied: ${SID}` }],
     );
     expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([]);
   });
 
+  it("rule 2: a superseded record no accepted resolution explains fails (T-538 S5a)", () => {
+    const ledger = { tickets: [LEDGER.tickets[0]!, item("T-004", "Sign in", "K2", { supersededBy: "T-001" }), ...LEDGER.tickets.slice(1)], issues: [], phases: [] };
+    expect(checkSetupApply(run(), opts({ ledger })).failures).toEqual(["rule 2: T-004 (key K2) is superseded by T-001, but no accepted setup-apply call printed that resolution"]);
+    const refused = `-> storybloq · resolved K2 (T-001, T-004): keep T-001\nSetup refused: the batch answers no open ambiguity.`;
+    const turns = run({}, [{ owner: "x", calls: [shell(`storybloq setup-apply --setup ${SID} --resume`, refused)], text: "" }]);
+    expect(checkSetupApply(turns, opts({ ledger })).failures).toContain("rule 2: T-004 (key K2) is superseded by T-001, but no accepted setup-apply call printed that resolution");
+  });
+
+  it("phases: a missing payload phase, an unexplained extra phase and a dropped baseline phase each fail (T-538 S5a)", () => {
+    const phased = { ...payload, phases: [{ key: "K1", id: "build", name: "Build", label: "PHASE 1", description: "" }] };
+    const turns = run({ calls: [shell(heredoc(phased), APPLIED)] });
+    expect(checkSetupApply(turns, opts({ ledger: { ...LEDGER, phases: ["p0", "build"] }, baselinePhases: ["p0"] })).failures).toEqual([]);
+    expect(checkSetupApply(turns, opts({ ledger: { ...LEDGER, phases: ["p0"] }, baselinePhases: ["p0"] })).failures).toEqual(["phases: payload phase build is not in the roadmap"]);
+    expect(checkSetupApply(turns, opts({ ledger: { ...LEDGER, phases: ["p0", "build", "extra"] }, baselinePhases: ["p0"] })).failures).toEqual(["phases: extra is in the roadmap, but neither the baseline nor the payload holds it"]);
+    expect(checkSetupApply(turns, opts({ ledger: { ...LEDGER, phases: ["build"] }, baselinePhases: ["p0"] })).failures).toEqual(["phases: baseline phase p0 is no longer in the roadmap"]);
+  });
+
   it("rule 2: an extra keyed record under this setup and a key of the wrong kind each fail (review r1 #10)", () => {
-    const ledger = { tickets: [...LEDGER.tickets.slice(0, 2), item("T-003", "Accept sign in", "K4"), item("T-011", "Billing", "K9")], issues: [] };
+    const ledger = { tickets: [...LEDGER.tickets.slice(0, 2), item("T-003", "Accept sign in", "K4"), item("T-011", "Billing", "K9")], issues: [], phases: [] };
     expect(checkSetupApply(run(), opts({ ledger })).failures).toEqual([
       "rule 2: T-003 (key K4) is a ticket, the payload's a checkpoint",
       "rule 2: keyed records under this setup that the payload does not hold: T-011 (key K9)",
@@ -100,7 +124,7 @@ describe("check set 7", () => {
     const runWith = (p: unknown) => run({ calls: [shell(heredoc(p), APPLIED)] });
     const ledger = (s2: string, s3: string | undefined) => {
       const { status: _, ...k3 } = LEDGER.tickets[1]! as Record<string, unknown>;
-      return { tickets: [{ ...LEDGER.tickets[0]!, status: s2 }, s3 === undefined ? k3 : { ...k3, status: s3 }, LEDGER.tickets[2]!], issues: [] };
+      return { tickets: [{ ...LEDGER.tickets[0]!, status: s2 }, s3 === undefined ? k3 : { ...k3, status: s3 }, LEDGER.tickets[2]!], issues: [], phases: [] };
     };
     expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "open") })).failures).toEqual([]);
     expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "inprogress") })).failures).toEqual([
@@ -125,11 +149,11 @@ describe("check set 7", () => {
       { calls: [shell(heredoc(payload), stop)], text: stop },
       [{ owner: "drop them", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":".story/config.json","resolution":"drop-checkpoints","ownerWords":"drop them"}]'`, `-> storybloq · resolved .story/config.json: drop-checkpoints (material, review recorded)\nSetup applied: ${SID}`)], text: `Setup applied: ${SID}` }],
     );
-    expect(checkSetupApply(turns, opts({ ledger: { tickets: LEDGER.tickets.slice(0, 2), issues: [] } })).failures).toEqual([]);
+    expect(checkSetupApply(turns, opts({ ledger: { tickets: LEDGER.tickets.slice(0, 2), issues: [], phases: [] } })).failures).toEqual([]);
   });
 
   describe("rule 4: a resolution must answer an outstanding ambiguity with the owner's words, and only an applied one amends (review r1 #9)", () => {
-    const ledger = { tickets: [item("T-001", "Log in", "K2"), ...LEDGER.tickets.slice(1)], issues: [] };
+    const ledger = { tickets: [item("T-001", "Log in", "K2"), ...LEDGER.tickets.slice(1)], issues: [], phases: [] };
     const stop = "Ambiguity: owned field edited · K2 (T-001) · observed title; expected title · resolutions: accept-current | restore-planned | stop";
     const resolveTurns = (owner: string, target: string, output: string) => run(
       { calls: [shell(heredoc(payload), stop)], text: stop },
@@ -179,7 +203,7 @@ describe("check set 7", () => {
 
   it("rule 3: a payload that differs from the approved Plan fails", () => {
     const changed = { ...payload, tickets: [...payload.tickets, { key: "K7", title: "Billing" }], checkpoints: [{ key: "K4", title: "Accept sign in", kind: "demo" }] };
-    const ledger = { tickets: [...LEDGER.tickets, item("T-004", "Billing", "K7")], issues: [] };
+    const ledger = { tickets: [...LEDGER.tickets, item("T-004", "Billing", "K7")], issues: [], phases: [] };
     const failures = checkSetupApply(run({ calls: [shell(heredoc(changed), APPLIED)] }), opts({ ledger })).failures;
     expect(failures).toEqual([
       "rule 3: the payload's tickets (Billing, Profile, Sign in) differ from the approved Plan's (Profile, Sign in)",
@@ -221,7 +245,7 @@ describe("check set 7", () => {
       { name: "mcp__storybloq__storybloq_ticket_create", input: {}, isError: false, nested: true, result: "" },
     ];
     const turns = cs7TurnsFrom([{ prompt: "p", stopText: "t", callRange: [0, 2] } as unknown as DriveTurn], calls);
-    expect(turns).toEqual([{ owner: "p", text: "t", calls: [{ name: "Bash", command: "storybloq setup-apply --resume --setup SS-0123abcd", input: { command: "storybloq setup-apply --resume --setup SS-0123abcd" }, output: "out" }] }]);
+    expect(turns).toEqual([{ owner: "p", text: "t", calls: [{ name: "Bash", command: "storybloq setup-apply --resume --setup SS-0123abcd", input: { command: "storybloq setup-apply --resume --setup SS-0123abcd" }, output: "out", isError: false }] }]);
   });
 });
 

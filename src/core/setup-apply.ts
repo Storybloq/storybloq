@@ -783,6 +783,11 @@ function setupBlockers(p: SetupPayload): Map<string, string[]> {
   return out;
 }
 
+/** The step ids `runSteps` walks for this payload, in order (the evaluation's rule 7 reads them; T-538 S5a). */
+export function planStepIds(p: SetupPayload): string[] {
+  return planSteps(effectivePlan(p)).map((s) => s.id);
+}
+
 function planSteps(p: SetupPayload): Step[] {
   const steps: Step[] = [];
   if (p.checkpoints.length > 0) steps.push({ id: "enable", run: stepEnable });

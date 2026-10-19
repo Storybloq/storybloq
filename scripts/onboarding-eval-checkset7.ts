@@ -23,15 +23,30 @@
  * Rule 6 (T-538 S3a-2): under a level that uses the test stage, each
  * component whose test stage is pending has exactly one establishment ticket
  * in the payload, at least one item waits on it in the effective graph
- * (blockedBy plus checkpoint gates), and it states no status. Not yet wired
- * to runs (S5a).
+ * (blockedBy plus checkpoint gates), and it states no status.
+ *
+ * T-538 S5a wires the set to runs (`checkSetupRun`): the events log the
+ * evaluation entry wrote decides completion and rule 7, maps each setup
+ * invocation to its transcript call, and splits the run at the call that
+ * printed the final report. Rules 1 to 6 judge the calls up to that boundary
+ * against the archive's snapshot; rule 9 judges the final ledger; rules 8 and
+ * 10 judge the whole run.
+ * Rule 8: a checkpoint is resolved only after an owner turn that quotes the
+ * response, and every evidence file keeps the digest it was created with.
+ * Rule 9: the fixture's follow-up ticket exists once, after the boundary, and
+ * cites the ruling recorded on its checkpoint, which exists.
+ * Rule 10: the ledger is written only through storybloq
+ * (onboarding-eval-checkset7-writes.ts).
  */
 import { heredocStdin } from "./onboarding-eval-checkset6.js";
+import { completion, flagValue, mapInvocations, readEventsLog, rule7, setupCalls, type EventsLog, type InvocationMapping } from "./onboarding-eval-checkset7-events.js";
+import { ledgerWriteFindings, shellTextOf } from "./onboarding-eval-checkset7-writes.js";
 import { parseSetupMeta } from "../src/core/setup-meta.js";
-import { effectiveEdges } from "../src/core/setup-payload.js";
+import { effectiveEdges, parseSetupPayload, type SetupPayload } from "../src/core/setup-payload.js";
+import { effectiveRevision, planStepIds } from "../src/core/setup-apply.js";
 import { STAGES_USED } from "../src/core/verification-activation.js";
-import type { DriveTurn } from "./onboarding-eval-drive.js";
-import type { EvalCall } from "./onboarding-eval-lib.js";
+import type { DriveState, DriveTurn, StoryReader } from "./onboarding-eval-drive.js";
+import { createdLines, enginePendingFindings, enginePendingInventory, type EvalCall, type QualityLevel, type RecipeContract } from "./onboarding-eval-lib.js";
 
 export interface Cs7Call {
   /** The tool's name as the client reported it. */
@@ -40,6 +55,8 @@ export interface Cs7Call {
   readonly command: string | null;
   readonly input: unknown;
   readonly output: string;
+  /** The client reported the call as an error. */
+  readonly isError?: boolean;
 }
 
 export interface Cs7Turn {
@@ -48,16 +65,20 @@ export interface Cs7Turn {
   readonly text: string;
 }
 
-/** The ledger after the run, as rule 2 reads it. */
+/** The ledger at the setup's completion, as rule 2 and the phase comparison read it. */
 export interface Cs7Ledger {
   readonly tickets: readonly object[];
   readonly issues: readonly object[];
+  /** The roadmap's phase ids. */
+  readonly phases: readonly string[];
 }
 
 export interface Cs7Options {
   readonly ledger: Cs7Ledger;
   /** Ticket and issue ids the fixture's ledger held before the run. */
   readonly baselineIds: readonly string[];
+  /** Phase ids the fixture's roadmap held before the run. */
+  readonly baselinePhases: readonly string[];
   /** The owner's approval, exactly as the owner script sends it. */
   readonly approval: string;
 }
@@ -123,6 +144,33 @@ const resolvedIn = (output: string, r: Resolution) => {
 const keepsOwnContent = (resolution: string) => resolution === "accept-current" || resolution.startsWith("adopt ");
 const ambiguityTarget = (line: string): string | null => /^Ambiguity: [^·]+ · (.+?) · observed /.exec(line)?.[1] ?? null;
 const keyOfTarget = (target: string) => target.split(" ")[0]!;
+const KEEP_LINE = /^-> storybloq · resolved (.+): keep (\S+?)(?: \(material, review recorded\))?$/;
+
+/** `key\0kept-id` for every duplicate resolution an accepted setup-apply call printed. */
+function keptRecords(outputs: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const output of outputs) {
+    const lines = linesOf(output);
+    if (lines.some((l) => l.startsWith("Setup refused:"))) continue;
+    for (const l of lines) {
+      const m = KEEP_LINE.exec(l);
+      if (m !== null) out.add(`${keyOfTarget(m[1]!)}\u0000${m[2]}`);
+    }
+  }
+  return out;
+}
+
+/** Phases: every payload phase is there, none beyond the baseline and the payload, and every baseline phase is kept. */
+function phaseFindings(payload: { phases?: ReadonlyArray<{ id: string }> }, ledger: Cs7Ledger, baseline: readonly string[]): string[] {
+  const failures: string[] = [];
+  const planned = (payload.phases ?? []).map((p) => p.id);
+  const have = new Set(ledger.phases);
+  for (const id of planned) if (!have.has(id)) failures.push(`phases: payload phase ${id} is not in the roadmap`);
+  const allowed = new Set([...baseline, ...planned]);
+  for (const id of ledger.phases) if (!allowed.has(id)) failures.push(`phases: ${id} is in the roadmap, but neither the baseline nor the payload holds it`);
+  for (const id of baseline) if (!have.has(id)) failures.push(`phases: baseline phase ${id} is no longer in the roadmap`);
+  return failures;
+}
 
 function applyCallOf(call: Cs7Call, turn: number): ApplyCall | null {
   if (call.command !== null && CLI_SETUP_APPLY.test(call.command)) {
@@ -184,7 +232,7 @@ function rule3(plan: readonly string[], payload: PayloadShape): string[] {
 
 type Cs7Kind = "ticket" | "checkpoint" | "issue";
 
-function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, baseline: ReadonlySet<string>, amended: ReadonlySet<string>, droppedCheckpoints: boolean): string[] {
+function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, baseline: ReadonlySet<string>, amended: ReadonlySet<string>, droppedCheckpoints: boolean, kept: ReadonlySet<string>): string[] {
   const failures: string[] = [];
   const keyed = new Map<string, Array<{ id: string; title: string; kind: Cs7Kind; status?: string }>>();
   const unkeyed: string[] = [];
@@ -193,7 +241,11 @@ function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, 
       const it = item as { id: string; title: string; status?: string; ownerCheckpoint?: unknown };
       const meta = parseSetupMeta(entity, item);
       if (meta.kind === "item" && meta.meta.setupId === payload.setupId) {
-        if (meta.meta.supersededBy !== undefined) continue;
+        if (meta.meta.supersededBy !== undefined) {
+          // Excluded only when an accepted resolution kept the record it names (T-538 S5a).
+          if (!kept.has(`${meta.meta.key}\u0000${meta.meta.supersededBy}`)) failures.push(`rule 2: ${it.id} (key ${meta.meta.key}) is superseded by ${meta.meta.supersededBy}, but no accepted setup-apply call printed that resolution`);
+          continue;
+        }
         const kind: Cs7Kind = entity === "issue" ? "issue" : it.ownerCheckpoint !== undefined ? "checkpoint" : "ticket";
         keyed.set(meta.meta.key, [...(keyed.get(meta.meta.key) ?? []), { id: it.id, title: it.title, kind, status: it.status }]);
       } else if (!baseline.has(it.id)) {
@@ -324,7 +376,8 @@ export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { 
     const plan = approvedPlan(turns, approvalAt);
     if (plan === null) failures.push("rule 3: no package with a marked Plan section came before the approval");
     else failures.push(...rule3(plan, payload));
-    failures.push(...rule2(payload, opts.ledger, new Set(opts.baselineIds), amended, droppedCheckpoints));
+    failures.push(...rule2(payload, opts.ledger, new Set(opts.baselineIds), amended, droppedCheckpoints, keptRecords(applies.map((a) => a.output))));
+    failures.push(...phaseFindings(first.payload as { phases?: ReadonlyArray<{ id: string }> }, opts.ledger, opts.baselinePhases));
     failures.push(...rule6(first.payload as EstablishmentShape));
   }
   return { failures };
@@ -354,6 +407,234 @@ export function cs7TurnsFrom(turns: readonly DriveTurn[], allCalls: readonly Eva
       command: shellCommandOf(c),
       input: c.input,
       output: c.result ?? "",
+      isError: c.isError,
     })),
   }));
+}
+
+// --- T-538 S5a: check set 7 over a run ----------------------------------------------------------
+
+/** One digest of one evidence file, taken at its creation (an event index) or by the harness before a turn. */
+export interface EvidenceObservation {
+  readonly ref: string;
+  readonly sha256: string;
+  readonly at: { readonly kind: "event" | "turn"; readonly index: number };
+}
+
+/** The fixture's follow-up assertion: one ticket after the boundary, citing the ruling on this checkpoint. */
+export interface FollowUp {
+  readonly titlePattern: string;
+  readonly checkpointKey: string;
+}
+
+/** The ledger after the run, with the notes the archived payload lives in and the rulings' ids. */
+export interface Cs7FinalLedger extends Cs7Ledger {
+  readonly notes: readonly object[];
+  readonly rulings: readonly string[];
+}
+
+const jsonNames = (names: readonly string[]) => names.filter((n) => n.endsWith(".json")).sort();
+
+/** A `.story/` directory as check set 7 reads it: tickets, issues, notes, the roadmap's phases and the rulings. */
+export function cs7FinalLedger(reader: StoryReader): Cs7FinalLedger {
+  const dir = (rel: string): object[] => (reader.exists(rel) ? jsonNames(reader.list(rel)).map((n) => JSON.parse(reader.read(`${rel}/${n}`)) as object) : []);
+  const roadmap = reader.exists("roadmap.json") ? (JSON.parse(reader.read("roadmap.json")) as { phases?: Array<{ id: string }> }) : {};
+  return {
+    tickets: dir("tickets"),
+    issues: dir("issues"),
+    notes: dir("notes"),
+    phases: (roadmap.phases ?? []).map((p) => p.id),
+    rulings: dir("rulings").map((r) => (r as { id: string }).id),
+  };
+}
+
+/** The ledger the archive's snapshot holds (eval-fault-mcp.ts `ledgerSnapshot`). Throws on a text that is not one. */
+export function cs7SnapshotLedger(text: string): Cs7Ledger {
+  const files = (JSON.parse(text) as { files?: Record<string, string> }).files;
+  if (files === undefined || files === null || typeof files !== "object") throw new Error("the setup snapshot holds no files");
+  const under = (dir: string) => Object.keys(files).filter((k) => k.startsWith(`${dir}/`)).sort().map((k) => JSON.parse(files[k]!) as object);
+  const roadmap = files["roadmap.json"] !== undefined ? (JSON.parse(files["roadmap.json"]) as { phases?: Array<{ id: string }> }) : {};
+  return { tickets: under("tickets"), issues: under("issues"), phases: (roadmap.phases ?? []).map((p) => p.id) };
+}
+
+/** The payload the setup's archived progress note holds, or null when the ledger has none. */
+function archivedPayload(final: Cs7FinalLedger, setupId: string | null): SetupPayload | null {
+  for (const note of final.notes) {
+    const n = note as { status?: string; content?: string };
+    const meta = parseSetupMeta("note", note);
+    if (n.status !== "archived" || meta.kind !== "record" || meta.meta.record !== "progress" || meta.meta.setupId !== setupId) continue;
+    try {
+      return parseSetupPayload(n.content ?? "");
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Each amendment prefix's effective revision, mapped to that plan's step ids (rule 7's plans). */
+function plansOf(p: SetupPayload): (revision: string) => readonly string[] | null {
+  const plans = new Map<string, string[]>();
+  for (let i = 0; i <= p.amendments.length; i++) {
+    const q = { ...p, amendments: p.amendments.slice(0, i) };
+    plans.set(effectiveRevision(q), planStepIds(q));
+  }
+  return (revision) => plans.get(revision) ?? null;
+}
+
+const CLI_CHECKPOINT_RESOLVE = /(?:^|[;&|]\s*)storybloq checkpoint resolve\s/;
+
+/** The response a checkpoint-resolve call sends: a string, null when it cannot be read, undefined when the call is not one. */
+function resolveResponse(call: Pick<EvalCall, "name" | "input">): string | null | undefined {
+  if (isMcp(call.name, "storybloq_checkpoint_resolve")) {
+    const r = (call.input as { response?: unknown } | null)?.response;
+    return typeof r === "string" ? r : null;
+  }
+  const text = shellTextOf(call.input);
+  if (text === null) return undefined;
+  const line = text.split("\n").find((l) => CLI_CHECKPOINT_RESOLVE.test(l));
+  if (line === undefined) return undefined;
+  return flagValue(line, "--response") ?? null;
+}
+
+/**
+ * Rule 8 over the whole run: a checkpoint is resolved only by the agent and
+ * only after an owner turn up to that call quotes the response, and every
+ * evidence file keeps the digest it was created with at every later
+ * observation (a created file with none fails).
+ */
+export function rule8(turns: readonly Cs7Turn[], allCalls: readonly EvalCall[], log: EventsLog | null, observations: readonly EvidenceObservation[] | null): string[] {
+  const failures: string[] = [];
+  turns.forEach((turn, t) => turn.calls.forEach((c, i) => {
+    const response = resolveResponse(c);
+    if (response === undefined) return;
+    const where = `turn ${t + 1} call ${i + 1}`;
+    if (response === null || response.trim() === "") failures.push(`rule 8: ${where} resolves a checkpoint with a response the transcript cannot read`);
+    else if (!turns.slice(0, t + 1).some((x) => x.owner.includes(response.trim()))) failures.push(`rule 8: ${where} resolves a checkpoint with a response no owner turn up to it quotes`);
+  }));
+  for (const c of allCalls) if (c.nested === true && resolveResponse(c) !== undefined) failures.push(`rule 8: a nested agent resolved a checkpoint (${c.name})`);
+  for (const e of log?.events ?? []) {
+    if (!e.point.startsWith("evidence-created:")) continue;
+    const ref = e.point.slice("evidence-created:".length);
+    const seen = (observations ?? []).filter((o) => o.ref === ref);
+    if (seen.length === 0) failures.push(`rule 8: evidence ${ref} was created, but nothing observed it afterwards`);
+    for (const o of seen) {
+      if (o.sha256 !== e.sha256) failures.push(`rule 8: evidence ${ref} changed: created as ${String(e.sha256).slice(0, 12)}, observed as ${o.sha256.slice(0, 12)} at ${o.at.kind} ${o.at.index}`);
+    }
+  }
+  return failures;
+}
+
+/** Rule 9: exactly one ticket created after the boundary matches the follow-up, and it cites the ruling on its checkpoint, which exists. */
+export function rule9(followUp: FollowUp, atBoundary: Cs7Ledger, final: Cs7FinalLedger, baselineIds: readonly string[]): string[] {
+  const before = new Set([...baselineIds, ...atBoundary.tickets.map((t) => (t as { id: string }).id)]);
+  const pattern = new RegExp(followUp.titlePattern);
+  const matches = final.tickets.filter((t) => !before.has((t as { id: string }).id) && pattern.test((t as { title?: string }).title ?? ""));
+  if (matches.length !== 1) return [`rule 9: ${matches.length} tickets created after the setup match /${followUp.titlePattern}/; expected exactly one`];
+  const ticket = matches[0] as { id: string; citesRulings?: string[] };
+  const cp = final.tickets.find((t) => {
+    const meta = parseSetupMeta("ticket", t);
+    return (t as { ownerCheckpoint?: unknown }).ownerCheckpoint !== undefined && meta.kind === "item" && meta.meta.key === followUp.checkpointKey && meta.meta.supersededBy === undefined;
+  }) as { id: string; ownerCheckpoint: { resolution?: { rulingId?: unknown } } } | undefined;
+  if (cp === undefined) return [`rule 9: no checkpoint carries key ${followUp.checkpointKey}`];
+  const rulingId = cp.ownerCheckpoint.resolution?.rulingId;
+  if (typeof rulingId !== "string") return [`rule 9: checkpoint ${cp.id} (key ${followUp.checkpointKey}) records no ruling`];
+  const failures: string[] = [];
+  if (!(ticket.citesRulings ?? []).includes(rulingId)) failures.push(`rule 9: ${ticket.id} does not cite ${rulingId}, the ruling on ${cp.id}`);
+  if (!final.rulings.includes(rulingId)) failures.push(`rule 9: ruling ${rulingId}, recorded on ${cp.id}, does not exist`);
+  return failures;
+}
+
+/** The final report against the engine's: its Created: line is the engine's, and each pending line appears once. */
+function summaryFindings(summary: string, engineOutput: string, contract: RecipeContract | null, payload: SetupPayload | null): string[] {
+  const failures: string[] = [];
+  const engine = createdLines(engineOutput);
+  const shown = createdLines(summary);
+  if (engine.length !== 1) failures.push(`summary: the setup-apply call printed ${engine.length} Created: lines; expected one`);
+  else if (shown.length === 0) failures.push("summary: the final report shows no Created: line");
+  else for (const l of shown) if (l !== engine[0]) failures.push(`summary: "${l}" is not the engine's "${engine[0]}"`);
+  if (contract !== null && payload !== null) {
+    const inventory = enginePendingInventory(contract, payload.quality.level as QualityLevel, payload.quality.components);
+    for (const f of enginePendingFindings(summary, inventory)) failures.push(`summary: ${f}`);
+  }
+  return failures;
+}
+
+export interface Cs7RunInputs {
+  /** The events log's text, or null when the run left none. */
+  readonly eventsText: string | null;
+  /** The archive's snapshot text, or null when there is none. */
+  readonly snapshotText: string | null;
+  readonly final: Cs7FinalLedger;
+  readonly baselineIds: readonly string[];
+  readonly baselinePhases: readonly string[];
+  readonly approval: string;
+  /** The project root the client worked in, for rule 10's relative targets. */
+  readonly projectRoot: string;
+  /** The fixture's recipe contract, for the pending lines; null when it states none. */
+  readonly contract: RecipeContract | null;
+  /** Evidence observations, or null when the run recorded none. */
+  readonly observations: readonly EvidenceObservation[] | null;
+  readonly followUp: FollowUp | null;
+}
+
+export interface Cs7RunResult {
+  readonly failures: string[];
+  /** Each setup invocation and its transcript call (invocations.json). */
+  readonly invocations: InvocationMapping[];
+  /** The call that printed the final report, or null. */
+  readonly boundary: { readonly turn: number; readonly call: number } | null;
+}
+
+/**
+ * Check set 7 over one run. The events log decides completion and rule 7 and
+ * maps each invocation to its call; rules 1 to 6 and the summary judge the
+ * calls up to the call that printed `Setup applied:`, against the snapshot;
+ * rule 9 judges the final ledger; rules 8 and 10 judge every call. A run
+ * without a verified archive fails as "setup incomplete" and is graded no
+ * further than the rules that need no boundary.
+ */
+export function checkSetupRun(turns: readonly Cs7Turn[], allCalls: readonly EvalCall[], inputs: Cs7RunInputs): Cs7RunResult {
+  const failures: string[] = [];
+  const { log, findings } = readEventsLog(inputs.eventsText);
+  failures.push(...findings);
+  failures.push(...ledgerWriteFindings(allCalls, inputs.projectRoot));
+  failures.push(...rule8(turns, allCalls, log, inputs.observations));
+  if (log === null) return { failures, invocations: [], boundary: null };
+  const calls = setupCalls(turns);
+  const mapped = mapInvocations(calls, log);
+  failures.push(...mapped.findings);
+  const done = completion(log, inputs.snapshotText);
+  failures.push(...done.findings);
+  const payload = done.archive === null ? null : archivedPayload(inputs.final, done.archive.setupId);
+  if (done.archive !== null && payload === null) failures.push(`completion: the final ledger holds no archived progress note for setup ${done.archive.setupId}`);
+  if (payload !== null) failures.push(...rule7(log, plansOf(payload)));
+  if (!done.complete) return { failures, invocations: mapped.mapping, boundary: null };
+  const at = calls.find((c) => linesOf(turns[c.turn]!.calls[c.call]!.output).some((l) => l.trim().startsWith("Setup applied:")));
+  if (at === undefined) {
+    failures.push("completion: no setup-apply call printed the Setup applied: report");
+    return { failures, invocations: mapped.mapping, boundary: null };
+  }
+  let snapshot: Cs7Ledger;
+  try {
+    snapshot = cs7SnapshotLedger(inputs.snapshotText!);
+  } catch (err) {
+    failures.push(`setup incomplete: the setup snapshot cannot be read (${err instanceof Error ? err.message : String(err)})`);
+    return { failures, invocations: mapped.mapping, boundary: null };
+  }
+  const upTo = turns.slice(0, at.turn + 1).map((t, i) => (i === at.turn ? { ...t, calls: t.calls.slice(0, at.call + 1) } : t));
+  failures.push(...checkSetupApply(upTo, { ledger: snapshot, baselineIds: inputs.baselineIds, baselinePhases: inputs.baselinePhases, approval: inputs.approval }).failures);
+  failures.push(...summaryFindings(turns[at.turn]!.text, turns[at.turn]!.calls[at.call]!.output, inputs.contract, payload));
+  if (inputs.followUp !== null) failures.push(...rule9(inputs.followUp, snapshot, inputs.final, inputs.baselineIds));
+  return { failures, invocations: mapped.mapping, boundary: { turn: at.turn, call: at.call } };
+}
+
+/** Check set 7 on a driven run: its failures join the run's, each sourced as the setup's. */
+export function applySetupRunChecks(state: DriveState, inputs: Cs7RunInputs): Cs7RunResult {
+  const r = checkSetupRun(cs7TurnsFrom(state.turns, state.allCalls), state.allCalls, inputs);
+  for (const f of r.failures) {
+    state.failures.push(f);
+    state.sources.push({ kind: "setup" });
+  }
+  return r;
 }

@@ -591,7 +591,7 @@ describe("check set 2: the command-evidence contract", () => {
 
 describe("check set 2: every run is graded under the check set it was recorded with", () => {
   it("the current check set is 5; check set 2 records still replay under 2", () => {
-    expect(CHECK_SET_VERSION).toBe(6);
+    expect(CHECK_SET_VERSION).toBe(7);
   });
 
   it("the rubric projection: check set 1 drops the overlay; check set 2 replaces in place and appends", () => {

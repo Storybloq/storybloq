@@ -55,11 +55,14 @@ import {
   type PackageTurn, type StoryReader, type TurnResponse, type Variant,
 } from "./onboarding-eval-drive.js";
 import {
-  CHECK_SET_VERSION, claudeTurn, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
+  CHECK_SET_VERSION, claudeTurn, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, recipeContract, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
   type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { applySetupReviewChecks, STORE_COPY } from "./onboarding-eval-checkset6.js";
-import { runRegrade, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
+import { applySetupRunChecks, cs7FinalLedger, type Cs7FinalLedger, type FollowUp } from "./onboarding-eval-checkset7.js";
+import type { InvocationMapping } from "./onboarding-eval-checkset7-events.js";
+import { buildEval, EVAL_DIST } from "./build-eval.mjs";
+import { EVENTS_RAW, INVOCATIONS_RAW, runRegrade, SNAPSHOT_RAW, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = join(PKG_ROOT, "test", "fixtures", "onboarding");
@@ -206,9 +209,18 @@ export function resolveOnPath(bin: string, path: string): string | null {
   return null;
 }
 
-/** The launcher's text: both paths single-quoted, so a space, `$`, backtick or quote in them stays literal. */
-export function launcherScript(nodePath: string, cliPath: string): string {
-  return `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(cliPath)} "$@"\n`;
+/** The launcher's text: every path and fixed argument single-quoted, so a space, `$`, backtick or quote in them stays literal. */
+export function launcherScript(nodePath: string, cliPath: string, fixed: readonly string[] = []): string {
+  return `#!/bin/sh\nexec ${[nodePath, cliPath, ...fixed].map(shellQuote).join(" ")} "$@"\n`;
+}
+
+/**
+ * Check set 7 (T-538 S5a): every client-side storybloq process, the MCP server
+ * and the CLI alike, runs the evaluation bundle, which writes the events log.
+ */
+export function storybloqEntry(checkSet: number, entry: "mcp" | "cli"): { readonly path: string; readonly args: readonly string[] } {
+  if (checkSet < 7) return { path: join(PKG_ROOT, "dist", `${entry}.js`), args: [] };
+  return { path: join(PKG_ROOT, EVAL_DIST, `eval-${entry}.js`), args: ["--entry", entry] };
 }
 
 /**
@@ -219,7 +231,8 @@ export function launcherScript(nodePath: string, cliPath: string): string {
 function installCliLauncher(binDir: string): string {
   mkdirSync(binDir, { recursive: true });
   const launcher = join(binDir, "storybloq");
-  writeFileSync(launcher, launcherScript(process.execPath, join(PKG_ROOT, "dist", "cli.js")), { mode: 0o755 });
+  const cli = storybloqEntry(CHECK_SET_VERSION, "cli");
+  writeFileSync(launcher, launcherScript(process.execPath, cli.path, cli.args), { mode: 0o755 });
   return launcher;
 }
 
@@ -253,7 +266,8 @@ export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: 
   under("HOME");
   under("CODEX_HOME");
   if (client === "claude") under("CLAUDE_CONFIG_DIR");
-  const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_GLOBAL_DIR"]);
+  // Check set 7: the evaluation entry's events log and fault selector are the runner's own.
+  const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT"]);
   for (const k of Object.keys(env)) if (INHERITED_CLIENT_ENV.test(k) && !allowed.has(k)) problems.push(`${k} is inherited`);
   return problems;
 }
@@ -267,6 +281,10 @@ function buildIdentity(): Record<string, string> {
     cliSha256: sha256(readFileSync(join(PKG_ROOT, "dist", "cli.js"))),
     mcpSha256: sha256(readFileSync(join(PKG_ROOT, "dist", "mcp.js"))),
     skillSha256: sha256(readFileSync(join(PKG_ROOT, "src", "skill", "setup-flow.md"))),
+    ...(CHECK_SET_VERSION >= 7 ? {
+      evalMcpSha256: sha256(readFileSync(storybloqEntry(CHECK_SET_VERSION, "mcp").path)),
+      evalCliSha256: sha256(readFileSync(storybloqEntry(CHECK_SET_VERSION, "cli").path)),
+    } : {}),
   };
 }
 
@@ -293,10 +311,11 @@ function provisionCodexHome(home: string, realAuth: string, role: "client" | "re
   const lines: string[] = [];
   if (role === "client") {
     cpSync(join(PKG_ROOT, "src", "skill"), join(home, ".agents", "skills", "story"), { recursive: true });
+    const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
     lines.push(
       "[mcp_servers.storybloq]",
       `command = ${JSON.stringify(process.execPath)}`,
-      `args = [${JSON.stringify(join(PKG_ROOT, "dist", "mcp.js"))}]`,
+      `args = [${[mcp.path, ...mcp.args].map((a) => JSON.stringify(a)).join(", ")}]`,
       "[mcp_servers.storybloq.env]",
       'STORYBLOQ_CLIENT = "codex"',
     );
@@ -397,6 +416,8 @@ async function main(): Promise<void> {
   const o = parseArgs(process.argv.slice(2));
   assertSubscriptionAuthOnly(process.env, "onboarding-eval");
   if (!existsSync(join(PKG_ROOT, "dist", "mcp.js"))) throw new Error("onboarding-eval: dist/mcp.js is missing; build this checkout first");
+  // Check set 7: the evaluation bundle, rebuilt whenever its inputs changed.
+  const evalBuild = CHECK_SET_VERSION >= 7 ? await buildEval(PKG_ROOT) : null;
   if (o.client === "claude" && !process.env.CLAUDE_CODE_OAUTH_TOKEN) throw new Error("onboarding-eval: CLAUDE_CODE_OAUTH_TOKEN is required for a fresh Claude config");
 
   const fixtureDir = join(FIXTURES, o.fixture);
@@ -420,6 +441,12 @@ async function main(): Promise<void> {
   // The name carries the default store's prefix, so a turn that touches it reads as touching the store in a replay too.
   const setupReviewStore = join(work, "storybloq-setup-review-store");
   env.STORYBLOQ_SETUP_REVIEW_DIR = setupReviewStore;
+  // Check set 7: every storybloq process appends to one events log, outside the project.
+  const eventsFile = join(work, "eval-events", "events.jsonl");
+  if (CHECK_SET_VERSION >= 7) {
+    mkdirSync(dirname(eventsFile), { recursive: true });
+    env.STORYBLOQ_EVAL_EVENTS = eventsFile;
+  }
   // The client binary is resolved on the ORIGINAL path, before any filtering below touches PATH.
   const clientBin = resolveOnPath(o.client, process.env.PATH ?? "");
   if (clientBin === null) throw new Error(`onboarding-eval: ${o.client} is not on PATH`);
@@ -433,7 +460,8 @@ async function main(): Promise<void> {
   if (o.client === "claude") {
     env.CLAUDE_CONFIG_DIR = provisionClaude(work);
     const mcpConfig = join(work, "mcp.json");
-    writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { storybloq: { command: process.execPath, args: [join(PKG_ROOT, "dist", "mcp.js")] } } }, null, 2));
+    const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
+    writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { storybloq: { command: process.execPath, args: [mcp.path, ...mcp.args] } } }, null, 2));
     claudeArgs = ["--model", o.model, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--strict-mcp-config", "--mcp-config", mcpConfig, "--max-budget-usd", String(o.maxBudgetUsd)];
     if (o.variant === "reviewer-unavailable") claudeArgs.push("--disallowedTools", "Agent", "Task");
     if (o.variant === "degraded") env.ENABLE_TOOL_SEARCH = "true";
@@ -459,7 +487,10 @@ async function main(): Promise<void> {
   }
   const resolvedCli = spawnSync("/bin/sh", ["-c", "command -v storybloq"], { env, encoding: "utf-8" }).stdout.trim();
   if (resolvedCli !== launcher) throw new Error(`onboarding-eval: storybloq resolves to ${resolvedCli || "nothing"}, not this checkout's launcher ${launcher}`);
-  const identity = { ...buildIdentity(), clientBin, cliLauncher: launcher, effectivePaths, codexReviewerAuth: existsSync(join(env.CODEX_HOME!, "auth.json")) };
+  const identity = {
+    ...buildIdentity(), clientBin, cliLauncher: launcher, effectivePaths, codexReviewerAuth: existsSync(join(env.CODEX_HOME!, "auth.json")),
+    ...(evalBuild !== null ? { evalInputDigest: evalBuild.digest } : {}),
+  };
 
   const before = treeDigest(project);
   const exclusion = runtimeExclusion(project);
@@ -482,6 +513,33 @@ async function main(): Promise<void> {
     // Always present for check set 6, empty when nothing ran, so a missing copy is a loss the regrade names.
     if (existsSync(setupReviewStore)) cpSync(setupReviewStore, join(rawDir, STORE_COPY), { recursive: true, verbatimSymlinks: true });
     else mkdirSync(join(rawDir, STORE_COPY));
+  }
+  let replayInputs: ManifestEntry[] = [];
+  if (CHECK_SET_VERSION >= 7) {
+    // The raw inputs are copied first, so the regrade reads exactly what the run graded.
+    const events = existsSync(eventsFile) ? readFileSync(eventsFile) : null;
+    const snapshot = existsSync(`${eventsFile}.setup-snapshot.json`) ? readFileSync(`${eventsFile}.setup-snapshot.json`) : null;
+    if (events !== null) writeFileSync(join(rawDir, EVENTS_RAW), events);
+    if (snapshot !== null) writeFileSync(join(rawDir, SNAPSHOT_RAW), snapshot);
+    const story = join(project, ".story");
+    const r = applySetupRunChecks(state, {
+      eventsText: events === null ? null : events.toString("utf-8"),
+      snapshotText: snapshot === null ? null : snapshot.toString("utf-8"),
+      final: existsSync(story) ? cs7FinalLedger(diskReader(story)) : EMPTY_LEDGER,
+      ...fixtureBaseline(fixtureDir, (rel) => readFileSync(join(fixtureDir, rel), "utf-8")),
+      approval: afterPackage.find((x) => x.label === "approve")?.prompt ?? "",
+      projectRoot: project,
+      contract: recipeContract(rubric.expectedRecipe),
+      observations: null,
+      followUp: followUpOf(rubric),
+    });
+    const invocations = invocationsText(project, r.invocations);
+    writeFileSync(join(rawDir, INVOCATIONS_RAW), invocations);
+    replayInputs = [
+      ...(events !== null ? [{ path: EVENTS_RAW, sha256: sha256(events) }] : []),
+      { path: INVOCATIONS_RAW, sha256: sha256(invocations) },
+      ...(snapshot !== null ? [{ path: SNAPSHOT_RAW, sha256: sha256(snapshot) }] : []),
+    ];
   }
   const { turns, failures, reviewSkipped } = state;
   const evidence = finishDrive(state, REVIEW_LINE);
@@ -512,6 +570,8 @@ async function main(): Promise<void> {
       reviewerInventory: inventoryFor(o.variant), skillCitations: evidence.skillCitations ?? [],
       instructionContext: ctx.sessionId !== null && ctx.env.CODEX_HOME ? rolloutInstructions(rolloutLines(ctx.env.CODEX_HOME, ctx.sessionId)) : { status: "unknown" },
     } : {}),
+    // Check set 7: the raw inputs the regrade must find unchanged, each with its sha256.
+    ...(CHECK_SET_VERSION >= 7 ? { replayInputs } : {}),
     packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);
@@ -522,7 +582,27 @@ async function main(): Promise<void> {
 }
 
 /** A fixture's rubric as the drive reads it, after the check set projection (lib `rubricFor`). */
-type FixtureRubric = { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] } };
+type FixtureRubric = { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] }; followUp?: FollowUp };
+
+const EMPTY_LEDGER: Cs7FinalLedger = { tickets: [], issues: [], notes: [], phases: [], rulings: [] };
+
+/** The fixture's own ledger before the run: its ticket and issue ids and its phases. `read` takes a path relative to the fixture. */
+export function fixtureBaseline(fixtureDir: string, read: (rel: string) => string): { baselineIds: string[]; baselinePhases: string[] } {
+  const story = join(fixtureDir, "project", ".story");
+  if (!existsSync(story)) return { baselineIds: [], baselinePhases: [] };
+  const ledger = cs7FinalLedger({ exists: (rel) => existsSync(join(story, rel)), read: (rel) => read(join("project", ".story", rel)), list: (rel) => readdirSync(join(story, rel)) });
+  return { baselineIds: [...ledger.tickets, ...ledger.issues].map((x) => (x as { id: string }).id), baselinePhases: [...ledger.phases] };
+}
+
+/** The rubric's follow-up assertion (rule 9), or null when the fixture names none. */
+export function followUpOf(rubric: { readonly followUp?: FollowUp }): FollowUp | null {
+  return rubric.followUp ?? null;
+}
+
+/** invocations.json: the project root rule 10 resolved against, and each invocation's call. */
+export function invocationsText(projectRoot: string, mapping: readonly InvocationMapping[]): string {
+  return `${JSON.stringify({ projectRoot, mapping }, null, 2)}\n`;
+}
 
 /** The owner script a check set reads: check set 2 prefers `owner-answers.checkset-2.md` when the fixture has one. */
 export function ownerScriptFile(fixtureDir: string, checkSet: number): string {
@@ -677,6 +757,9 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
   const story = join(rawDir, "project.after", ".story");
   const storeCopy = join(rawDir, STORE_COPY);
   const evidence = fixtureEvidence(join(fixtureDir, "project"));
+  const afterPackage = packageTurns(record.variant as Variant, script);
+  // Check set 7 also reads the fixture's own ledger; pinned only from 7 on, so older records keep their manifests.
+  const set7 = checkSet >= 7 ? { baseline: fixtureBaseline(fixtureDir, pinned), approval: afterPackage.find((x) => x.label === "approve")?.prompt ?? "" } : {};
   return {
     recordBytes,
     packetBytes: readFileSync(join(recordDir, "grading-packet.json")),
@@ -685,11 +768,12 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
     story: existsSync(story) ? diskStoryBytes(story) : null,
     setupReviewStore: existsSync(storeCopy) ? storeCopy : null,
     fixture: {
-      firstPrompt, discoveryPrompt: script.discovery, afterPackage: packageTurns(record.variant as Variant, script), rubric,
+      firstPrompt, discoveryPrompt: script.discovery, afterPackage, rubric,
       beforeConfig: () => { if (beforeText === null) throw new Error("the fixture has no .story/config.json"); return JSON.parse(beforeText) as Record<string, unknown>; },
       briefs: evidence.briefs, projectFiles: evidence.projectFiles,
       files: [...files, ...evidence.hashes.map((h) => ({ path: `fixture/${h.path}`, sha256: h.sha256 }))],
       checkSet,
+      ...set7,
     },
     reviewLine: REVIEW_LINE,
     semanticLines: runSemanticLines,

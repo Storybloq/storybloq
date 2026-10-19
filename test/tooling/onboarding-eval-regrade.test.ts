@@ -3,25 +3,29 @@
  * computation, every stored field it establishes must agree, and only parser and subshell-recipe questions
  * may leave the hard failures.
  */
-import { describe, expect, it, vi } from "vitest";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkRecipe, codexTurn as codexTurnOf, shellSequence, STOP_RULE_VERSION, type ExpectedRecipe, type JudgeLine, type RuntimeExclusion } from "../../scripts/onboarding-eval-lib.js";
+import { checkRecipe, codexTurn as codexTurnOf, recipeContract, shellSequence, STOP_RULE_VERSION, type ExpectedRecipe, type JudgeLine, type RuntimeExclusion } from "../../scripts/onboarding-eval-lib.js";
 import { sha256 } from "../../scripts/continuity-lib.js";
 import {
   driveFlow, finishDrive, inspectAfter, inventoryFor, MAX_DISCOVERY_ROUNDS, newDriveState, packetText, setupRecordFrom, writesAfterApprovalOf,
   type DriveState, type Rubric, type StoryReader, type TurnResponse, type Variant,
 } from "../../scripts/onboarding-eval-drive.js";
-import { diskReader, diskStoryBytes, ownerScript, packageTurns, regradeCli, regradeInputFrom, REVIEW_LINE, runSemanticLines } from "../../scripts/onboarding-eval-run.js";
+import { diskReader, diskStoryBytes, invocationsText, ownerScript, packageTurns, regradeCli, regradeInputFrom, REVIEW_LINE, runSemanticLines } from "../../scripts/onboarding-eval-run.js";
+import { applySetupRunChecks, cs7FinalLedger } from "../../scripts/onboarding-eval-checkset7.js";
 import {
   canonical, evidenceHash, G1, judgeable, judgeVerdict, OPAQUE_LIMIT, readRevisions, recipeSubshell, regrade, runRegrade, turnFile,
   type Candidate, type RegradeInput, type RegradeJudge, type Regraded,
 } from "../../scripts/onboarding-eval-regrade.js";
 import { applySetupReviewChecks, checkSetupReview, cs6TurnsFrom, STORE_COPY, STORE_COPY_MISSING } from "../../scripts/onboarding-eval-checkset6.js";
 import { createHash } from "node:crypto";
+import { setAfterWriteFault, setupApplySeams } from "../../src/core/setup-apply.js";
+import { handleSetupApply } from "../../src/cli/commands/setup-apply.js";
+import { collector } from "../../scripts/eval-fault-mcp.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNS = join(HERE, "..", "fixtures", "onboarding-eval-runs", "regrade");
@@ -162,9 +166,13 @@ interface Synth {
   readonly packet: Record<string, any>;
 }
 
+/** Check set 7's raw inputs for a synthetic run (T-538 S5a): the events log, the snapshot, and where the project was. */
+interface Cs7Raw { readonly events: string; readonly snapshot: string | null; readonly projectRoot: string }
+
 /** A run the runner would have recorded, without spawning a client: the same flow, record fields and packet. */
-function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string | null = null, cs6: { readonly store: string } | null = null): Synth {
-  const cs = cs6 === null ? 1 : 6;
+function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string | null = null, cs6: { readonly store: string } | null = null, cs7: Cs7Raw | null = null): Synth {
+  const cs = cs7 !== null ? 7 : cs6 === null ? 1 : 6;
+  const rubric = RUBRIC;
   const story: StoryReader | null = storyDir === null ? null : diskReader(storyDir);
   const runId = "synthetic";
   const exclusion = RUN6_RECORD.treeExclusion;
@@ -187,13 +195,27 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
   }
   if (n !== script.length) throw new Error(`the flow ended after ${n} of ${script.length} scripted turns`);
   if (cs6 !== null) applySetupReviewChecks(state, cs6.store, variant);
+  const approval = afterPackage.find((x) => x.label === "approve")?.prompt ?? "";
+  const replayInputs: { path: string; sha256: string }[] = [];
+  if (cs7 !== null) {
+    const r = applySetupRunChecks(state, {
+      eventsText: cs7.events, snapshotText: cs7.snapshot, final: cs7FinalLedger(story ?? NO_STORY), baselineIds: [], baselinePhases: [], approval,
+      projectRoot: cs7.projectRoot, contract: recipeContract(rubric.expectedRecipe), observations: null, followUp: null,
+    });
+    const files: [string, string | null][] = [["events.jsonl", cs7.events], ["invocations.json", invocationsText(cs7.projectRoot, r.invocations)], ["setup-snapshot.json", cs7.snapshot]];
+    for (const [name, text] of files) {
+      if (text === null) continue;
+      raw.set(name, text);
+      replayInputs.push({ path: name, sha256: sha256(text) });
+    }
+  }
   const evidence = finishDrive(state, REVIEW_LINE);
   const adjusted = afterPackage.some((x) => x.label === "adjust");
   const semanticLines = runSemanticLines(state.reviewSkipped, state.turns, exclusion, adjusted, cs, evidence.reviewLines, evidence.judgeLines ?? []);
   const reader = story ?? NO_STORY;
-  const { inspection, ledgerRecords } = inspectAfter(state, reader, RUBRIC, () => ({}), variant);
+  const { inspection, ledgerRecords } = inspectAfter(state, reader, rubric, () => ({}), variant);
   const text = packetText({
-    runId, semanticLines, reviewSkipped: state.reviewSkipped, exclusion, rubric: RUBRIC, briefs: {}, projectFiles: {}, turns: state.turns, evidence, ledgerRecords,
+    runId, semanticLines, reviewSkipped: state.reviewSkipped, exclusion, rubric: rubric, briefs: {}, projectFiles: {}, turns: state.turns, evidence, ledgerRecords,
     setupRecord: story ? setupRecordFrom(story) : "", final: state.final, ...(cs6 !== null ? { checkSet: cs } : {}),
   });
   const record = JSON.parse(JSON.stringify({
@@ -204,13 +226,17 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
       checkSetVersion: cs, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
       reviewerInventory: inventoryFor(variant), skillCitations: evidence.skillCitations ?? [], instructionContext: { status: "unknown" },
     } : {}),
+    ...(cs7 !== null ? { replayInputs } : {}),
   })) as Record<string, any>;
   const input: RegradeInput = {
     recordBytes: Buffer.from(JSON.stringify(record, null, 2)), packetBytes: Buffer.from(text), rawNames: [...raw.keys(), "project.after", ...(cs6 !== null ? [STORE_COPY] : [])],
     readRaw: (name) => { const t = raw.get(name); if (t === undefined) throw new Error(`no raw ${name}`); return Buffer.from(t); },
     story: storyDir === null ? null : diskStoryBytes(storyDir),
     ...(cs6 !== null ? { setupReviewStore: cs6.store } : {}),
-    fixture: { firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, rubric: RUBRIC, beforeConfig: () => ({}), briefs: {}, projectFiles: {}, files: [], checkSet: cs },
+    fixture: {
+      firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, rubric: rubric, beforeConfig: () => ({}), briefs: {}, projectFiles: {}, files: [], checkSet: cs,
+      ...(cs7 !== null ? { baseline: { baselineIds: [], baselinePhases: [] }, approval } : {}),
+    },
     reviewLine: REVIEW_LINE, semanticLines: runSemanticLines,
   };
   return { input, state, record, packet: JSON.parse(text) as Record<string, any> };
@@ -277,6 +303,119 @@ describe("regrade: check set 6 reads the run's copy of its setup review store (T
       const r = regrade(s.input);
       expect(r.ok ? "accepted" : r.reason).toBe("the record's failures differ from the replayed run's (a failure was added, removed, reordered or changed)");
     });
+  });
+});
+
+describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
+  const SID = "SS-0123abcd";
+  let scratch: string;
+  let n = 0;
+  beforeAll(() => { scratch = realpathSync(mkdtempSync(join(tmpdir(), "regrade7-"))); });
+  afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
+  afterEach(() => { setupApplySeams.fault = () => {}; });
+
+  const payload = {
+    version: 1, setupId: SID, review: { reviewer: "codex", outcome: "approved", lines: ["Plan review: approved"] }, ownerLabel: "Sam",
+    project: { name: "demo", type: "npm", language: "typescript" },
+    quality: { level: "full", verifyApplies: false, components: [{ id: "root", workdir: ".", test: { command: "npm test", status: "established" }, build: null, verify: null }] },
+    governance: { canonicalFactsPath: "CLAUDE.md", files: [{ path: "CLAUDE.md", content: "# demo\n" }] },
+    git: { init: false, gitignore: [] },
+    phases: [{ key: "K1", id: "build", name: "Build", label: "BUILD", description: "the first version" }],
+    tickets: [{ key: "K2", title: "Sign in", type: "feature", phase: "K1", description: "d", blockedBy: [] }],
+    checkpoints: [], issues: [], coverage: [],
+  };
+  const heredoc = `storybloq setup-apply <<'STORYBLOQ_SETUP'\n${JSON.stringify(payload)}\nSTORYBLOQ_SETUP`;
+  const resume = `storybloq setup-apply --resume --setup ${SID}`;
+  class Killed extends Error {}
+
+  /** The log as a SIGKILL at `point` leaves it: nothing of that attempt after the point's line. */
+  function cutAfter(text: string, point: string): string {
+    const lines = text.split("\n").filter(Boolean);
+    const at = lines.findIndex((l) => (JSON.parse(l) as { point?: string }).point === point);
+    const attempt = (JSON.parse(lines[at]!) as { attempt: string }).attempt;
+    return `${lines.filter((l, i) => i <= at || (JSON.parse(l) as { attempt: string }).attempt !== attempt).join("\n")}\n`;
+  }
+
+  /**
+   * G11: the setup is killed at archive-committed, and the approve turn resumes it. The engine runs in this
+   * process under the evaluation collector, so the events log and snapshot are ones it wrote.
+   */
+  async function g11(): Promise<{ readonly s: Synth; readonly events: string; readonly snapshot: string }> {
+    const root = join(scratch, `p${n++}`);
+    mkdirSync(root);
+    const store = join(scratch, `store${n}`);
+    mkdirSync(store);
+    const eventsPath = join(scratch, `${n}-events.jsonl`);
+    const env = { PATH: process.env.PATH ?? "", HOME: scratch, STORYBLOQ_SETUP_REVIEW_DIR: join(scratch, "review-store") };
+    setAfterWriteFault(collector(eventsPath, "archive-committed", "cli", () => { throw new Killed("killed"); }));
+    await handleSetupApply({ cwd: root, env, stdin: () => Buffer.from(JSON.stringify(payload)) }, {});
+    writeFileSync(eventsPath, cutAfter(readFileSync(eventsPath, "utf-8"), "archive-committed"));
+    setAfterWriteFault(collector(eventsPath, null, "cli", () => { throw new Killed("killed"); }));
+    const resumed = (await handleSetupApply({ cwd: root, env, stdin: () => Buffer.from("") }, { resume: true, setup: SID })).stdout;
+    expect(resumed).toContain(`Setup applied: ${SID}`);
+    const events = readFileSync(eventsPath, "utf-8");
+    const snapshot = readFileSync(`${eventsPath}.setup-snapshot.json`, "utf-8");
+    const script: SynthTurn[] = [{ text: PACKAGE }, { text: PACKAGE }, { text: PACKAGE }, { text: resumed, commands: [{ command: heredoc, output: "" }, { command: resume, output: resumed }] }];
+    return { s: synth("none", script, join(root, ".story"), { store }, { events, snapshot, projectRoot: root }), events, snapshot };
+  }
+
+  /** The input with raw `name` replaced by `text`; `pin` also records the new bytes' sha256, so only the content is wrong. */
+  function withRaw(input: RegradeInput, name: string, text: string, pin = false): RegradeInput {
+    const base = pin ? withRecord(input, (r) => { r.replayInputs = r.replayInputs.map((e: { path: string; sha256: string }) => (e.path === name ? { path: name, sha256: sha256(text) } : e)); }) : input;
+    return { ...base, readRaw: (x) => (x === name ? Buffer.from(text) : input.readRaw(x)) };
+  }
+  const without = (input: RegradeInput, name: string): RegradeInput => ({ ...input, rawNames: input.rawNames.filter((x) => x !== name) });
+
+  it("G11: a kill at archive-committed resumed in the approve turn regrades accepted, with no check set 7 failure", async () => {
+    const { s } = await g11();
+    expect(s.state.failures.filter((_, i) => s.state.sources[i]?.kind === "setup")).toEqual([]);
+    const g = accepted(s.input);
+    expect(g.checkSet).toBe(7);
+    expect(g.manifest.map((m) => m.path)).toEqual(expect.arrayContaining(["events.jsonl", "invocations.json", "setup-snapshot.json"]));
+    expect(g.manifest.some((m) => m.path.startsWith("project.after/.story#cs7:"))).toBe(true);
+  });
+
+  it("refuses an events log that is missing, tampered, empty, cut before its attempt line, or archived without its commit", async () => {
+    const { s, events } = await g11();
+    expect(refused(without(s.input, "events.jsonl"))).toBe("replay input events.jsonl is missing");
+    expect(refused(withRaw(s.input, "events.jsonl", events.replace(SID, "SS-ffffffff")))).toBe("replay input events.jsonl does not match its recorded sha256");
+    expect(refused(withRaw(s.input, "events.jsonl", "", true))).toMatch(/^replay input events\.jsonl is malformed or incomplete: /);
+    expect(refused(withRaw(s.input, "events.jsonl", `${events.split("\n").slice(1).join("\n")}`, true))).toMatch(/^replay input events\.jsonl is malformed or incomplete: /);
+    const uncommitted = `${events.split("\n").filter((l) => l !== "" && !l.includes('"point":"archive-committed"')).join("\n")}\n`;
+    expect(refused(withRaw(s.input, "events.jsonl", uncommitted, true))).toBe("replay input events.jsonl is incomplete: step:archive with no archive-committed");
+  });
+
+  it("refuses a snapshot that is missing, tampered, or not the one archive-committed names", async () => {
+    const { s, snapshot } = await g11();
+    expect(refused(without(s.input, "setup-snapshot.json"))).toBe("replay input setup-snapshot.json is missing");
+    const other = snapshot.replace("Sign in", "Signed in");
+    expect(refused(withRaw(s.input, "setup-snapshot.json", other))).toBe("replay input setup-snapshot.json does not match its recorded sha256");
+    expect(refused(withRaw(s.input, "setup-snapshot.json", other, true))).toBe("replay input setup-snapshot.json is not the snapshot archive-committed names");
+  });
+
+  it("refuses an invocation mapping that is missing, tampered, malformed, or not the replayed run's", async () => {
+    const { s } = await g11();
+    const stored = s.input.readRaw("invocations.json").toString("utf-8");
+    expect(refused(without(s.input, "invocations.json"))).toBe("replay input invocations.json is missing");
+    expect(refused(withRaw(s.input, "invocations.json", `${stored} `))).toBe("replay input invocations.json does not match its recorded sha256");
+    expect(refused(withRaw(s.input, "invocations.json", "{", true))).toBe("replay input invocations.json is malformed");
+    expect(refused(withRaw(s.input, "invocations.json", "{}", true))).toBe("replay input invocations.json is malformed");
+    const differs = JSON.stringify({ ...(JSON.parse(stored) as object), mapping: [] }, null, 2) + "\n";
+    expect(refused(withRaw(s.input, "invocations.json", differs, true))).toBe("invocations.json differs from the mapping the replayed run produces");
+  });
+
+  it("refuses a record with no replay inputs, an input it does not name, or one check set 7 does not read", async () => {
+    const { s } = await g11();
+    expect(refused(withRecord(s.input, (r) => { delete r.replayInputs; }))).toBe("the check set 7 record names no replay inputs");
+    expect(refused(withRecord(s.input, (r) => { r.replayInputs = r.replayInputs.filter((e: { path: string }) => e.path !== "setup-snapshot.json"); }))).toBe("replay input setup-snapshot.json is not named in the record's replay inputs");
+    const extra = { ...withRecord(s.input, (r) => { r.replayInputs.push({ path: "notes.txt", sha256: sha256("x") }); }), rawNames: [...s.input.rawNames, "notes.txt"] };
+    expect(refused({ ...extra, readRaw: (x) => (x === "notes.txt" ? Buffer.from("x") : s.input.readRaw(x)) })).toBe("the record names replay input notes.txt, which check set 7 does not read");
+  });
+
+  it("refuses fixture inputs read without the baseline ledger and approval", async () => {
+    const { s } = await g11();
+    const { baseline: _b, approval: _a, ...fixture } = s.input.fixture as typeof s.input.fixture & { baseline?: unknown; approval?: unknown };
+    expect(refused({ ...s.input, fixture })).toBe("check set 7 needs the fixture's baseline ledger and approval");
   });
 });
 

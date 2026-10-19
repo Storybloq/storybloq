@@ -56,7 +56,7 @@ import { resolveRecipe } from "../autonomous/recipes/loader.js";
 import { validateProject } from "./validation.js";
 import { saveSnapshot } from "./snapshot.js";
 import { partitionByActionability, recommend, ticketCompletion } from "./recommend.js";
-import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { checkpointReady, checkpointState, hasOwnerCheckpoint, parseOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import { hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
@@ -1620,10 +1620,61 @@ export function setupReportLines(state: ProjectState, p: SetupPayload, options: 
     `Quality: ${p.quality.level}; stages on: ${on.length > 0 ? on.join(", ") : "none"}${keptStages.length > 0 ? `; kept current: ${keptStages.join(", ")}` : ""}`,
     ...pending.map((l) => `Pending: ${l.stage}${l.component === null ? "" : ` (${l.component})`}: ${l.command} (pending: ${l.reason})`),
     `Governance: ${p.governance.files.length > 0 ? p.governance.files.map((f) => f.path).join(", ") : "none"}; canonical facts: ${p.governance.canonicalFactsPath}`,
+    ...(options.live === true ? liveLines(state, p, ledgerOn) : []),
     ...p.review.lines.map((l) => `Review: ${l}`),
     `Ready to build: ${ready.length > 0 ? ready.map(label).join(", ") : "none"}`,
     `First story: ${ready.length > 0 ? label(ready[0]!) : `none${waitingOn(state, keyedIds)}`}`,
   ];
+  return lines;
+}
+
+/**
+ * The live report's state lines (T-538 S3b), never frozen into the
+ * historical report: each setup checkpoint, ready or waiting on its open
+ * blockers, and each recipe stage the level uses, on or off and why.
+ */
+function liveLines(state: ProjectState, p: SetupPayload, ledgerOn: (stage: string) => boolean): string[] {
+  const lines: string[] = [];
+  for (const cp of p.checkpoints) {
+    const ticket = keyedTicket(state, p.setupId, cp.key);
+    if (ticket === undefined) continue;
+    const parsed = parseOwnerCheckpoint(ticket);
+    const owner = parsed.kind === "ok" ? parsed.checkpoint.owner : p.ownerLabel;
+    const waiting = ticket.blockedBy
+      .map((ref) => state.resolveTicketRef(ref))
+      .map((r) => (r.kind === "found" ? (state.releasesDependency(r.item) ? null : displayIdOf(r.item)) : "an unresolved blocker"))
+      .filter((x): x is string => x !== null);
+    const now = checkpointState(ticket);
+    const status = now !== "pending" ? (now ?? "unrecognized") : checkpointReady(state, ticket) ? "ready" : `waiting on ${waiting.join(", ")}`;
+    lines.push(`Checkpoint: ${cp.title} (${cp.kind}, owner ${owner}): ${status}`);
+  }
+  const read = readRecord(state.config);
+  if (read.kind !== "ok" || read.record.setupId !== p.setupId) return lines;
+  const record = read.record;
+  for (const stage of STAGES_USED[record.level]) {
+    if (stage === "VERIFY" && !record.verifyApplies) {
+      lines.push("Verification: VERIFY: off (level)");
+      continue;
+    }
+    const component = stage === "VERIFY" ? "verify" : stage === "BUILD" ? "build" : "test";
+    const evidence = record.components.map((c) => c[component]).filter((e): e is NonNullable<typeof e> => e !== null && e !== undefined);
+    if (ledgerOn(stage)) {
+      lines.push(`Verification: ${stage}: on (${evidence.length > 0 && evidence.every((e) => e.status === "verified") ? "verified" : "established"})`);
+      continue;
+    }
+    if (evidence.some((e) => e.status === "pending")) {
+      const open = p.tickets
+        .filter((t) => t.establishes?.stage === component)
+        .map((t) => keyedTicket(state, p.setupId, t.key))
+        .filter((t): t is Ticket => t !== undefined && t.status !== "complete")
+        .map((t) => displayIdOf(t));
+      lines.push(`Verification: ${stage}: off (pending${open.length > 0 ? `: ${open.join(", ")} open` : ""})`);
+    } else if (evidence.some((e) => e.status === "left-off")) {
+      lines.push(`Verification: ${stage}: off (left off)`);
+    } else {
+      lines.push(`Verification: ${stage}: off (level)`);
+    }
+  }
   return lines;
 }
 

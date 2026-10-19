@@ -7,7 +7,7 @@
  *
  * An establishment ticket's `setup` field (its key, what it establishes, its
  * verification spec and what setup-verify recorded) and its completion are
- * written only under an authority. Authority is an in-process symbol, never
+ * written only under an authority, and so is leaving complete. Authority is an in-process symbol, never
  * persisted and never crossing MCP, and each may be imported only by the
  * module that owns it (pinned by test/core/checkpoint-lifecycle.test.ts):
  *  - ESTABLISHMENT_CREATION_AUTHORITY: core/setup-apply.ts, for exactly two
@@ -73,7 +73,11 @@ export function assertVerificationWriteAllowed(prior: Raw | null, next: Raw, aut
   const nextSetup = setupOf(next);
   const setupChanged = !sameValue(priorSetup, nextSetup);
   const completes = next.status === "complete" && prior?.status !== "complete";
-  if (!setupChanged && !completes) return;
+  // Leaving complete is as much the verification's business as entering it:
+  // a verified, left-off or closed-without-result ticket reopens only through
+  // setup-verify --reopen, which runs the recovery checks.
+  const reopens = prior?.status === "complete" && next.status !== "complete";
+  if (!setupChanged && !completes && !reopens) return;
 
   let allowed = false;
   if (authority === ESTABLISHMENT_CREATION_AUTHORITY) {
@@ -94,6 +98,6 @@ export function assertVerificationWriteAllowed(prior: Raw | null, next: Raw, aut
   }
   throw new ProjectLoaderError(
     "conflict",
-    `${label(next)} is an establishment ticket: its setup field and its completion are written only by storybloq setup-verify --ticket ${label(next)}.`,
+    `${label(next)} is an establishment ticket: its setup field, its completion and its reopening are written only by storybloq setup-verify --ticket ${label(next)}.`,
   );
 }

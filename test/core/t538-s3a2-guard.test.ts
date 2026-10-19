@@ -12,6 +12,7 @@ import { parseSetupMeta } from "../../src/core/setup-meta.js";
 import { validateProject } from "../../src/core/validation.js";
 import { ESTABLISHMENT_CREATION_AUTHORITY, VERIFICATION_RESULT_AUTHORITY } from "../../src/core/setup-verification-guard.js";
 import { handleTicketUpdate } from "../../src/cli/commands/ticket.js";
+import { setupVerify } from "../../src/core/setup-verify.js";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import type { Ticket } from "../../src/models/ticket.js";
 import { SID, editTicket, faultOnce, makeRegistry, payload, pinEnvironment, ticketBytes, ticketFile } from "./t538-s3a2-fixture.js";
@@ -35,7 +36,7 @@ async function prepareTicketWrite(t: Ticket, root: string, opts?: Parameters<typ
   return out;
 }
 
-const guardMessage = /T-002 is an establishment ticket: its setup field and its completion are written only by storybloq setup-verify --ticket T-002/;
+const guardMessage = /T-002 is an establishment ticket: its setup field, its completion and its reopening are written only by storybloq setup-verify --ticket T-002/;
 
 describe("the establishment ticket setup creates", () => {
   it("carries what it establishes and its spec, and nothing recorded yet", async () => {
@@ -146,6 +147,37 @@ describe("the guard without authority", () => {
     expect(await ticketFile(root, "T-002")).toMatchObject({ status: "inprogress", title: "Prove the tests run" });
     const viaMcp = await tools.get("storybloq_ticket_update")!.handler({ id: "T-002", description: "one real test" });
     expect(viaMcp.isError).toBeUndefined();
+  });
+
+  it("refuses a reopen out of complete in every closed state, on both transports; setup-verify --reopen recovers", async () => {
+    const closed: Record<string, Record<string, unknown> | undefined> = {
+      verified: { status: "verified", at: "2026-10-18T00:00:00.000Z" },
+      "left-off": { status: "left-off", at: "2026-10-18T00:00:00.000Z" },
+      "closed without a result": undefined,
+    };
+    for (const [state, result] of Object.entries(closed)) {
+      const root = await applied();
+      await editTicket(root, "T-002", (raw) => {
+        raw.status = "complete";
+        raw.completedDate = "2026-10-18";
+        const v = (raw.setup as { verification: Record<string, unknown> }).verification;
+        if (result !== undefined) v.result = result;
+      });
+      const before = await ticketBytes(root, "T-002");
+      for (const status of ["open", "inprogress"]) {
+        await expect(handleTicketUpdate("T-002", { status }, "json", root), state).rejects.toThrow(guardMessage);
+        const { tools, server } = makeRegistry();
+        registerAllTools(server, root);
+        const mcp = await tools.get("storybloq_ticket_update")!.handler({ id: "T-002", status });
+        expect([state, mcp.isError, mcp.content[0]!.text]).toEqual([state, true, expect.stringMatching(guardMessage)]);
+      }
+      expect(await ticketBytes(root, "T-002"), state).toBe(before);
+      if (result === undefined) {
+        const r = await setupVerify(root, { ticket: "T-002", reopen: true });
+        expect([r.exitCode, r.lines[0]]).toEqual([0, "Reopened: T-002 is open; run storybloq setup-verify --ticket T-002."]);
+        expect((await ticketFile(root, "T-002")).status).toBe("open");
+      }
+    }
   });
 
   it("leaves tickets without the fields alone", async () => {

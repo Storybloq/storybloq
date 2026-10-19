@@ -2,3 +2,6 @@ node_modules/
 dist/
 .5c-run-output/
 dist-test/
+
+# T-538 S5a: the eval bundle (scripts/build-eval.mjs), never shipped
+.eval-dist/

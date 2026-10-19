@@ -18,7 +18,8 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runWithBoardWriteContext } from "../../core/board-write-recorder.js";
 import { reportBoardWrite } from "../../core/board-git-state.js";
-import { setupApply, setupReport, setupResolve, setupResume, type SetupApplyResult } from "../../core/setup-apply.js";
+import { serializeJSON } from "../../core/project-loader.js";
+import { runSetupInvocation, setupApply, setupReport, setupResolve, setupResume, sha256, type InvocationKind, type SetupApplyResult } from "../../core/setup-apply.js";
 
 export interface SetupApplyIo {
   readonly cwd: string;
@@ -57,22 +58,60 @@ async function reported(cwd: string, run: () => Promise<SetupApplyResult>): Prom
   return out({ ...value, lines: [...value.lines, ...report.lines] });
 }
 
-export async function handleSetupApply(io: SetupApplyIo, opts: SetupApplyCliOptions): Promise<SetupApplyCliResult> {
-  const options = { env: io.env };
-  if (opts.resume === true && opts.resolve !== undefined) return refused("--resume and --resolve are separate calls; send one.");
-  if (opts.resume === true || opts.resolve !== undefined) {
-    if (opts.setup === undefined) return refused(`--setup <id> is required with ${opts.resume === true ? "--resume" : "--resolve"}.`);
-    if (opts.resume === true) return reported(io.cwd, () => setupResume(io.cwd, opts.setup!, options));
-    const parsed = parseJson(opts.resolve!, "--resolve");
-    if ("error" in parsed) return parsed.error;
-    return reported(io.cwd, () => setupResolve(io.cwd, opts.setup!, parsed.value, options));
+/** A JSON argument as parsed, or its text, trimmed, when it does not parse (a here-document ends in a newline). */
+function argValue(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text.trim();
   }
-  if (opts.setup !== undefined) return refused("--setup goes with --resume or --resolve; a new setup takes its payload on standard input alone.");
-  const text = io.stdin().toString("utf-8");
-  if (text.trim() === "") return refused("no payload on standard input; send the approved payload, or use --resume --setup <id>.");
+}
+
+/**
+ * The digest of one setup-apply call's arguments (T-538 S5a): the same for an
+ * MCP call and its CLI form, since the MCP tool hands the handler the payload
+ * and the resolutions as JSON text. The payload is read only by the call form
+ * that takes it from standard input.
+ */
+export function setupArgSha256(opts: SetupApplyCliOptions, stdinText: string | null): string {
+  return sha256(serializeJSON({
+    payload: stdinText === null ? null : argValue(stdinText),
+    resume: opts.resume === true,
+    setup: opts.setup ?? null,
+    resolutions: opts.resolve === undefined ? null : argValue(opts.resolve),
+  }));
+}
+
+interface Routed {
+  readonly kind: InvocationKind;
+  readonly run: () => Promise<SetupApplyCliResult>;
+}
+
+function route(io: SetupApplyIo, opts: SetupApplyCliOptions, stdinText: string | null): Routed {
+  const options = { env: io.env };
+  const refuse = (r: SetupApplyCliResult): Routed => ({ kind: "refused", run: async () => r });
+  if (opts.resume === true && opts.resolve !== undefined) return refuse(refused("--resume and --resolve are separate calls; send one."));
+  if (opts.resume === true || opts.resolve !== undefined) {
+    if (opts.setup === undefined) return refuse(refused(`--setup <id> is required with ${opts.resume === true ? "--resume" : "--resolve"}.`));
+    if (opts.resume === true) return { kind: "resume", run: () => reported(io.cwd, () => setupResume(io.cwd, opts.setup!, options)) };
+    const parsed = parseJson(opts.resolve!, "--resolve");
+    if ("error" in parsed) return refuse(parsed.error);
+    return { kind: "resolve", run: () => reported(io.cwd, () => setupResolve(io.cwd, opts.setup!, parsed.value, options)) };
+  }
+  if (opts.setup !== undefined) return refuse(refused("--setup goes with --resume or --resolve; a new setup takes its payload on standard input alone."));
+  const text = stdinText!;
+  if (text.trim() === "") return refuse(refused("no payload on standard input; send the approved payload, or use --resume --setup <id>."));
   const parsed = parseJson(text, "the payload on standard input");
-  if ("error" in parsed) return parsed.error;
-  return reported(io.cwd, () => setupApply(io.cwd, parsed.value, options));
+  if ("error" in parsed) return refuse(parsed.error);
+  return { kind: "apply", run: () => reported(io.cwd, () => setupApply(io.cwd, parsed.value, options)) };
+}
+
+/** Every setup-apply call, MCP or CLI, refused or run, is one invocation with its start and end events. */
+export async function handleSetupApply(io: SetupApplyIo, opts: SetupApplyCliOptions): Promise<SetupApplyCliResult> {
+  const takesPayload = opts.resume !== true && opts.resolve === undefined && opts.setup === undefined;
+  const stdinText = takesPayload ? io.stdin().toString("utf-8") : null;
+  const routed = route(io, opts, stdinText);
+  return runSetupInvocation(io.cwd, routed.kind, setupArgSha256(opts, stdinText), routed.run);
 }
 
 export async function handleSetupReport(io: SetupApplyIo, opts: { setup: string; historical?: boolean }): Promise<SetupApplyCliResult> {

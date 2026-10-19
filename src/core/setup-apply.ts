@@ -16,6 +16,7 @@
  * handler is ever called; only unlocked primitives, whose writes the engine
  * commits itself.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { existsSync } from "node:fs";
@@ -37,12 +38,14 @@ import {
   resolveActor,
   runTransactionUnlocked,
   serializeJSON,
+  transactionSeams,
   SETUP_BOOTSTRAP_MANIFEST,
   withBootstrapLock,
   withProjectLock,
   type LoadResult,
 } from "./project-loader.js";
 import { ProjectLoaderError, IMMUTABLE_EVIDENCE_SCHEMA_VERSION } from "./errors.js";
+import { evidenceFileSeams } from "./checkpoint-evidence-files.js";
 import { recordUserFileTarget } from "./board-write-recorder.js";
 import { localDateOf } from "./local-date.js";
 import { STORY_GITIGNORE_ENTRIES } from "./init.js";
@@ -98,14 +101,97 @@ export interface SetupApplyOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
+/** What a seam event knows about the call it fires in (T-538 S5a). */
+export interface FaultInfo {
+  /** The project the call runs on; null for a direct engine call. */
+  readonly root: string | null;
+  readonly setupId: string | null;
+  /** One id per setup-apply call through `runSetupInvocation`; null for a direct engine call. */
+  readonly invocation: string | null;
+  /** `effectiveRevision` of the payload as the event fires; null before a progress note exists. */
+  readonly revision: string | null;
+  readonly kind?: InvocationKind;
+  readonly argSha256?: string;
+  readonly exitCode?: number;
+  /** An evidence file's digest, on `evidence-created:<ref>`. */
+  readonly sha256?: string;
+  /** A transaction target, on `txn:after-temp` and `txn:after-commit-entry`. */
+  readonly target?: string;
+}
+
+export type InvocationKind = "apply" | "resume" | "resolve" | "refused";
+
 /**
  * Test seam: called after each durable write with the point's name, so a
  * test can interrupt the run there. Not reachable through any CLI or MCP
- * input.
+ * input. `step:<id>` fires when a step commits, `skip:<id>` when it was
+ * already done, `recovery:<op>` after a tidy or recovery write, and
+ * `archive-committed` inside the archive's lock hold.
  */
-export const setupApplySeams: { fault: (point: string) => void | Promise<void> } = {
+export const setupApplySeams: { fault: (point: string, info: FaultInfo) => void | Promise<void> } = {
   fault: () => {},
 };
+
+/**
+ * Sets one function behind every write seam: setup-apply's points, the
+ * evidence file creates (`evidence-created:<ref>`) and the transaction seams
+ * (`txn:after-temp`, `txn:after-commit-entry`, with the target). Only the eval
+ * wrapper calls it; nothing shipped does.
+ */
+export function setAfterWriteFault(fn: (point: string, info: FaultInfo) => void | Promise<void>): void {
+  const info = (extra: Pick<FaultInfo, "sha256" | "target">): FaultInfo => {
+    const scope = faultScope.getStore();
+    return { root: scope?.root ?? null, setupId: scope?.setupId ?? null, invocation: scope?.invocation ?? null, revision: scope?.revision ?? null, ...extra };
+  };
+  setupApplySeams.fault = fn;
+  evidenceFileSeams.afterCreate = (ref, digest) => fn(`evidence-created:${ref}`, info({ sha256: digest }));
+  transactionSeams.afterTemp = (target) => fn("txn:after-temp", info({ target }));
+  transactionSeams.afterCommitEntry = (target) => fn("txn:after-commit-entry", info({ target }));
+}
+
+interface FaultScope {
+  readonly root: string;
+  readonly invocation: string;
+  setupId: string | null;
+  revision: string | null;
+}
+
+const faultScope = new AsyncLocalStorage<FaultScope>();
+
+function fault(point: string, extra: Pick<FaultInfo, "kind" | "argSha256" | "exitCode"> = {}): void | Promise<void> {
+  const scope = faultScope.getStore();
+  return setupApplySeams.fault(point, { root: scope?.root ?? null, setupId: scope?.setupId ?? null, invocation: scope?.invocation ?? null, revision: scope?.revision ?? null, ...extra });
+}
+
+/** Records what the current call has learned; a direct engine call outside any invocation records nothing. */
+function noteScope(setupId: string | null, p?: SetupPayload): void {
+  const scope = faultScope.getStore();
+  if (!scope) return;
+  if (setupId !== null) scope.setupId = setupId;
+  if (p) scope.revision = effectiveRevision(p);
+}
+
+/**
+ * One setup-apply call, from either entry: `invocation-start` before it runs
+ * and `invocation-end` with its exit code after, in a scope its events read.
+ * A call killed in between has a start and no end.
+ */
+export async function runSetupInvocation<T extends { readonly exitCode: number }>(root: string, kind: InvocationKind, argSha256: string, run: () => Promise<T>): Promise<T> {
+  const scope: FaultScope = { root: resolve(root), invocation: randomBytes(8).toString("hex"), setupId: null, revision: null };
+  return faultScope.run(scope, async () => {
+    await fault("invocation-start", { kind, argSha256 });
+    let result: T;
+    try {
+      result = await run();
+    } catch (err) {
+      // The MCP tool reports a throw as exit 3; the call still ended.
+      await fault("invocation-end", { kind, exitCode: 3 });
+      throw err;
+    }
+    await fault("invocation-end", { kind, exitCode: result.exitCode });
+    return result;
+  });
+}
 
 /** One ambiguity, as the line exit 4 prints for it (plan v5 2b). */
 export interface SetupAmbiguity {
@@ -514,7 +600,7 @@ async function bootstrap(root: string, p: SetupPayload, out: string[], options: 
     } else {
       manifest = { setupId: p.setupId, attempt: 1, payloadDigest: digestOf(p), payload: p, owned: [], publish: null };
       await atomicCreate(manifestPath, serializeJSON(manifest));
-      await setupApplySeams.fault("bootstrap:manifest");
+      await fault("bootstrap:manifest");
     }
     const approved = manifest.payload;
     for (const dir of ENTITY_DIRS) await mkdir(join(wrap, dir), { recursive: true });
@@ -532,7 +618,7 @@ async function bootstrap(root: string, p: SetupPayload, out: string[], options: 
         owned = { target, digest: sha256(content), content };
         manifest = { ...manifest, owned: [...manifest.owned, owned] };
         await atomicWrite(manifestPath, serializeJSON(manifest));
-        await setupApplySeams.fault(`bootstrap:owned:${target}`);
+        await fault(`bootstrap:owned:${target}`);
       }
       const path = join(wrap, target);
       if (existsSync(path)) {
@@ -543,7 +629,7 @@ async function bootstrap(root: string, p: SetupPayload, out: string[], options: 
         continue;
       }
       await atomicCreate(path, owned.content);
-      await setupApplySeams.fault(`bootstrap:create:${target}`);
+      await fault(`bootstrap:create:${target}`);
     }
 
     let publish = manifest.publish;
@@ -552,7 +638,7 @@ async function bootstrap(root: string, p: SetupPayload, out: string[], options: 
       publish = { target: "config.json", digest: sha256(content), content };
       manifest = { ...manifest, publish };
       await atomicWrite(manifestPath, serializeJSON(manifest));
-      await setupApplySeams.fault("bootstrap:owned:config.json");
+      await fault("bootstrap:owned:config.json");
     }
     try {
       await atomicCreate(join(wrap, "config.json"), publish.content);
@@ -560,9 +646,9 @@ async function bootstrap(root: string, p: SetupPayload, out: string[], options: 
       if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;
       throw publishedByOther();
     }
-    await setupApplySeams.fault("bootstrap:publish");
+    await fault("bootstrap:publish");
     await fencedUnlink(manifestPath);
-    await setupApplySeams.fault("bootstrap:manifest-removed");
+    await fault("bootstrap:manifest-removed");
     out.push(`-> storybloq · project "${approved.project.name}" created for setup ${approved.setupId}`);
     return true;
   }, { deadlineMs: options.lockDeadlineMs });
@@ -589,7 +675,7 @@ async function finishPublishedBootstrap(root: string, p: SetupPayload, options: 
     const config = await readFile(join(wrap, "config.json"), "utf-8");
     if (manifest.publish === null || sha256(config) !== manifest.publish.digest) throw publishedByOther();
     await fencedUnlink(join(wrap, SETUP_BOOTSTRAP_MANIFEST));
-    await setupApplySeams.fault("bootstrap:manifest-removed");
+    await fault("recovery:bootstrap:manifest-removed");
   }, { deadlineMs: options.lockDeadlineMs });
 }
 
@@ -655,7 +741,10 @@ async function startOnProject(root: string, p: SetupPayload, out: string[], opti
     await runTransactionUnlocked(root, [{ op: "write", ...op }]);
     out.push(`-> storybloq · setup ${p.setupId} started on the existing scaffold (progress note ${displayId ?? id})`);
   });
-  if (start.kind === "run") await setupApplySeams.fault("progress");
+  if (start.kind === "run") {
+    noteScope(p.setupId, p);
+    await fault("progress");
+  }
   return start;
 }
 
@@ -672,8 +761,8 @@ interface StepContext {
 interface Step {
   readonly id: string;
   readonly run: (ctx: StepContext) => Promise<void>;
-  /** Runs instead when the step is already receipted: what a crash between its receipt and its cleanup left. */
-  readonly tidy?: (ctx: StepContext) => Promise<void>;
+  /** Runs instead when the step is already receipted: what a crash between its receipt and its cleanup left. True when it wrote. */
+  readonly tidy?: (ctx: StepContext) => Promise<boolean>;
 }
 
 /** Commits `ops` and the receipt in one transaction under the held lock. */
@@ -971,7 +1060,7 @@ async function stepConfig(ctx: StepContext): Promise<void> {
 async function stepGovernance(ctx: StepContext, path: string, content: string): Promise<void> {
   const p = ctx.progress.payload;
   const outcome = await createUserFile(ctx.root, path, content, p.setupId, "user-owned target occupied");
-  await setupApplySeams.fault(`governance-created:${posix.normalize(path)}`);
+  await fault(`governance-created:${posix.normalize(path)}`);
   await commit(ctx, [], { step: `governance:${posix.normalize(path)}`, target: `file:${posix.normalize(path)}`, ownedPre: null, ownedPost: ownedDigest.bytes(content) });
   await removeProposed(insideProject(ctx.root, path), p.setupId);
   ctx.out.push(`-> file · ${path} ${outcome === "created" ? "created" : "already present with setup's content"} (${content.length} chars)`);
@@ -1051,7 +1140,7 @@ async function stepPointer(ctx: StepContext, ptr: PointerPlan): Promise<void> {
   if (current !== null && current.includes(ptr.block)) {
     const payload = withReceipt(p, { step: `pointer:${ptr.path}`, target: `file:${ptr.path}`, ownedPre: null, ownedPost: sha256(ptr.block), outcome: "applied" });
     await commit(ctx, [], payload.receipts.at(-1)!, payload);
-    await setupApplySeams.fault(`pointer-receipted:${ptr.path}`);
+    await fault(`pointer-receipted:${ptr.path}`);
     await tidyPointer(ctx.root, ptr.path, payload, ctx.out);
     ctx.out.push(`-> file · ${ptr.path} carries setup's pointer block`);
     return;
@@ -1064,9 +1153,9 @@ async function stepPointer(ctx: StepContext, ptr: PointerPlan): Promise<void> {
   };
   const payload = withReceipt(p, intent);
   await commit(ctx, [], intent, payload);
-  await setupApplySeams.fault(`pointer-intent:${ptr.path}`);
+  await fault(`pointer-intent:${ptr.path}`);
   const finding = await pointerFinding(ctx.root, payload, ptr);
-  await setupApplySeams.fault(`pointer-proposed:${ptr.path}`);
+  await fault(`pointer-proposed:${ptr.path}`);
   throw ambiguities([finding!]);
 }
 
@@ -1138,23 +1227,23 @@ async function pointerFinding(root: string, p: SetupPayload, ptr: PointerPlan): 
  * Nothing is written as a copy. Residual, accepted: a write that lands
  * between the final read and the unlink of bytes found to be setup's.
  */
-async function tidyPointer(root: string, path: string, p: SetupPayload, out: string[]): Promise<void> {
+async function tidyPointer(root: string, path: string, p: SetupPayload, out: string[]): Promise<boolean> {
   const intent = lastReceipt(p, `pointer-proposal:${path}`);
   const rel = pointerProposal(path, p.setupId);
   const abs = join(root, rel);
   const current = await readOrNull(abs);
-  if (current === null) return;
+  if (current === null) return false;
   const notOurs = `-> file · ${rel} is not setup's proposal; left as it is`;
   if (intent === undefined || sha256(current) !== intent.ownedPost) {
     out.push(notOurs);
-    return;
+    return false;
   }
-  await setupApplySeams.fault(`pointer-tidy:${path}`);
+  await fault(`pointer-tidy:${path}`);
   const cleanup = `${abs}.cleanup-${randomBytes(6).toString("hex")}`;
   try {
     await rename(abs, cleanup);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw err;
   }
   const keptAt = relative(root, cleanup).split(sep).join("/");
@@ -1162,31 +1251,32 @@ async function tidyPointer(root: string, path: string, p: SetupPayload, out: str
     const held = await open(cleanup, "r");
     let captured: string;
     try {
-      await setupApplySeams.fault(`pointer-tidy-held:${path}`);
+      await fault(`pointer-tidy-held:${path}`);
       captured = await held.readFile("utf-8");
     } finally {
       await held.close();
     }
-    await setupApplySeams.fault(`pointer-tidy-read:${path}`);
+    await fault(`pointer-tidy-read:${path}`);
     if (sha256(captured) === intent.ownedPost) {
       await fencedUnlink(cleanup);
-      return;
+      return true;
     }
-    await setupApplySeams.fault(`pointer-tidy-captured:${path}`);
+    await fault(`pointer-tidy-captured:${path}`);
     try {
-      await setupApplySeams.fault(`pointer-tidy-restore:${path}`);
+      await fault(`pointer-tidy-restore:${path}`);
       // link refuses to replace what now sits at the proposal path.
       await link(cleanup, abs);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       out.push(`-> file · ${rel} changed while setup removed it; the bytes it held are kept at ${keptAt}`);
-      return;
+      return true;
     }
     await unlink(cleanup);
     out.push(notOurs);
   } catch {
     out.push(`-> file · ${rel} could not be removed safely; its bytes are kept at ${keptAt}`);
   }
+  return true;
 }
 
 // --- Resume classification (plan v5 1d, 2) ----------------------------------
@@ -1847,7 +1937,7 @@ async function stepHandover(ctx: StepContext): Promise<void> {
   const frozen = frozenOf(p);
   await handoverTarget(ctx.root, frozen.handover.path);
   const outcome = await createUserFile(ctx.root, frozen.handover.path, frozen.handover.content, p.setupId, "user-owned target occupied");
-  await setupApplySeams.fault("handover-created");
+  await fault("handover-created");
   await commit(ctx, [], { step: "handover", target: `file:${frozen.handover.path}`, ownedPre: null, ownedPost: ownedDigest.bytes(frozen.handover.content), revision: frozen.revision });
   ctx.out.push(`-> storybloq · handover ${posix.basename(frozen.handover.path)} ${outcome === "created" ? "created" : "already present"}`);
 }
@@ -1899,8 +1989,10 @@ async function stepArchive(ctx: StepContext): Promise<void> {
   if (handover !== frozen.handover.content) throw fail("the handover is not the frozen one");
   const payload = withReceipt(p, { step: "archive", target: `note:${ctx.progress.note.id}`, ownedPre: null, ownedPost: sha256("archived"), revision: frozen.revision });
   const note = await progressWrite(ctx.root, ctx.progress, payload, ctx.today, true);
-  await setupApplySeams.fault("archive-gated");
+  await fault("archive-gated");
   await runTransactionUnlocked(ctx.root, [{ op: "write", ...note }]);
+  // Still inside this step's lock hold: no writer that takes the lock has run since the archive committed.
+  await fault("archive-committed");
   ctx.out.push(`-> storybloq · progress note ${ctx.progress.note.displayId ?? ctx.progress.note.id} archived`);
 }
 
@@ -1910,11 +2002,14 @@ async function runSteps(root: string, setupId: string, out: string[], options: S
     payload = readProgress(state, setupId).payload;
   });
   for (const step of planSteps(effectivePlan(payload!))) {
+    // Set inside the lock callback, so it is read as the union, not narrowed to its initial value.
+    let outcome = "committed" as "committed" | "skipped" | "tidied";
     await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async (lr) => {
       const progress = readProgress(lr.state, setupId);
+      noteScope(setupId, progress.payload);
       const ctx = { root, lr, progress, today: localDateOf(new Date()), out };
       if (stepDone(progress.payload, step.id)) {
-        await step.tidy?.(ctx);
+        outcome = (await step.tidy?.(ctx)) === true ? "tidied" : "skipped";
         return;
       }
       // The whole plan, classified in the same hold as the step's write: its compare-and-set.
@@ -1922,7 +2017,9 @@ async function runSteps(root: string, setupId: string, out: string[], options: S
       if (findings.length > 0) throw ambiguities(findings);
       await step.run(ctx);
     });
-    await setupApplySeams.fault(`step:${step.id}`);
+    // `step:` only when the step committed in this call; a step already done is a skip.
+    if (outcome === "tidied") await fault(`recovery:tidy:${step.id}`);
+    await fault(outcome === "committed" ? `step:${step.id}` : `skip:${step.id}`);
   }
   let report = "";
   await withProjectLock(root, { strict: false, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
@@ -1979,6 +2076,7 @@ export async function setupApply(root: string, raw: unknown, options: SetupApply
   if (payload.receipts.length > 0 || payload.amendments.length > 0 || payload.preImages.length > 0 || payload.frozen !== null || payload.frozenHistory.length > 0) {
     return { exitCode: 2, lines: ["Setup refused: a new setup payload carries no receipts, amendments, pre-images or frozen block; resume an existing setup instead."], setupId: payload.setupId };
   }
+  noteScope(payload.setupId);
   const out: string[] = [];
   return guarded(payload.setupId, out, async () => {
     // Before any write: every user-file path stays inside the project once resolved (review r1 #1).
@@ -2041,6 +2139,7 @@ export async function setupReport(root: string, setupId: string, opts: { histori
 export async function setupResume(root: string, setupId: string, options: SetupApplyOptions = {}): Promise<SetupApplyResult> {
   const absRoot = resolve(root);
   if (!SETUP_ID_PATTERN.test(setupId)) return refused(null, `"${setupId}" is not a setup id (SS-<8 hex>).`);
+  noteScope(setupId);
   const out: string[] = [];
   return guarded(setupId, out, async () => {
     const wrap = join(absRoot, ".story");
@@ -2140,6 +2239,7 @@ export async function setupResolve(root: string, setupId: string, raw: unknown, 
     return refused(setupId, `the resolutions are not valid: ${issue.path.join(".") || "(root)"} ${issue.message}. Pass [{"target", "resolution", "ownerWords", "reviewRevision"?}].`);
   }
   const resolutions = parsed.data;
+  noteScope(setupId);
   if (resolutions.some((r) => r.resolution === "stop")) {
     return { exitCode: 3, lines: [`Setup stopped: the owner chose stop; nothing was written. Resume with storybloq setup-apply --resume --setup ${setupId}.`], setupId };
   }
@@ -2344,7 +2444,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
       case "proposal-conflict":
         // keep-current: the owner's file as it is, a waived pointer; only setup's own proposal is removed.
         baseline(`pointer:${f.ref.path}`, `file:${f.ref.path}`, KEPT, { outcome: "waived" });
-        if (f.kind === "entry-pointer") cleanup.push(() => tidyPointer(root, f.ref.path!, p, out));
+        if (f.kind === "entry-pointer") cleanup.push(async () => { await tidyPointer(root, f.ref.path!, p, out); });
         break;
       default:
         break;
@@ -2381,6 +2481,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   }
   out.push(...resolved);
   for (const c of cleanup) await c();
-  await setupApplySeams.fault("resolved");
+  noteScope(setupId, payload);
+  await fault("resolved");
   return null;
 }

@@ -122,10 +122,10 @@ async function editTicket(root: string, id: string, edit: (raw: Record<string, u
   await writeFile(path, JSON.stringify(raw, null, 2) + "\n");
 }
 
-function faultOnce(point: string): void {
+function faultOnce(...points: string[]): void {
   let fired = false;
   setupApplySeams.fault = (p) => {
-    if (p === point && !fired) {
+    if (points.includes(p) && !fired) {
       fired = true;
       throw new Error(`injected fault at ${p}`);
     }
@@ -223,7 +223,8 @@ describe("the status as an owned field", () => {
       clock(`${day}T12:00:00Z`);
       expect((await setupResume(root, SID)).exitCode).toBe(4);
       // The resolution goes on to finish the setup; stop it again at config so the next day has a setup to resume.
-      faultOnce("step:config");
+      // Config commits on the first day; on a later day it is already done, so its point is `skip:config` (T-538 S5a).
+      faultOnce("step:config", "skip:config");
       expect((await setupResolve(root, SID, [{ target: "K2 (T-001)", resolution: "restore-planned", ownerWords: "it is built" }])).exitCode).toBe(3);
       setupApplySeams.fault = () => {};
       const restored = await ticketFile(root, "T-001");

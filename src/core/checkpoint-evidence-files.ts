@@ -182,6 +182,11 @@ async function readStoredFile(root: string, ref: string): Promise<Buffer> {
 
 const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 
+/** Module seam (T-538 S5a): called after an evidence file is created, with its ref and digest. A no-op unless the eval wrapper sets it. */
+export const evidenceFileSeams: { afterCreate: (ref: string, sha256: string) => void | Promise<void> } = {
+  afterCreate: () => {},
+};
+
 /**
  * Publishes `bytes` at `ref` by a no-replace create. A file already there
  * with the same bytes is reused; other bytes, a link, or a directory that is
@@ -195,6 +200,7 @@ export async function publishEvidenceRevision(root: string, id: string, ref: str
   let created: { dev: number; ino: number } | undefined;
   try {
     created = await atomicCreate(target, bytes);
+    await evidenceFileSeams.afterCreate(ref, sha256(bytes));
     await hooks.afterCreate?.();
   } catch (err) {
     if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;

@@ -76,7 +76,7 @@ const map = (turn: number, exitCode: number): InvocationMapping => ({ turn, call
 
 describe("the drive with later sessions", () => {
   it("each later session's turns carry its number, a session after the setup is marked, and sessions.json covers every turn and call", () => {
-    const s = drive("milestone-demo", [{ text: "Built.", calls: [sh(DEMO, "Today: Sam waters beds 1-4")] }, { text: "Thanks." }, { text: "Reopened." }, { text: "Ticket T-3 waits on owner checkpoint(s) T-2, not yet approved or retired." }]);
+    const s = drive("milestone-demo", [{ text: "Built.", calls: [sh(DEMO, "Today: Sam waters beds 1-4")] }, { text: "Thanks." }, { text: "Reopened." }, { text: "Ticket T-3 waits on owner checkpoint T-2, not yet approved or retired." }]);
     expect(s.turns.map((t) => [t.label, t.session ?? 1, t.afterSetup ?? false])).toEqual([
       ["opening", 1, false], ["inspect", 1, false], ["adjust", 1, false], ["approve", 1, false],
       ["milestone-run", 2, true], ["demo-approval", 2, true], ["change-request", 2, true], ["dependent-run", 3, true],
@@ -160,7 +160,7 @@ describe("milestone-demo", () => {
     { text: "Milestone 1 is built; here is the demo.", calls: [sh(DEMO, demo.expected)] },
     { text: "Recorded your approval." },
     { text: "Reopened and added the follow-up." },
-    { text: "Ticket T-3 waits on owner checkpoint(s) T-2, not yet approved or retired." },
+    { text: "Ticket T-3 waits on owner checkpoint T-2, not yet approved or retired." },
   ];
   it("passes when the demo ran, printed the rubric's line, and the dependent comes back checkpoint-blocked", () => {
     expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3" } })).toEqual([]);

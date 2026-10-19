@@ -268,7 +268,8 @@ function interruptedFindings(i: VariantInputs): string[] {
   if (i.harness.fired !== true) out.push(`${v}: the fault ${i.harness.fault ?? "(none set)"} never fired (no .fired marker after session 1)`);
   i.turns.forEach((t, n) => {
     const s = sessionOf(i.sessions, n);
-    if (s >= 2 && routeOf(t.text, i.checkSet) === "discovery") out.push(`${v}: session ${s} asked a discovery question (turn ${n + 1})`);
+    // The edited variant's session 2 asks the owner about the edited description by design (exit 4), so only a plain resume is held to no question.
+    if (v === "interrupted" && s >= 2 && routeOf(t.text, i.checkSet) === "discovery") out.push(`${v}: session ${s} asked a discovery question (turn ${n + 1})`);
   });
   const counts = new Map<string, number>();
   for (const e of i.log?.events ?? []) if (e.point.startsWith("step:item:") || e.point === "step:archive") counts.set(e.point, (counts.get(e.point) ?? 0) + 1);

@@ -407,8 +407,8 @@ describe("transcript normalisation", () => {
 describe("onboarding fixtures", () => {
   const names = readdirSync(FIXTURES).filter((n) => existsSync(join(FIXTURES, n, "rubric.json"))).sort();
 
-  it("has the seven stage-1 fixtures and the two check set 2 recipe fixtures", () => {
-    expect(names).toEqual(["brief-only", "conflicting-briefs", "custom-pytest-patterns", "django-explicit-pytest", "empty-idea", "empty-scaffold", "existing-partial", "mixed-stack", "non-npm-tests"]);
+  it("has the seven stage-1 fixtures, the two check set 2 recipe fixtures and the check set 7 demo fixture", () => {
+    expect(names).toEqual(["brief-only", "checkpoint-demo", "conflicting-briefs", "custom-pytest-patterns", "django-explicit-pytest", "empty-idea", "empty-scaffold", "existing-partial", "mixed-stack", "non-npm-tests"]);
   });
 
   it.each(names)("%s carries a rubric, an opening prompt and scripted owner turns", (name) => {
@@ -563,6 +563,8 @@ describe("runner safety", () => {
     expect(isolationProblems({ HOME: ok.HOME }, work, "claude").join()).toContain("CODEX_HOME is not set");
     expect(isolationProblems({ ...ok, CODEX_THREAD_ID: "t" }, work, "codex").join()).toContain("CODEX_THREAD_ID is inherited");
     expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME }, work, "codex")).toEqual([]);
+    // The runner's own per-run variables pass: the setup review store (check set 6) and the events log and fault (check set 7).
+    expect(isolationProblems({ ...ok, STORYBLOQ_SETUP_REVIEW_DIR: `${work}/storybloq-setup-review-store`, STORYBLOQ_EVAL_EVENTS: `${work}/eval-events/events.jsonl`, STORYBLOQ_EVAL_FAULT: "step:handover" }, work, "codex")).toEqual([]);
   });
 
   it("splits the fixture into briefs and implementation files", () => {

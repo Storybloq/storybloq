@@ -291,7 +291,7 @@ export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: 
   under("CODEX_HOME");
   if (client === "claude") under("CLAUDE_CONFIG_DIR");
   // Check set 7: the evaluation entry's events log and fault selector are the runner's own.
-  const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT"]);
+  const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT"]);
   for (const k of Object.keys(env)) if (INHERITED_CLIENT_ENV.test(k) && !allowed.has(k)) problems.push(`${k} is inherited`);
   return problems;
 }

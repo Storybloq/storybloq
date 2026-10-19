@@ -37,12 +37,12 @@ import { checkpointState, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import type { CompletionGuardOptions } from "./claims.js";
-import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type EstablishableStage, type ParsedSetupMeta, type SetupItemMeta, type TestSpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
+import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type BuildSpec, type EstablishableStage, type ParsedSetupMeta, type SetupItemMeta, type TestSpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
 import { VERIFICATION_RESULT_AUTHORITY } from "./setup-verification-guard.js";
 import { readRecord, recordActivation, type RecordComponent, type SetupVerificationRecord } from "./setup-verification-record.js";
 import { establishStage, SERVES, type StagesConfig } from "./verification-activation.js";
 import { allKeyed, ambiguityLine } from "./setup-apply.js";
-import { runInGroup } from "./process-group.js";
+import { KILL_GRACE_MS, ownedGroupUnsupported, runInGroup, runOwnedGroup } from "./process-group.js";
 import { classifyEvidence, EvidenceScanner, tailDigest, type Evidence, type TestRunner } from "./setup-verify-parsers.js";
 import type { ProjectState } from "./project-state.js";
 import type { Config } from "../models/config.js";
@@ -90,7 +90,12 @@ class Refusal extends Error {
 
 const refuse = (why: string): Refusal => new Refusal([`Setup-verify refused: ${why}`]);
 
-type Meta = SetupItemMeta & { readonly verification: NonNullable<SetupItemMeta["verification"]> & { readonly spec: TestSpec }; readonly establishes: NonNullable<SetupItemMeta["establishes"]> };
+type Meta = SetupItemMeta & { readonly verification: NonNullable<SetupItemMeta["verification"]>; readonly establishes: NonNullable<SetupItemMeta["establishes"]> };
+
+/** A component's evidence for one stage in the record, or null when the plan has none. */
+function stageOf(c: RecordComponent, stage: EstablishableStage): { readonly status: string } | null {
+  return stage === "test" ? c.test : stage === "build" ? c.build : c.verify;
+}
 
 /** Everything the first hold established, and the digest the second hold must reproduce. */
 interface Checked {
@@ -141,9 +146,9 @@ function closure(state: ProjectState, target: Ticket): Ticket[] {
   return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function servedStages(config: Config): Record<string, unknown> {
+function servedStages(config: Config, stage: EstablishableStage): Record<string, unknown> {
   const stages = (config as Config & { recipeOverrides?: { stages?: Record<string, unknown> } }).recipeOverrides?.stages ?? {};
-  return Object.fromEntries(SERVES.test.map((s) => [s, stages[s] ?? null]));
+  return Object.fromEntries(SERVES[stage].map((s) => [s, stages[s] ?? null]));
 }
 
 const outside = (rel: string): boolean => rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
@@ -206,8 +211,8 @@ function identify(state: ProjectState, ref: string): Identified {
   if (parsed.kind !== "item" || parsed.meta.establishes === undefined || parsed.meta.verification === undefined) {
     throw refuse(`${label(ticket)} is not an establishment ticket; setup-verify runs only on a ticket a setup created to establish a test stage.`);
   }
-  if (parsed.meta.verification.spec.stage !== "test") {
-    throw refuse(`${label(ticket)} establishes the ${parsed.meta.verification.spec.stage} stage; this CLI runs setup-verify only for a test stage.`);
+  if (parsed.meta.verification.spec.stage === "verify") {
+    throw refuse(`${label(ticket)} establishes the verify stage; this CLI runs setup-verify only for a test or build stage.`);
   }
   const meta = parsed.meta as Meta;
   const spec = meta.verification.spec;
@@ -227,23 +232,27 @@ function identify(state: ProjectState, ref: string): Identified {
   const record = read.record;
   if (record.setupId !== meta.setupId) throw refuse(`the setup verification record belongs to setup ${record.setupId}, not ${meta.setupId}.`);
   const component = record.components.find((c) => c.id === spec.component);
-  if (!component || component.test === null) throw refuse(`the setup verification record has no test stage for component ${spec.component}.`);
-  const mismatch = ([
+  if (!component || stageOf(component, spec.stage) === null) throw refuse(`the setup verification record has no ${spec.stage} stage for component ${spec.component}.`);
+  const common = [
     ["component", meta.establishes.component, spec.component],
     ["workdir", component.workdir, spec.workdir],
-    ["command", component.test.command, spec.command],
-    ["runner", component.test.runner, spec.runner],
-    ["wrapper", component.test.wrapper, spec.wrapper],
-  ] as const).find(([, a, b]) => a !== b);
+  ] as const;
+  const own: ReadonlyArray<readonly [string, unknown, unknown]> = spec.stage === "test"
+    ? [["command", component.test!.command, spec.command], ["runner", component.test!.runner, spec.runner], ["wrapper", component.test!.wrapper, spec.wrapper]]
+    : spec.stage === "build"
+      ? [["command", component.build!.command, spec.command]]
+      : [["command", component.verify!.startCommand, spec.command]];
+  const mismatch = [...common, ...own].find(([, a, b]) => a !== b);
   if (mismatch) throw refuse(`${label(ticket)}'s verification spec and the setup verification record disagree on the ${mismatch[0]} of ${spec.component} (${String(mismatch[2])} against ${String(mismatch[1])}).`);
   return { ticket, meta, record, component };
 }
 
 /** A component already verified or left off is terminal, whichever ticket asks; so is a ticket that is complete. */
 function assertOpen({ ticket, meta, component }: Identified): void {
-  const status = component.test!.status;
+  const { stage } = meta.verification.spec;
+  const status = stageOf(component, stage)!.status;
   if (status === "verified" || status === "left-off") {
-    throw refuse(`${meta.verification.spec.component}'s test stage is already ${status === "verified" ? "verified" : "left off"}.`);
+    throw refuse(`${meta.verification.spec.component}'s ${stage} stage is already ${status === "verified" ? "verified" : "left off"}.`);
   }
   if (ticket.status === "complete") {
     throw refuse(meta.verification.result
@@ -289,7 +298,7 @@ async function check(root: string, state: ProjectState, ref: string, env: Readon
     blockedBy: ticket.blockedBy,
     closure: prerequisites.map((t) => ({ id: t.id, status: t.status, blockedBy: t.blockedBy, checkpoint: checkpointState(t) })),
     record,
-    stages: servedStages(state.config),
+    stages: servedStages(state.config, spec.stage),
     decision: meta.verification.decision ?? null,
     guard,
   };
@@ -331,6 +340,10 @@ function tokenEnv(env: Readonly<Record<string, string>>): Record<string, string>
  */
 function runEnvironment(meta: ParsedSetupMeta, base: NodeJS.ProcessEnv, junitPath: string): { env: Record<string, string> | null; digestEnv: Record<string, string>; incompatible: string | null } {
   const spec = meta.kind === "item" ? meta.meta.verification?.spec : undefined;
+  if (spec !== undefined && spec.stage !== "test") {
+    const env = plainEnv(base);
+    return { env, digestEnv: env, incompatible: null };
+  }
   const runner = spec?.stage === "test" ? spec.runner : undefined;
   const adapter = meta.kind === "item" ? meta.meta.verification?.decision?.adapter : undefined;
   const built = runner === undefined ? { env: {} } : evidenceEnv(runner, withoutDropped(base, adapter), junitPath);
@@ -347,11 +360,7 @@ function runEnvironment(meta: ParsedSetupMeta, base: NodeJS.ProcessEnv, junitPat
  * evidence cannot coexist with is returned as the reason instead.
  */
 export function evidenceEnv(runner: TestRunner, base: NodeJS.ProcessEnv, junitPath: string): { env: Record<string, string> } | { incompatible: string } {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(base)) if (v !== undefined) env[k] = v;
-  env.CI = "1";
-  env.NO_COLOR = "1";
-  env.FORCE_COLOR = "0";
+  const env = plainEnv(base);
   if (runner === "pytest") {
     const prior = env.PYTEST_ADDOPTS ?? "";
     if (/(^|\s)--junit-?xml(=|\s|$)/.test(prior)) return { incompatible: "PYTEST_ADDOPTS already names a JUnit report (--junitxml)" };
@@ -364,6 +373,16 @@ export function evidenceEnv(runner: TestRunner, base: NodeJS.ProcessEnv, junitPa
     env.GOFLAGS = `${prior === "" ? "" : `${prior} `}-v`;
   }
   return { env };
+}
+
+/** The caller's environment with CI, NO_COLOR and FORCE_COLOR set, as every run gets it. */
+function plainEnv(base: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(base)) if (v !== undefined) env[k] = v;
+  env.CI = "1";
+  env.NO_COLOR = "1";
+  env.FORCE_COLOR = "0";
+  return env;
 }
 
 /** The caller's environment without the variables the owner's adapter drops whole. */
@@ -388,7 +407,14 @@ function countsText(e: Evidence): string {
 }
 
 /** The digest-equal second hold: the result, the completion, the record and the stages in one transaction. */
-async function commit(root: string, ref: string, first: Checked, env: Readonly<Record<string, string>>, evidence: Extract<Evidence, { kind: "verified" }>, tail: string, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
+/** What a verified run records, and its first line given the stages it turned on. */
+interface Verified {
+  readonly counts?: { readonly executed: number; readonly failed: number };
+  readonly tail: string;
+  readonly line: (on: string) => string;
+}
+
+async function commit(root: string, ref: string, first: Checked, env: Readonly<Record<string, string>>, verified: Verified, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
   let result: SetupVerifyResult | null = null;
   await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
     let now: Checked;
@@ -410,7 +436,7 @@ async function commit(root: string, ref: string, first: Checked, env: Readonly<R
     const at = new Date().toISOString();
     const spec = now.meta.verification.spec;
     const setup = { ...(now.ticket as Ticket & { setup: Record<string, unknown> }).setup };
-    setup.verification = { ...now.meta.verification, result: { status: "verified", counts: { executed: evidence.executed, failed: 0 }, tailDigest: tailDigest(tail), at } };
+    setup.verification = { ...now.meta.verification, result: { status: "verified", ...(verified.counts ? { counts: verified.counts } : {}), tailDigest: tailDigest(verified.tail), at } };
     const next = { ...now.ticket, status: "complete", completedDate: localDateOf(new Date()), setup } as Ticket;
     const decision = authoriseStatusChange(now.ticket, next, now.guard, { claimFreeReopen: false }, label(now.ticket));
     if (!decision.ok) {
@@ -424,19 +450,28 @@ async function commit(root: string, ref: string, first: Checked, env: Readonly<R
     }
 
     const config = state.config as Config & { recipeOverrides?: Record<string, unknown> & { stages?: StagesConfig } };
-    const established = establishStage(recordActivation(now.record), config.recipeOverrides?.stages ?? {}, spec.component, "test");
-    const record: SetupVerificationRecord = {
-      ...now.record,
-      components: now.record.components.map((c) => (c.id === spec.component ? { ...c, test: { ...c.test!, status: "verified" as const } } : c)),
-    };
+    const established = establishStage(recordActivation(now.record), config.recipeOverrides?.stages ?? {}, spec.component, spec.stage);
+    const record = withStageStatus(now.record, spec.component, spec.stage, "verified");
     const nextConfig = { ...config, recipeOverrides: { ...(config.recipeOverrides ?? {}), stages: established.stages }, setupVerification: record } as Config;
     const ops = [completion.op, await prepareConfigWrite(nextConfig, root)];
     await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));
     invalidateResolutionWriteContext(root);
-    const on = SERVES.test.filter((s) => (established.stages[s] as { enabled?: unknown } | undefined)?.enabled === true);
-    result = { exitCode: 0, lines: [`Verified: ${spec.component} test (${spec.runner}, ${evidence.executed} test${evidence.executed === 1 ? "" : "s"}); stages on: ${on.length > 0 ? on.join(", ") : "none"}`] };
+    const on = SERVES[spec.stage].filter((s) => (established.stages[s] as { enabled?: unknown } | undefined)?.enabled === true);
+    result = { exitCode: 0, lines: [verified.line(on.length > 0 ? on.join(", ") : "none")] };
   });
   return result!;
+}
+
+/** The record with one component's stage moved to `status`; every other stage and component as it was. */
+function withStageStatus(record: SetupVerificationRecord, component: string, stage: EstablishableStage, status: "verified" | "left-off", extra: Partial<RecordComponent> = {}): SetupVerificationRecord {
+  return {
+    ...record,
+    components: record.components.map((c) => {
+      if (c.id !== component) return c;
+      const moved = stage === "test" ? { test: { ...c.test!, status } } : stage === "build" ? { build: { ...c.build!, status } } : { verify: { ...c.verify!, status } };
+      return { ...c, ...moved, ...extra };
+    }),
+  };
 }
 
 function stale(ticket: Ticket, why: string): SetupVerifyResult {
@@ -478,6 +513,9 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     }
     const checked = first as unknown as Checked;
     const spec = checked.meta.verification.spec;
+    if (spec.stage === "build") return await runBuild(absRoot, input.ticket, checked, spec, env!, digestEnv, options);
+    // identify refuses a verify stage until setup-verify runs it.
+    if (spec.stage !== "test") throw new Error(`setup-verify: no run for the ${spec.stage} stage`);
     if (incompatible !== null) return unreadable(checked, spec.runner, incompatible, "");
 
     // Outside the lock: the command in its own process group, read as it streams.
@@ -511,8 +549,14 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     }
     if (evidence.kind === "unrecognized") return unreadable(checked, spec.runner, evidence.reason, facts.tail);
 
+    const executed = evidence.executed;
+    const verified: Verified = {
+      counts: { executed, failed: 0 },
+      tail: facts.tail,
+      line: (on) => `Verified: ${spec.component} test (${spec.runner}, ${executed} test${executed === 1 ? "" : "s"}); stages on: ${on}`,
+    };
     try {
-      return await commit(absRoot, input.ticket, checked, digestEnv, evidence, facts.tail, options);
+      return await commit(absRoot, input.ticket, checked, digestEnv, verified, options);
     } catch (err) {
       if (err instanceof Refusal) return stale(checked.ticket, err.lines.join(" "));
       throw err;
@@ -529,6 +573,63 @@ function unreadable({ ticket, token }: Checked, runner: TestRunner, reason: stri
       `Setup-verify stopped: the evidence of ${label(ticket)}'s run cannot be read; nothing was written (run ${token}).`,
       ambiguityLine({ class: "verification evidence unreadable", target: label(ticket), observed: reason, expected: `one ${runner} summary`, resolutions: ["adapter", "leave-off", "stop"] }),
       ...tailLines(tail),
+    ],
+  };
+}
+
+/**
+ * A BUILD run (T-538 S3b): the approved command in its own process group,
+ * against the spec's deadline. Verified is exit 0 within the deadline with no
+ * pid left in the group when the command exited and the group confirmed gone;
+ * a pid left behind is cleanup-failed even when the stop then removes it.
+ * Every other outcome writes nothing and prints the run token, so the owner
+ * can stop. Without process groups nothing runs: unsupported, exit 4.
+ */
+async function runBuild(root: string, ref: string, checked: Checked, spec: BuildSpec, env: Record<string, string>, digestEnv: Readonly<Record<string, string>>, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
+  const why = ownedGroupUnsupported();
+  if (why !== null) return unsupported(checked, why);
+  const scanner = new EvidenceScanner();
+  const run = await runOwnedGroup(
+    { command: "/bin/sh", args: ["-c", spec.command], cwd: checked.workdir, env, shutdownTimeoutMs: KILL_GRACE_MS, onData: (c) => scanner.feed(c) },
+    async (group) => {
+      let timer: NodeJS.Timeout | undefined;
+      const timedOut = await Promise.race([
+        group.exit.then(() => false),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), spec.timeoutMs); }),
+      ]);
+      clearTimeout(timer);
+      return { timedOut, exited: group.exited(), left: group.leftAtLeaderExit() };
+    },
+  );
+  const tail = scanner.end().tail;
+  if (run.kind === "spawn-error") return buildFailed(checked, `the command could not start (${run.reason})`, "");
+  if (!run.value.ok) throw run.value.error;
+  const { timedOut, exited, left } = run.value.value;
+  if (run.cleanup === "unconfirmed") return buildFailed(checked, `cleanup failed: ${run.cleanupDetail}`, tail);
+  if (left === true) return buildFailed(checked, "cleanup failed: a process it started was still in its group when it exited", tail);
+  if (timedOut || exited === null) return buildFailed(checked, `timed out after ${spec.timeoutMs} ms`, tail);
+  if (exited.code !== 0) return buildFailed(checked, exited.signal !== null ? `ended by ${exited.signal}` : `exited with code ${exited.code}`, tail);
+  await setupVerifySeams.afterRun();
+  try {
+    return await commit(root, ref, checked, digestEnv, { tail, line: (on) => `Verified: ${spec.component} build; stages on: ${on}` }, options);
+  } catch (err) {
+    if (err instanceof Refusal) return stale(checked.ticket, err.lines.join(" "));
+    throw err;
+  }
+}
+
+function buildFailed({ ticket, token, meta }: Checked, reason: string, tail: string): SetupVerifyResult {
+  return { exitCode: 1, lines: [`Verification failed: ${meta.verification.spec.component} build: ${reason}. ${label(ticket)} stays as it was (run ${token}).`, ...tailLines(tail)] };
+}
+
+/** A stage this platform cannot run: nothing was spawned, and the owner may leave it off or stop. */
+function unsupported({ ticket, token, meta }: Checked, why: string): SetupVerifyResult {
+  const { component, stage } = meta.verification.spec;
+  return {
+    exitCode: 4,
+    lines: [
+      `Setup-verify stopped: ${component}'s ${stage} stage cannot run here; nothing was written (run ${token}).`,
+      ambiguityLine({ class: "verification unsupported", target: label(ticket), observed: why, expected: `a platform that can own the ${stage} command's processes`, resolutions: ["leave-off", "stop"] }),
     ],
   };
 }
@@ -580,6 +681,7 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
   const at = new Date().toISOString();
   let adapter: AdapterDecision | undefined;
   if (kind === "adapter") {
+    if (spec.stage !== "test") throw refuse(`--resolve adapter: a ${spec.stage} stage has no evidence to adapt; its resolutions are leave-off and stop.`);
     const drop = [...new Set(input.drop ?? [])] as VerificationDroppable[];
     const own = EVIDENCE_VARIABLE[spec.runner];
     const unrelated = drop.find((d) => d !== own);
@@ -599,14 +701,9 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
   const setup = { ...(ticket as Ticket & { setup: Record<string, unknown> }).setup };
   const leaveOff = kind === "leave-off";
   setup.verification = { ...meta.verification, decision, ...(leaveOff ? { result: { status: "left-off", at } } : {}) };
-  const nextRecord: SetupVerificationRecord = {
-    ...record,
-    components: record.components.map((c) => (c.id !== spec.component ? c : {
-      ...c,
-      ...(leaveOff ? { test: { ...c.test!, status: "left-off" as const } } : {}),
-      decision,
-    })),
-  };
+  const nextRecord: SetupVerificationRecord = leaveOff
+    ? withStageStatus(record, spec.component, spec.stage, "left-off", { decision })
+    : { ...record, components: record.components.map((c) => (c.id !== spec.component ? c : { ...c, decision })) };
 
   let ticketOp: Awaited<ReturnType<typeof prepareTicketWrite>>;
   if (leaveOff) {
@@ -625,9 +722,9 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
   await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));
   invalidateResolutionWriteContext(root);
 
-  if (kind === "leave-off") return { exitCode: 0, lines: [`Left off: ${spec.component} test; ${label(ticket)} is complete and the stages are unchanged.`] };
+  if (kind === "leave-off") return { exitCode: 0, lines: [`Left off: ${spec.component} ${spec.stage}; ${label(ticket)} is complete and the stages are unchanged.`] };
   if (kind === "stop") return { exitCode: 0, lines: [`Decision recorded for ${label(ticket)}: stop. Nothing else changed.`] };
-  return { exitCode: 0, lines: [adapterLine(ticket, spec.runner, spec.workdir, adapter!, env)] };
+  return { exitCode: 0, lines: [adapterLine(ticket, (spec as TestSpec).runner, spec.workdir, adapter!, env)] };
 }
 
 /** What the next run will do: the argv, and exactly what each dropped variable held and what replaces it. */
@@ -652,8 +749,8 @@ async function reopen(root: string, found: Identified): Promise<SetupVerifyResul
   const { ticket, meta, component } = found;
   const spec = meta.verification.spec;
   if (meta.verification.result) throw refuse(`${label(ticket)} is already ${meta.verification.result.status === "verified" ? "verified" : "left off"}.`);
-  const status = component.test!.status;
-  if (status !== "pending") throw refuse(`${spec.component}'s test stage is ${status === "verified" ? "already verified" : status === "left-off" ? "already left off" : status}, not pending.`);
+  const status = stageOf(component, spec.stage)!.status;
+  if (status !== "pending") throw refuse(`${spec.component}'s ${spec.stage} stage is ${status === "verified" ? "already verified" : status === "left-off" ? "already left off" : status}, not pending.`);
   if (ticket.status !== "complete") throw refuse(`${label(ticket)} is ${ticket.status}, not complete; there is nothing to reopen.`);
 
   const guard = await ownership(root);

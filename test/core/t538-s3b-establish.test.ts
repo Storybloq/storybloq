@@ -4,7 +4,7 @@
  * under the full level, VERIFY only where it applies and only at a readiness
  * URL setup-verify can own; the ticket's verification spec is a union on the
  * stage; and setup-verify, until it runs BUILD and VERIFY, refuses them by
- * name with nothing written.
+ * name with nothing written (BUILD runs from commit 3).
  */
 import { describe, it, expect } from "vitest";
 import { readFile } from "node:fs/promises";
@@ -141,15 +141,15 @@ describe("a setup that establishes BUILD or VERIFY", () => {
     });
   });
 
-  it("is refused by setup-verify, by stage, with nothing written", async () => {
-    for (const stage of ["build", "verify"] as const) {
+  it("is refused by setup-verify for VERIFY, until it runs it, with nothing written", async () => {
+    for (const stage of ["verify"] as const) {
       const root = await folder();
       expect((await setupApply(root, full(stage))).exitCode).toBe(0);
       await editTicket(root, "T-001", (r) => { r.status = "complete"; r.completedDate = "2026-10-18"; });
       const before = { ticket: await readFile(join(root, ".story", "tickets", "T-002.json"), "utf-8"), config: await readFile(join(root, ".story", "config.json"), "utf-8") };
       const r = await setupVerify(root, { ticket: "T-002" });
       expect(r.exitCode).toBe(2);
-      expect(r.lines.join("\n")).toMatch(new RegExp(`T-002 establishes the ${stage} stage; this CLI runs setup-verify only for a test stage`));
+      expect(r.lines.join("\n")).toMatch(new RegExp(`T-002 establishes the ${stage} stage; this CLI runs setup-verify only for a test or build stage`));
       expect(await readFile(join(root, ".story", "tickets", "T-002.json"), "utf-8")).toBe(before.ticket);
       expect(await readFile(join(root, ".story", "config.json"), "utf-8")).toBe(before.config);
     }

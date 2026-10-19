@@ -284,7 +284,8 @@ const PLUMBING: readonly { variant: SessionVariant; fixture: string; fault?: str
 describe("the runner's plumbing per variant", () => {
   for (const p of PLUMBING) {
     it(`${p.variant} leaves every artifact its contract requires`, () => {
-      const dir = realpathSync(mkdtempSync(join(tmpdir(), `t538-s5a-plumb-${p.variant}-`)));
+      // A short name: tsx's IPC pipe lives at $TMPDIR/tsx-<uid>/<pid>.pipe, and a long TMPDIR truncates that socket path past 104 bytes.
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), "t538p-")));
       try {
         const bin = join(dir, "bin");
         mkdirSync(bin);

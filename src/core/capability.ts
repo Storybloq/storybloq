@@ -1050,6 +1050,67 @@ export async function checkCapabilities(
   };
 }
 
+/** ISS-1283: the most names a digest lists; the rest are counted in `omitted`. */
+export const CAPABILITY_DIGEST_CAP = 20;
+
+/**
+ * Whether the freshness half ran on every entry. `skipped` is the caller's
+ * choice; `incomplete` means it ran and could not finish: HEAD unreadable, the
+ * deadline hit, or a group git could not answer.
+ */
+export type DigestFreshness = "skipped" | "complete" | "incomplete";
+
+export interface CapabilityDigest {
+  readonly entries: readonly { readonly id: string; readonly name: string }[];
+  readonly total: number;
+  readonly review: number;
+  readonly pending: number;
+  readonly returned: number;
+  readonly omitted: number;
+  readonly freshness: DigestFreshness;
+  readonly unchecked: number;
+}
+
+/**
+ * ISS-1283: the bounded form `/story` Step 2 loads. It takes the report the
+ * check ALREADY produced over every entry, so the cap can never decide which
+ * entries were checked: slicing first would hide an entry whose files moved
+ * behind twenty that did not. Eligible means effectively `review`, which a
+ * pending note already forces, so pending entries lead as a priority inside
+ * that set, never as a set of their own. Counts only: no id list beyond the
+ * capped names, so the payload stays bounded whatever the inventory holds.
+ */
+export function capabilityDigest(
+  entries: readonly Capability[],
+  report: CapabilityCheckReport,
+  skipped: boolean,
+  cap: number = CAPABILITY_DIGEST_CAP,
+): CapabilityDigest {
+  const effective = new Map(report.entries.map((e) => [e.id, e.effectiveStatus]));
+  const eligible = entries.filter((entry) => (effective.get(entry.id) ?? entry.status) === "review");
+  const ordered = [...eligible.filter((e) => hasPendingNote(e)), ...eligible.filter((e) => !hasPendingNote(e))];
+  const listed = ordered.slice(0, cap).map((e) => ({ id: e.id, name: e.name }));
+  const unchecked = new Set(report.unchecked).size;
+  // An empty inventory has nothing to check, so nothing was left unchecked.
+  const freshness: DigestFreshness = skipped
+    ? "skipped"
+    : entries.length === 0
+      ? "complete"
+      : report.head === null || report.deadlineHit || unchecked > 0
+        ? "incomplete"
+        : "complete";
+  return {
+    entries: listed,
+    total: entries.length,
+    review: eligible.length,
+    pending: entries.filter((e) => hasPendingNote(e)).length,
+    returned: listed.length,
+    omitted: eligible.length - listed.length,
+    freshness,
+    unchecked: skipped ? entries.length : unchecked,
+  };
+}
+
 /** True when the entry may be stamped: freshness may be dirty, structure may not. */
 export function isStampable(entry: CapabilityCheckEntry): boolean {
   return !entry.results.some((r) => r.cls === "structural" || r.cls === "incomplete");

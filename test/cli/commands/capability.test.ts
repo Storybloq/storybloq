@@ -807,6 +807,7 @@ describe("catalog text reaches every sink inert, and legitimate content survives
       showSkip: (await handleCapabilityGet("cap-hostile", { skipCheck: true }, ctx)).output,
       list: (await handleCapabilityList({}, ctx)).output,
       listSkip: (await handleCapabilityList({ skipCheck: true }, ctx)).output,
+      digest: (await handleCapabilityList({ digest: true }, ctx)).output,
       matchPath: (await handleCapabilityMatch({ paths: ["src/core/thing.ts"] }, ctx)).output,
       matchTitle: (await handleCapabilityMatch({ title: "name pwned" }, ctx)).output,
       check: (await handleCapabilityCheck({}, "md", root, ctx)).output,
@@ -827,6 +828,7 @@ describe("catalog text reaches every sink inert, and legitimate content survives
       showSkip: ["## name?]0;pwned", "updated?]0;pwned"],
       list: ["# Capabilities (1 of 1)", "- **name?]0;pwned"],
       listSkip: ["_Freshness was not checked (--skip-check)", "- **name?]0;pwned"],
+      digest: ["Capabilities in review: 1: name?]0;pwned"],
       matchPath: ["searched 1 inventory entries by path", "**name?]0;pwned"],
       matchTitle: ["title words matched: name, pwned", "**name?]0;pwned"],
       check: ["# Capability check (1 entries)", "entry point does not exist: src/ep\\u001b]0;pwned"],
@@ -854,6 +856,9 @@ describe("catalog text reaches every sink inert, and legitimate content survives
       .filter(([, text]) => UNSAFE.test(text))
       .map(([sink]) => sink);
     expect(offending).toEqual([]);
+    // ISS-1283: the digest's JSON is the machine interface too, so its name keeps the real bytes.
+    const digestJson = JSON.parse((await handleCapabilityList({ digest: true }, ctxFor(root, "json"))).output).data;
+    expect(digestJson.entries.map((e: { name: string }) => e.name)).toEqual([HOSTILE.name]);
   });
 
   it("keeps the JSON output raw: it is the machine interface, and a consumer needs the real bytes", async () => {

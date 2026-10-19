@@ -61,7 +61,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **lesson update <id>** (--title?, --content?, --context?, --clear-tags?, --status?, --stdin?, --tags?, --format?, --commit?) - Update a lesson
 - **lesson reinforce <id>** (--format?, --commit?) - Reinforce a lesson: increment count and update lastValidated
 - **lesson delete <id>** (--hard?, --format?, --commit?) - Delete a lesson
-- **capability list** (--status?, --skip-check?, --format?) - List the capability inventory with each entry's EFFECTIVE status: the stored flag folded together with a freshness check against HEAD. --status filters on the effective status, not the stored one
+- **capability list** (--status?, --skip-check?, --digest?, --full?, --format?) - List the capability inventory with each entry's EFFECTIVE status: the stored flag folded with a freshness check against HEAD. --status filters on the effective status
 - **capability get <id>** (--skip-check?, --format?) - Show one capability: contract, entry points, surfaces, the rulings and items behind it, and its findings
 - **capability match** (--path?, --title?, --phase?, --format?) - Find capabilities a task may already be covered by, from its paths, title or phase. Bounded to the inventory and says so: no match never means no implementation exists
 - **capability add** (--id, --name, --summary, --entry, --contract, --example?, --cli?, --mcp-tool?, --app?, --surface-file?, --ruling?, --item?, --term?, --status?, --skip-check?, --format?, --commit?) - Add a capability. Stamps the checkpoint at HEAD, recording that the entry points were read
@@ -239,7 +239,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_lesson_update** (id, title?, content?, context?, tags?, status?, commit?) - Update lesson
 - **storybloq_lesson_reinforce** (id, commit?) - Reinforce lesson: increment count and update lastValidated
 - **storybloq_capability_match** (paths?, title?, phaseId?) - Find capabilities a task may already be covered by. Bounded to the inventory: no match never means no implementation exists
-- **storybloq_capability_list** (status?, skipCheck?) - List the capability inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)
+- **storybloq_capability_list** (status?, skipCheck?, digest?, full?) - List the inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)
 - **storybloq_capability_get** (id, skipCheck?) - Get one capability: contract, entry points, surfaces, rulings, items and findings
 - **storybloq_capability_add** (id, name, summary, entryPoints, contract, example?, cli?, mcp?, app?, files?, rulings?, items?, terms?, status?, skipCheck?, commit?) - Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read
 - **storybloq_capability_update** (id, name?, summary?, entryPoints?, contract?, example?, cli?, mcp?, app?, files?, rulings?, items?, terms?, status?, skipCheck?, clear?, commit?) - Edit a capability; supplied lists replace stored ones; the checkpoint is never touched

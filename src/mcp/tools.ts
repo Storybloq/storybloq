@@ -1589,13 +1589,15 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     description:
       "List the inventory with each entry's EFFECTIVE status: the stored flag folded with a freshness check " +
       "against HEAD, so an entry whose files moved reads as review on sight. skipCheck skips the freshness half " +
-      "only (structural findings still count) and says so.",
+      "only (structural findings still count) and says so. digest: the review names only, bounded.",
     inputSchema: {
       status: z.enum(CAPABILITY_STATUSES).optional().describe("Filter by effective status"),
       skipCheck: z.boolean().optional().describe("Skip the freshness check"),
+      digest: z.boolean().optional().describe("Bounded review-names payload"),
+      full: z.boolean().optional().describe("The unbounded form, the default"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
-    handleCapabilityList({ status: args.status, skipCheck: args.skipCheck }, ctx)));
+    handleCapabilityList({ status: args.status, skipCheck: args.skipCheck, digest: args.digest, full: args.full }, ctx)));
 
   server.registerTool("storybloq_capability_get", {
     description: "Get one capability: contract, entry points, surfaces, the rulings and items behind it, and its findings.",

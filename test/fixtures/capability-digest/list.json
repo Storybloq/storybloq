@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "data": {
+    "present": true,
+    "inventorySize": 5,
+    "pending": 1,
+    "freshnessChecked": false,
+    "head": null,
+    "unchecked": [],
+    "capabilities": [
+      {
+        "id": "cap-gamma",
+        "name": "Gamma",
+        "summary": "Deferred work.",
+        "surfaces": {},
+        "entryPoints": [
+          "src/core/a.ts"
+        ],
+        "contract": "Gamma holds.",
+        "checkedAt": {
+          "sha": "0123456789abcdef0123456789abcdef01234567",
+          "date": "2026-10-18"
+        },
+        "status": "current",
+        "pendingNote": "owe a regression test",
+        "effectiveStatus": "review",
+        "results": []
+      },
+      {
+        "id": "cap-alpha",
+        "name": "Alpha",
+        "summary": "Current and clean.",
+        "surfaces": {},
+        "entryPoints": [
+          "src/core/a.ts"
+        ],
+        "contract": "Alpha holds.",
+        "checkedAt": {
+          "sha": "0123456789abcdef0123456789abcdef01234567",
+          "date": "2026-10-18"
+        },
+        "status": "current",
+        "effectiveStatus": "current",
+        "results": []
+      },
+      {
+        "id": "cap-beta",
+        "name": "Beta",
+        "summary": "Stored review.",
+        "surfaces": {},
+        "entryPoints": [
+          "src/core/b.ts"
+        ],
+        "contract": "Beta holds.",
+        "checkedAt": {
+          "sha": "0123456789abcdef0123456789abcdef01234567",
+          "date": "2026-10-18"
+        },
+        "status": "review",
+        "effectiveStatus": "review",
+        "results": []
+      },
+      {
+        "id": "cap-delta",
+        "name": "Delta",
+        "summary": "Dangling item.",
+        "surfaces": {},
+        "entryPoints": [
+          "src/core/b.ts"
+        ],
+        "contract": "Delta holds.",
+        "items": [
+          "T-999"
+        ],
+        "checkedAt": {
+          "sha": "0123456789abcdef0123456789abcdef01234567",
+          "date": "2026-10-18"
+        },
+        "status": "current",
+        "effectiveStatus": "review",
+        "results": [
+          {
+            "code": "capability_unknown_item",
+            "cls": "structural",
+            "detail": "unknown item: T-999"
+          }
+        ]
+      },
+      {
+        "id": "cap-eps",
+        "name": "Epsilon",
+        "summary": "Missing entry point.",
+        "surfaces": {},
+        "entryPoints": [
+          "src/core/missing.ts"
+        ],
+        "contract": "Epsilon holds.",
+        "checkedAt": {
+          "sha": "0123456789abcdef0123456789abcdef01234567",
+          "date": "2026-10-18"
+        },
+        "status": "current",
+        "effectiveStatus": "review",
+        "results": [
+          {
+            "code": "capability_missing_path",
+            "cls": "structural",
+            "detail": "entry point does not exist: src/core/missing.ts"
+          }
+        ]
+      }
+    ]
+  }
+}

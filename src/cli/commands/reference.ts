@@ -332,9 +332,9 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "capability list",
-    description: "List the capability inventory with each entry's EFFECTIVE status: the stored flag folded together with a freshness check against HEAD. --status filters on the effective status, not the stored one",
-    usage: "storybloq capability list [--status <current|review>] [--skip-check] [--format <json|md>]",
-    flags: ["--status", "--skip-check", "--format"],
+    description: "List the capability inventory with each entry's EFFECTIVE status: the stored flag folded with a freshness check against HEAD. --status filters on the effective status",
+    usage: "storybloq capability list [--status <current|review>] [--skip-check] [--digest] [--full] [--format <json|md>]",
+    flags: ["--status", "--skip-check", "--digest", "--full", "--format"],
   },
   {
     name: "capability get",
@@ -1144,7 +1144,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_lesson_update", description: "Update lesson", params: ["id","title?","content?","context?","tags?","status?","commit?"] },
   { name: "storybloq_lesson_reinforce", description: "Reinforce lesson: increment count and update lastValidated", params: ["id","commit?"] },
   { name: "storybloq_capability_match", description: "Find capabilities a task may already be covered by. Bounded to the inventory: no match never means no implementation exists", params: ["paths?","title?","phaseId?"] },
-  { name: "storybloq_capability_list", description: "List the capability inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)", params: ["status?","skipCheck?"] },
+  { name: "storybloq_capability_list", description: "List the inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)", params: ["status?","skipCheck?","digest?","full?"] },
   { name: "storybloq_capability_get", description: "Get one capability: contract, entry points, surfaces, rulings, items and findings", params: ["id","skipCheck?"] },
   { name: "storybloq_capability_add", description: "Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read", params: ["id","name","summary","entryPoints","contract","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","commit?"] },
   { name: "storybloq_capability_update", description: "Edit a capability; supplied lists replace stored ones; the checkpoint is never touched", params: ["id","name?","summary?","entryPoints?","contract?","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","clear?","commit?"] },

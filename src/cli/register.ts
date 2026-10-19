@@ -6667,13 +6667,20 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
             addFormatOption(
               y2
                 .option("status", { type: "string", choices: ["current", "review"], describe: "Filter by EFFECTIVE status, not the stored flag" })
-                .option("skip-check", { type: "boolean", describe: "Skip the freshness check; statuses printed still include structural findings" }),
+                .option("skip-check", { type: "boolean", describe: "Skip the freshness check; statuses printed still include structural findings" })
+                .option("digest", { type: "boolean", describe: "Only the names of entries in review, bounded" })
+                .option("full", { type: "boolean", describe: "The unbounded form, the default" }),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             await runReadCommand(format, (ctx) =>
               handleCapabilityList(
-                { status: argv.status as string | undefined, skipCheck: argv["skip-check"] as boolean | undefined },
+                {
+                  status: argv.status as string | undefined,
+                  skipCheck: argv["skip-check"] as boolean | undefined,
+                  digest: argv.digest as boolean | undefined,
+                  full: argv.full as boolean | undefined,
+                },
                 ctx,
               ),
             );

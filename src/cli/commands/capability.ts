@@ -26,6 +26,7 @@ import { join } from "node:path";
 import canonicalize from "canonicalize";
 import {
   checkCapabilities,
+  capabilityDigest,
   matchCapabilities,
   queryPathRefusal,
   matchDisclosure,
@@ -36,6 +37,7 @@ import {
   unknownSurfaceDetail,
   nearestSurfaceNames,
   type CapabilityCheckReport,
+  type CapabilityDigest,
   type CapabilityCheckEntry,
   type CapabilityMatchResult,
 } from "../../core/capability.js";
@@ -419,16 +421,53 @@ function freshnessCaveat(report: CapabilityCheckReport, skipped: boolean): strin
   return notes;
 }
 
+/**
+ * ISS-1283: one line for a session load. A skipped check never prints a bare
+ * "none": without freshness the line is only about the stored flag, pending
+ * notes and structure, and it says so.
+ */
+function renderDigest(digest: CapabilityDigest, present: boolean, format: OutputFormat): CommandResult {
+  if (format === "json") {
+    return {
+      output: JSON.stringify(
+        successEnvelope({ present, freshnessChecked: digest.freshness === "complete", ...digest }),
+        null,
+        2,
+      ),
+    };
+  }
+  const head =
+    digest.freshness === "skipped"
+      ? "Capabilities in review by stored flag and structure (freshness not checked)"
+      : "Capabilities in review";
+  const names = digest.entries.map((e) => catalogText(e.name));
+  let line = digest.review === 0 ? `${head}: none` : `${head}: ${digest.review}: ${names.join(", ")}`;
+  if (digest.omitted > 0) line += ` (${digest.omitted} more, \`storybloq capability list --status review\`)`;
+  if (digest.pending > 0) line += ` (pending: ${digest.pending}, listed first)`;
+  if (digest.freshness === "incomplete") line += ` (freshness incomplete: ${digest.unchecked} unchecked, \`storybloq capability check\`)`;
+  return { output: line };
+}
+
 // --- read handlers ---
 
 export async function handleCapabilityList(
-  filters: { status?: string; skipCheck?: boolean },
+  filters: { status?: string; skipCheck?: boolean; digest?: boolean; full?: boolean },
   ctx: CommandContext,
 ): Promise<CommandResult> {
+  // The digest is its own filter and its own size bound, so a second filter or
+  // the unbounded form beside it is a contradiction, refused rather than one
+  // of the two silently winning.
+  if (filters.digest === true && (filters.full === true || filters.status !== undefined)) {
+    throw new CliValidationError(
+      "invalid_input",
+      `digest cannot be combined with ${filters.full === true ? "full" : "status"}: the digest lists the entries in review, bounded`,
+    );
+  }
   const status = statusFrom(filters.status);
   const skip = filters.skipCheck === true;
   const { doc, present } = capabilityCatalog.load(ctx.root);
   const report = await reportFor(ctx, doc.capabilities, skip, capabilityConflictScope(doc));
+  if (filters.digest === true) return renderDigest(capabilityDigest(doc.capabilities, report, skip), present, ctx.format);
 
   // Filtering runs on the EFFECTIVE status, not the stored one. `--status
   // review` that only matched the manual flag would hide exactly the entries

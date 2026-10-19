@@ -7,7 +7,7 @@
  * binaries (test/helpers/setup-review-fakes.ts), so every spawn is real and
  * countable.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { fork, spawn, spawnSync } from "node:child_process";
 import {
@@ -21,7 +21,7 @@ import {
 import { projectKeyFor, STOP_LINES } from "../../src/core/setup-review.js";
 import { acquireProjectLockAsync, releaseProjectLock } from "../../src/core/project-lock.js";
 import { captureProcessSignatureSync } from "../../src/core/process-identity.js";
-import { makeFakeBin, REVIEW_PACKET, type FakeBin } from "../helpers/setup-review-fakes.js";
+import { makeFakeBin, removeScratchDirs, REVIEW_PACKET, scratchDirsCreated, type FakeBin } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -95,6 +95,15 @@ afterEach(() => {
     try { chmodSync(dir, 0o700); } catch { /* ignore */ }
     rmSync(dir, { recursive: true, force: true });
   }
+  removeScratchDirs();
+});
+
+// ISS-1392: the fake reviewers' directories went to the OS tmpdir and stayed.
+// Checked as absence, after every test's cleanup, and never vacuously.
+afterAll(() => {
+  const made = scratchDirsCreated();
+  expect(made.length).toBeGreaterThan(0);
+  expect(made.filter((dir) => existsSync(dir))).toEqual([]);
 });
 
 describe("gate (T-536)", () => {

@@ -4,19 +4,45 @@
  * a flag that a CLI renames or drops shows up here rather than as a failed
  * review in a user's setup.
  */
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeArgs, codexArgs, parseReviewerOutput, probeBackend, reviewerEnv, runReviewer, SETUP_REVIEW_SCHEMA } from "../../src/core/setup-review-backends.js";
-import { makeFakeBin } from "../helpers/setup-review-fakes.js";
+import { makeFakeBin, makeScratchDir, removeScratchDirs, scratchDirsCreated } from "../helpers/setup-review-fakes.js";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { shouldSkipHousekeeping } from "../../src/cli/housekeeping.js";
 
 const FIXTURES = join(import.meta.dirname, "..", "fixtures", "setup-review");
 const claudeHelp = readFileSync(join(FIXTURES, "claude-help-2.1.302.txt"), "utf-8");
 const codexHelp = readFileSync(join(FIXTURES, "codex-exec-help-0.163.0.txt"), "utf-8");
+
+// ISS-1392: every fake bin, project and store this file makes goes through the
+// helper's registry and is removed after each test, so a run leaves nothing in
+// the OS tmpdir. The tests that start worker processes wait for them first.
+afterEach(removeScratchDirs);
+afterAll(() => {
+  const made = scratchDirsCreated();
+  expect(made.length).toBeGreaterThan(0);
+  expect(made.filter((dir) => existsSync(dir))).toEqual([]);
+});
+
+/**
+ * The barrier before afterEach removes a test's directories: the worker has
+ * closed and the process it owned is gone, each bounded so a stuck process
+ * fails the absence check rather than hanging the file.
+ */
+async function settled(closed: Promise<void>, gone: () => boolean): Promise<void> {
+  await Promise.race([closed, new Promise((r) => setTimeout(r, 5_000))]);
+  const end = Date.now() + 5_000;
+  while (!gone() && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+}
+
+it("allocates every scratch directory through the helper's registry (ISS-1392)", () => {
+  // Spelled in two parts so this test's own source does not match itself.
+  const direct = ["mkdtemp", "Sync"].join("");
+  expect(readFileSync(join(import.meta.dirname, "setup-review-backends.test.ts"), "utf-8").includes(direct)).toBe(false);
+});
 
 describe("setup reviewer backends (T-536)", () => {
   it("runs codex read-only, ephemeral, with a schema file and an output file, the prompt on stdin", () => {
@@ -114,23 +140,29 @@ describe("reviewer processes always end (T-536)", () => {
   for (const mode of ["review", "probe"] as const) {
     it(`a process that timed out a ${mode} exits by itself while the escaped child is still alive`, async () => {
       const fake = makeFakeBin(["codex"]);
-      const project = mkdtempSync(join(tmpdir(), "sr-exit-project-"));
-      const store = mkdtempSync(join(tmpdir(), "sr-exit-store-"));
+      const project = makeScratchDir("sr-exit-project-");
+      const store = makeScratchDir("sr-exit-store-");
       const pidFile = join(fake.stdinDir, "escaped.pid");
       const fixture = join(import.meta.dirname, "fixtures", "setup-review-exit-worker.ts");
       const child = spawn(process.execPath, ["--import", "tsx", fixture, mode, project, store, fake.path, pidFile], { stdio: ["ignore", "pipe", "inherit"] });
+      // Both promises exist from the spawn on, so the finally can wait for the worker whatever failed.
+      const exit = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
+      const closed = new Promise<void>((r) => child.once("close", () => r()));
       let stdout = "";
       child.stdout.on("data", (c) => { stdout += String(c); });
-      const exited = await within(new Promise<number | null>((r) => child.once("exit", (code) => r(code))), 10_000);
-      const pid = Number(readFileSync(pidFile, "utf-8"));
-      const stillAlive = alive(pid);
-      if (exited === "hung") child.kill("SIGKILL");
+      let pid = 0;
       try {
+        const exited = await within(exit, 10_000);
+        pid = Number(readFileSync(pidFile, "utf-8"));
+        const stillAlive = alive(pid);
         expect(exited).toBe(0);
         expect(stillAlive).toBe(true);
         expect(stdout).toMatch(mode === "probe" ? /"version":null/ : /"exitCode":3/);
       } finally {
-        try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+        try { child.kill("SIGKILL"); } catch { /* gone */ }
+        if (pid === 0 && existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8")) || 0;
+        if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+        await settled(closed, () => pid === 0 || !alive(pid));
       }
     }, 20_000);
   }
@@ -155,8 +187,8 @@ describe.skipIf(process.platform === "win32")("a signal during a setup review en
   /** Starts the signal worker, waits until the reviewer is up, sends `sig` (if any) and reports how the worker ended. */
   async function run(mode: string, sig: NodeJS.Signals | null, listener?: string): Promise<{ ended: Ended | "hung"; stdout: string; groupGone: boolean }> {
     const fake = makeFakeBin(["codex"]);
-    const project = mkdtempSync(join(tmpdir(), "sr-signal-project-"));
-    const store = mkdtempSync(join(tmpdir(), "sr-signal-store-"));
+    const project = makeScratchDir("sr-signal-project-");
+    const store = makeScratchDir("sr-signal-store-");
     const pidFile = join(fake.stdinDir, "reviewer.pid");
     const fixture = join(import.meta.dirname, "fixtures", "setup-review-signal-worker.ts");
     const args = ["--import", "tsx", fixture, mode, project, store, fake.path, pidFile, ...(listener ? [listener] : [])];
@@ -189,6 +221,7 @@ describe.skipIf(process.platform === "win32")("a signal during a setup review en
       if (pgid === 0 && pidIn(pidFile) > 0) pgid = pgidOf(pidIn(pidFile));
       try { child.kill("SIGKILL"); } catch { /* gone */ }
       if (pgid > 0) { try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ } }
+      await settled(closed, () => pgid === 0 || !groupAlive(pgid));
     }
   }
   const within = <T>(p: Promise<T>, ms: number): Promise<T | "hung"> => Promise.race([p, new Promise<"hung">((r) => setTimeout(() => r("hung"), ms))]);

@@ -9,7 +9,7 @@
  * invocation appends one line to FAKE_LOG, so a test can count how many
  * backends actually started.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -95,8 +95,42 @@ export interface FakeBin {
   stdins(): Buffer[];
 }
 
+/**
+ * ISS-1392: every scratch directory these tests make is recorded here, so a run
+ * leaves nothing behind in the OS tmpdir. The registry is plain module state
+ * rather than a vitest hook, because the worker fixtures import this file for
+ * REVIEW_PACKET under plain node, where vitest cannot load.
+ */
+const live: string[] = [];
+const created: string[] = [];
+
+/** A fresh directory under the OS tmpdir, removed by the next `removeScratchDirs()`. */
+export function makeScratchDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  live.push(dir);
+  created.push(dir);
+  return dir;
+}
+
+/**
+ * Removes every directory made since the last call. A test that runs reviewer
+ * processes awaits their exit first, so nothing writes into a directory while
+ * it goes; the retries cover a process that has exited but not yet released it.
+ */
+export function removeScratchDirs(): void {
+  for (const dir of live.splice(0)) {
+    try { chmodSync(dir, 0o700); } catch { /* ignore */ }
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* the absence check reports it */ }
+  }
+}
+
+/** Every directory made in this process, for a file's closing absence check. */
+export function scratchDirsCreated(): readonly string[] {
+  return [...created];
+}
+
 export function makeFakeBin(names: ReadonlyArray<"codex" | "claude">): FakeBin {
-  const root = mkdtempSync(join(tmpdir(), "sr-fakes-"));
+  const root = makeScratchDir("sr-fakes-");
   const dir = join(root, "bin");
   const stdinDir = join(root, "stdin");
   mkdirSync(dir);

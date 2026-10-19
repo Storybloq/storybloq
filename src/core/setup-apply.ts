@@ -16,10 +16,10 @@
  * handler is ever called; only unlocked primitives, whose writes the engine
  * commits itself.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, unlink } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import {
@@ -1127,21 +1127,47 @@ async function pointerFinding(root: string, p: SetupPayload, ptr: PointerPlan): 
   };
 }
 
-/** Removes a pointer's proposal only while it holds the bytes its intent recorded; a changed one stays, and the output says so. */
+/**
+ * Removes a pointer's proposal only while it holds the bytes its intent
+ * recorded; a changed one stays, and the output says so. The file is first
+ * moved to a unique cleanup path and the bytes captured there are checked,
+ * so an edit or replacement after the first check is never deleted: it is
+ * put back when nothing has taken its place, else kept at the cleanup path.
+ */
 async function tidyPointer(root: string, path: string, p: SetupPayload, out: string[]): Promise<void> {
   const intent = lastReceipt(p, `pointer-proposal:${path}`);
   const rel = pointerProposal(path, p.setupId);
-  const current = await readOrNull(join(root, rel));
+  const abs = join(root, rel);
+  const current = await readOrNull(abs);
   if (current === null) return;
+  const notOurs = `-> file · ${rel} is not setup's proposal; left as it is`;
   if (intent === undefined || sha256(current) !== intent.ownedPost) {
-    out.push(`-> file · ${rel} is not setup's proposal; left as it is`);
+    out.push(notOurs);
     return;
   }
+  await setupApplySeams.fault(`pointer-tidy:${path}`);
+  const cleanup = `${abs}.cleanup-${randomBytes(6).toString("hex")}`;
   try {
-    await fencedUnlink(join(root, rel));
+    await rename(abs, cleanup);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
   }
+  const captured = await readOrNull(cleanup);
+  if (captured !== null && sha256(captured) === intent.ownedPost) {
+    await fencedUnlink(cleanup);
+    return;
+  }
+  await setupApplySeams.fault(`pointer-tidy-captured:${path}`);
+  try {
+    // link refuses to replace what now sits at the proposal path.
+    await link(cleanup, abs);
+  } catch {
+    out.push(`-> file · ${rel} changed while setup removed it; the bytes it held are kept at ${relative(root, cleanup).split(sep).join("/")}`);
+    return;
+  }
+  await unlink(cleanup);
+  out.push(notOurs);
 }
 
 // --- Resume classification (plan v5 1d, 2) ----------------------------------

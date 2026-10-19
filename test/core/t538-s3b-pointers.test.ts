@@ -8,12 +8,12 @@
  * pointer drift, and a waived one is never checked.
  */
 import { describe, it, expect, vi } from "vitest";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { loadProject } from "../../src/core/project-loader.js";
-import { setupApply, setupResolve, setupResume } from "../../src/core/setup-apply.js";
+import { setupApply, setupApplySeams, setupResolve, setupResume } from "../../src/core/setup-apply.js";
 import { parseSetupPayload, validateSetupPayload, type SetupPayload } from "../../src/core/setup-payload.js";
 import { SID, faultOnce, payload, pinEnvironment } from "./t538-s3a2-fixture.js";
 
@@ -232,6 +232,35 @@ describe("proposal ownership", () => {
     expect(r.lines).toContainEqual(ambiguity("pointer edit owed", "CLAUDE.md"));
     expect(await readFile(proposal(root, "CLAUDE.md"), "utf-8")).toBe(before);
     expect((await progress(root, "active")).receipts.filter((x) => x.step === "pointer-proposal:CLAUDE.md")).toHaveLength(1);
+  });
+
+  it("a proposal replaced after its check is never deleted: the captured bytes are checked and put back", async () => {
+    const root = await stopped();
+    await writeFile(join(root, "CLAUDE.md"), await readFile(proposal(root, "CLAUDE.md"), "utf-8"));
+    setupApplySeams.fault = async (point) => {
+      if (point === "pointer-tidy:CLAUDE.md") await writeFile(proposal(root, "CLAUDE.md"), "the owner's own notes\n");
+    };
+    const done = await resolve1(root, "CLAUDE.md", "applied");
+    expect(done.exitCode).toBe(0);
+    expect(done.lines).toContain(`-> file · CLAUDE.md.storybloq-${SID}.proposed is not setup's proposal; left as it is`);
+    expect(await readFile(proposal(root, "CLAUDE.md"), "utf-8")).toBe("the owner's own notes\n");
+    expect((await readdir(root)).filter((f) => f.includes(".cleanup-"))).toEqual([]);
+  });
+
+  it("when something takes the proposal's place after the capture, the captured bytes are kept at the cleanup path and the newcomer is untouched", async () => {
+    const root = await stopped();
+    await writeFile(join(root, "CLAUDE.md"), await readFile(proposal(root, "CLAUDE.md"), "utf-8"));
+    setupApplySeams.fault = async (point) => {
+      if (point === "pointer-tidy:CLAUDE.md") await writeFile(proposal(root, "CLAUDE.md"), "the owner's own notes\n");
+      if (point === "pointer-tidy-captured:CLAUDE.md") await writeFile(proposal(root, "CLAUDE.md"), "newer still\n");
+    };
+    const done = await resolve1(root, "CLAUDE.md", "applied");
+    expect(done.exitCode).toBe(0);
+    expect(await readFile(proposal(root, "CLAUDE.md"), "utf-8")).toBe("newer still\n");
+    const kept = (await readdir(root)).filter((f) => f.startsWith(`CLAUDE.md.storybloq-${SID}.proposed.cleanup-`));
+    expect(kept).toHaveLength(1);
+    expect(await readFile(join(root, kept[0]!), "utf-8")).toBe("the owner's own notes\n");
+    expect(done.lines).toContain(`-> file · CLAUDE.md.storybloq-${SID}.proposed changed while setup removed it; the bytes it held are kept at ${kept[0]}`);
   });
 
   it("a crash between the receipt and the removal replays cleanly: the receipt holds and the proposal goes", async () => {

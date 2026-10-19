@@ -20,12 +20,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile, readFile, rm, chmod, readdir, lstat, symlink } from "node:fs/promises";
 import { existsSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { claudeValidate } from "../helpers/claude-validate.js";
+import { claudeValidate, resolveClaude } from "../helpers/claude-validate.js";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PLUGIN_SRC = join(PKG_ROOT, "plugins", "storybloq");
@@ -583,13 +582,9 @@ describe("installMods (T-507 D)", () => {
   });
 
   it("the copy passes the client's own validation and scans the same hooks and calls as the repository plugin", async () => {
-    let available = true;
-    try {
-      execFileSync("claude", ["--version"], { stdio: "pipe" });
-    } catch {
-      available = false;
-    }
-    expect(available, "claude is not on PATH, so the installed copy cannot be validated").toBe(true);
+    // The named client only (ISS-1408): never whichever claude PATH finds first.
+    const claude = resolveClaude(process.env);
+    expect(claude.found, claude.found ? "" : `${claude.reason}, so the installed copy cannot be validated`).toBe(true);
     const { installMods, modsDir } = await import("../../src/core/mods-install.js");
     const bin = await fakeBin(join(tempDir, "bin"));
     await installMods({ bin });

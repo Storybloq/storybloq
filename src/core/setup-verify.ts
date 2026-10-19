@@ -22,7 +22,8 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   invalidateResolutionWriteContext,
   prepareConfigWrite,
@@ -96,6 +97,8 @@ interface Checked {
   readonly record: SetupVerificationRecord;
   readonly component: RecordComponent;
   readonly guard: CompletionGuardOptions;
+  /** The workdir's real path, where the command runs. */
+  readonly workdir: string;
   readonly digest: string;
 }
 
@@ -139,20 +142,46 @@ function servedStages(config: Config): Record<string, unknown> {
   return Object.fromEntries(SERVES.test.map((s) => [s, stages[s] ?? null]));
 }
 
-/** The workdir as an absolute path inside the project, or a refusal. */
+const outside = (rel: string): boolean => rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
+
+/** The real path of `p`: its longest existing ancestor resolved through every symlink, with the missing rest appended. */
+function realOf(p: string): string {
+  const rest: string[] = [];
+  let head = p;
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...rest.reverse());
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+    }
+    const parent = dirname(head);
+    if (parent === head) return p;
+    rest.push(basename(head));
+    head = parent;
+  }
+}
+
+/**
+ * The workdir's real path inside the project, or a refusal. Containment is
+ * checked on real paths, so a symlink in the workdir that points outside the
+ * project is refused; the command then runs in the real path checked.
+ */
 export function workdirOf(root: string, workdir: string): string {
   const abs = resolve(root, workdir);
-  const rel = relative(root, abs);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw refuse(`the workdir ${workdir} is outside the project.`);
-  return abs;
+  if (outside(relative(root, abs))) throw refuse(`the workdir ${workdir} is outside the project.`);
+  const real = realOf(abs);
+  if (outside(relative(realOf(root), real))) throw refuse(`the workdir ${workdir} resolves outside the project (${real}).`);
+  return real;
 }
 
 /**
  * Every check a run needs, under the lock. A refusal throws; otherwise the
- * digest covers what the run and its result depend on: the spec, the ticket's
- * status and claims, the closure's ids, statuses, edges and checkpoint
- * states, the record, the two served stages, the decision, the ownership
- * evidence and the environment the command runs with.
+ * digest covers what the run and its result depend on: the ticket's id, setup
+ * and key, the workdir's real path, the spec, the ticket's status and claims,
+ * the closure's ids, statuses, edges and checkpoint states, the record, the
+ * two served stages, the decision, the ownership evidence and the environment
+ * the command runs with.
  */
 interface Identified {
   readonly ticket: Ticket;
@@ -236,12 +265,16 @@ async function check(root: string, state: ProjectState, ref: string, env: Readon
   assertOpen(found);
   const { ticket, meta, record, component } = found;
   const spec = meta.verification.spec;
-  workdirOf(root, spec.workdir);
+  const workdir = workdirOf(root, spec.workdir);
   const prerequisites = closure(state, ticket);
   const guard = await ownership(root);
   assertMayComplete(ticket, guard);
 
   const digest = createHash("sha256").update(JSON.stringify({
+    id: ticket.id,
+    setupId: meta.setupId,
+    key: meta.key,
+    workdir,
     spec,
     status: ticket.status,
     claim: ticket.claim ?? null,
@@ -254,7 +287,7 @@ async function check(root: string, state: ProjectState, ref: string, env: Readon
     guard,
     env,
   })).digest("hex");
-  return { ticket, meta, record, component, guard, digest };
+  return { ticket, meta, record, component, guard, workdir, digest };
 }
 
 /**
@@ -313,6 +346,10 @@ async function commit(root: string, ref: string, first: Checked, env: Readonly<R
     } catch (err) {
       if (!(err instanceof Refusal)) throw err;
       result = stale(first.ticket, err.lines.join(" "));
+      return;
+    }
+    if (now.ticket.id !== first.ticket.id) {
+      result = stale(first.ticket, `${ref} is now ticket ${now.ticket.id}, not ${first.ticket.id}, the ticket the run was for`);
       return;
     }
     if (now.digest !== first.digest) {
@@ -404,7 +441,7 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     const run = await runInGroup({
       command: adapter ? adapter.argv[0]! : "/bin/sh",
       args: adapter ? adapter.argv.slice(1) : ["-c", spec.command],
-      cwd: workdirOf(absRoot, spec.workdir),
+      cwd: checked.workdir,
       env: env!,
       timeoutMs: spec.timeoutMs,
       onData: (c) => scanner.feed(c),

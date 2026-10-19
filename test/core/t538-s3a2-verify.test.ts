@@ -5,7 +5,8 @@
  * verdict is the runner's own words; live runners come with the resolutions.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setupApply } from "../../src/core/setup-apply.js";
@@ -292,6 +293,12 @@ describe("refusals before anything runs (exit 2)", () => {
 
 describe("freshness: a change during the run is exit 5 with nothing written", () => {
   const changes: Array<[string, (root: string) => Promise<void>]> = [
+    ["the ticket, replaced by another carrying its display id", async (root) => {
+      const raw = await ticketFile(root, "T-002");
+      await rm(join(root, ".story", "tickets", "T-002.json"));
+      await writeFile(join(root, ".story", "tickets", "t-abcdef1234567890.json"), JSON.stringify({ ...raw, id: "t-abcdef1234567890", displayId: "T-002" }, null, 2) + "\n");
+    }],
+    ["the ticket's setup key", (root) => editTicket(root, "T-002", (r) => { (r.setup as { key: string }).key = "K3-renamed"; })],
     ["the ticket's claim", (root) => editTicket(root, "T-002", (r) => { r.claim = { user: "rival@example.com", branch: "b", since: "2026-10-18" }; })],
     ["a dependency", (root) => editTicket(root, "T-002", (r) => { r.blockedBy = ["T-001", "T-003"]; })],
     ["a prerequisite's status", (root) => editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; })],
@@ -329,7 +336,9 @@ describe("freshness: a change during the run is exit 5 with nothing written", ()
     const root = await ready(replay("vitest-pass"));
     setupVerifySeams.afterRun = () => change(root);
     const r = await setupVerify(root, { ticket: "T-002" });
-    const after = await files(root);
+    const after = existsSync(join(root, ".story", "tickets", "T-002.json"))
+      ? await files(root)
+      : { ticket: await readFile(join(root, ".story", "tickets", "t-abcdef1234567890.json"), "utf-8"), config: await readFile(join(root, ".story", "config.json"), "utf-8") };
     expect(r.exitCode).toBe(5);
     expect(r.lines[0]).toMatch(/^Setup-verify stale: .*; nothing was written\. Run storybloq setup-verify --ticket T-002 again\.$/);
     const t = JSON.parse(after.ticket) as { status: string; setup: { verification: Record<string, unknown> } };
@@ -366,5 +375,45 @@ describe("the evidence environment", () => {
     const root = await ready(replay("go-pass", "seen"), "go");
     expect((await setupVerify(root, { ticket: "T-002" }, { env: { ...process.env, GOFLAGS: "-tags=integration" } })).exitCode).toBe(0);
     expect(await readFile(join(root, "seen"), "utf-8")).toBe("1|1|0|-tags=integration -v\n");
+  });
+});
+
+describe("the workdir by its real path", () => {
+  /** A finished setup whose component lives in `app`, made a symlink to `target` once setup is done. */
+  async function linked(target: (root: string) => Promise<string>, command = replay("vitest-pass")): Promise<string> {
+    const root = await folder();
+    expect((await setupApply(root, payload({ components: [comp({ workdir: "app", command })] }))).exitCode).toBe(0);
+    await editTicket(root, "T-001", (r) => { r.status = "complete"; r.completedDate = "2026-10-18"; });
+    await rm(join(root, "app"), { recursive: true, force: true });
+    await symlink(await target(root), join(root, "app"));
+    return root;
+  }
+
+  it("a workdir symlink that points outside the project is refused, and nothing runs or is written", async () => {
+    const away = await mkdtemp(join(tmpdir(), "t538-outside-"));
+    try {
+      const root = await linked(async () => away, replay("vitest-pass", "touch"));
+      const before = await files(root);
+      const r = await setupVerify(root, { ticket: "T-002" });
+      expect(r.exitCode).toBe(2);
+      expect(r.lines).toEqual([`Setup-verify refused: the workdir app resolves outside the project (${await realpath(away)}).`]);
+      expect(existsSync(join(away, "ran"))).toBe(false);
+      expect(await files(root)).toEqual(before);
+    } finally {
+      await rm(away, { recursive: true, force: true });
+    }
+  });
+
+  it("a workdir symlink retargeted inside the project during the run is stale", async () => {
+    const root = await linked(async (r) => { await mkdir(join(r, "real-a")); await mkdir(join(r, "real-b")); return join(r, "real-a"); });
+    setupVerifySeams.afterRun = async () => { await rm(join(root, "app")); await symlink(join(root, "real-b"), join(root, "app")); };
+    const r = await setupVerify(root, { ticket: "T-002" });
+    expect(r.exitCode).toBe(5);
+    expect((await ticketFile(root, "T-002")).status).toBe("open");
+  });
+
+  it("a workdir symlink that stays inside the project runs there", async () => {
+    const root = await linked(async (r) => { await mkdir(join(r, "real-a")); return join(r, "real-a"); });
+    expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(0);
   });
 });

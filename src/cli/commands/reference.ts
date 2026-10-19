@@ -584,14 +584,14 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "setup-report",
-    description: "Live or frozen setup report",
+    description: "Live or frozen report",
     usage: "storybloq setup-report --setup <id> [--historical]",
     flags: ["--setup", "--historical"],
   },
   {
     name: "setup-verify",
-    description: "Verify establishment ticket",
-    usage: "storybloq setup-verify --ticket <id> [--resolve <adapter|leave-off|stop> --owner-words <w> [--argv <word>...] [--drop <var>...]] [--reopen]",
+    description: "Verify establishment; --resolve needs --owner-words",
+    usage: "storybloq setup-verify --ticket <id> [--resolve <adapter|leave-off|stop>] [--owner-words <w>] [--argv <word>...] [--drop <var>...] [--reopen]",
     flags: ["--ticket", "--resolve", "--argv", "--drop", "--owner-words", "--reopen"],
   },
   {
@@ -1166,8 +1166,8 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_selftest", description: "Integration smoke test: create/update/delete cycle", params: [] },
   { name: "storybloq_health", description: "Tooling check: auto-compact window, CLI version, Codex review bridge, /story skill, cross-session message delivery. Works without .story/, read-only", params: ["format?","only?","refresh?"] },
   { name: "storybloq_setup_apply", description: "Payload, resume or resolutions; no .story/. First line [exit N]", params: ["payload?","resume?","setup?","resolutions?"] },
-  { name: "storybloq_setup_report", description: "Live or frozen setup report. Read-only", params: ["setup","historical?"] },
-  { name: "storybloq_setup_verify", description: "Verify establishment ticket. First line [exit N]", params: ["ticket","resolve?","argv?","drop?","ownerWords?","reopen?"] },
+  { name: "storybloq_setup_report", description: "Live or frozen setup report", params: ["setup","historical?"] },
+  { name: "storybloq_setup_verify", description: "Verify establishment. First line [exit N]", params: ["ticket","resolve?","argv?","drop?","ownerWords?","reopen?"] },
   { name: "storybloq_review_lenses_prepare", description: "Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts", params: ["stage","diff","changedFiles","ticketDescription?","reviewRound?","priorDeferrals?","sessionId?","target?"] },
   { name: "storybloq_review_lenses_synthesize", description: "Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route", params: ["stage?","lensResults","activeLenses","skippedLenses","reviewRound?","reviewId?","diff?","changedFiles?","sessionId?","citedRulingsUndelivered?"] },
   { name: "storybloq_review_lenses_judge", description: "Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap", params: ["reviewVerdict?","convergenceHistory?"] },

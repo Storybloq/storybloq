@@ -2658,6 +2658,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     budget: opts.reachBudget ?? 5000, maxVisits: 0, exhausted: [] as string[], paths: {} as Record<string, string>,
     /** ISS-1381: external files edge-scanned and found tainted, generic calls seen, and those whose result carried a sensitive type. */
     edgeScanned: 0, tainted: [] as string[], genericCalls: 0, sensitiveResults: 0,
+    /** ISS-1381: generic callables compared against a callable target by the conversion check. */
+    conversions: 0,
   };
   function launderingChecks(): void {
     /** Every named src type that is itself sensitive (any and unknown aliases aside): the targets R4-2 and R4-3 test against. */
@@ -2884,23 +2886,35 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       return out;
     }
     /**
+     * ISS-1381 (review round 1): a parameter vouches for S only when every call must pass S through it: it is
+     * required (no `?`, no default, not a rest) and every branch of its union carries S. An optional or rest
+     * parameter can be left out, and a branch without S can be passed instead.
+     */
+    function vouches(q: ts.Symbol, k: SensitiveKey): boolean {
+      const d = q.valueDeclaration;
+      if (!d || !ts.isParameter(d) || d.questionToken || d.initializer || d.dotDotDotToken || checker.isOptionalParameter(d)) return false;
+      const t = checker.getTypeOfSymbol(q);
+      return (t.isUnion() ? t.types : [t]).every((x) => sensitiveSet(x, false).has(k));
+    }
+    /**
      * ISS-1381 conversion check: where a generic callable is specialized to a callable target, a sensitive type in a
      * target signature's return is introduced by the specialization unless it is already in a source signature's
      * declared return (walked through its type parameters' constraints and defaults) or, as in rule I, goes in through
-     * one of the target signature's parameters (input form: a parameter's own signatures never vouch).
+     * one of the target signature's parameters that vouches for it (input form: a parameter's own signatures never vouch).
      */
     function specialization(at: ts.Node, source: ts.Expression, target: ts.Type | undefined): void {
       if (!target) return;
       const generic = signaturesOf(checker.getTypeAtLocation(source)).filter(hasTypeParams);
       if (generic.length === 0) return;
-      const targets = signaturesOf(target);
+      // An optional slot's target is `F | undefined`; the undefined branch has no signatures to compare.
+      const targets = signaturesOf(checker.getNonNullableType(target));
       if (targets.length === 0) return;
+      reach.conversions += 1;
       const allowed = new Set<SensitiveKey>();
       for (const g of generic) for (const k of sensitiveSet(checker.getReturnTypeOfSignature(g), true).keys()) allowed.add(k);
       for (const sig of targets) {
-        const ins = sig.getParameters().map((q) => sensitiveSet(checker.getTypeOfSymbol(q), false));
         for (const [k, p] of sensitiveSet(checker.getReturnTypeOfSignature(sig), true)) {
-          if (k !== "exhausted" && (allowed.has(k) || ins.some((m) => m.has(k)))) continue;
+          if (k !== "exhausted" && (allowed.has(k) || sig.getParameters().some((q) => vouches(q, k)))) continue;
           reach.paths[where(at)] = p;
           const name = source.getText().replace(/\s+/g, " ");
           errors.push(`UNRESOLVED generic specialization at ${where(at)} (${keyName(k)} introduced by specializing ${name.length > 60 ? `${name.slice(0, 57)}...` : name}; ${p})`);
@@ -2908,6 +2922,20 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         }
       }
     }
+    /**
+     * An expression the sweep compares: not a parenthesis (its operand is), not a declaration's or member's own name
+     * (the checker hands a property name its value's contextual type, so the name would repeat the value's finding),
+     * and not one that has an explicit target.
+     */
+    const sweepable = (n: ts.Node): n is ts.Expression => {
+      if (!ts.isIdentifier(n) && !ts.isPropertyAccessExpression(n) && !ts.isElementAccessExpression(n) && !ts.isCallExpression(n)
+        && !ts.isNewExpression(n) && !ts.isTaggedTemplateExpression(n) && !ts.isArrowFunction(n) && !ts.isFunctionExpression(n)
+        && !ts.isNonNullExpression(n) && !ts.isAwaitExpression(n) && !ts.isClassExpression(n)) return false;
+      if ((n.parent as { name?: ts.Node }).name === n) return false;
+      let up: ts.Node = n.parent;
+      while (ts.isParenthesizedExpression(up)) up = up.parent;
+      return !ts.isAsExpression(up) && !ts.isTypeAssertionExpression(up) && !ts.isSatisfiesExpression(up);
+    };
     const propertyTarget = (n: ts.ShorthandPropertyAssignment): ts.Type | undefined => {
       const ct = checker.getContextualType(n.parent);
       const prop = ct && checker.getPropertyOfType(ct, n.name.text);
@@ -2951,19 +2979,14 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
               finding(`UNRESOLVED generic result at ${where(n)} (${checker.typeToString(ret)} result flowing into ${keyName(hit[0])}; ${hit[1]})`);
             }
           }
-          if (!ts.isTaggedTemplateExpression(n)) {
-            for (const a of n.arguments ?? []) if (!ts.isSpreadElement(a)) specialization(a, a, checker.getContextualType(a));
-          }
-        } else if (ts.isVariableDeclaration(n) && n.type && n.initializer) {
-          specialization(n.initializer, n.initializer, checker.getTypeFromTypeNode(n.type));
-        } else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-          specialization(n.right, n.right, checker.getTypeAtLocation(n.left));
-        } else if (ts.isPropertyAssignment(n) && ts.isObjectLiteralExpression(n.parent)) {
-          specialization(n.initializer, n.initializer, checker.getContextualType(n.initializer));
-        } else if (ts.isShorthandPropertyAssignment(n)) {
+        }
+        // ISS-1381 (review round 1): every expression the checker gives a contextual type is a conversion site (an
+        // argument, an initializer of a variable, field, parameter or binding default, an assignment, a property
+        // value, an array element, a return or an expression body, an operand of ?:, ??, || or &&). The operand of
+        // an assertion or satisfies, and a shorthand property's name, are compared below against their explicit target.
+        if (sweepable(n)) specialization(n, n, checker.getContextualType(n));
+        if (ts.isShorthandPropertyAssignment(n)) {
           specialization(n.name, n.name, propertyTarget(n));
-        } else if (ts.isReturnStatement(n) && n.expression) {
-          specialization(n.expression, n.expression, checker.getContextualType(n.expression));
         } else if ((ts.isAsExpression(n) || ts.isTypeAssertionExpression(n) || ts.isSatisfiesExpression(n)) && !ts.isConstTypeReference(n.type)) {
           specialization(n, n.expression, checker.getTypeFromTypeNode(n.type));
         } else if (ts.isExpressionWithTypeArguments(n) && !ts.isHeritageClause(n.parent)) {

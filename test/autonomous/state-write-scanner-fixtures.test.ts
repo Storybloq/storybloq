@@ -1774,6 +1774,32 @@ export function useId(f: <T>(x: T) => T): void { void f; }
     expect(specialized(gen(body))).toEqual([]);
   });
 
+  // ISS-1381 (review round 1): a parameter vouches only when every call must pass the sensitive type through it, and
+  // every place the checker converts a generic callable to a callable target is checked. Each fixture calls the
+  // converted function and hands its result to the sensitive consumer.
+  const PLAIN = "export declare const plain: () => Deps;\n";
+  it.each([
+    ["an optional parameter, the converted function called with no argument", "const m: (x?: Deps) => Deps = opt;\n    await take(d, ctx, m());", ""],
+    ["a rest parameter, the converted function called with no arguments", "const m: (...x: Deps[]) => Deps = rest;\n    await take(d, ctx, m());", ""],
+    ["a union parameter with a branch that carries no Deps", "const m: (x: Deps | number) => Deps = branch;\n    await take(d, ctx, m(1));", ""],
+    ["a class field initializer", "await take(d, ctx, new K().m());", "export class K { m: () => Deps = make; }\n"],
+    ["a parameter default", "await take(d, ctx, viaDefault());", "export function viaDefault(m: () => Deps = make): Deps { return m(); }\n"],
+    ["a binding-pattern default", "await take(d, ctx, viaBinding({}));", "export function viaBinding({ m = make }: { m?: () => Deps }): Deps { return m(); }\n"],
+    ["an array element", "const fs: Array<() => Deps> = [make];\n    await take(d, ctx, fs[0]!());", ""],
+    ["an expression-bodied arrow's return", "const mk = (): (() => Deps) => make;\n    await take(d, ctx, mk()());", ""],
+    ["a conditional operand beside a non-generic branch", "const m: () => Deps = items.length > 0 ? make : plain;\n    await take(d, ctx, m());", PLAIN],
+    ["a call argument to a non-generic parameter that calls it and writes", "await runWith(d, ctx, make);", "export async function runWith(d: string, ctx: StageContext, f: () => Deps) { await take(d, ctx, f()); }\n"],
+  ])("ISS-1381 conversion (round 1): %s is UNRESOLVED", (_n, body, extra) => {
+    expect(specialized(gen(body, extra))).toHaveLength(1);
+  });
+
+  it.each([
+    ["a required parameter of plain Deps", "const m: (x: Deps) => Deps = id;\n    await take(d, ctx, m(deps0));"],
+    ["a source whose declared return already carries Deps", "const m: (c: StageContext) => Deps = swap;\n    await take(d, ctx, m(ctx));"],
+  ])("ISS-1381 conversion (round 1): %s passes", (_n, body) => {
+    expect(specialized(gen(body, "export declare const deps0: Deps;\n"))).toEqual([]);
+  });
+
   // ISS-1381: a callable cannot vouch for itself; input collection never descends into a signature.
   it.each([
     ["m.call", "const deps = m.call(undefined);"],

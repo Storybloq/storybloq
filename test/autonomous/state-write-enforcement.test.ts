@@ -103,7 +103,7 @@ const CONTAINED_CATCHES: readonly string[] = [
  */
 const REVIEWED_SITES: Readonly<Record<string, string>> = {
   "src/autonomous/stages/registry.ts:7:new Map<string, WorkflowStage>()":
-    "an empty default-library Map with explicit type arguments; values enter only through stages.set(...), which rule I checks as a call carrying a WorkflowStage argument, so nothing reaches the writer through it",
+    "an empty default-library Map with explicit type arguments. stages.set is not a generic call, so rule I never sees it. Reviewed: its only writer is registerStage in this file, and its only callers are the registrations in stages/index.ts, each a new stage instance. Nothing reaches the writer through it.",
 };
 
 let cached: ScanResult | undefined;

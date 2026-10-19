@@ -647,8 +647,8 @@ describe("check set 2: every run is graded under the check set it was recorded w
   });
 
   it("(c) an unknown check set is refused (Mv3)", () => {
-    const r = regrade(edit(recorded(), (x) => { x.checkSetVersion = 7; }, (p) => p.replace('"checkSet": 2', '"checkSet": 7')));
-    expect(r.ok ? "accepted" : r.reason).toBe("the run was graded under check set 7, which this regrade does not support");
+    const r = regrade(edit(recorded(), (x) => { x.checkSetVersion = 8; }, (p) => p.replace('"checkSet": 2', '"checkSet": 8')));
+    expect(r.ok ? "accepted" : r.reason).toBe("the run was graded under check set 8, which this regrade does not support");
   });
 
   it("(d) a record and packet naming different check sets are refused, both directions (Mv4)", () => {

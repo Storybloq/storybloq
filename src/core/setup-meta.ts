@@ -42,13 +42,19 @@ export type TestWrapper = (typeof TEST_WRAPPERS)[number];
 export const VERIFICATION_DROPPABLE = ["PYTEST_ADDOPTS", "GOFLAGS"] as const;
 export type VerificationDroppable = (typeof VERIFICATION_DROPPABLE)[number];
 
+/** The component stages an establishment ticket can establish (T-538 S3b adds BUILD and VERIFY). */
+export const ESTABLISHABLE_STAGES = ["test", "build", "verify"] as const;
+export type EstablishableStage = (typeof ESTABLISHABLE_STAGES)[number];
+
 export const EstablishesSchema = z.object({
   component: text,
-  stage: z.literal("test"),
+  stage: z.enum(ESTABLISHABLE_STAGES),
   scaffold: key,
 }).strict();
 
-export const VerificationSpecSchema = z.object({
+const ms = z.number().int().positive();
+
+export const TestSpecSchema = z.object({
   setupId,
   component: text,
   stage: z.literal("test"),
@@ -56,8 +62,41 @@ export const VerificationSpecSchema = z.object({
   command: text,
   runner: z.enum(TEST_RUNNERS),
   wrapper: z.enum(TEST_WRAPPERS),
-  timeoutMs: z.number().int().positive(),
+  timeoutMs: ms,
 }).strict();
+
+/** A build establishment: the approved build command succeeds on the scaffold, and leaves no process behind. */
+export const BuildSpecSchema = z.object({
+  setupId,
+  component: text,
+  stage: z.literal("build"),
+  workdir: text,
+  command: text,
+  timeoutMs: ms,
+}).strict();
+
+/**
+ * A verify establishment: the approved start command serves a 2xx at
+ * 127.0.0.1:port + readinessPath from a listener its own process group owns,
+ * and the group is gone after shutdown.
+ */
+export const VerifySpecSchema = z.object({
+  setupId,
+  component: text,
+  stage: z.literal("verify"),
+  workdir: text,
+  command: text,
+  host: z.literal("127.0.0.1"),
+  port: z.number().int().min(1).max(65535),
+  readinessPath: z.string().regex(/^\/[^\s#]*$/, "is not an absolute path"),
+  startupTimeoutMs: ms,
+  shutdownTimeoutMs: ms,
+}).strict();
+
+export const VerificationSpecSchema = z.discriminatedUnion("stage", [TestSpecSchema, BuildSpecSchema, VerifySpecSchema]);
+export type TestSpec = z.infer<typeof TestSpecSchema>;
+export type BuildSpec = z.infer<typeof BuildSpecSchema>;
+export type VerifySpec = z.infer<typeof VerifySpecSchema>;
 export type VerificationSpec = z.infer<typeof VerificationSpecSchema>;
 
 /** The owner's adapter: an argv run with no shell, and the inherited variables it drops before the evidence options are added. */
@@ -103,6 +142,9 @@ export const SetupTicketMetaSchema = SetupItemMetaSchema.extend({
   verification: VerificationSchema.optional(),
 }).strict().refine((m) => (m.establishes === undefined) === (m.verification === undefined), {
   message: "carries establishes and verification together, or neither",
+}).refine((m) => m.establishes === undefined || m.verification === undefined
+  || (m.establishes.stage === m.verification.spec.stage && m.establishes.component === m.verification.spec.component), {
+  message: "establishes one stage of one component and its spec is for another",
 });
 export type SetupItemMeta = z.infer<typeof SetupTicketMetaSchema>;
 

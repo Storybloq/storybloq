@@ -20,7 +20,7 @@
 import { z } from "zod";
 import { isAbsolute, normalize, posix, sep } from "node:path";
 import { SETUP_ID_PATTERN } from "./setup-review.js";
-import { SETUP_KEY_PATTERN, TEST_RUNNERS, TEST_WRAPPERS } from "./setup-meta.js";
+import { ESTABLISHABLE_STAGES, SETUP_KEY_PATTERN, TEST_RUNNERS, TEST_WRAPPERS } from "./setup-meta.js";
 
 export const SETUP_PAYLOAD_VERSION = 1;
 export const SETUP_PAYLOAD_MARKER = "<!-- storybloq-setup-payload v1 -->";
@@ -80,10 +80,11 @@ const Ticket = z.object({
   /** Already-built work is a complete ticket; absent means open (never defaulted here, so a payload without it renders unchanged). */
   status: z.enum(["open", "complete"]).optional(),
   /**
-   * T-538 S3a-2: this ticket establishes a component's test stage once its
-   * scaffold is built: its lifecycle belongs to `storybloq setup-verify`.
+   * T-538 S3a-2: this ticket establishes a component's stage (test; S3b adds
+   * build and verify) once its scaffold is built: its lifecycle belongs to
+   * `storybloq setup-verify`.
    */
-  establishes: z.object({ component: text, stage: z.literal("test"), scaffold: key }).strict().optional(),
+  establishes: z.object({ component: text, stage: z.enum(ESTABLISHABLE_STAGES), scaffold: key }).strict().optional(),
 }).strict();
 
 const Checkpoint = z.object({
@@ -409,9 +410,10 @@ function referenceProblem(p: SetupPayload): string | null {
 }
 
 /**
- * The establishment rules (T-538 S3a-2), on the effective graph. Each
- * establishment ticket serves one component whose test stage is pending and
- * names its runner and wrapper; it is a task with no explicit status (only
+ * The establishment rules (T-538 S3a-2, S3b), on the effective graph. Each
+ * establishment ticket serves one stage of one component, which
+ * `establishedStageProblem` allows, and no two tickets serve the same
+ * component and stage; it is a task with no explicit status (only
  * setup-verify moves it); it waits on its scaffold and nothing else, so its
  * prerequisites are exactly the scaffold's plus the scaffold; and nothing it
  * waits on waits on an establishment ticket, which would deadlock the two
@@ -425,11 +427,12 @@ function establishmentProblem(p: SetupPayload, edges: Map<string, string[]>): st
     const e = t.establishes!;
     const comp = p.quality.components.find((c) => c.id === e.component);
     if (!comp) return `${t.key} establishes component ${e.component}, which is not a component`;
-    if (comp.test === null || comp.test.status !== "pending") return `${t.key} establishes ${e.component}'s test stage, which is not pending`;
-    if (comp.test.runner === undefined || comp.test.wrapper === undefined) return `${t.key} establishes ${e.component}'s test stage, which names no runner and wrapper`;
-    const other = served.get(e.component);
-    if (other !== undefined) return `${other} and ${t.key} both establish ${e.component}'s test stage`;
-    served.set(e.component, t.key);
+    const stageProblem = establishedStageProblem(p, comp, e.stage);
+    if (stageProblem !== null) return `${t.key} establishes ${e.component}'s ${e.stage} stage, ${stageProblem}`;
+    const servedKey = `${e.component}\u0000${e.stage}`;
+    const other = served.get(servedKey);
+    if (other !== undefined) return `${other} and ${t.key} both establish ${e.component}'s ${e.stage} stage`;
+    served.set(servedKey, t.key);
     if (t.type !== "task") return `${t.key} is an establishment ticket and must be a task`;
     if (t.status !== undefined) return `${t.key} is an establishment ticket and carries no status; storybloq setup-verify completes it`;
     const scaffold = p.tickets.find((x) => x.key === e.scaffold);
@@ -448,7 +451,38 @@ function establishmentProblem(p: SetupPayload, edges: Map<string, string[]>): st
   return null;
 }
 
-/** Whether a payload establishes any test stage: only then are the verification record and metadata written. */
+/**
+ * Why a component's stage cannot be established, or null. The stage's
+ * evidence must be pending; a test stage names its runner and wrapper; BUILD
+ * and VERIFY exist only under the full level (the activation table enables
+ * them nowhere else, so an establishment could never change a stage); VERIFY
+ * only where it applies, with a readiness URL setup-verify can own.
+ */
+function establishedStageProblem(p: SetupPayload, comp: SetupPayload["quality"]["components"][number], stage: (typeof ESTABLISHABLE_STAGES)[number]): string | null {
+  const evidence = stage === "test" ? comp.test : stage === "build" ? comp.build : comp.verify;
+  if (evidence === null || evidence.status !== "pending") return "which is not pending";
+  if (stage === "test") return comp.test!.runner === undefined || comp.test!.wrapper === undefined ? "which names no runner and wrapper" : null;
+  if (p.quality.level !== "full") return `which only the full level runs (this setup is ${p.quality.level})`;
+  if (stage === "build") return null;
+  if (!p.quality.verifyApplies) return "but VERIFY does not apply to this project";
+  return readinessEndpoint(comp.verify!.readinessUrl) === null ? `whose readiness URL ${comp.verify!.readinessUrl} is not http://127.0.0.1:<port>/<path>` : null;
+}
+
+/**
+ * The endpoint of a VERIFY readiness URL setup-verify can own: plain http on
+ * 127.0.0.1 with an explicit port, and a path (no query credentials, no
+ * fragment). Anything else is null: setup-verify checks listener ownership
+ * for that exact endpoint only.
+ */
+export function readinessEndpoint(url: string): { port: number; path: string } | null {
+  const m = /^http:\/\/127\.0\.0\.1:(\d{1,5})(\/[^\s#]*)?$/.exec(url);
+  if (!m) return null;
+  const port = Number(m[1]);
+  if (port < 1 || port > 65535 || m[1]!.startsWith("0")) return null;
+  return { port, path: m[2] ?? "/" };
+}
+
+/** Whether a payload establishes any stage: only then are the verification record and metadata written. */
 export function usesEstablishment(p: Pick<SetupPayload, "tickets">): boolean {
   return p.tickets.some((t) => t.establishes !== undefined);
 }

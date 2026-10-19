@@ -37,7 +37,7 @@ import { checkpointState, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import type { CompletionGuardOptions } from "./claims.js";
-import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type SetupItemMeta, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
+import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type SetupItemMeta, type TestSpec, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
 import { VERIFICATION_RESULT_AUTHORITY } from "./setup-verification-guard.js";
 import { readRecord, recordActivation, type RecordComponent, type SetupVerificationRecord } from "./setup-verification-record.js";
 import { establishStage, SERVES, type StagesConfig } from "./verification-activation.js";
@@ -88,7 +88,7 @@ class Refusal extends Error {
 
 const refuse = (why: string): Refusal => new Refusal([`Setup-verify refused: ${why}`]);
 
-type Meta = SetupItemMeta & { readonly verification: NonNullable<SetupItemMeta["verification"]>; readonly establishes: NonNullable<SetupItemMeta["establishes"]> };
+type Meta = SetupItemMeta & { readonly verification: NonNullable<SetupItemMeta["verification"]> & { readonly spec: TestSpec }; readonly establishes: NonNullable<SetupItemMeta["establishes"]> };
 
 /** Everything the first hold established, and the digest the second hold must reproduce. */
 interface Checked {
@@ -201,6 +201,9 @@ function identify(state: ProjectState, ref: string): Identified {
   if (parsed.kind === "invalid") throw refuse(`${label(ticket)}'s setup field does not read: ${parsed.reason}.`);
   if (parsed.kind !== "item" || parsed.meta.establishes === undefined || parsed.meta.verification === undefined) {
     throw refuse(`${label(ticket)} is not an establishment ticket; setup-verify runs only on a ticket a setup created to establish a test stage.`);
+  }
+  if (parsed.meta.verification.spec.stage !== "test") {
+    throw refuse(`${label(ticket)} establishes the ${parsed.meta.verification.spec.stage} stage; this CLI runs setup-verify only for a test stage.`);
   }
   const meta = parsed.meta as Meta;
   const spec = meta.verification.spec;
@@ -417,7 +420,8 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
       await withProjectLock(absRoot, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
         const pre = findTicket(state, input.ticket);
         const meta = parseSetupMeta("ticket", pre);
-        const runner = meta.kind === "item" ? meta.meta.verification?.spec.runner : undefined;
+        const preSpec = meta.kind === "item" ? meta.meta.verification?.spec : undefined;
+        const runner = preSpec?.stage === "test" ? preSpec.runner : undefined;
         const adapter = meta.kind === "item" ? meta.meta.verification?.decision?.adapter : undefined;
         const built = runner === undefined ? { env: {} } : evidenceEnv(runner, withoutDropped(options.env ?? process.env, adapter), junitPath);
         if ("incompatible" in built) incompatible = built.incompatible;

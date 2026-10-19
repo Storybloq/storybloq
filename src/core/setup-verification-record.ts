@@ -1,6 +1,6 @@
 /**
  * T-538 S3a-2: the setup verification record, `config.setupVerification`.
- * A setup whose payload establishes a test stage writes it with the recipe
+ * A setup whose payload establishes any stage writes it with the recipe
  * stages: the quality level and every component with each stage's live
  * status. `storybloq setup-verify` reads it to bind a ticket's spec to its
  * component, moves a component's test status to `verified` or `left-off`, and

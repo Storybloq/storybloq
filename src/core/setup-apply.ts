@@ -73,6 +73,7 @@ import {
   SetupPayloadError,
   validateSetupPayload,
   type SetupPayload,
+  readinessEndpoint,
 } from "./setup-payload.js";
 import type { ProjectState } from "./project-state.js";
 import type { Config } from "../models/config.js";
@@ -168,12 +169,27 @@ function ownedSetup(setup: unknown): unknown {
 /** How long one setup-verify run may take, from spawn until its process group is gone. */
 export const VERIFICATION_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** The verification spec an establishment ticket is created with: its component's test stage as the payload names it. */
+/** How long a VERIFY server may take to answer its readiness check, and to be gone after its shutdown starts. */
+export const VERIFY_STARTUP_TIMEOUT_MS = 2 * 60 * 1000;
+export const VERIFY_SHUTDOWN_TIMEOUT_MS = 10 * 1000;
+
+/** The verification spec an establishment ticket is created with: its component's stage as the payload names it. */
 export function verificationSpec(p: SetupPayload, t: SetupPayload["tickets"][number]): VerificationSpec | null {
   if (t.establishes === undefined) return null;
   const comp = p.quality.components.find((c) => c.id === t.establishes!.component)!;
-  const test = comp.test!;
-  return { setupId: p.setupId, component: comp.id, stage: "test", workdir: comp.workdir, command: test.command, runner: test.runner!, wrapper: test.wrapper!, timeoutMs: VERIFICATION_TIMEOUT_MS };
+  const base = { setupId: p.setupId, component: comp.id, workdir: comp.workdir };
+  switch (t.establishes.stage) {
+    case "test": {
+      const test = comp.test!;
+      return { ...base, stage: "test", command: test.command, runner: test.runner!, wrapper: test.wrapper!, timeoutMs: VERIFICATION_TIMEOUT_MS };
+    }
+    case "build":
+      return { ...base, stage: "build", command: comp.build!.command, timeoutMs: VERIFICATION_TIMEOUT_MS };
+    case "verify": {
+      const at = readinessEndpoint(comp.verify!.readinessUrl)!;
+      return { ...base, stage: "verify", command: comp.verify!.startCommand, host: "127.0.0.1", port: at.port, readinessPath: at.path, startupTimeoutMs: VERIFY_STARTUP_TIMEOUT_MS, shutdownTimeoutMs: VERIFY_SHUTDOWN_TIMEOUT_MS };
+    }
+  }
 }
 
 /** The setup field setup writes on a planned ticket. */

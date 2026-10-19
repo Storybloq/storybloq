@@ -200,8 +200,9 @@ const outside = (home: string) => ({
 });
 
 function expectOutsideUnchanged(before: ReturnType<typeof outside>, after: ReturnType<typeof outside>): void {
-  expect({ parent: diff(before.parent, after.parent), store: diff(before.store, after.store), home: diff(before.home, after.home) })
-    .toEqual({ parent: [], store: [], home: [] });
+  const changed = { parent: diff(before.parent, after.parent), store: diff(before.store, after.store), home: diff(before.home, after.home) };
+  // The paths ride in the message: the assertion's own rendering truncates them.
+  expect(changed, JSON.stringify(changed)).toEqual({ parent: [], store: [], home: [] });
 }
 
 interface Oracle { snap: ByteMap; afterNew: ByteMap; afterOld: ByteMap; old: Ran[] }

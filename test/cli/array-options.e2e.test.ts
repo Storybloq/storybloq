@@ -1431,12 +1431,13 @@ const MATRIX: Coverage[] = [
   },
   {
     // T-538 S3a-2: setup-verify's option shape is checked before any ticket is
-    // read, so the refusals below show what the registration delivered. An
+    // read and refused with exit 2, so the refusals below show what the
+    // registration delivered. An
     // empty word survives (empty: "preserve") and is refused by name.
     key: "setup-verify --argv",
     check: (dir) => {
       const res = run(dir, "setup-verify", "--ticket", "T-001", "--resolve", "adapter", "--owner-words", "ok", "--argv", "sh", "--argv", "");
-      expect(res.code, res.out).toBe(4);
+      expect(res.code, res.out).toBe(2);
       expect(res.out).toContain("an adapter's argv has an empty word.");
     },
   },
@@ -1446,7 +1447,7 @@ const MATRIX: Coverage[] = [
     key: "setup-verify --drop",
     check: (dir) => {
       const res = run(dir, "setup-verify", "--ticket", "T-001", "--resolve", "adapter", "--owner-words", "ok", "--argv", "sh", "--drop", "GOFLAGS, NOPE");
-      expect(res.code, res.out).toBe(4);
+      expect(res.code, res.out).toBe(2);
       expect(res.out).toContain("--drop names NOPE; an adapter drops only");
     },
   },

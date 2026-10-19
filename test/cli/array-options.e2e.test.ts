@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -33,6 +33,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await fixture.cleanup();
 });
+
+// ISS-994: every test here is synchronous (spawnSync), so between tests the
+// worker drains only microtasks and never reaches the poll phase where vitest's
+// onTaskUpdate reply is read. After about 60 s of chained tests the reply's
+// timer fires first, giving one "Timeout calling onTaskUpdate" with every test
+// green. One macrotask turn after each test lets the reply land.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 // Returns stdout only (fix direction d) -- never mixes stderr into `out`, on
 // either the success or failure path, so a housekeeping notice on stderr can

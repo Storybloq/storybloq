@@ -127,14 +127,18 @@ export function assertUpdateHasFields(
   entity: string,
   fieldHint: string,
 ): void {
-  const supplied = Object.values(updates).some((v) => v !== undefined && v !== false);
-  if (!supplied) {
+  if (!updateHasFields(updates)) {
     throw new CliValidationError(
       "invalid_input",
       `No fields to update on this ${entity}. Supply at least one of: ${fieldHint}. ` +
         "If you passed a field and still see this, the name was not recognized.",
     );
   }
+}
+
+/** Whether an update carries any field, by the rule assertUpdateHasFields applies. */
+export function updateHasFields(updates: object): boolean {
+  return Object.values(updates).some((v) => v !== undefined && v !== false);
 }
 
 /**

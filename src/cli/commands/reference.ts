@@ -56,8 +56,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "ticket update",
     description: "Update a ticket",
-    usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--node <value>] [--force] [--clear-cites-rulings] [--resolution-kind <kind>] [--reason <text>] [--blocked-by <value>] [--add-blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
-    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--node", "--force", "--clear-cites-rulings", "--resolution-kind", "--reason", "--blocked-by", "--add-blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--priority", "--waiting-on", "--format", "--commit"],
+    usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--keep-absent <value>] [--node <value>] [--force] [--clear-cites-rulings] [--resolution-kind <kind>] [--reason <text>] [--blocked-by <value>] [--add-blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
+    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--keep-absent", "--node", "--force", "--clear-cites-rulings", "--resolution-kind", "--reason", "--blocked-by", "--add-blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--priority", "--waiting-on", "--format", "--commit"],
   },
   {
     name: "ticket meta",
@@ -152,8 +152,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "issue update",
     description: "Update an issue",
-    usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--resolution-kind <kind>] [--duplicate-of <id>] [--disposition <value>] [--reason <text>] [--ref <ref>] [--clear-disposition] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
-    flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--resolution-kind", "--duplicate-of", "--disposition", "--reason", "--ref", "--clear-disposition", "--priority", "--waiting-on", "--format", "--commit"],
+    usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--keep-absent <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--resolution-kind <kind>] [--duplicate-of <id>] [--disposition <value>] [--reason <text>] [--ref <ref>] [--clear-disposition] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
+    flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--keep-absent", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--resolution-kind", "--duplicate-of", "--disposition", "--reason", "--ref", "--clear-disposition", "--priority", "--waiting-on", "--format", "--commit"],
   },
   {
     name: "issue meta",
@@ -494,7 +494,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "duet spawn",
-    description: "Start a visible duet worker: mints its task id, creates the arrangement and coordination (--arrangement auto, needs --bounds), writes role and handshake facts under .story/spawn/, opens the window with /story first. Permission mode defaults to auto (bypassPermissions under a bypass pen); --model defaults to opus (the hands tier). A --dir with no .story uses the pen's board. --name and --pen launch or --print; --recover lists interrupted spawns read-only",
+    description: "Start a visible duet worker: mints its task id, creates arrangement and coordination (--arrangement auto, needs --bounds), writes role and handshake in .story/spawn/, opens the window on /story. Permission mode: auto (bypassPermissions under a bypass pen); --model defaults to opus (the hands tier). A --dir without .story uses the pen's board. --name and --pen launch or --print; --recover lists interrupted spawns read-only",
     usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover] [--format <json|md>]",
     flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--format"],
   },

@@ -872,6 +872,20 @@ const MATRIX: Coverage[] = [
     },
   },
   {
+    key: "ticket update --keep-absent",
+    check: (dir) => {
+      // ISS-1397: an empty parent beside --keep-absent leaves the key absent.
+      seedTickets(dir, 1);
+      expect(Object.hasOwn(byDisplayId(dir, "tickets", "T-001"), "parentTicket")).toBe(false);
+      const res = run(dir, "ticket", "update", "T-001", "--title", "renamed",
+        "--parent-ticket", "", "--keep-absent", "parentTicket");
+      expect(res.code, res.out).toBe(0);
+      const ticket = byDisplayId(dir, "tickets", "T-001");
+      expect(ticket.title).toBe("renamed");
+      expect(Object.hasOwn(ticket, "parentTicket")).toBe(false);
+    },
+  },
+  {
     key: "triage --severity",
     check: (dir) => {
       for (const severity of ["low", "high", "medium"]) {
@@ -975,6 +989,30 @@ const MATRIX: Coverage[] = [
       const res = run(dir, "issue", "update", "ISS-001", "--related-tickets", "T-001,T-002");
       expect(res.code, res.out).toBe(0);
       expect(byDisplayId(dir, "issues", "ISS-001").relatedTickets).toEqual(["T-001", "T-002"]);
+    },
+  },
+  {
+    key: "issue update --keep-absent",
+    check: (dir) => {
+      // ISS-1397: the flag repeats, one field each; both keys stay absent.
+      // `issue create` always writes a phase, so the seed drops it the way an
+      // older writer's file lacks it.
+      seedIssue(dir);
+      const issuesDir = join(dir, ".story", "issues");
+      const file = readdirSync(issuesDir).find((f) => f.endsWith(".json"))!;
+      const stored = JSON.parse(readFileSync(join(issuesDir, file), "utf-8")) as Record<string, unknown>;
+      delete stored.phase;
+      writeFileSync(join(issuesDir, file), JSON.stringify(stored, null, 2) + "\n");
+      const seeded = byDisplayId(dir, "issues", "ISS-001");
+      expect(Object.hasOwn(seeded, "order")).toBe(false);
+      expect(Object.hasOwn(seeded, "phase")).toBe(false);
+      const res = run(dir, "issue", "update", "ISS-001", "--title", "renamed", "--order", "0",
+        "--phase", "", "--keep-absent", "order", "--keep-absent", "phase");
+      expect(res.code, res.out).toBe(0);
+      const issue = byDisplayId(dir, "issues", "ISS-001");
+      expect(issue.title).toBe("renamed");
+      expect(Object.hasOwn(issue, "order")).toBe(false);
+      expect(Object.hasOwn(issue, "phase")).toBe(false);
     },
   },
   {

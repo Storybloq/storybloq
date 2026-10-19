@@ -5,15 +5,16 @@ import type { IssueUpdateInput } from "../../src/core/update-inputs.js";
 import type { NoteUpdateInput } from "../../src/core/update-inputs.js";
 import type { NoteUpdateHatches } from "../../src/core/update-inputs.js";
 import type { UpdateWriteHooks } from "../../src/core/update-write-hooks.js";
+import type { KeepAbsentOption } from "../../src/core/keep-absent.js";
 import type { Ticket } from "../../src/models/ticket.js";
 import type { Issue } from "../../src/models/issue.js";
 import type { Note } from "../../src/models/note.js";
 import type { OutputFormat } from "../../src/models/types.js";
 
-export declare function handleTicketUpdate(id: string, updates: TicketUpdateInput, format: string, root: string, force?: boolean, hooks?: UpdateWriteHooks<Ticket>): Promise<CommandResult>;
+export declare function handleTicketUpdate(id: string, updates: TicketUpdateInput, format: string, root: string, force?: boolean, hooks?: UpdateWriteHooks<Ticket> & KeepAbsentOption): Promise<CommandResult>;
 
 export declare function handleIssueUpdate(id: string, updates: IssueUpdateInput, format: string, root: string, opts?: {
     clearEarmarkForSession?: string;
-} & UpdateWriteHooks<Issue>): Promise<CommandResult>;
+} & UpdateWriteHooks<Issue> & KeepAbsentOption): Promise<CommandResult>;
 
 export declare function handleNoteUpdate(id: string, updates: NoteUpdateInput, format: OutputFormat, root: string, hatches?: NoteUpdateHatches, hooks?: UpdateWriteHooks<Note>): Promise<CommandResult>;

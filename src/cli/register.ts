@@ -205,6 +205,7 @@ import { handleReference } from "./commands/reference.js";
 
 // Selftest command
 import { handleSelftest } from "./commands/selftest.js";
+import { KEEP_ABSENT_ISSUE_FIELDS, KEEP_ABSENT_TICKET_FIELDS, type KeepAbsentField } from "../core/keep-absent.js";
 
 function parseIssueSourceRefs(values: string[] | undefined): IssueSourceRefInput[] | undefined {
   if (!values) return undefined;
@@ -1411,6 +1412,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Parent ticket ID",
                 })
+                .choices("keep-absent", [...KEEP_ABSENT_TICKET_FIELDS])
                 .option("node", {
                   type: "string",
                   describe: "Node name (orchestrator only)",
@@ -1440,6 +1442,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
               {
                 "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
                 "add-blocked-by": { ...SPLIT_LIST, describe: "IDs to add to the blocking tickets, keeping the existing ones (not with --blocked-by)" },
+                "keep-absent": {
+                  ...LITERAL_DROP_BLANK,
+                  describe: "Leave this field absent when the stored ticket has no such key and the value passed is empty (for the Mac app)",
+                },
                 "cross-node-blocked-by": {
                   ...LEGACY_SPLIT_LIST,
                   describe: "Cross-node blocking refs (e.g. engine:T-001). Bare flag clears.",
@@ -1511,6 +1517,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 format,
                 eff.root,
                 argv.force as boolean,
+                { keepAbsent: argv["keep-absent"] as KeepAbsentField[] | undefined },
               ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
@@ -2174,6 +2181,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New phase ID",
                 })
+                .choices("keep-absent", [...KEEP_ABSENT_ISSUE_FIELDS])
                 .option("priority", {
                   type: "string",
                   describe: "Priority, how soon: p0, p1, p2, p3 (unset reads as p2; severity is how bad)",
@@ -2217,6 +2225,10 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 components: { ...SPLIT_LIST, describe: "Affected components" },
                 "related-tickets": { ...SPLIT_LIST, describe: "Related ticket IDs" },
                 location: { ...LITERAL_DROP_BLANK, describe: "File locations" },
+                "keep-absent": {
+                  ...LITERAL_DROP_BLANK,
+                  describe: "Leave this field absent when the stored issue has no such key and the value passed is empty (for the Mac app)",
+                },
                 "source-ref": {
                   ...LITERAL_KEEP_BLANK,
                   describe: "Replacement source ref (JSON object)",
@@ -2280,6 +2292,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
+                { keepAbsent: argv["keep-absent"] as KeepAbsentField[] | undefined },
               ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;

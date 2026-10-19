@@ -55,10 +55,12 @@ import {
   todayISO,
   CliValidationError,
   assertUpdateHasFields,
+  updateHasFields,
   parsePriority,
   parseWaitingOn,
   withPriorityFields,
 } from "../helpers.js";
+import { applyKeepAbsent, type KeepAbsentOption } from "../../core/keep-absent.js";
 import { localDateOf } from "../../core/local-date.js";
 import { issueStatusImage } from "../../core/issue-status-image.js";
 
@@ -510,7 +512,7 @@ export async function handleIssueUpdate(
   updates: IssueUpdateInput,
   format: string,
   root: string,
-  opts?: { clearEarmarkForSession?: string } & UpdateWriteHooks<Issue>,
+  opts?: { clearEarmarkForSession?: string } & UpdateWriteHooks<Issue> & KeepAbsentOption,
 ): Promise<CommandResult> {
   assertUpdateHasFields(
     updates,
@@ -567,6 +569,15 @@ export async function handleIssueUpdate(
     }
 
     await opts?.precondition?.(existing, state);
+
+    // ISS-1397: decided here, on the record this update replaces. When the
+    // option drops every field passed, nothing is written and the record is
+    // returned as read.
+    updates = applyKeepAbsent(existing, updates, opts?.keepAbsent);
+    if (!updateHasFields(updates)) {
+      updatedIssue = existing;
+      return;
+    }
 
     let sourceRefs;
     try {

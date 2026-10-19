@@ -10,6 +10,7 @@ const typeModules = {
   NoteUpdateInput: "../../src/core/update-inputs.js",
   NoteUpdateHatches: "../../src/core/update-inputs.js",
   UpdateWriteHooks: "../../src/core/update-write-hooks.js",
+  KeepAbsentOption: "../../src/core/keep-absent.js",
   Ticket: "../../src/models/ticket.js",
   Issue: "../../src/models/issue.js",
   Note: "../../src/models/note.js",

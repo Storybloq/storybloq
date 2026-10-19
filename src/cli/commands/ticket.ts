@@ -61,10 +61,12 @@ import {
   todayISO,
   CliValidationError,
   assertUpdateHasFields,
+  updateHasFields,
   parsePriority,
   parseWaitingOn,
   withPriorityFields,
 } from "../helpers.js";
+import { applyKeepAbsent, type KeepAbsentOption } from "../../core/keep-absent.js";
 import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import {
@@ -558,7 +560,7 @@ export async function handleTicketUpdate(
   format: string,
   root: string,
   force = false,
-  hooks?: UpdateWriteHooks<Ticket>,
+  hooks?: UpdateWriteHooks<Ticket> & KeepAbsentOption,
 ): Promise<CommandResult> {
   if (updates.reason !== undefined && updates.resolutionKind === undefined) {
     throw new CliValidationError("invalid_input", "--reason is only for a withdrawal: pass it with --resolution-kind withdrawn");
@@ -623,6 +625,15 @@ export async function handleTicketUpdate(
     }
 
     await hooks?.precondition?.(existing, state);
+
+    // ISS-1397: decided here, on the record this update replaces. When the
+    // option drops every field passed, nothing is written and the record is
+    // returned as read.
+    updates = applyKeepAbsent(existing, updates, hooks?.keepAbsent);
+    if (!updateHasFields(updates)) {
+      updatedTicket = existing;
+      return;
+    }
 
     if (updates.phase !== undefined) {
       validatePhase(updates.phase, { state });

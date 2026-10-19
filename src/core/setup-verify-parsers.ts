@@ -8,6 +8,10 @@
  *
  * The scanner knows every runner's summary, so a stream carrying summaries
  * from two runners is told apart from one carrying the spec runner's alone.
+ *
+ * A line still being assembled is held to the same 64 KiB. Past that the rest
+ * of the line is discarded up to its delimiter and the run is marked as
+ * carrying an oversized line, which can never be read as verified.
  */
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
@@ -31,6 +35,8 @@ export interface StreamFacts {
   readonly errorSeen: boolean;
   readonly runners: ReadonlyMap<TestRunner, RunnerSummary>;
   readonly tail: string;
+  /** A line longer than TAIL_BYTES was seen; part of it was never read. */
+  readonly oversizedLine: boolean;
 }
 
 interface Tally { summaries: number; executed: number; failed: number; unparseable: boolean }
@@ -52,6 +58,9 @@ function namedCounts(text: string, sep: RegExp): Map<string, number> | null {
 export class EvidenceScanner {
   private readonly decoder = new StringDecoder("utf8");
   private partial = "";
+  /** Inside an oversized line: everything up to its delimiter is dropped. */
+  private discarding = false;
+  private oversized = false;
   private tailBuf: Buffer = Buffer.alloc(0);
   private failure = false;
   private error = false;
@@ -67,14 +76,16 @@ export class EvidenceScanner {
 
   end(): StreamFacts {
     this.scan(this.decoder.end());
-    if (this.partial !== "") this.line(this.partial);
+    if (this.partial !== "" && !this.discarding) this.line(this.partial);
     this.partial = "";
+    this.discarding = false;
     this.settleRan(null);
     return {
       failureSeen: this.failure,
       errorSeen: this.error,
       runners: new Map([...this.tallies].map(([r, t]) => [r, { ...t }])),
       tail: this.tailBuf.toString("utf-8"),
+      oversizedLine: this.oversized,
     };
   }
 
@@ -84,9 +95,21 @@ export class EvidenceScanner {
   }
 
   private scan(text: string): void {
-    const parts = (this.partial + text).split(/\r\n|\r|\n/);
+    let rest = text;
+    if (this.discarding) {
+      const at = rest.search(/[\r\n]/);
+      if (at < 0) return;
+      this.discarding = false;
+      rest = rest.slice(at);
+    }
+    const parts = (this.partial + rest).split(/\r\n|\r|\n/);
     this.partial = parts.pop()!;
     for (const p of parts) this.line(p);
+    if (Buffer.byteLength(this.partial, "utf-8") > TAIL_BYTES) {
+      this.partial = "";
+      this.discarding = true;
+      this.oversized = true;
+    }
   }
 
   private tally(r: TestRunner): Tally {
@@ -207,26 +230,54 @@ export class EvidenceScanner {
 
 export interface JunitCounts { readonly executed: number; readonly failed: number; readonly errors: number }
 
-/** The counts in a JUnit XML report, summed over its testsuite elements; null when it has none or one does not read. */
+const JUNIT_COUNTS = ["tests", "failures", "errors", "skipped"] as const;
+
+/**
+ * The counts in a JUnit XML report, summed over its testsuite elements; null
+ * when the report does not read. It reads only when it is whole: every
+ * testsuite and testsuites element closed in order, nothing after the root,
+ * and no DTD (entities are never resolved). Every count attribute present is
+ * a non-negative integer: a missing optional count is zero, an invalid one
+ * makes the report unreadable, and `tests` is required.
+ */
 export function readJunit(xml: string): JunitCounts | null {
-  const suites = [...xml.matchAll(/<testsuite\b([^>]*)>/g)];
-  if (suites.length === 0) return null;
+  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) return null;
+  const body = xml.trim();
+  if (!body.endsWith(">") || body.lastIndexOf("<") > body.lastIndexOf(">")) return null;
+  const open: string[] = [];
+  let roots = 0;
   let executed = 0;
   let failed = 0;
   let errors = 0;
-  for (const s of suites) {
-    const attr = (name: string): number | null => {
-      const m = new RegExp(`\\s${name}="(\\d+)"`).exec(s[1]!);
-      return m ? Number(m[1]) : null;
-    };
-    const tests = attr("tests");
-    if (tests === null) return null;
-    const f = attr("failures") ?? 0;
-    const e = attr("errors") ?? 0;
-    executed += tests - (attr("skipped") ?? 0);
+  let suites = 0;
+  for (const m of body.matchAll(/<(\/?)(testsuites?)(?=[\s/>])([^>]*?)(\/?)>/g)) {
+    const [, closing, name, attrs, selfClosing] = m;
+    if (closing === "/") {
+      if (open.pop() !== name) return null;
+      continue;
+    }
+    if (open.length === 0 && ++roots > 1) return null;
+    if (selfClosing !== "/") open.push(name!);
+    if (name !== "testsuite") continue;
+    const counts = new Map<string, number>();
+    for (const a of attrs!.matchAll(/\s([A-Za-z_][-\w.:]*)="([^"]*)"/g)) {
+      if (!(JUNIT_COUNTS as readonly string[]).includes(a[1]!)) continue;
+      if (!/^\d+$/.test(a[2]!)) return null;
+      counts.set(a[1]!, Number(a[2]));
+    }
+    const tests = counts.get("tests");
+    if (tests === undefined) return null;
+    const f = counts.get("failures") ?? 0;
+    const e = counts.get("errors") ?? 0;
+    suites += 1;
+    executed += tests - (counts.get("skipped") ?? 0);
     failed += f + e;
     errors += e;
   }
+  if (open.length > 0 || suites === 0) return null;
+  // Nothing may follow the root's close: the last tag in the report is it.
+  const last = [...body.matchAll(/<[^>]*>/g)].pop()![0];
+  if (!/^<\/testsuites?>$/.test(last) && !/^<testsuite\b[^>]*\/>$/.test(last)) return null;
   return { executed, failed, errors };
 }
 
@@ -260,6 +311,7 @@ export function classifyEvidence(runner: TestRunner, end: RunEnd, facts: StreamF
   }
   if (end.exitCode !== 0) return { kind: "failed", reason: `exited with code ${end.exitCode}`, ...counts };
 
+  if (facts.oversizedLine) return { kind: "unrecognized", reason: `a line of the output is longer than ${TAIL_BYTES} bytes, so part of it was never read` };
   const others = [...facts.runners.keys()].filter((r) => r !== runner).sort();
   if (others.length > 0) return { kind: "unrecognized", reason: `the output carries ${others.join(" and ")} summaries as well as ${runner}'s` };
   if (runner === "pytest") {

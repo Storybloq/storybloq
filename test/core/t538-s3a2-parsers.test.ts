@@ -188,7 +188,73 @@ describe("the whole stream, not the tail", () => {
   });
 });
 
+describe("an oversized line", () => {
+  const pending = (sc: EvidenceScanner): number => (sc as unknown as { partial: string }).partial.length;
+
+  it("holds at most 64 KiB of an unfinished line however many chunks arrive, and the run reads as unrecognized", () => {
+    const sc = new EvidenceScanner();
+    const block = Buffer.alloc(4096, "x");
+    let most = 0;
+    for (let i = 0; i < 400; i++) {
+      sc.feed(block);
+      most = Math.max(most, pending(sc));
+    }
+    expect(most).toBeLessThanOrEqual(TAIL_BYTES);
+    // The line ends, and the summary after it is read as usual; the run still never verifies.
+    sc.feed("\n      Tests  1 passed (1)\n");
+    const facts = sc.end();
+    expect(facts.oversizedLine).toBe(true);
+    expect(facts.runners.get("vitest")).toMatchObject({ summaries: 1, executed: 1, failed: 0 });
+    expect(classifyEvidence("vitest", ended(0), facts, null, 1)).toEqual({ kind: "unrecognized", reason: `a line of the output is longer than ${TAIL_BYTES} bytes, so part of it was never read` });
+  });
+
+  it("an oversized line still unfinished at the end is dropped, not read", () => {
+    const facts = scan([Buffer.from("      Tests  1 passed (1)\n"), Buffer.alloc(TAIL_BYTES + 10, "y")]);
+    expect(facts.oversizedLine).toBe(true);
+    expect(classifyEvidence("vitest", ended(0), facts, null, 1).kind).toBe("unrecognized");
+  });
+
+  it("a line just within the bound is read whole", () => {
+    const facts = scan(chunked(Buffer.from(`${"z".repeat(TAIL_BYTES - 1)}\n      Tests  1 passed (1)\n`), 1000));
+    expect(facts.oversizedLine).toBe(false);
+    expect(classifyEvidence("vitest", ended(0), facts, null, 1)).toEqual({ kind: "verified", executed: 1, failed: 0 });
+  });
+});
+
 describe("readJunit", () => {
+  const whole = '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="2"><testcase name="a"/><testcase name="b"/></testsuite></testsuites>';
+
+  it("reads only a whole report: truncated, invalid or negative counts, a DTD, a second root or trailing bytes do not read", () => {
+    expect(readJunit(whole)).toEqual({ executed: 2, failed: 0, errors: 0 });
+    for (const [why, xml] of [
+      ["truncated after the opening tags", '<?xml version="1.0"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" tests="2">'],
+      ["truncated before the root closes", whole.replace("</testsuites>", "")],
+      ["truncated inside a tag", whole.slice(0, whole.length - 5)],
+      ["an invalid count", whole.replace('failures="0"', 'failures="invalid"')],
+      ["a negative count", whole.replace('failures="0"', 'failures="-1"')],
+      ["a negative tests count", whole.replace('tests="2"', 'tests="-2"')],
+      ["an empty count", whole.replace('skipped="0"', 'skipped=""')],
+      ["a DTD", `<!DOCTYPE x [<!ENTITY n "3">]>${whole}`],
+      ["a second root", `${whole}<testsuite tests="1"/>`],
+      ["bytes after the root", `${whole}<x>`],
+      ["a mismatched close", whole.replace("</testsuite></testsuites>", "</testsuites></testsuite>")],
+    ] as const) {
+      expect(readJunit(xml), why).toBeNull();
+    }
+  });
+
+  it("a missing optional count is zero, unlike an invalid one", () => {
+    expect(readJunit('<testsuite name="a" tests="2"/>')).toEqual({ executed: 2, failed: 0, errors: 0 });
+    expect(readJunit('<testsuite name="a" tests="2" skipped="x"/>')).toBeNull();
+  });
+
+  it("a report that does not read leaves a passing pytest run unrecognized", () => {
+    const facts = scan([recorded("pytest-pass")]);
+    for (const xml of ['<testsuites><testsuite tests="3" failures="0">', whole.replace('failures="0"', 'failures="invalid"'), whole.replace('failures="0"', 'failures="-1"')]) {
+      expect(classifyEvidence("pytest", ended(0), facts, xml, 1)).toEqual({ kind: "unrecognized", reason: "pytest's JUnit report does not read" });
+    }
+  });
+
   it("sums every testsuite and leaves skipped tests out of the executed count", () => {
     const xml = '<testsuites><testsuite name="a" tests="3" failures="1" errors="1" skipped="1"></testsuite><testsuite name="b" tests="2" failures="0" errors="0"/></testsuites>';
     expect(readJunit(xml)).toEqual({ executed: 4, failed: 2, errors: 1 });

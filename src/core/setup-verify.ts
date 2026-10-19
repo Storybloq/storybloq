@@ -707,7 +707,19 @@ function inputShape(input: SetupVerifyInput): string | null {
 async function record(root: string, input: SetupVerifyInput, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
   let result: SetupVerifyResult | null = null;
   await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
-    const found = identify(state, input.ticket);
+    // A --ticket that names no ticket is the caller's input, refused as ever.
+    const named = findTicket(state, input.ticket);
+    let found: Identified;
+    try {
+      found = identify(state, input.ticket);
+    } catch (err) {
+      // With --run, identify passed when that run printed its token, so a refusal now is a change since: stale.
+      if (err instanceof Refusal && input.resolve !== undefined && input.run !== undefined) {
+        result = stale(named, err.lines.join(" "));
+        return;
+      }
+      throw err;
+    }
     if (input.reopen === true) {
       result = await reopen(root, found);
       return;

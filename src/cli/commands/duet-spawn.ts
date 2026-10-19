@@ -258,7 +258,8 @@ export function reconcileSpawnJournal(root: string, journal: Record<string, unkn
   else if (launch === "launched") {
     // ISS-1294: the echo is awaited only while the handshake is open. A
     // launched worker holds the nonce, so an unreadable runtime is uncertain,
-    // not settled; every other state has no echo coming for this journal.
+    // not settled. Other states do not require waiting for this journal's
+    // original challenge; delayed echoes may still arrive.
     const head = coordination === "not-started" || coordination === "started-no-receipt" ? launchText
       : coordination === "receipt" ? "launched; handshake complete"
       : coordination === "unresolved" ? "launched; handshake status unknown, an echo may still arrive"

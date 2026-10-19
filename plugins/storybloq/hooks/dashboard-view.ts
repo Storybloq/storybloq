@@ -5,6 +5,11 @@ import { stageLabel, stageStale } from "./stage-label.js";
 const COLUMN_CARD_CAP = 6;
 const COLUMN_TAIL = "...";
 const BOARD_COLUMNS = 3;
+/**
+* What a card draws for a title that projected to nothing (ISS-1311): dimmed,
+* never shimmered, and a render choice only, so the cache keeps the empty string.
+*/
+const UNTITLED = "(untitled)";
 /** What a column with nothing in it says, rather than drawing a blank frame. */
 const EMPTY_COLUMNS = {
   "board-open": { symbol: "◇", title: "Queue clear", short: "Queue clear", hint: "Add your next story." },
@@ -293,12 +298,14 @@ function cardRow(dashboard: DashboardState, elements: any, card: SidebarBoardCar
       paneText(dashboard, elements.Text, { dimColor: true, ...(tone ? { color: tone } : {}), children: `${id} ` }),
       ...(tag === "" ? [] : [paneText(dashboard, elements.Text, { ...(stage!.stale ? { dimColor: true } : { color: "cyan" }), children: tag })]),
       paneText(dashboard, elements.Text, { ...(card.blocked ? { color: "yellow" } : withdrawn !== "" ? { dimColor: true } : { dimColor: effect.fading }), children: blocked }),
-      paneText(dashboard, elements.Text, { bold: !done, dimColor: done, children: shimmerTitle(dashboard, elements, truncate(card.title, room), effect.progress) }),
+      card.title === ""
+        ? paneText(dashboard, elements.Text, { dimColor: true, children: truncate(UNTITLED, room) })
+        : paneText(dashboard, elements.Text, { bold: !done, dimColor: done, children: shimmerTitle(dashboard, elements, truncate(card.title, room), effect.progress) }),
     ],
   });
 }
 /** Preserve graphemes and cell widths while a narrow highlight crosses the text. */
-function shimmerTitle(dashboard: DashboardState, elements: any, title: string, progress: number | null): unknown {
+export function shimmerTitle(dashboard: DashboardState, elements: any, title: string, progress: number | null): unknown {
   if (progress === null)
     return title;
   const start = Math.round(progress * (cellWidth(title) + 6)) - 6;
@@ -591,8 +598,9 @@ export function compactLineNode(dashboard: DashboardState, elements: any, column
         runs.push(text({ color: "yellow", children: "[Blocked] " }));
         used += 10;
       }
-      const title = truncate(item.title, Math.min(58, room - used));
-      runs.push(text({ bold: true, children: title }));
+      const untitled = item.title === "";
+      const title = truncate(untitled ? UNTITLED : item.title, Math.min(58, room - used));
+      runs.push(text(untitled ? { dimColor: true, children: title } : { bold: true, children: title }));
       used += cellWidth(title);
     }
   }

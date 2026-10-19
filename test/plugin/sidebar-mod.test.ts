@@ -17,7 +17,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { registerSidebar, IDLE_POLL_TICKS, SETUP_HINT, MOD_VERSION, contextLabel } from "../../plugins/storybloq/hooks/sidebar.js";
-import { cellWidth } from "../../plugins/storybloq/hooks/terminal-text.js";
+import { cellWidth, graphemes, truncate } from "../../plugins/storybloq/hooks/terminal-text.js";
+import { shimmerTitle } from "../../plugins/storybloq/hooks/dashboard-view.js";
 
 const PANE_ID = "storybloq";
 
@@ -2004,5 +2005,155 @@ describe("ISS-1306: ledger titles are drawn display-safe", () => {
     const tree = draw(h, 156, "inline");
     expect(textOf(findUi(tree, "ticket:T-001"))).toContain("Cached [2Jtitle");
     for (const text of leaves(tree)) expect(text).not.toMatch(UNSAFE);
+  });
+});
+
+/**
+* ISS-1311: an In progress card drew its stage tag and then nothing. A record
+* whose title projects to "" (absent, not a string, empty, or only characters
+* displaySafe removes) is the route on our side; such a card now draws a dim
+* "(untitled)" that never shimmers. The shimmer itself is proven to give back
+* exactly the truncated title at every frame.
+*/
+describe("ISS-1311: a board card never draws an empty title", () => {
+  const FULL = "Editable contribution and one successful follow-up";
+  const status = () => JSON.stringify({
+    schemaVersion: 1, sessionActive: true, sessionId: "s-1", state: "IMPLEMENT", ticket: "T-001",
+    ticketTitle: "Ticket T-001", claudeStatus: "working", observedAt: new Date().toISOString(),
+  });
+  function record(title: unknown, state = "inprogress"): string {
+    const value = JSON.parse(ticket("T-001", state));
+    if (title === undefined) delete value.title;
+    else value.title = title;
+    return JSON.stringify(value);
+  }
+  async function booted(title: unknown, state = "inprogress"): Promise<Harness> {
+    const h = new Harness();
+    seedLedger(h.fs, "/repo");
+    h.fs.addFile("/repo/.story/tickets/T-001.json", record(title, state));
+    h.fs.addFile("/repo/.story/status.json", status());
+    await h.start("/repo");
+    await h.settle();
+    return h;
+  }
+  function draw(h: Harness, width: number, rows = 40): any {
+    return h.handlers.get("ui.render")!(
+      h.$,
+      { component: "Pane", requestId: PANE_ID, viewport: { columns: width + 4, rows }, props: { bodyColumns: width, placement: "inline", scroll: { offset: 0, bodyRows: 30 } } },
+      (e: any) => e,
+    );
+  }
+  function compact(h: Harness): any {
+    return h.handlers.get("ui.render")!(h.$, {
+      component: "Pane", requestId: PANE_ID, viewport: { rows: 20, columns: 100 }, props: { bodyColumns: 100 },
+    }, () => null);
+  }
+  const textOf = (node: any): string => typeof node === "string" ? node
+    : Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.children) : "";
+  const runText = (run: any): string => textOf(run);
+
+  const EMPTY: [string, unknown][] = [
+    ["an absent title", undefined],
+    ["a non-string title", 42],
+    ["an empty title", ""],
+    ["a title of removed characters only", "\u0007‮"],
+  ];
+
+  for (const [name, title] of EMPTY) {
+    it(`${name} draws the id, the tag, no marker, then a dim (untitled), at 110 and 400`, async () => {
+      const h = await booted(title);
+      for (const width of [110, 400]) {
+        const row = findUi(draw(h, width), "ticket:T-001");
+        expect(row.children.map(runText), `${width}`).toEqual(["T-001 ", "[Code] ", "", "(untitled)"]);
+        expect(row.children[3], `${width}`).toMatchObject({ dimColor: true, children: "(untitled)" });
+        expect(row.children[3].bold, `${width}`).toBeFalsy();
+      }
+    });
+  }
+
+  it("a titled card is unchanged: 21 title cells inside 34 at 110, the whole title at 400, three columns and the tag", async () => {
+    const h = await booted(FULL);
+    const narrow = draw(h, 110);
+    for (const key of ["board-open", "board-inprogress", "board-done"]) expect(findUi(narrow, key), key).toBeTruthy();
+    const row = findUi(narrow, "ticket:T-001");
+    // The 21 below is pinned to this exact tag: T-532 shortened IMPLEMENT's label from "[Implementing] " (15 cells,
+    // the issue's 13 title cells) to "[Code] " (7). A label change fails here first, naming why the room moved.
+    expect(row.children[1].children).toBe("[Code] ");
+    const title = runText(row.children[3]);
+    // 34 row cells less "T-001 " (6) and "[Code] " (7).
+    expect(title).toBe(truncate(FULL, 21));
+    expect(cellWidth(title)).toBe(21);
+    expect(cellWidth(textOf(row))).toBeLessThanOrEqual(34);
+    expect(textOf(row)).not.toContain("(untitled)");
+    const wide = findUi(draw(h, 400), "ticket:T-001");
+    expect(runText(wide.children[3])).toBe(FULL);
+    expect(wide.children[3].bold).toBe(true);
+  });
+
+  it("the placeholder fits a two-cell room and is cut like any title", () => {
+    const cut = truncate("(untitled)", 2);
+    expect(cut.startsWith("(")).toBe(true);
+    expect(cut).not.toBe("(u");
+    expect(cellWidth(cut)).toBe(2);
+  });
+
+  it("the placeholder never shimmers: on an active frame it is one dim run, while a titled card shimmers", async () => {
+    for (const [title, untitled] of [["", true], [FULL, false]] as const) {
+      const h = await booted(title, "open");
+      h.fs.addFile("/repo/.story/tickets/T-001.json", record(title, "inprogress"));
+      await h.fire("turn.complete");
+      await h.settle(8);
+      const run = findUi(draw(h, 400), "ticket:T-001").children[3];
+      if (untitled) {
+        expect(run).toMatchObject({ dimColor: true, children: "(untitled)" });
+      } else {
+        // The frame is active: the titled card's run is the shimmer's nested runs.
+        expect(Array.isArray(run.children)).toBe(true);
+        expect(textOf(run)).toBe(FULL);
+      }
+    }
+  });
+
+  it("the compact line draws the placeholder for an empty title and leaves a titled one alone", async () => {
+    const empty = compact(await booted(""));
+    expect(empty.key).toBe("compact-line");
+    const placeholder = empty.children.find((node: any) => node.children === "(untitled)");
+    expect(placeholder).toMatchObject({ dimColor: true });
+    expect(placeholder.bold).toBeFalsy();
+    const titled = compact(await booted(FULL));
+    expect(textOf(titled)).not.toContain("(untitled)");
+    expect(titled.children.find((node: any) => typeof node.children === "string" && node.children.startsWith("Editable"))).toMatchObject({ bold: true });
+  });
+
+  describe("the shimmer, our half", () => {
+    const dashboard = { paneInline: true, themeLight: false } as any;
+    const elements = { Text: (props: any) => ({ node: "Text", ...props }) };
+    const ASCII = FULL;
+    const WIDE = "編集可能な貢献と👩‍💻、一回の成功した追跡 é";
+    const steps: (number | null)[] = [null, 0, 1];
+    for (let i = 1; i < 20; i += 1) steps.push(i * 0.05);
+    const rooms = [13, 21, 34, 152];
+
+    for (const [name, source] of [["ASCII", ASCII], ["wide graphemes", WIDE]] as const) {
+      it(`${name}: every frame draws exactly the truncated title, inside its room, split only between graphemes`, () => {
+        for (const room of rooms) {
+          const title = truncate(source, room);
+          const boundaries = new Set<number>([0]);
+          let at = 0;
+          for (const { cluster } of graphemes(title)) boundaries.add((at += cluster.length));
+          for (const progress of steps) {
+            const where = `${room}@${progress}`;
+            const out = shimmerTitle(dashboard, elements, title, progress) as any;
+            const runs: string[] = typeof out === "string" ? [out] : out.map((run: any) => run.children as string);
+            const flat = runs.join("");
+            expect(flat, where).toBe(title);
+            expect(flat.length, where).toBeGreaterThan(0);
+            expect(cellWidth(flat), where).toBeLessThanOrEqual(room);
+            let end = 0;
+            for (const run of runs) expect(boundaries.has((end += run.length)), where).toBe(true);
+          }
+        }
+      });
+    }
   });
 });

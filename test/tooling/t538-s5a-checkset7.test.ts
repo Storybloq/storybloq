@@ -298,6 +298,13 @@ describe("check set 7 rule 7: ordered events", () => {
     const plans = () => null;
     expect(rule7(parseEventsLog(text), plans)[0]).toMatch(/^rule 7: step:enable is at revision [0-9a-f]{12}, which no amendment of the archived payload produces$/);
   });
+
+  it("a recommit from a second process at the same revision fails: a key commits once per setup, not once per process", () => {
+    const revision = "a".repeat(64);
+    const step = (attempt: string) => JSON.stringify({ attempt, seq: 1, point: "step:config", setupId: SID, invocation: null, revision });
+    const text = [JSON.stringify({ attempt: "a1", pid: 1, entry: "cli" }), step("a1"), JSON.stringify({ attempt: "a2", pid: 2, entry: "cli" }), step("a2")].join("\n") + "\n";
+    expect(rule7(parseEventsLog(text), () => ["config"])).toEqual(["rule 7: step:config committed again at the same revision aaaaaaaaaaaa"]);
+  });
 });
 
 describe("check set 7: the summary's pending and Created: lines", () => {
@@ -444,6 +451,7 @@ describe("check set 7 rule 10: the ledger is written only through storybloq", ()
     ["a write after a cd into .story", bash("cd .story && echo x > tickets/T-001.json"), "a redirection (>) into tickets/T-001.json"],
     ["an exec_command write in cmd", { name: "exec_command", input: { cmd: ["bash", "-lc", "echo x > .story/x"] } }, "a redirection (>) into .story/x"],
     ["an expansion target", bash("F=.story/x; echo y > $F"), "a redirection to an expansion ($F) in a call that names .story"],
+    ["a command the detector cannot classify", bash("frobnicate .story/x"), "frobnicate is a command the detector cannot classify, in a call that names .story"],
   ])("%s fails", (_label, call, reason) => {
     expect(findings(call).map((f) => f.replace(/^rule 10: call 1: ledger write: /, "").split(": ")[0])).toContain(reason);
   });

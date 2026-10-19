@@ -266,6 +266,16 @@ describe("G4: a fault kills the process at a point of each class", () => {
     const done = point === "archive-committed" ? `Setup applied: ${SID} (already complete; nothing written)` : `Setup applied: ${SID}`;
     expect([resumed.status, applied(resumed.stdout)]).toEqual([0, done]);
   });
+
+  it("a point#n selector kills at the nth occurrence in the invocation, not the first", async () => {
+    const root = folder();
+    const events = join(scratch, `g4-nth-${n}.jsonl`);
+    const r = await evalApply(root, events, "txn:after-commit-entry#2");
+    expect([r.status, r.signal]).toEqual([null, "SIGKILL"]);
+    const [first] = attempts(readEvents(events));
+    expect(first!.filter((e) => e.point === "txn:after-commit-entry").length).toBe(2);
+    expect(first!.at(-1)!.point).toBe("txn:after-commit-entry");
+  });
 });
 
 describe("G5: a resumed trace", () => {

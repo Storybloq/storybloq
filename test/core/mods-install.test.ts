@@ -25,6 +25,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { claudeValidate } from "../helpers/claude-validate.js";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PLUGIN_SRC = join(PKG_ROOT, "plugins", "storybloq");
@@ -594,11 +595,11 @@ describe("installMods (T-507 D)", () => {
     await installMods({ bin });
     const env = { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1" };
     const scanOf = (dir: string) =>
-      execFileSync("claude", ["plugin", "validate", dir], { encoding: "utf8", env })
+      claudeValidate(dir, env)
         .split("\n")
         .filter((row) => row.includes("mod.ts hooks:") || row.includes("mod.ts calls:"))
         .map((row) => row.trim());
-    const installed = execFileSync("claude", ["plugin", "validate", modsDir()], { encoding: "utf8", env });
+    const installed = claudeValidate(modsDir(), env);
     expect(installed).toContain("Validation passed");
     const copyScan = scanOf(modsDir());
     const repoScan = scanOf(PLUGIN_SRC);

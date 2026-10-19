@@ -804,7 +804,7 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
 
   // ---- universal fencing coverage: all four choke points, real call sites ----
 
-  async function forceOwnershipLossDuring(root: string, run: () => Promise<void>): Promise<unknown> {
+  async function forceOwnershipLossDuring(root: string, run: () => Promise<unknown>): Promise<unknown> {
     let caught: unknown;
     await withProjectLock(root, { strict: false }, async () => {
       const lockPath = join(root, ".story", ".lock");

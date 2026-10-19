@@ -111,7 +111,8 @@ export const CONFIRM_BOUND_MS = 2000;
 export const processGroupSeams: { probe: (pgid: number) => void; ownGroup: boolean; spawn: typeof spawn } = {
   probe: (pgid) => process.kill(-pgid, 0),
   ownGroup: OWN_GROUP,
-  spawn,
+  // Read at call time: a module-load capture breaks a test's partial node:child_process mock.
+  spawn: ((...args: Parameters<typeof spawn>) => spawn(...args)) as typeof spawn,
 };
 
 /** "gone" on ESRCH, "alive" when the probe succeeds, and the error code for anything else (EPERM included). */

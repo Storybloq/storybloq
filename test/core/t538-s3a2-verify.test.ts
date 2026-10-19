@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setupApply } from "../../src/core/setup-apply.js";
+import { transactionSeams, withProjectLock } from "../../src/core/project-loader.js";
 import { evidenceEnv, setupVerify, setupVerifySeams } from "../../src/core/setup-verify.js";
 import { processGroupSeams } from "../../src/core/process-group.js";
 import { handleSetupVerify } from "../../src/cli/commands/setup-verify.js";
@@ -415,5 +416,39 @@ describe("the workdir by its real path", () => {
   it("a workdir symlink that stays inside the project runs there", async () => {
     const root = await linked(async (r) => { await mkdir(join(r, "real-a")); return join(r, "real-a"); });
     expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(0);
+  });
+});
+
+describe("atomicity: the ticket and the config are written as one", () => {
+  afterEach(() => {
+    transactionSeams.afterTemp = () => {};
+    transactionSeams.afterCommitEntry = () => {};
+  });
+  const recover = (root: string) => withProjectLock(root, { strict: false }, async () => {});
+  const leftovers = async (root: string) => [
+    ...(await readdir(join(root, ".story"))).filter((f) => f.startsWith(".txn")),
+    ...(await readdir(join(root, ".story", "tickets"))).filter((f) => f.endsWith(".tmp")),
+  ];
+
+  it("a fault after the ticket is staged and before the config is: after recovery both are as they were before the run", async () => {
+    const root = await ready(replay("vitest-pass"));
+    const before = await files(root);
+    transactionSeams.afterTemp = (target) => { if (target.endsWith("T-002.json")) throw new Error("injected fault after the ticket write"); };
+    await expect(setupVerify(root, { ticket: "T-002" })).rejects.toThrow();
+    await recover(root);
+    expect(await files(root)).toEqual(before);
+    expect(await leftovers(root)).toEqual([]);
+  });
+
+  it("a fault after the ticket is committed and before the config is: recovery finishes both", async () => {
+    const root = await ready(replay("vitest-pass"));
+    transactionSeams.afterCommitEntry = (target) => { if (target.endsWith("T-002.json")) throw new Error("injected fault after the ticket commit"); };
+    await expect(setupVerify(root, { ticket: "T-002" })).rejects.toThrow();
+    await recover(root);
+    expect((await ticketFile(root, "T-002")).status).toBe("complete");
+    const c = await configOf(root);
+    expect(c.setupVerification.components[0]!.test.status).toBe("verified");
+    expect(c.recipeOverrides.stages.TEST!.enabled).toBe(true);
+    expect(await leftovers(root)).toEqual([]);
   });
 });

@@ -1521,6 +1521,16 @@ export class TransactionCommittedUnconfirmedError extends ProjectLoaderError {
  * 8. remove the journal; sync `.story`.
  * A torn marker write tears only the sidecar, never the journal.
  */
+/**
+ * Test seams for transaction atomicity: called after each temp file is
+ * written (before the commit marker) and after each commit rename. Not
+ * reachable through any CLI or MCP input.
+ */
+export const transactionSeams: { afterTemp: (target: string) => void | Promise<void>; afterCommitEntry: (target: string) => void | Promise<void> } = {
+  afterTemp: () => {},
+  afterCommitEntry: () => {},
+};
+
 export async function runTransactionUnlocked(
   root: string,
   operations: Array<
@@ -1653,6 +1663,7 @@ export async function runTransactionUnlocked(
         const tempPath = `${op.target}.${process.pid}.tmp`;
         checkProjectLockFencing();
         await fsyncWrite(tempPath, op.content, true, () => createdTemps.push(tempPath));
+        await transactionSeams.afterTemp(op.target);
       }
     }
     await syncParents(createdTemps);
@@ -1682,6 +1693,7 @@ export async function runTransactionUnlocked(
       if (entry.op === "write" && entry.tempPath) {
         await rename(entry.tempPath, entry.target);
         applied.push({ target: entry.target, kind: "write" });
+        await transactionSeams.afterCommitEntry(entry.target);
       } else if (entry.op === "delete") {
         try {
           await unlink(entry.target);

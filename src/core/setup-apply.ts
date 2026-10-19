@@ -672,6 +672,8 @@ interface StepContext {
 interface Step {
   readonly id: string;
   readonly run: (ctx: StepContext) => Promise<void>;
+  /** Runs instead when the step is already receipted: what a crash between its receipt and its cleanup left. */
+  readonly tidy?: (ctx: StepContext) => Promise<void>;
 }
 
 /** Commits `ops` and the receipt in one transaction under the held lock. */
@@ -706,6 +708,9 @@ function planSteps(p: SetupPayload): Step[] {
   for (const f of p.governance.files) steps.push({ id: `governance:${posix.normalize(f.path)}`, run: (ctx) => stepGovernance(ctx, f.path, f.content) });
   if (p.git.init) steps.push({ id: "git-init", run: stepGitInit });
   if (p.git.gitignore.length > 0) steps.push({ id: "gitignore", run: stepGitignore });
+  for (const ptr of p.governance.pointers ?? []) {
+    steps.push({ id: `pointer:${ptr.path}`, run: (ctx) => stepPointer(ctx, ptr), tidy: (ctx) => tidyPointer(ctx.root, ptr.path, ctx.progress.payload, ctx.out) });
+  }
   steps.push({ id: "freeze", run: stepFreeze });
   steps.push({ id: "setup-note", run: stepSetupNote });
   steps.push({ id: "handover", run: stepHandover });
@@ -1022,6 +1027,123 @@ async function stepGitignore(ctx: StepContext): Promise<void> {
   ctx.out.push("-> git · .gitignore already lists the setup entries");
 }
 
+// --- Entry-file pointers (T-538 S3b) -----------------------------------------
+
+type PointerPlan = NonNullable<SetupPayload["governance"]["pointers"]>[number];
+
+/** The proposal beside an entry file, relative to the project. */
+const pointerProposal = (path: string, setupId: string) => `${path}.storybloq-${setupId}.proposed`;
+
+/** The entry file with the setup's block after a blank line. */
+function withPointerBlock(current: string, block: string): string {
+  return current === "" ? block : `${current}${current.endsWith("\n") ? "\n" : "\n\n"}${block}`;
+}
+
+/**
+ * A pointer step: the engine never writes the entry file. The block already
+ * there byte for byte is receipted `applied`. Otherwise an intent receipt
+ * (the entry file's sha256 and the proposal's) is committed before the
+ * proposal is created beside the file, and the run stops for the owner.
+ */
+async function stepPointer(ctx: StepContext, ptr: PointerPlan): Promise<void> {
+  const p = ctx.progress.payload;
+  const current = await readOrNull(join(ctx.root, ptr.path));
+  if (current !== null && current.includes(ptr.block)) {
+    const payload = withReceipt(p, { step: `pointer:${ptr.path}`, target: `file:${ptr.path}`, ownedPre: null, ownedPost: sha256(ptr.block), outcome: "applied" });
+    await commit(ctx, [], payload.receipts.at(-1)!, payload);
+    await setupApplySeams.fault(`pointer-receipted:${ptr.path}`);
+    await tidyPointer(ctx.root, ptr.path, payload, ctx.out);
+    ctx.out.push(`-> file · ${ptr.path} carries setup's pointer block`);
+    return;
+  }
+  const intent: Receipt = {
+    step: `pointer-proposal:${ptr.path}`,
+    target: `file:${pointerProposal(ptr.path, p.setupId)}`,
+    ownedPre: current === null ? ABSENT : sha256(current),
+    ownedPost: sha256(withPointerBlock(current ?? "", ptr.block)),
+  };
+  const payload = withReceipt(p, intent);
+  await commit(ctx, [], intent, payload);
+  await setupApplySeams.fault(`pointer-intent:${ptr.path}`);
+  const finding = await pointerFinding(ctx.root, payload, ptr);
+  await setupApplySeams.fault(`pointer-proposed:${ptr.path}`);
+  throw ambiguities([finding!]);
+}
+
+/**
+ * A pointer's proposal against its intent receipt: one already there with
+ * the intended bytes is adopted; a missing one is created when the entry
+ * file is still what the intent recorded (`stale` otherwise, nothing
+ * created); any other bytes are a conflict, never adopted or removed.
+ */
+async function ensureProposal(root: string, p: SetupPayload, ptr: PointerPlan): Promise<"ours" | "stale" | "conflict"> {
+  const intent = lastReceipt(p, `pointer-proposal:${ptr.path}`)!;
+  const rel = pointerProposal(ptr.path, p.setupId);
+  const target = join(root, rel);
+  const existing = await readOrNull(target);
+  if (existing !== null) return sha256(existing) === intent.ownedPost ? "ours" : "conflict";
+  const content = withPointerBlock((await readOrNull(join(root, ptr.path))) ?? "", ptr.block);
+  if (sha256(content) !== intent.ownedPost) return "stale";
+  await guardWrite(root, target, rel);
+  try {
+    await atomicCreate(target, content);
+  } catch (err) {
+    if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;
+    return sha256((await readOrNull(target)) ?? "") === intent.ownedPost ? "ours" : "conflict";
+  }
+  return "ours";
+}
+
+/** What a pointer owes the owner now, or null: drift of an applied block, a conflicting proposal, or the edit itself. */
+async function pointerFinding(root: string, p: SetupPayload, ptr: PointerPlan): Promise<Finding | null> {
+  const current = await readOrNull(join(root, ptr.path));
+  const has = current !== null && current.includes(ptr.block);
+  const ref = { path: ptr.path };
+  const r = lastReceipt(p, `pointer:${ptr.path}`);
+  if (r) {
+    // A waived pointer is the owner's file as it is; only an applied block can drift.
+    if (r.outcome !== "applied" || has) return null;
+    return {
+      kind: "pointer-drift", class: "governance file drifted", target: ptr.path,
+      observed: current === null ? "the file is gone" : "setup's pointer block is no longer in it", expected: "the pointer block the owner applied",
+      resolutions: ["keep-current", "stop"], ref,
+    };
+  }
+  if (has || lastReceipt(p, `pointer-proposal:${ptr.path}`) === undefined) return null;
+  const rel = pointerProposal(ptr.path, p.setupId);
+  const proposal = await ensureProposal(root, p, ptr);
+  if (proposal === "conflict") {
+    return {
+      kind: "proposal-conflict", class: "proposal conflict", target: ptr.path,
+      observed: `${rel} holds bytes setup did not write`, expected: "setup's proposal or none; the file is left as it is",
+      resolutions: ["keep-current", "stop"], ref,
+    };
+  }
+  return {
+    kind: "entry-pointer", class: "pointer edit owed", target: ptr.path,
+    observed: current === null ? "the file is gone" : "setup's pointer block is not in it",
+    expected: proposal === "ours" ? `the block in ${posix.basename(rel)}` : `setup's pointer block (${ptr.path} changed since its proposal was recorded)`,
+    resolutions: ["applied", "keep-current", "stop"], ref,
+  };
+}
+
+/** Removes a pointer's proposal only while it holds the bytes its intent recorded; a changed one stays, and the output says so. */
+async function tidyPointer(root: string, path: string, p: SetupPayload, out: string[]): Promise<void> {
+  const intent = lastReceipt(p, `pointer-proposal:${path}`);
+  const rel = pointerProposal(path, p.setupId);
+  const current = await readOrNull(join(root, rel));
+  if (current === null) return;
+  if (intent === undefined || sha256(current) !== intent.ownedPost) {
+    out.push(`-> file · ${rel} is not setup's proposal; left as it is`);
+    return;
+  }
+  try {
+    await fencedUnlink(join(root, rel));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
 // --- Resume classification (plan v5 1d, 2) ----------------------------------
 
 /** Digest of a user-owned file that is gone, and of a step the owner kept as it is. */
@@ -1030,7 +1152,8 @@ const KEPT = sha256("\u0000kept-current");
 
 type FindingKind =
   | "edited" | "removed" | "duplicate" | "unkeyed" | "edge" | "config" | "config-pre"
-  | "governance-drift" | "occupied" | "gitignore-drift" | "pointer" | "enable" | "progress" | "stop-only";
+  | "governance-drift" | "occupied" | "gitignore-drift" | "pointer" | "enable" | "progress" | "stop-only"
+  | "entry-pointer" | "pointer-drift" | "proposal-conflict";
 
 /** One ambiguity plus what `--resolve` needs to act on it. */
 interface Finding extends SetupAmbiguity {
@@ -1299,6 +1422,11 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
         resolutions: ["applied", "keep-current", "stop"], ref: {},
       });
     }
+  }
+
+  for (const ptr of plan.governance.pointers ?? []) {
+    const f = await pointerFinding(root, p, ptr);
+    if (f) out.push(f);
   }
 
   const config = state.config;
@@ -1687,11 +1815,15 @@ async function runSteps(root: string, setupId: string, out: string[], options: S
   for (const step of planSteps(effectivePlan(payload!))) {
     await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async (lr) => {
       const progress = readProgress(lr.state, setupId);
-      if (stepDone(progress.payload, step.id)) return;
+      const ctx = { root, lr, progress, today: localDateOf(new Date()), out };
+      if (stepDone(progress.payload, step.id)) {
+        await step.tidy?.(ctx);
+        return;
+      }
       // The whole plan, classified in the same hold as the step's write: its compare-and-set.
       const findings = await classifySetup(root, lr.state, progress.payload);
       if (findings.length > 0) throw ambiguities(findings);
-      await step.run({ root, lr, progress, today: localDateOf(new Date()), out });
+      await step.run(ctx);
     });
     await setupApplySeams.fault(`step:${step.id}`);
   }
@@ -1754,6 +1886,9 @@ export async function setupApply(root: string, raw: unknown, options: SetupApply
   return guarded(payload.setupId, out, async () => {
     // Before any write: every user-file path stays inside the project once resolved (review r1 #1).
     for (const f of payload.governance.files) await containedTarget(absRoot, f.path, true);
+    for (const ptr of payload.governance.pointers ?? []) {
+      if (!existsSync(await containedTarget(absRoot, ptr.path, true))) throw new SetupStop(2, `the pointer target ${ptr.path} does not exist; a pointer block goes into an entry file already there`);
+    }
     const wrap = join(absRoot, ".story");
     let start: Start = { kind: "run" };
     if (existsSync(join(wrap, "config.json")) || !(await bootstrap(absRoot, payload, out, options))) {
@@ -1974,6 +2109,14 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
       resolved.push(`-> storybloq · resolved .gitignore: applied`);
       continue;
     }
+    const ptr = (plan.governance.pointers ?? []).find((x) => x.path === r.target);
+    if (r.resolution === "applied" && ptr) {
+      // The owner made the edit; the pointer step finds the block byte for byte and receipts it.
+      const current = await readOrNull(join(root, ptr.path));
+      if (hasReceipt(p, `pointer:${ptr.path}`) || current === null || !current.includes(ptr.block)) return `${ptr.path}: applied, but it does not carry setup's pointer block yet.`;
+      resolved.push(`-> storybloq · resolved ${ptr.path}: applied`);
+      continue;
+    }
     if (!f) {
       const open = findings.map((x) => `${x.target} (${x.resolutions.join(" | ")})`);
       return `no open ambiguity at ${r.target} takes ${r.resolution}; open: ${open.length > 0 ? open.join("; ") : "none"}.`;
@@ -2098,6 +2241,13 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
       case "pointer":
         baseline("gitignore", "file:.gitignore", KEPT);
         if (f.kind === "pointer") cleanup.push(() => removeProposed(join(root, ".gitignore"), setupId));
+        break;
+      case "entry-pointer":
+      case "pointer-drift":
+      case "proposal-conflict":
+        // keep-current: the owner's file as it is, a waived pointer; only setup's own proposal is removed.
+        baseline(`pointer:${f.ref.path}`, `file:${f.ref.path}`, KEPT, { outcome: "waived" });
+        if (f.kind === "entry-pointer") cleanup.push(() => tidyPointer(root, f.ref.path!, p, out));
         break;
       default:
         break;

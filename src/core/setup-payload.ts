@@ -119,6 +119,10 @@ const Coverage = z.object({
 
 const GovernanceFile = z.object({ path: text, content: z.string() }).strict();
 
+/** The entry files a setup may point at its canonical facts from (T-538 S3b): a block the owner adds, never the engine. */
+export const POINTER_FILES = ["CLAUDE.md", "AGENTS.md"] as const;
+const Pointer = z.object({ path: z.enum(POINTER_FILES), block: z.string() }).strict();
+
 const Receipt = z.object({
   step: text,
   target: text,
@@ -126,6 +130,8 @@ const Receipt = z.object({
   ownedPost: sha256Hex,
   edges: z.array(z.tuple([text, text])).optional(),
   revision: sha256Hex.optional(),
+  /** A pointer step's outcome: the block was found in the file, or the owner kept the file without it. */
+  outcome: z.enum(["applied", "waived"]).optional(),
 }).strict();
 
 const Amendment = z.object({
@@ -168,6 +174,8 @@ export const SetupPayloadSchema = z.object({
   governance: z.object({
     canonicalFactsPath: text,
     files: z.array(GovernanceFile),
+    /** Optional, so a payload from before pointers serializes as it did. */
+    pointers: z.array(Pointer).optional(),
   }).strict(),
   git: z.object({ init: z.boolean(), gitignore: z.array(text) }).strict(),
   phases: z.array(Phase),
@@ -370,6 +378,13 @@ function referenceProblem(p: SetupPayload): string | null {
     const earlier = destinations.get(dest);
     if (earlier !== undefined) return `governance files ${earlier} and ${f.path} are the same file`;
     destinations.set(dest, f.path);
+  }
+  const pointed = new Set<string>();
+  for (const ptr of p.governance.pointers ?? []) {
+    if (pointed.has(ptr.path)) return `two pointers name ${ptr.path}; an entry file takes one block`;
+    pointed.add(ptr.path);
+    if (destinations.has(ptr.path)) return `${ptr.path} is both a governance file and a pointer target`;
+    if (ptr.block.trim() === "" || !ptr.block.endsWith("\n")) return `the pointer block for ${ptr.path} must be non-empty and end in a newline`;
   }
   for (const block of [...(p.frozen ? [p.frozen] : []), ...p.frozenHistory]) {
     if (escapes(block.handover.path)) return `the frozen handover path leaves the project: ${block.handover.path}`;

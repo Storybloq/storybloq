@@ -608,7 +608,8 @@ function commandResponses(words: readonly string[], cmd: { words: readonly strin
   const u = unwrap(words as string[]);
   if (u.inner !== null) return shellResponses(u.inner, depth + 1);
   const argv = u.argv;
-  if (argv.length === 0 || isReader(argv)) return [];
+  // What a runner runs directly gets no reader or data-only exemption: a mistaken target can only give a false finding.
+  if (argv.length === 0 || (!viaRunner && isReader(argv))) return [];
   const target = runnerTarget(argv);
   if (target !== null) {
     if ("opaque" in target) return NAMES_WORDS.test(argv.join(" ")) || NAMES_RESOLVE.test(text) ? [null] : [];
@@ -622,8 +623,9 @@ function commandResponses(words: readonly string[], cmd: { words: readonly strin
     const at = selectsResolve(argv, 1);
     return at !== null ? [responseFlag(argv.slice(at + 1))] : [];
   }
-  if (dataOnly(argv)) return [];
+  if (!viaRunner && dataOnly(argv)) return [];
   if (/[$`]/.test(argv[0] ?? "") || FED.has(exe)) return /storybloq/.test(text) && NAMES_WORDS.test(text) ? [null] : [];
+  if (viaRunner) return NAMES_WORDS.test(argv.join(" ")) || NAMES_RESOLVE.test(text) ? [null] : [];
   const consecutive = argv.some((w, i) => w === "checkpoint" && argv[i + 1] === "resolve");
   if (cmd.live.some((l) => NAMES_RESOLVE.test(l))) return [];
   return consecutive || NAMES_RESOLVE.test(argv.join(" ")) || NAMES_RESOLVE.test(cmd.words.join(" ")) || (cmd.heredoc && NAMES_RESOLVE.test(text)) ? [null] : [];

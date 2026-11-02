@@ -83,7 +83,7 @@ function withoutRedirects(argv: readonly string[]): string[] {
   return out;
 }
 
-function isReader(argv: readonly string[]): boolean {
+export function isReader(argv: readonly string[]): boolean {
   const bin = baseName(argv[0] ?? "");
   if (bin === "git") return GIT_READS.has(argv.slice(1).find((w) => !w.startsWith("-")) ?? "");
   if (!READERS.has(bin)) return false;
@@ -135,7 +135,9 @@ function judge(cmd: ShellCommand, argv: readonly string[], context: string, inSt
   if (family !== null) {
     const flag = INLINE[family]!;
     const at = args.findIndex((w) => flag.test(w));
-    if (at >= 0 && (mentions(args[at + 1] ?? "") || (family === "perl" && args.slice(at + 1).some(mentions)))) return { reason: `${bin} inline code that names .story`, entersStory: false };
+    if (at >= 0 && mentions(args[at + 1] ?? "")) return { reason: `${bin} inline code that names .story`, entersStory: false };
+    if (at >= 0 && args.slice(at + 2).some(mentions)) return { reason: `${bin} inline code with .story in its arguments`, entersStory: false };
+    if (at >= 0 && risky && args.slice(at + 1).some(expands)) return { reason: `${bin} inline code with an expansion in its arguments, in a call that names .story`, entersStory: false };
     if (cmd.heredoc && mentions(fullText)) return { reason: `${bin} reading a here-document, in a call that names .story`, entersStory: false };
     if (at >= 0 || cmd.heredoc) return { reason: null, entersStory: false };
   }
@@ -148,11 +150,12 @@ function judge(cmd: ShellCommand, argv: readonly string[], context: string, inSt
 /** The operators the detector models between commands: `&&`, `||`, `;`, a newline, and `|` into a reader. */
 const MODELLED = new Set(["&&", "||", ";", "\n", "|", ""]);
 
-function shellFindings(text: string, root: string, depth = 0): string[] {
+/** A nested shell starts where its parent stands and knows what the parent's text named; its own `cd` stays inside it. */
+function shellFindings(text: string, root: string, depth = 0, inherited: { inStory: boolean; context: string } = { inStory: false, context: "" }): string[] {
   const findings: string[] = [];
   const { commands, operators } = shellSequence(text);
-  let inStory = false;
-  let context = "";
+  let inStory = inherited.inStory;
+  let context = inherited.context;
   let pipedInto = false;
   const unmodelled = operators.filter((o) => !MODELLED.has(o));
   if (unmodelled.length > 0 && mentions(text)) findings.push(`an operator the detector does not model (${[...new Set(unmodelled)].join(" ")}) in a call that names .story`);
@@ -160,14 +163,14 @@ function shellFindings(text: string, root: string, depth = 0): string[] {
     context += ` ${cmd.words.join(" ")} ${cmd.live.join(" ")}`;
     const u = unwrap(cmd.words);
     if (u.inner !== null) {
-      if (depth < 3) findings.push(...shellFindings(u.inner, root, depth + 1));
+      if (depth < 3) findings.push(...shellFindings(u.inner, root, depth + 1, { inStory, context }));
       else if (mentions(u.inner)) findings.push("a nested shell too deep to read, in a call that names .story");
     } else {
       const j = judge(cmd, u.argv.length > 0 ? u.argv : cmd.words.filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)), context, inStory, pipedInto, root, text);
       if (j.reason !== null) findings.push(`${j.reason}: ${shown(cmd.words)}`);
       if (j.entersStory) inStory = true;
     }
-    for (const live of cmd.live) if (mentions(live)) findings.push(...shellFindings(live, root, depth + 1));
+    for (const live of cmd.live) if (mentions(live) || inStory) findings.push(...shellFindings(live, root, depth + 1, { inStory, context }));
     pipedInto = cmd.sep === "|";
   }
   return findings;

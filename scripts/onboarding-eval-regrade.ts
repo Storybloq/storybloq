@@ -231,7 +231,7 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
   const invocationsBytes = read(INVOCATIONS_RAW, true)!;
   let invocations: { projectRoot?: unknown; mapping?: unknown };
   try { invocations = JSON.parse(invocationsBytes.toString("utf-8")) as typeof invocations; } catch { return refuse(`replay input ${INVOCATIONS_RAW} is malformed`); }
-  if (typeof invocations.projectRoot !== "string" || !Array.isArray(invocations.mapping)) refuse(`replay input ${INVOCATIONS_RAW} is malformed`);
+  if (invocations === null || typeof invocations.projectRoot !== "string" || !Array.isArray(invocations.mapping)) refuse(`replay input ${INVOCATIONS_RAW} is malformed`);
   const entries: ManifestEntry[] = [
     { path: EVENTS_RAW, sha256: sha256(eventsBytes) },
     { path: INVOCATIONS_RAW, sha256: sha256(invocationsBytes) },

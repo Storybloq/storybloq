@@ -24,6 +24,8 @@ import {
 import { applySetupReviewChecks, checkSetupReview, cs6TurnsFrom, STORE_COPY, STORE_COPY_MISSING } from "../../scripts/onboarding-eval-checkset6.js";
 import { createHash } from "node:crypto";
 import { setAfterWriteFault, setupApplySeams } from "../../src/core/setup-apply.js";
+import { evidenceFileSeams } from "../../src/core/checkpoint-evidence-files.js";
+import { transactionSeams } from "../../src/core/project-loader.js";
 import { handleSetupApply } from "../../src/cli/commands/setup-apply.js";
 import { collector } from "../../scripts/eval-fault-mcp.js";
 
@@ -312,7 +314,22 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
   let n = 0;
   beforeAll(() => { scratch = realpathSync(mkdtempSync(join(tmpdir(), "regrade7-"))); });
   afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
-  afterEach(() => { setupApplySeams.fault = () => {}; });
+  const seamDefaults = { evidence: evidenceFileSeams.afterCreate, afterTemp: transactionSeams.afterTemp, afterCommitEntry: transactionSeams.afterCommitEntry };
+  afterEach(() => {
+    setupApplySeams.fault = () => {};
+    evidenceFileSeams.afterCreate = seamDefaults.evidence;
+    transactionSeams.afterTemp = seamDefaults.afterTemp;
+    transactionSeams.afterCommitEntry = seamDefaults.afterCommitEntry;
+  });
+  it("a test installs the collector", () => {
+    setAfterWriteFault(() => {});
+    expect(transactionSeams.afterTemp).not.toBe(seamDefaults.afterTemp);
+  });
+  it("the next test sees the default on every seam it installed", () => {
+    expect(evidenceFileSeams.afterCreate).toBe(seamDefaults.evidence);
+    expect(transactionSeams.afterTemp).toBe(seamDefaults.afterTemp);
+    expect(transactionSeams.afterCommitEntry).toBe(seamDefaults.afterCommitEntry);
+  });
 
   const payload = {
     version: 1, setupId: SID, review: { reviewer: "codex", outcome: "approved", lines: ["Plan review: approved"] }, ownerLabel: "Sam",
@@ -432,6 +449,8 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     expect(refused(withRaw(s.input, "invocations.json", `${stored} `))).toBe("replay input invocations.json does not match its recorded sha256");
     expect(refused(withRaw(s.input, "invocations.json", "{", true))).toBe("replay input invocations.json is malformed");
     expect(refused(withRaw(s.input, "invocations.json", "{}", true))).toBe("replay input invocations.json is malformed");
+    expect(refused(withRaw(s.input, "invocations.json", "null", true))).toBe("replay input invocations.json is malformed");
+    expect(refused(withRaw(s.input, "invocations.json", "[]", true))).toBe("replay input invocations.json is malformed");
     const differs = JSON.stringify({ ...(JSON.parse(stored) as object), mapping: [] }, null, 2) + "\n";
     expect(refused(withRaw(s.input, "invocations.json", differs, true))).toBe("invocations.json differs from the mapping the replayed run produces");
   });

@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { driveFlow, newDriveState, setupView, finishDrive, type DriveState, type TurnResponse } from "../../scripts/onboarding-eval-drive.js";
 import { ownerScript, packageTurns, faultFor } from "../../scripts/onboarding-eval-run.js";
 import {
-  applySessionChecks, artifactFindings, completionsOf, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
+  applySessionChecks, demoFacts, artifactFindings, completionsOf, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
   type HarnessFacts, type SessionCheckInputs, type SessionVariant,
 } from "../../scripts/onboarding-eval-sessions.js";
 import { rule9 } from "../../scripts/onboarding-eval-checkset7.js";
@@ -113,49 +113,76 @@ describe("the drive with later sessions", () => {
 describe("interrupted", () => {
   const resumed: Synth = { text: "Resumed and finished.", calls: [sh(`storybloq setup-apply --resume --setup ${SID}`, `Setup applied: ${SID}`)] };
   it("passes when the fault fired, session 2 resumes without asking, and each key commits once", () => {
-    expect(check(drive("interrupted", [resumed]), "interrupted", { harness: { fault: "step:handover", fired: true } })).toEqual([]);
+    expect(check(drive("interrupted", [resumed]), "interrupted", { mapping: [map(4, 0)], harness: { fault: "step:handover", fired: true } })).toEqual([]);
   });
   it("fails a fault that never fired", () => {
-    expect(check(drive("interrupted", [resumed]), "interrupted", { harness: { fault: "step:handover", fired: false } })).toEqual(["interrupted: the fault step:handover never fired (no .fired marker after session 1)"]);
+    expect(check(drive("interrupted", [resumed]), "interrupted", { mapping: [map(4, 0)], harness: { fault: "step:handover", fired: false } })).toEqual(["interrupted: the fault step:handover never fired (no .fired marker after session 1)"]);
   });
   it("fails a discovery question in session 2", () => {
-    expect(check(drive("interrupted", [{ text: "Before I continue: who will use the app?" }]), "interrupted", { harness: { fired: true } })).toEqual(["interrupted: session 2 asked a discovery question (turn 5)"]);
+    expect(check(drive("interrupted", [{ text: "Before I continue: who will use the app?" }]), "interrupted", { mapping: [map(4, 0)], harness: { fired: true } })).toEqual(["interrupted: session 2 asked a discovery question (turn 5)"]);
   });
   it("fails a duplicated key and a repeated archive step", () => {
     const twice = log("step:item:K2", "step:item:K2", "archive-committed", "step:archive", "step:archive");
-    expect(check(drive("interrupted", [resumed]), "interrupted", { harness: { fired: true }, log: twice })).toEqual(["interrupted: item:K2 committed 2 times", "interrupted: archive committed 2 times"]);
+    expect(check(drive("interrupted", [resumed]), "interrupted", { mapping: [map(4, 0)], harness: { fired: true }, log: twice })).toEqual(["interrupted: item:K2 committed 2 times", "interrupted: archive committed 2 times"]);
+  });
+  it("fails a retry that finished the setup in session 1, with session 2 doing nothing", () => {
+    expect(check(drive("interrupted", [{ text: "Nothing to do." }]), "interrupted", { mapping: [{ ...map(2, 0), exitCode: null }, map(3, 0)], harness: { fired: true } })).toEqual([
+      "interrupted: session 1 finished the setup itself (turn 4), so the resume was never exercised",
+      "interrupted: no setup-apply call in session 2 finished the setup",
+    ]);
+  });
+  it("fails a session 2 whose resume did not finish", () => {
+    expect(check(drive("interrupted", [resumed]), "interrupted", { mapping: [map(4, 7)], harness: { fired: true } })).toEqual(["interrupted: no setup-apply call in session 2 finished the setup"]);
   });
 });
 
 describe("interrupted-edited", () => {
   const edits = { edgeTicket: "T-3", blocker: "T-1", describedTicket: "T-1", description: "edited" };
-  const resolve = JSON.stringify([{ target: "T-1", resolution: "accept-current", ownerWords: "Keep my edited description." }]);
+  const resolve = JSON.stringify([{ target: "K2 (T-1)", resolution: "accept-current", ownerWords: "Keep my edited description." }]);
+  const described = { ...ticket("T-1"), description: "edited" };
   const sessions: Synth[] = [
     { text: "The description of T-1 changed. Keep yours or mine?", calls: [sh(`storybloq setup-apply --resume --setup ${SID}`, "Ambiguity: T-1")] },
     { text: `Setup applied: ${SID}`, calls: [sh(`storybloq setup-apply --setup ${SID} --resolve '${resolve}'`, `Setup applied: ${SID}`)] },
   ];
-  const ok = { harness: { fired: true, edits, storeRevisions: 2 }, mapping: [map(4, 4), map(5, 0)], tickets: [ticket("T-1"), ticket("T-3", ["T-1"])] };
+  const ok = { harness: { fired: true, edits, storeRevisions: 2 }, mapping: [map(4, 4), map(5, 0)], tickets: [described, ticket("T-3", ["T-1"])] };
   it("passes when the edge is kept, the edit stops at exit 4, and accept-current carries the owner's words", () => {
     expect(check(drive("interrupted-edited", sessions), "interrupted-edited", ok)).toEqual([]);
   });
   it("fails a lost edge", () => {
-    expect(check(drive("interrupted-edited", sessions), "interrupted-edited", { ...ok, tickets: [ticket("T-1"), ticket("T-3")] })).toEqual(["interrupted-edited: T-3 lost the owner's blockedBy edge on T-1"]);
+    expect(check(drive("interrupted-edited", sessions), "interrupted-edited", { ...ok, tickets: [described, ticket("T-3")] })).toEqual(["interrupted-edited: T-3 lost the owner's blockedBy edge on T-1"]);
   });
   it("fails a description edit that did not stop the run", () => {
     expect(check(drive("interrupted-edited", sessions), "interrupted-edited", { ...ok, mapping: [map(4, 0), map(5, 0)] })).toEqual(["interrupted-edited: no setup-apply call in session 2 stopped at exit 4 on the edited description"]);
   });
   it("fails a resolution in words the owner never said, and an amendment with no review", () => {
-    const other = JSON.stringify([{ target: "T-1", resolution: "accept-current", ownerWords: "keep theirs" }]);
+    const other = JSON.stringify([{ target: "K2 (T-1)", resolution: "accept-current", ownerWords: "keep theirs" }]);
     const s = drive("interrupted-edited", [sessions[0]!, { text: "Done.", calls: [sh(`storybloq setup-apply --setup ${SID} --resolve '${other}'`)] }]);
     expect(check(s, "interrupted-edited", { ...ok, harness: { ...ok.harness, storeRevisions: 1 } })).toEqual([
       "interrupted-edited: the accept-current resolution at turn 6 carries words no owner turn of session 2 said (\"keep theirs\")",
       "interrupted-edited: the setup review store holds no review of the amendment",
     ]);
   });
+  it("fails a final description that is not the owner's edit", () => {
+    expect(check(drive("interrupted-edited", sessions), "interrupted-edited", { ...ok, tickets: [{ ...described, description: "restored" }, ticket("T-3", ["T-1"])] })).toEqual(["interrupted-edited: T-1's final description is not the owner's edit"]);
+    expect(check(drive("interrupted-edited", sessions), "interrupted-edited", { ...ok, tickets: [ticket("T-3", ["T-1"])] })).toEqual(["interrupted-edited: T-1's final description is not the owner's edit"]);
+  });
+  it("fails accept-current on any target but the edited tickets", () => {
+    const elsewhere = JSON.stringify([{ target: "K9 (T-9)", resolution: "accept-current", ownerWords: "Keep my edited description." }]);
+    const s = drive("interrupted-edited", [sessions[0]!, { text: "Done.", calls: [sh(`storybloq setup-apply --setup ${SID} --resolve '${elsewhere}'`)] }]);
+    expect(check(s, "interrupted-edited", ok)).toEqual([
+      "interrupted-edited: session 2 never resolved the edited description with accept-current",
+      "interrupted-edited: the accept-current resolution at turn 6 targets K9 (T-9), which the harness did not edit",
+    ]);
+  });
+  it("accepts the owner's edge edit too", () => {
+    const both = JSON.stringify([{ target: "K2 (T-1)", resolution: "accept-current", ownerWords: "Keep my edited description." }, { target: "K3 (T-3)", resolution: "accept-current", ownerWords: "Keep my edited description." }]);
+    const s = drive("interrupted-edited", [sessions[0]!, { text: "Done.", calls: [sh(`storybloq setup-apply --setup ${SID} --resolve '${both}'`)] }]);
+    expect(check(s, "interrupted-edited", ok)).toEqual([]);
+  });
 });
 
 describe("milestone-demo", () => {
-  const demo = { command: DEMO, expected: "Today: Sam waters beds 1-4", stdout: "Today: Sam waters beds 1-4\n" };
+  const demo = { command: DEMO, expected: "Today: Sam waters beds 1-4", stdout: "Today: Sam waters beds 1-4\n", status: 0, signal: null, error: null };
   const run: Synth[] = [
     { text: "Milestone 1 is built; here is the demo.", calls: [sh(DEMO, demo.expected)] },
     { text: "Recorded your approval." },
@@ -176,6 +203,18 @@ describe("milestone-demo", () => {
       "milestone-demo: the targeted run on T-3 did not come back checkpoint-blocked",
     ]);
   });
+  it.each([
+    ["a non-zero exit", { status: 1 }, "status 1, signal none, error none"],
+    ["a signal", { status: null, signal: "SIGKILL" }, "status none, signal SIGKILL, error none"],
+    ["a spawn error", { status: null, error: "spawnSync /bin/sh ETIMEDOUT" }, "status none, signal none, error spawnSync /bin/sh ETIMEDOUT"],
+    ["a record with no status", { status: undefined }, "status none, signal none, error none"],
+  ])("fails a demo with the right stdout and %s", (_label, over, detail) => {
+    expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo: { ...demo, ...over } as never, dependent: "T-3" } })).toEqual([`milestone-demo: the demo command did not exit 0 (${detail})`]);
+  });
+  it("records what the demo's process did", () => {
+    expect(demoFacts("c", "e", { status: 3, signal: null, stdout: "x" })).toEqual({ command: "c", expected: "e", stdout: "x", status: 3, signal: null, error: null });
+    expect(demoFacts("c", "e", { status: null, signal: "SIGTERM", stdout: null, error: new Error("boom") })).toEqual({ command: "c", expected: "e", stdout: "", status: null, signal: "SIGTERM", error: "boom" });
+  });
   it("fails a missing follow-up (rule 9)", () => {
     const followUp = { titlePattern: "^Add tap to rota line", checkpoint: { kind: "acceptance" as const, owner: "Robin" } };
     const cp = { id: "T-2", title: "Watering rota demo", setup: { setupId: SID, key: "K4" }, ownerCheckpoint: { kind: "acceptance", owner: "Robin", resolution: { response: "ok", rulingId: "r-1" } } };
@@ -185,13 +224,24 @@ describe("milestone-demo", () => {
 
 describe("empty-idea-verify", () => {
   const tickets = [ticket("T-1"), ticket("T-2", ["T-1"])];
-  const done = (id: string) => tool("storybloq_ticket_update", { id, status: "complete" });
+  const done = (id: string) => tool("storybloq_ticket_update", { id, status: "complete" }, "Updated");
   it("passes when TEST is on and every ticket completes after its blockers", () => {
     expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [done("T-1"), done("T-2")] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual([]);
   });
   it("reads the guide's own completion line too", () => {
     const guide = tool("storybloq_autonomous_guide", {}, "Ticket **T-1** completed.");
     expect(completionsOf({ name: "storybloq_autonomous_guide", command: null, input: {}, output: guide.result! })).toEqual(["T-1"]);
+  });
+  it("fails a run that completed nothing", () => {
+    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: session 2 completed no ticket"]);
+  });
+  it("does not count a failed status update as a completion", () => {
+    const failed = { ...done("T-1"), isError: true };
+    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [failed, done("T-2")] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: T-2 completed before its blocker T-1"]);
+    const unanswered = tool("storybloq_ticket_update", { id: "T-1", status: "complete" });
+    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [unanswered] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: session 2 completed no ticket"]);
+    const cli = { ...sh("storybloq ticket update T-1 --status complete", "Error: refused"), isError: true };
+    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [cli] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: session 2 completed no ticket"]);
   });
   it("fails a ticket completed before its blocker, and a config without TEST", () => {
     expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [done("T-2"), done("T-1")] }]), "empty-idea-verify", { harness: { testEnabled: false }, tickets })).toEqual([
@@ -281,7 +331,15 @@ const PLUMBING: readonly { variant: SessionVariant; fixture: string; fault?: str
   { variant: "restart", fixture: "empty-idea" },
 ];
 
+/** The runner finished on its own: 0 or 1 (a graded failure), never a refusal, a timeout or a signal. */
+function expectRunnerFinished(r: { status: number | null; signal?: NodeJS.Signals | null; stdout?: string; stderr?: string }): void {
+  expect([0, 1], `status ${String(r.status)} signal ${String(r.signal ?? null)}\n${r.stdout ?? ""}\n${r.stderr ?? ""}`).toContain(r.status);
+}
+
 describe("the runner's plumbing per variant", () => {
+  it.each([[null, "SIGKILL"], [null, null], [2, null]] as const)("status %s signal %s is not a finished run", (status, signal) => {
+    expect(() => expectRunnerFinished({ status, signal })).toThrow();
+  });
   for (const p of PLUMBING) {
     it(`${p.variant} leaves every artifact its contract requires`, () => {
       // A short name: tsx's IPC pipe lives at $TMPDIR/tsx-<uid>/<pid>.pipe, and a long TMPDIR truncates that socket path past 104 bytes.
@@ -306,7 +364,7 @@ describe("the runner's plumbing per variant", () => {
         const raw = join(dir, "raw");
         const args = [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw, ...(p.fault ? ["--fault", p.fault] : [])];
         const r = spawnSync(process.execPath, args, { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
-        expect(r.status, `${r.stdout}\n${r.stderr}`).not.toBe(2);
+        expectRunnerFinished(r);
         const runId = readdirSync(raw)[0]!;
         const names = readdirSync(join(raw, runId));
         const events = readFileSync(join(raw, runId, "events.jsonl"), "utf-8");
@@ -318,6 +376,7 @@ describe("the runner's plumbing per variant", () => {
         expect(record.replayInputs.map((e) => e.path)).toEqual(expect.arrayContaining(requiredArtifacts(p.variant, completed)));
         expect(record.failures.filter((f) => f.startsWith("artifact:"))).toEqual([]);
         const sessions = JSON.parse(readFileSync(join(raw, runId, "sessions.json"), "utf-8")) as { sessions: { session: number }[]; harness: HarnessFacts };
+        if (p.variant === "milestone-demo") expect(sessions.harness.demo).toHaveProperty("status");
         expect(sessions.sessions.length).toBeGreaterThanOrEqual(2);
         if (p.fault) expect(sessions.harness.fired).toBe(true);
         if (p.variant === "interrupted-edited") expect(sessions.harness.edits).not.toBeNull();

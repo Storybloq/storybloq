@@ -12,8 +12,9 @@
 //   (--tsup-only is the child process buildEval runs in the package root)
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const EVAL_DIST = ".eval-dist";
 export const EVAL_INPUTS = ["src", "scripts/eval-fault-mcp.ts", "scripts/build-eval.mjs", "tsup.config.ts", "package.json", "package-lock.json"];
@@ -69,8 +70,11 @@ export async function buildEval(root, { force = false } = {}) {
   return { digest, built: true };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname)) {
-  const root = resolve(new URL("..", import.meta.url).pathname);
+// The script's own path, as a file path (a URL's pathname keeps a space percent-encoded), with symlinks resolved on
+// both sides: node resolves its main module, so an unresolved argv would silently skip all of this and exit 0.
+const self = fileURLToPath(import.meta.url);
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(self)) {
+  const root = resolve(dirname(self), "..");
   if (process.argv.includes("--tsup-only")) {
     const { build } = await import("tsup");
     await build({

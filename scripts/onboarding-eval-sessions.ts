@@ -112,6 +112,20 @@ export interface SessionSpan {
   readonly calls: readonly [number, number];
 }
 
+export interface DemoFacts {
+  readonly command: string;
+  readonly expected: string;
+  readonly stdout: string;
+  readonly status: number | null;
+  readonly signal: string | null;
+  readonly error: string | null;
+}
+
+/** The demo run as sessions.json records it, from its spawnSync result. */
+export function demoFacts(command: string, expected: string, r: { readonly status: number | null; readonly signal: string | null; readonly stdout?: string | null; readonly error?: Error }): DemoFacts {
+  return { command, expected, stdout: r.stdout ?? "", status: r.status, signal: r.signal, error: r.error?.message ?? null };
+}
+
 /** What the harness itself did and saw, recorded so the regrade reads the facts the run graded. */
 export interface HarnessFacts {
   /** The `--fault` selector set in session 1, or null. */
@@ -120,8 +134,8 @@ export interface HarnessFacts {
   readonly fired: boolean | null;
   /** interrupted-edited: the owner edits the harness made between the sessions. */
   readonly edits: { readonly edgeTicket: string; readonly blocker: string; readonly describedTicket: string; readonly description: string } | null;
-  /** milestone-demo: the demo command, the rubric's stdout, and what the harness's own run printed. */
-  readonly demo: { readonly command: string; readonly expected: string; readonly stdout: string } | null;
+  /** milestone-demo: the demo command, the rubric's stdout, and what the harness's own run printed and how it ended. */
+  readonly demo: DemoFacts | null;
   /** milestone-demo: the ticket the milestone checkpoint gates. */
   readonly dependent: string | null;
   /** restart: the live `setup-report` lines read before the fresh session. */
@@ -203,7 +217,7 @@ export function artifactFindings(variant: string, completed: boolean, present: (
 export interface VariantTurn {
   readonly owner: string;
   readonly text: string;
-  readonly calls: readonly { readonly name: string; readonly command: string | null; readonly input: unknown; readonly output: string }[];
+  readonly calls: readonly { readonly name: string; readonly command: string | null; readonly input: unknown; readonly output: string; readonly isError?: boolean }[];
 }
 
 export interface VariantInputs {
@@ -248,6 +262,8 @@ export function resolutionsOf(call: VariantTurn["calls"][number]): { target?: st
 
 /** The tickets a call completes, in the order it reports them: a status update to complete, or the guide's completion line. */
 export function completionsOf(call: VariantTurn["calls"][number]): string[] {
+  // A failed or unanswered call completed nothing, whatever it asked for.
+  if (call.isError === true || call.output === "") return [];
   if (call.command !== null) {
     const m = /^storybloq ticket update\s+(\S+)[^\n]*\s--status\s+['"]?complete\b/.exec(call.command);
     return m ? [m[1]!.replace(/^['"]|['"]$/g, "")] : [];
@@ -274,6 +290,9 @@ function interruptedFindings(i: VariantInputs): string[] {
   const counts = new Map<string, number>();
   for (const e of i.log?.events ?? []) if (e.point.startsWith("step:item:") || e.point === "step:archive") counts.set(e.point, (counts.get(e.point) ?? 0) + 1);
   for (const [point, n] of counts) if (n > 1) out.push(`${v}: ${point.slice("step:".length)} committed ${n} times`);
+  // The resume is the point: a retry inside session 1 proves nothing about a fresh session picking the setup up.
+  for (const m of i.mapping) if (sessionOf(i.sessions, m.turn) === 1 && m.exitCode === 0) out.push(`${v}: session 1 finished the setup itself (turn ${m.turn + 1}), so the resume was never exercised`);
+  if (!i.mapping.some((m) => sessionOf(i.sessions, m.turn) >= 2 && m.exitCode === 0)) out.push(`${v}: no setup-apply call in session 2 finished the setup`);
   return out;
 }
 
@@ -281,17 +300,26 @@ function editedFindings(i: VariantInputs): string[] {
   const out: string[] = [];
   const e = i.harness.edits;
   if (e === null) return ["interrupted-edited: the harness made no edit between the sessions"];
-  const edged = i.tickets.find((t) => displayOf(t) === e.edgeTicket || idOf(t) === e.edgeTicket) as { blockedBy?: string[] } | undefined;
+  const byRef = (ref: string) => i.tickets.find((t) => displayOf(t) === ref || idOf(t) === ref);
+  if ((byRef(e.describedTicket) as { description?: string } | undefined)?.description !== e.description) out.push(`interrupted-edited: ${e.describedTicket}'s final description is not the owner's edit`);
+  const edged = byRef(e.edgeTicket) as { blockedBy?: string[] } | undefined;
   const blocker = i.tickets.find((t) => displayOf(t) === e.blocker || idOf(t) === e.blocker);
   const refs = new Set([e.blocker, ...(blocker !== undefined ? [idOf(blocker), displayOf(blocker)] : [])]);
   if (!(edged?.blockedBy ?? []).some((b) => refs.has(b))) out.push(`interrupted-edited: ${e.edgeTicket} lost the owner's blockedBy edge on ${e.blocker}`);
   if (!i.mapping.some((m) => sessionOf(i.sessions, m.turn) >= 2 && m.exitCode === 4)) out.push("interrupted-edited: no setup-apply call in session 2 stopped at exit 4 on the edited description");
-  const accepts: { turn: number; words: string }[] = [];
+  // The engine's target reads `<key> (<display id>)`; a bare reference is accepted too.
+  const names = (target: string, ref: string): boolean => {
+    const t = byRef(ref);
+    const refs = [ref, ...(t !== undefined ? [idOf(t), displayOf(t)] : [])];
+    return refs.includes(target) || refs.includes(/\(([^()]+)\)$/.exec(target)?.[1] ?? "");
+  };
+  const accepts: { turn: number; words: string; target: string }[] = [];
   i.turns.forEach((t, n) => {
     if (sessionOf(i.sessions, n) < 2) return;
-    for (const c of t.calls) for (const r of resolutionsOf(c) ?? []) if (r.resolution === "accept-current") accepts.push({ turn: n, words: r.ownerWords ?? "" });
+    for (const c of t.calls) for (const r of resolutionsOf(c) ?? []) if (r.resolution === "accept-current") accepts.push({ turn: n, words: r.ownerWords ?? "", target: r.target ?? "" });
   });
-  if (accepts.length === 0) out.push("interrupted-edited: session 2 never resolved the edited description with accept-current");
+  if (!accepts.some((a) => names(a.target, e.describedTicket))) out.push("interrupted-edited: session 2 never resolved the edited description with accept-current");
+  for (const a of accepts) if (!names(a.target, e.describedTicket) && !names(a.target, e.edgeTicket)) out.push(`interrupted-edited: the accept-current resolution at turn ${a.turn + 1} targets ${a.target}, which the harness did not edit`);
   for (const a of accepts) {
     const owners = i.turns.slice(i.sessions.find((s) => s.session === 2)?.turns[0] ?? 0, a.turn + 1).map((t) => t.owner);
     if (a.words.trim() === "" || !owners.some((o) => o.includes(a.words.trim()))) out.push(`interrupted-edited: the accept-current resolution at turn ${a.turn + 1} carries words no owner turn of session 2 said ("${a.words}")`);
@@ -304,6 +332,7 @@ function demoFindings(i: VariantInputs): string[] {
   const out: string[] = [];
   const d = i.harness.demo;
   if (d === null) return ["milestone-demo: the harness has no demo run"];
+  if (d.status !== 0 || d.signal || d.error) out.push(`milestone-demo: the demo command did not exit 0 (status ${d.status ?? "none"}, signal ${d.signal ?? "none"}, error ${d.error ?? "none"})`);
   if (d.stdout.trim() !== d.expected.trim()) out.push(`milestone-demo: the demo command printed "${d.stdout.trim()}", not the rubric's "${d.expected.trim()}"`);
   // The demo is shown by running it, before the owner's approval: a narrated result is not a demo.
   // Session 2's turns are milestone-run, demo-approval, change-request (laterSessions): the demo is run inside the first.
@@ -320,11 +349,13 @@ function orderFindings(i: VariantInputs): string[] {
   const out: string[] = [];
   if (i.harness.testEnabled !== true) out.push("empty-idea-verify: the final config does not enable the TEST stage");
   const done = new Set<string>();
+  let completions = 0;
   for (const t of i.ticketsAtSetup) if ((t as { status?: string }).status === "complete") for (const r of [idOf(t), displayOf(t)]) done.add(r);
   const byRef = (ref: string) => i.tickets.find((t) => idOf(t) === ref || displayOf(t) === ref);
   i.turns.forEach((t, n) => {
     if (sessionOf(i.sessions, n) < 2) return;
     for (const c of t.calls) for (const ref of completionsOf(c)) {
+      completions++;
       const ticket = byRef(ref);
       for (const b of ((ticket as { blockedBy?: string[] } | undefined)?.blockedBy ?? [])) {
         const blocker = byRef(b);
@@ -335,6 +366,7 @@ function orderFindings(i: VariantInputs): string[] {
       done.add(ref);
     }
   });
+  if (completions === 0) out.push("empty-idea-verify: session 2 completed no ticket");
   return out;
 }
 

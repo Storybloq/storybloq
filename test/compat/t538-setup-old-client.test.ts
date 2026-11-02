@@ -144,18 +144,28 @@ function scratchHome(home: string): string {
 
 interface Ran { status: number | null; signal: NodeJS.Signals | null; out: string }
 
+/** Past this a child is hung, not slow: below the slowest suite's patience, far above any real CLI call. */
+const RUN_DEADLINE_MS = 120_000;
+
 /** Async, so the real-HOME refusal is a rejection like any other failure. */
-async function run(command: string, args: string[], cwd: string, env: Record<string, string>, stdin = ""): Promise<Ran> {
+async function run(command: string, args: string[], cwd: string, env: Record<string, string>, stdin = "", deadlineMs = RUN_DEADLINE_MS): Promise<Ran> {
   scratchHome(env.HOME!);
-  const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  // Its own process group, so a deadline takes the whole tree: a hung CLI never outlives its test.
+  const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let out = "";
   child.stdout.on("data", (d) => { out += String(d); });
   child.stderr.on("data", (d) => { out += String(d); });
   child.stdin.on("error", () => {});
   child.stdin.end(stdin);
   return new Promise((done, fail) => {
-    child.on("error", fail);
-    child.on("close", (status, signal) => done({ status, signal, out }));
+    const timer = setTimeout(() => {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+      child.stdout.destroy();
+      child.stderr.destroy();
+      fail(new Error(`${command} ${args.join(" ")} passed its ${deadlineMs} ms deadline and was killed; output so far: ${out}`));
+    }, deadlineMs);
+    child.on("error", (err) => { clearTimeout(timer); fail(err); });
+    child.on("close", (status, signal) => { clearTimeout(timer); done({ status, signal, out }); });
   });
 }
 
@@ -318,4 +328,25 @@ describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${LATEST_P
     mkdirSync(cold);
     await expect(oracle(oldCommands, cold)).rejects.toThrow(/settings\.json/);
   });
+});
+
+describe("a hung child never outlives its test", () => {
+  it("the deadline rejects by name and kills the child and what it started", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "t538-deadline-")));
+    try {
+      // Both bounded at 20 s, so a run helper with no deadline leaks nothing for long.
+      const hung = "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{},20000)'], { stdio: 'inherit' }); console.log('pid ' + c.pid); setTimeout(()=>{},20000);";
+      const failure = await run(process.execPath, ["-e", hung], home, { HOME: home, PATH: process.env.PATH ?? "" }, "", 1500).then(() => null, (e: Error) => e);
+      expect(failure?.message).toMatch(/passed its 1500 ms deadline/);
+      const pid = Number(/pid (\d+)/.exec(failure!.message)?.[1]);
+      expect(pid).toBeGreaterThan(0);
+      let alive = true;
+      for (let i = 0; i < 100 && alive; i++) {
+        try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 20)); } catch { alive = false; }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

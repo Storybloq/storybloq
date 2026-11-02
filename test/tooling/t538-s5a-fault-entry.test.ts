@@ -390,8 +390,14 @@ describe("G9: a competing writer", () => {
         child.stdout.on("data", (d) => { writerOutput += String(d); });
         child.stderr.on("data", (d) => { writerOutput += String(d); });
         writer = new Promise((done) => child.on("exit", (code) => done(code)));
-        const exited = await Promise.race([writer.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 1500))]);
-        expect(exited).toBe(false);
+        // Proof the writer reached the lock, not a wait: a contender holds its own `.lock.tmp.<pid>.*` body while it polls.
+        let exited = false;
+        void writer.then(() => { exited = true; });
+        const contending = () => readdirSync(join(root, ".story")).some((n) => n.startsWith(`.lock.tmp.${child.pid}.`));
+        const deadline = Date.now() + 20_000;
+        while (!exited && !contending() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+        expect(exited, `the writer exited before the holder released: ${writerOutput}`).toBe(false);
+        expect(contending(), "the writer never reached the lock").toBe(true);
       }
       collect(point, info);
     });
@@ -487,7 +493,7 @@ describe("G10: the invocation events", () => {
     const seen: Array<string | null> = [];
     setupApplySeams.fault = (_p, info) => { seen.push(info.invocation); };
     const { setupApply } = await import("../../src/core/setup-apply.js");
-    expect((await setupApply(root, payload())).exitCode).toBe(0);
+    expect((await setupApply(root, payload(), { env: childEnv() })).exitCode).toBe(0);
     expect(seen.length).toBeGreaterThan(0);
     expect(new Set(seen)).toEqual(new Set([null]));
   });
@@ -522,6 +528,24 @@ describe("G11: a kill at archive-committed", () => {
 });
 
 describe("G12: the eval bundle is rebuilt by content", () => {
+  it("a package path with a space really builds, over a stale bundle, and the script's own modes run", async () => {
+    const { buildEval, evalInputDigest, EVAL_INPUTS } = await import("../../scripts/build-eval.mjs");
+    const copy = join(scratch, "g12 with space");
+    mkdirSync(copy);
+    for (const input of EVAL_INPUTS) cpSync(join(PKG, input), join(copy, input), { recursive: true });
+    symlinkSync(join(PKG, "node_modules"), join(copy, "node_modules"));
+    mkdirSync(join(copy, ".eval-dist"));
+    for (const name of ["eval-cli.js", "eval-mcp.js"]) writeFileSync(join(copy, ".eval-dist", name), "stale");
+    expect((await buildEval(copy)).built).toBe(true);
+    for (const name of ["eval-cli.js", "eval-mcp.js"]) expect(readFileSync(join(copy, ".eval-dist", name), "utf-8")).not.toBe("stale");
+    const digest = spawnSync(process.execPath, [join(copy, "scripts", "build-eval.mjs"), "--digest"], { encoding: "utf-8" });
+    expect(digest.stdout.trim()).toBe(evalInputDigest(copy));
+    const link = join(scratch, "g12-link");
+    symlinkSync(copy, link);
+    const viaLink = spawnSync(process.execPath, [join(link, "scripts", "build-eval.mjs"), "--digest"], { encoding: "utf-8" });
+    expect(viaLink.stdout.trim()).toBe(evalInputDigest(copy));
+  });
+
   it("an uncommitted src change rebuilds and changes the bundle; nothing changed builds nothing; the build inputs are in the digest", async () => {
     const { buildEval, evalInputDigest, EVAL_INPUTS } = await import("../../scripts/build-eval.mjs");
     const copy = join(scratch, "g12");

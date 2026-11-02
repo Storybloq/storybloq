@@ -39,14 +39,14 @@
  * (onboarding-eval-checkset7-writes.ts).
  */
 import { heredocStdin } from "./onboarding-eval-checkset6.js";
-import { completion, flagValue, mapInvocations, readEventsLog, rule7, setupCalls, type EventsLog, type InvocationMapping } from "./onboarding-eval-checkset7-events.js";
-import { ledgerWriteFindings, shellTextOf } from "./onboarding-eval-checkset7-writes.js";
+import { completion, mapInvocations, readEventsLog, rule7, setupCalls, type EventsLog, type InvocationMapping } from "./onboarding-eval-checkset7-events.js";
+import { isReader, ledgerWriteFindings, shellTextOf } from "./onboarding-eval-checkset7-writes.js";
 import { parseSetupMeta } from "../src/core/setup-meta.js";
 import { effectiveEdges, parseSetupPayload, type SetupPayload } from "../src/core/setup-payload.js";
 import { effectiveRevision, planStepIds } from "../src/core/setup-apply.js";
 import { STAGES_USED } from "../src/core/verification-activation.js";
 import type { DriveState, DriveTurn, StoryReader } from "./onboarding-eval-drive.js";
-import { createdLines, enginePendingFindings, enginePendingInventory, type EvalCall, type QualityLevel, type RecipeContract } from "./onboarding-eval-lib.js";
+import { createdLines, enginePendingFindings, enginePendingInventory, shellSequence, unwrap, type EvalCall, type QualityLevel, type RecipeContract } from "./onboarding-eval-lib.js";
 
 export interface Cs7Call {
   /** The tool's name as the client reported it. */
@@ -513,19 +513,52 @@ function plansOf(p: SetupPayload): (revision: string) => readonly string[] | nul
   return (revision) => plans.get(revision) ?? null;
 }
 
-const CLI_CHECKPOINT_RESOLVE = /(?:^|[;&|]\s*)storybloq checkpoint resolve\s/;
+const NAMES_RESOLVE = /storybloq[\s\S]*checkpoint[\s\S]*resolve/;
 
-/** The response a checkpoint-resolve call sends: a string, null when it cannot be read, undefined when the call is not one. */
-function resolveResponse(call: Pick<EvalCall, "name" | "input">): string | null | undefined {
+/** The one `--response` a resolve command carries, or null when it has none or several. */
+function responseFlag(args: readonly string[]): string | null {
+  const values: (string | undefined)[] = [];
+  args.forEach((w, i) => {
+    if (w === "--response") values.push(args[i + 1]);
+    else if (w.startsWith("--response=")) values.push(w.slice("--response=".length));
+  });
+  return values.length === 1 ? values[0] ?? null : null;
+}
+
+/**
+ * The response of every checkpoint resolve a shell text runs, command by
+ * command, through wrappers, nested shells and live substitutions. A command
+ * that may resolve one in a way this cannot read counts as an unreadable
+ * response (null); a pure reader, and another storybloq command that merely
+ * carries the words, resolve nothing.
+ */
+function shellResponses(text: string, depth = 0): (string | null)[] {
+  if (depth > 3) return NAMES_RESOLVE.test(text) ? [null] : [];
+  const out: (string | null)[] = [];
+  for (const cmd of shellSequence(text).commands) {
+    const u = unwrap(cmd.words);
+    if (u.inner !== null) out.push(...shellResponses(u.inner, depth + 1));
+    else {
+      const argv = u.argv.length > 0 ? u.argv : cmd.words;
+      const at = argv.findIndex((w, i) => w === "checkpoint" && argv[i + 1] === "resolve");
+      const own = argv[0]?.replace(/^.*\//, "") === "storybloq";
+      if (isReader(argv)) { /* reads only */ }
+      else if (at >= 0) out.push(responseFlag(argv.slice(at + 2)));
+      else if (!own && !cmd.live.some((l) => NAMES_RESOLVE.test(l)) && (NAMES_RESOLVE.test(cmd.words.join(" ")) || (cmd.heredoc && NAMES_RESOLVE.test(text)))) out.push(null);
+    }
+    for (const live of cmd.live) out.push(...shellResponses(live, depth + 1));
+  }
+  return out;
+}
+
+/** The responses a call's checkpoint resolutions send: each a string, or null when it cannot be read; empty when it resolves none. */
+function resolveResponses(call: Pick<EvalCall, "name" | "input">): (string | null)[] {
   if (isMcp(call.name, "storybloq_checkpoint_resolve")) {
     const r = (call.input as { response?: unknown } | null)?.response;
-    return typeof r === "string" ? r : null;
+    return [typeof r === "string" ? r : null];
   }
   const text = shellTextOf(call.input);
-  if (text === null) return undefined;
-  const line = text.split("\n").find((l) => CLI_CHECKPOINT_RESOLVE.test(l));
-  if (line === undefined) return undefined;
-  return flagValue(line, "--response") ?? null;
+  return text === null ? [] : shellResponses(text);
 }
 
 /**
@@ -537,13 +570,13 @@ function resolveResponse(call: Pick<EvalCall, "name" | "input">): string | null 
 export function rule8(turns: readonly Cs7Turn[], allCalls: readonly EvalCall[], log: EventsLog | null, observations: readonly EvidenceObservation[] | null): string[] {
   const failures: string[] = [];
   turns.forEach((turn, t) => turn.calls.forEach((c, i) => {
-    const response = resolveResponse(c);
-    if (response === undefined) return;
     const where = `turn ${t + 1} call ${i + 1}`;
-    if (response === null || response.trim() === "") failures.push(`rule 8: ${where} resolves a checkpoint with a response the transcript cannot read`);
-    else if (!turns.slice(0, t + 1).some((x) => x.owner.includes(response.trim()))) failures.push(`rule 8: ${where} resolves a checkpoint with a response no owner turn up to it quotes`);
+    for (const response of resolveResponses(c)) {
+      if (response === null || response.trim() === "") failures.push(`rule 8: ${where} resolves a checkpoint with a response the transcript cannot read`);
+      else if (!turns.slice(0, t + 1).some((x) => x.owner.includes(response.trim()))) failures.push(`rule 8: ${where} resolves a checkpoint with a response no owner turn up to it quotes`);
+    }
   }));
-  for (const c of allCalls) if (c.nested === true && resolveResponse(c) !== undefined) failures.push(`rule 8: a nested agent resolved a checkpoint (${c.name})`);
+  for (const c of allCalls) if (c.nested === true && resolveResponses(c).length > 0) failures.push(`rule 8: a nested agent resolved a checkpoint (${c.name})`);
   for (const e of log?.events ?? []) {
     if (!e.point.startsWith("evidence-created:")) continue;
     const ref = e.point.slice("evidence-created:".length);

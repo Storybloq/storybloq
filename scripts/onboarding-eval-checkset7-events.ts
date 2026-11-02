@@ -270,17 +270,42 @@ export interface InvocationMapping {
   readonly exitCode: number | null;
 }
 
+/** Every event inside its invocation: after its start, in its attempt, before its end, with one start. */
+function lifecycleFindings(log: EventsLog): string[] {
+  const out: string[] = [];
+  const state = new Map<string, "open" | "ended">();
+  for (const e of log.events) {
+    const owned = e.point === "invocation-start" || e.point === "invocation-end" || e.point === "archive-committed" || e.point.startsWith("step:") || e.point.startsWith("skip:");
+    if (e.invocation === null) {
+      if (owned) out.push(`mapping: ${e.point} names no invocation`);
+      continue;
+    }
+    const key = `${e.attempt}\u0000${e.invocation}`;
+    const was = state.get(key);
+    if (e.point === "invocation-start") {
+      if (was !== undefined) out.push(`mapping: invocation ${e.invocation} started twice in attempt ${e.attempt}`);
+      state.set(key, "open");
+    } else if (was === undefined) out.push(`mapping: ${e.point} in invocation ${e.invocation} has no invocation-start in attempt ${e.attempt}`);
+    else if (was === "ended") out.push(`mapping: ${e.point} in invocation ${e.invocation} comes after its invocation-end`);
+    else if (e.point === "invocation-end") state.set(key, "ended");
+  }
+  return out;
+}
+
 /**
  * One call to one invocation, by position (the calls in transcript order
  * against the `invocation-start` events in log order), with the digest
  * matching. A killed invocation maps to a call whose result is an error or
- * missing. An unmapped call or invocation, and every overlap record, fail.
+ * missing. An unmapped call or invocation, and every overlap record, fail,
+ * and so does an event outside its invocation's lifecycle and a call whose
+ * client is not the process the invocation ran in.
  */
 export function mapInvocations(calls: readonly SetupCallRef[], log: EventsLog): { mapping: InvocationMapping[]; findings: string[] } {
   const findings: string[] = [];
   const mapping: InvocationMapping[] = [];
   const starts = log.events.filter((e) => e.point === "invocation-start");
   for (const o of log.overlaps) findings.push(`mapping: invocation ${o.invocation} started while ${o.open.join(", ")} was still open`);
+  findings.push(...lifecycleFindings(log));
   const n = Math.min(calls.length, starts.length);
   for (let i = 0; i < n; i++) {
     const c = calls[i]!;
@@ -290,6 +315,9 @@ export function mapInvocations(calls: readonly SetupCallRef[], log: EventsLog): 
     if (c.digest === null) findings.push(`mapping: ${where} has arguments the transcript cannot digest`);
     else if (c.digest !== s.argSha256) findings.push(`mapping: ${where}'s argument digest differs from invocation ${s.invocation}'s`);
     if (end === undefined && !c.failed) findings.push(`mapping: invocation ${s.invocation} never ended, but ${where} has a result`);
+    const attempt = log.attempts.find((a) => a.attempt === s.attempt);
+    if (attempt === undefined) findings.push(`mapping: invocation ${s.invocation} ran in attempt ${s.attempt}, which has no attempt line`);
+    else if (attempt.entry !== c.via) findings.push(`mapping: ${where} went through the ${c.via}, but invocation ${s.invocation} ran in a ${attempt.entry} process`);
     mapping.push({ turn: c.turn, call: c.call, attempt: s.attempt, invocation: s.invocation!, kind: s.kind ?? "", exitCode: end?.exitCode ?? null });
   }
   for (const c of calls.slice(n)) findings.push(`mapping: turn ${c.turn + 1} call ${c.call + 1} maps to no invocation`);

@@ -70,6 +70,7 @@ import { buildEval, EVAL_DIST } from "./build-eval.mjs";
 import {
   applySessionChecks, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, observeEvidence, OBSERVATIONS_RAW, ownerEdits, sessionScript,
   sessionSpans, SESSIONS_RAW, sessionsText, setupIdOf, storeRevisionCount, SESSION_VARIANTS, variantFixture, type HarnessFacts, type SessionVariant,
+  demoFacts,
 } from "./onboarding-eval-sessions.js";
 import { cs7SnapshotLedger, type EvidenceObservation } from "./onboarding-eval-checkset7.js";
 import { readEventsLog } from "./onboarding-eval-checkset7-events.js";
@@ -576,7 +577,7 @@ async function main(): Promise<void> {
       const demo = rubric.demo;
       if (demo !== undefined) {
         const r = spawnSync("/bin/sh", ["-c", demo.command], { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
-        facts.demo = { command: demo.command, expected: demo.stdout, stdout: r.stdout ?? "" };
+        facts.demo = demoFacts(demo.command, demo.stdout, r);
       }
     }
     if (session === "milestone-demo" && n >= 2) observations.push(...observeEvidence(project, { kind: "turn", index: state.turns.length }));

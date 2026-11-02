@@ -120,29 +120,26 @@ export class HandoverStage implements WorkflowStage {
     // clears ctx.state.ticket in FINALIZE and clearClaimOnComplete owns that
     // path, while stale claims on complete tickets belong to the ISS-652 repair.
     const ticketId = ctx.state.ticket?.id;
+    let releaseNote = "";
     if (ticketId) {
-      try {
-        const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
-        await withProjectLock(ctx.root, { strict: false }, async ({ state: projectState }) => {
-          const ticket = projectState.ticketByID(ticketId);
-          if (ticket && ticket.status === "inprogress") {
-            const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
-            const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
-            // ISS-778/ISS-816: strict ownership, matching the cancel and
-            // session-compact paths. Release when this session owns the
-            // claimedBySession stamp, or when the ticket carries no claim material
-            // at all (a bare inprogress ticket, nothing foreign to destroy). A
-            // foreign claim (another session's claimedBySession, or a CLI claim
-            // block that never sets claimedBySession) is never released here.
-            if (ticketClaim === ctx.state.sessionId || (!ticketClaim && ticketClaimBlock == null)) {
-              // ISS-652: delete the keys rather than writing an explicit null,
-              // so a released ticket carries no residual claim state.
-              const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-              await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, ctx.root);
-            }
-          }
-        });
-      } catch { /* best-effort */ }
+      const { releaseOwnClaim, ownClaimReleaseNote } = await import("../../core/own-claim-release.js");
+      const { sessionId } = ctx.state;
+      releaseNote = ownClaimReleaseNote(await releaseOwnClaim(ctx.root, ticketId, sessionId, (ticket) => {
+        if (ticket.status !== "inprogress") return null;
+        const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
+        const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
+        // ISS-778/ISS-816: strict ownership, matching the cancel and
+        // session-compact paths. Release when this session owns the
+        // claimedBySession stamp, or when the ticket carries no claim material
+        // at all (a bare inprogress ticket, nothing foreign to destroy). A
+        // foreign claim (another session's claimedBySession, or a CLI claim
+        // block that never sets claimedBySession) is never released here.
+        if (ticketClaim !== sessionId && (ticketClaim || ticketClaimBlock != null)) return null;
+        // ISS-652: delete the keys rather than writing an explicit null,
+        // so a released ticket carries no residual claim state.
+        const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
+        return { ...rest, status: "open" as const } as typeof ticket;
+      }));
     }
 
     // ISS-037: final drain of pending deferrals before session end
@@ -206,6 +203,7 @@ export class HandoverStage implements WorkflowStage {
           ctx.state.completedTickets.map((t) => `- ${(t as Record<string, unknown>).displayId as string | undefined ?? t.id}${t.title ? `: ${t.title}` : ""} (${t.commitHash ?? "no commit"})`).join("\n"),
           ...(resolvedList ? [resolvedList] : []),
           ...(sweepLines.length > 0 ? ["", ...sweepLines] : []),
+          ...(releaseNote ? ["", releaseNote.trim()] : []),
         ].join("\n") + reportSection,
         reminders: [],
         transitionedFrom: "HANDOVER",

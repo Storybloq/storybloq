@@ -4860,6 +4860,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // the OTHER party's winning claim. A session that cannot prove ownership
   // releases nothing; it just ends.
   let disposition: TicketDisposition;
+  let releaseNote = "";
   // The authority gate is deliberately expressed twice: once here, binding the
   // id to the authority to use it, and once as the `!mayWriteTicket` branch
   // below. The branch makes this ternary redundant TODAY, which is why a mutant
@@ -4884,76 +4885,61 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     disposition = { kind: "unchanged", ticketId: "", reason: "empty-id" };
   } else {
     const ticketId = draftTicketId;
-    // `settled` reproduces what the two booleans did before this was extracted.
-    // A throw BEFORE any arm is reached reports `failed`; a throw AFTER one was
-    // reached leaves that arm standing, because the old code simply kept
-    // whatever the booleans already held when the catch swallowed.
-    let settled = false;
-    disposition = { kind: "unchanged", ticketId, reason: "missing" };
-    try {
-      const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
-      await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
-        const ticket = projectState.ticketByID(ticketId);
-        if (!ticket) {
-          disposition = { kind: "unchanged", ticketId, reason: "missing" };
-          settled = true;
-          return;
+    // A failure before any arm is reached reports `failed`; one after an arm was
+    // reached leaves that arm standing (releaseOwnClaim returns what happened).
+    let decided: TicketDisposition = { kind: "unchanged", ticketId, reason: "missing" };
+    const { releaseOwnClaim, ownClaimReleaseNote } = await import("../core/own-claim-release.js");
+    const outcome = await releaseOwnClaim(root, ticketId, cancelInfo.state.sessionId, (ticket) => {
+      if (ticket.status !== "inprogress") {
+        decided = { kind: "unchanged", ticketId, reason: "not-inprogress" };
+        return null;
+      }
+      // ISS-904: when the session carries an epoch, prove ownership HERE,
+      // inside the same lock as the write. The pre-cancel check above cannot
+      // be sufficient on its own -- a claim can move between it and this
+      // lock -- and `releaseClaimIfOwned` compares BOTH ownership fields
+      // rather than the stamp alone.
+      const epoch = parseClaimEpoch((cancelInfo.state as Record<string, unknown>).claimEpoch);
+      if (epoch) {
+        const outcome = releaseClaimIfOwned(ticket, epoch);
+        if (outcome.released) {
+          // Section 5: same-session earmark release, in the same locked
+          // write that releases the claim.
+          const { item: outcomeWithEarmark } = clearSameSessionEarmark(outcome.ticket, cancelInfo.state.sessionId);
+          decided = { kind: "released", ticketId };
+          return outcomeWithEarmark;
         }
-        if (ticket.status !== "inprogress") {
-          disposition = { kind: "unchanged", ticketId, reason: "not-inprogress" };
-          settled = true;
-          return;
-        }
-        // ISS-904: when the session carries an epoch, prove ownership HERE,
-        // inside the same lock as the write. The pre-cancel check above cannot
-        // be sufficient on its own -- a claim can move between it and this
-        // lock -- and `releaseClaimIfOwned` compares BOTH ownership fields
-        // rather than the stamp alone.
-        const epoch = parseClaimEpoch((cancelInfo.state as Record<string, unknown>).claimEpoch);
-        if (epoch) {
-          const outcome = releaseClaimIfOwned(ticket, epoch);
-          if (outcome.released) {
-            // Section 5: same-session earmark release, in the same locked
-            // write that releases the claim.
-            const { item: outcomeWithEarmark } = clearSameSessionEarmark(outcome.ticket, cancelInfo.state.sessionId);
-            await writeTicketUnlocked(outcomeWithEarmark, root);
-            disposition = { kind: "released", ticketId };
-          } else {
-            disposition = { kind: "conflict", ticketId };
-          }
-          settled = true;
-          return;
-        }
+        decided = { kind: "conflict", ticketId };
+        return null;
+      }
 
-        const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
-        const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
-        // ISS-778: strict ownership for epochless legacy sessions, which have
-        // no proof to check. Release only when this session owns the
-        // claimedBySession stamp, or when the ticket carries no claim material
-        // at all (a bare inprogress ticket this session flipped before any
-        // claim existed, nothing foreign to destroy). The old
-        // `!claimedBySession` escape hatch released FOREIGN CLI claims, which
-        // write claim{user,branch,since} but never set claimedBySession.
-        if (ticketClaim === cancelInfo.state.sessionId || (!ticketClaim && ticketClaimBlock == null)) {
-          // ISS-759/ISS-652: delete the claim keys rather than writing
-          // explicit nulls, so a released ticket carries no residual state.
-          const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-          // Section 5: same-session earmark release, in the same locked write.
-          const { item: restWithEarmark } = clearSameSessionEarmark(
-            rest as typeof ticket,
-            cancelInfo.state.sessionId,
-          );
-          await writeTicketUnlocked({ ...restWithEarmark, status: "open" as const } as typeof ticket, root);
-          disposition = { kind: "released", ticketId };
-        } else {
-          disposition = { kind: "conflict", ticketId };
-        }
-        settled = true;
-      });
-    } catch {
-      // Best-effort -- session ends regardless, ticket may remain inprogress.
-      if (!settled) disposition = { kind: "failed", ticketId };
-    }
+      const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
+      const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
+      // ISS-778: strict ownership for epochless legacy sessions, which have
+      // no proof to check. Release only when this session owns the
+      // claimedBySession stamp, or when the ticket carries no claim material
+      // at all (a bare inprogress ticket this session flipped before any
+      // claim existed, nothing foreign to destroy). The old
+      // `!claimedBySession` escape hatch released FOREIGN CLI claims, which
+      // write claim{user,branch,since} but never set claimedBySession.
+      if (ticketClaim === cancelInfo.state.sessionId || (!ticketClaim && ticketClaimBlock == null)) {
+        // ISS-759/ISS-652: delete the claim keys rather than writing
+        // explicit nulls, so a released ticket carries no residual state.
+        const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
+        // Section 5: same-session earmark release, in the same locked write.
+        const { item: restWithEarmark } = clearSameSessionEarmark(
+          rest as typeof ticket,
+          cancelInfo.state.sessionId,
+        );
+        decided = { kind: "released", ticketId };
+        return { ...restWithEarmark, status: "open" as const } as typeof ticket;
+      }
+      decided = { kind: "conflict", ticketId };
+      return null;
+    });
+    // The session ends regardless; the ticket may stay inprogress, and the reply says so.
+    disposition = outcome.kind === "not-released" ? { kind: "failed", ticketId } : decided;
+    releaseNote = ownClaimReleaseNote(outcome);
   }
 
   const { written, stashPopFailed, tail } = await applyCancellationTransition(
@@ -4988,7 +4974,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     ? ` Shutdown is NOT yet complete: ${tail.unmet.join("; ")}. ${retryAdvice(cancelInfo.dir, resume.transitionId)}`
     : "";
   return {
-    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${issuesFinished(written)} issue(s) were completed.${sweepNotes}${stashNote}${tailNote}${reportSection}` }],
+    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${issuesFinished(written)} issue(s) were completed.${sweepNotes}${releaseNote}${stashNote}${tailNote}${reportSection}` }],
   };
 }
 

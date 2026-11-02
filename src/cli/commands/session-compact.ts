@@ -1013,29 +1013,26 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
     // Release ticket claim (best-effort, same as cancel)
     const ticketId = info.state.ticket?.id;
     let ticketReleased = false;
+    let releaseNote = "";
     if (ticketId) {
-      try {
-        const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
-        await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
-          const ticket = projectState.ticketByID(ticketId);
-          if (ticket && ticket.status === "inprogress") {
-            const claim = (ticket as Record<string, unknown>).claimedBySession;
-            const claimBlock = (ticket as Record<string, unknown>).claim;
-            // ISS-778: strict ownership. Release only when this session owns the
-            // claimedBySession stamp, or when the ticket carries no claim material
-            // at all. The old `!claimedBySession` escape hatch released FOREIGN
-            // CLI claims, which write claim{user,branch,since} but never set
-            // claimedBySession.
-            if (claim === info!.state.sessionId || (!claim && claimBlock == null)) {
-              // ISS-759/ISS-652: delete the claim keys rather than writing
-              // explicit nulls, so a released ticket carries no residual state.
-              const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-              await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, root);
-              ticketReleased = true;
-            }
-          }
-        });
-      } catch { /* best-effort */ }
+      const { releaseOwnClaim, ownClaimReleaseNote } = await import("../../core/own-claim-release.js");
+      const outcome = await releaseOwnClaim(root, ticketId, info.state.sessionId, (ticket) => {
+        if (ticket.status !== "inprogress") return null;
+        const claim = (ticket as Record<string, unknown>).claimedBySession;
+        const claimBlock = (ticket as Record<string, unknown>).claim;
+        // ISS-778: strict ownership. Release only when this session owns the
+        // claimedBySession stamp, or when the ticket carries no claim material
+        // at all. The old `!claimedBySession` escape hatch released FOREIGN
+        // CLI claims, which write claim{user,branch,since} but never set
+        // claimedBySession.
+        if (claim !== info!.state.sessionId && (claim || claimBlock != null)) return null;
+        // ISS-759/ISS-652: delete the claim keys rather than writing
+        // explicit nulls, so a released ticket carries no residual state.
+        const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
+        return { ...rest, status: "open" as const } as typeof ticket;
+      });
+      ticketReleased = outcome.kind === "released";
+      releaseNote = ownClaimReleaseNote(outcome);
     }
 
     // Flag unfiled deferrals -- drain is in guide.ts (not importable from CLI)
@@ -1082,7 +1079,7 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
     removeResumeMarker(root);
     if (undurable) throw undurable;
 
-    return `Session ${info.state.sessionId} stopped.${ticketReleased ? ` Ticket ${ticketId} released to open.` : ticketId ? ` Ticket ${ticketId} may need manual cleanup.` : ""}`;
+    return `Session ${info.state.sessionId} stopped.${ticketReleased ? ` Ticket ${ticketId} released to open.` : ticketId ? ` Ticket ${ticketId} may need manual cleanup.` : ""}${releaseNote}`;
   });
 }
 

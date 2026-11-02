@@ -147,4 +147,33 @@ describe("session stop claim-release ownership (ISS-778, handleSessionStop)", ()
     expect(after.claim).toBeUndefined();
     expect(after.claimedBySession).toBeUndefined();
   });
+
+  it("ISS-1405: releases past a ticket file that does not parse and names it", async () => {
+    const root = setupRoot();
+    const sessionId = "c0decafe-0000-0000-0000-0000000000dd";
+    writeTicket(root, { claimedBySession: sessionId });
+    writeFileSync(join(root, ".story", "tickets", "T-009.json"), "{not json");
+    plantSession(root, sessionId);
+
+    const reply = await handleSessionStop(root, sessionId);
+
+    expect(readTicket(root).claimedBySession).toBeUndefined();
+    expect(reply).toContain("released to open");
+    expect(reply).toContain(".story/tickets/T-009.json");
+  });
+
+  it("ISS-1405: says the claim was not released, and names the file, when the release fails", async () => {
+    const root = setupRoot();
+    const sessionId = "c0decafe-0000-0000-0000-0000000000ee";
+    writeTicket(root, { claimedBySession: sessionId });
+    writeFileSync(join(root, ".story", "tickets", "T-050.json"), readFileSync(join(root, ".story", "tickets", "T-001.json")));
+    writeFileSync(join(root, ".story", "tickets", "T-009.json"), "{not json");
+    plantSession(root, sessionId);
+
+    const reply = await handleSessionStop(root, sessionId);
+
+    expect(readTicket(root).claimedBySession).toBe(sessionId);
+    expect(reply).toContain("NOT released");
+    expect(reply).toContain("T-050.json");
+  });
 });

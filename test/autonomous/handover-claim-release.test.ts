@@ -253,4 +253,25 @@ describe("HANDOVER claim release flips a mid-work handoff back to open (ISS-792)
     expect(after.status).toBe("inprogress");
     expect(after.claim).toEqual({ user: "other@example.com", branch: "main", since: NOW });
   });
+
+  it("ISS-1405: session end releases past a ticket file that does not parse and names it", async () => {
+    const { sessionId } = plantHandoverSession(root, { previousState: "IMPLEMENT", ticket: { id: "T-001", title: "Test ticket", claimed: true } });
+    writeTicket(root, { claimedBySession: sessionId });
+    writeFileSync(join(root, ".story", "tickets", "T-009.json"), "{not json");
+    const reply = await reportHandoverWritten(root, sessionId);
+    expect(readTicket(root).claimedBySession).toBeUndefined();
+    expect(reply.content.map((c) => ("text" in c ? c.text : "")).join("")).toContain(".story/tickets/T-009.json");
+  });
+
+  it("ISS-1405: session end says the claim was not released, and names the file, when the release fails", async () => {
+    const { sessionId } = plantHandoverSession(root, { previousState: "IMPLEMENT", ticket: { id: "T-001", title: "Test ticket", claimed: true } });
+    writeTicket(root, { claimedBySession: sessionId });
+    writeFileSync(join(root, ".story", "tickets", "T-050.json"), rawTicketBytes(root));
+    writeFileSync(join(root, ".story", "tickets", "T-009.json"), "{not json");
+    const reply = await reportHandoverWritten(root, sessionId);
+    expect(readTicket(root).claimedBySession).toBe(sessionId);
+    const text = reply.content.map((c) => ("text" in c ? c.text : "")).join("");
+    expect(text).toContain("NOT released");
+    expect(text).toContain("T-050.json");
+  });
 });

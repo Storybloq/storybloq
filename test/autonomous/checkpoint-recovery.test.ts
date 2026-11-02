@@ -341,6 +341,22 @@ describe("T-537: a project that does not load never confirms a completion", () =
     expect(ticket.claim).toBeUndefined();
   });
 
+  it("cancel names the broken file it released past, and says so when the release fails", async () => {
+    writeUndecodableCheckpoint(root);
+    const released = plantBlockedCompletion(root);
+    expect(textOf(await handleAutonomousGuide(root, { action: "cancel", sessionId: released.sessionId }))).toContain(".story/tickets/T-009.json");
+  });
+
+  it("a cancel whose release is refused says the claim was not released and names the file", async () => {
+    writeUndecodableCheckpoint(root);
+    const { sessionId } = plantBlockedCompletion(root);
+    writeFileSync(join(root, ".story", "tickets", "T-050.json"), JSON.stringify(readTicket(root, "T-001")));
+    const text = textOf(await handleAutonomousGuide(root, { action: "cancel", sessionId }));
+    expect(text).toContain("NOT released");
+    expect(text).toContain("T-050.json");
+    expect(readTicket(root, "T-001").claimedBySession).toBe(sessionId);
+  });
+
   it("the completed-consistent preflight (report and start) refuses rather than terminalize when the project does not load, and when a checkpoint no longer releases", async () => {
     for (const [shape, call] of [["undecodable", "report"], ["pending", "report"], ["undecodable", "start"], ["pending", "start"]] as const) {
       const label = `${shape} ${call}`;

@@ -37,7 +37,7 @@ export const STATE_WRITE_CATCHES: Readonly<Record<string, string>> = {
   "src/autonomous/guide.ts#handleAutonomousGuide#catch#3": "B", // guideError at the MCP boundary
   "src/autonomous/plan-context.ts#withPlanContext#catch#1": "A",
   "src/autonomous/plan-context.ts#runGoverningGate#catch#1": "A",
-  "src/autonomous/stages/handover.ts#HandoverStage.report#catch#4": "TC", // 1c: completeTail
+  "src/autonomous/stages/handover.ts#HandoverStage.report#catch#3": "TC", // 1c: completeTail
   "src/autonomous/stages/types.ts#StageContext.writeState#catch#1": "A", // D15
   "src/autonomous/stages/types.ts#StageContext.finalizeSession#catch#1": "TC",
   "src/autonomous/retired-limit-park.ts#strip#catch#1": "TR",
@@ -49,7 +49,7 @@ export const STATE_WRITE_CATCHES: Readonly<Record<string, string>> = {
   "src/cli/commands/session-compact.ts#handleSessionResumePrompt#catch#5": "A",
   "src/cli/commands/session-compact.ts#handleSessionResumePrompt#catch#7": "B", // hook exits 0
   "src/cli/commands/session-compact.ts#handleSessionClearCompact#catch#1": "TC", // D8
-  "src/cli/commands/session-compact.ts#handleSessionStop#catch#2": "TC", // D9
+  "src/cli/commands/session-compact.ts#handleSessionStop#catch#1": "TC", // D9
   "src/cli/commands/brief.ts#handleBriefRebase#catch#1": "P",
   "src/cli/limit-retirement-entry.ts#retireLimitAutoResumeBestEffort#catch#1": "B",
   "src/core/limit-retirement.ts#runLimitRetirement#catch#2": "P",

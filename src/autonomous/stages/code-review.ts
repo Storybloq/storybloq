@@ -542,26 +542,20 @@ export class CodeReviewStage implements WorkflowStage {
       const ticketLabel = ctx.state.ticket?.displayId ?? ctx.state.ticket?.id ?? ctx.state.currentIssue?.displayId ?? ctx.state.currentIssue?.id ?? "unknown";
       const reason = report.notes ?? "Ticket cannot be completed in this session.";
 
+      let releaseNote = "";
       if (ctx.state.ticket) {
-        try {
-          const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
-          await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
-            const ticket = ps.ticketByID(ticketId);
-            if (ticket) {
-              // T-442: never delete a claim this session cannot prove is its own.
-              const { released, ticket: next } = releaseSessionClaim(
-                ticket,
-                ctx.state.sessionId,
-                (ctx.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined,
-              );
-              // Section 5: same-session earmark release, in the same locked
-              // write. Independent of `released` -- the choke point can have
-              // converted an earmark at pick time before any claim landed.
-              const { cleared, item: nextWithEarmark } = clearSameSessionEarmark(next, ctx.state.sessionId);
-              if (released || cleared) await writeTicketUnlocked(nextWithEarmark, ctx.root);
-            }
-          });
-        } catch { /* best-effort */ }
+        const { releaseOwnClaim, ownClaimReleaseNote } = await import("../../core/own-claim-release.js");
+        const { sessionId } = ctx.state;
+        const epoch = (ctx.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined;
+        releaseNote = ownClaimReleaseNote(await releaseOwnClaim(ctx.root, ctx.state.ticket.id, sessionId, (ticket) => {
+          // T-442: never delete a claim this session cannot prove is its own.
+          const { released, ticket: next } = releaseSessionClaim(ticket, sessionId, epoch);
+          // Section 5: same-session earmark release, in the same locked
+          // write. Independent of `released` -- the choke point can have
+          // converted an earmark at pick time before any claim landed.
+          const { cleared, item: nextWithEarmark } = clearSameSessionEarmark(next, sessionId);
+          return released || cleared ? nextWithEarmark : null;
+        }));
       }
 
       if (ctx.state.currentIssue) {
@@ -590,6 +584,7 @@ export class CodeReviewStage implements WorkflowStage {
             `# Ticket Skipped: ${ticketLabel}`,
             "",
             `**Reason:** ${reason}`,
+            ...(releaseNote ? ["", releaseNote.trim()] : []),
             "",
             "Write a handover documenting why this ticket was skipped and what the next session should know.",
             "",

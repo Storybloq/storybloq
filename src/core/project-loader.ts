@@ -492,7 +492,10 @@ export function misnamedCollisionMessage(id: string, dir: string, files: readonl
  * or from one directory read when the writer holds only the lock.
  */
 function assertNotMisnamed(ctx: ResolutionWriteContext, dir: MisnamedDir, id: string, target: string): void {
-  const claimants = ctx.misnamedClaimants(dir, id);
+  refuseMisnamedClaimants(ctx.misnamedClaimants(dir, id), dir, id, target);
+}
+
+function refuseMisnamedClaimants(claimants: readonly string[], dir: MisnamedDir, id: string, target: string): void {
   if (claimants.length === 0) return;
   const canonical = `.story/${dir}/${id}.json`;
   // Absent only on ENOENT: a probe that fails otherwise must not earn a rename hint.
@@ -509,10 +512,22 @@ function assertNotMisnamed(ctx: ResolutionWriteContext, dir: MisnamedDir, id: st
   throw new ProjectLoaderError("conflict", misnamedCollisionMessage(id, dir, files));
 }
 
+type PrepareTicketOptions = { authority?: CheckpointWriteAuthority; verificationAuthority?: VerificationWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption };
+
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
-  options?: { authority?: CheckpointWriteAuthority; verificationAuthority?: VerificationWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption },
+  options?: PrepareTicketOptions,
+): Promise<{ target: string; content: string }> {
+  return prepareTicketWriteChecked(ticket, root, options, (id, target) =>
+    assertNotMisnamed(heldResolutionContext(root, options?.resolutionContext), "tickets", id, target));
+}
+
+async function prepareTicketWriteChecked(
+  ticket: Ticket,
+  root: string,
+  options: PrepareTicketOptions | undefined,
+  checkMisnamed: (id: string, target: string) => void,
 ): Promise<{ target: string; content: string }> {
   const date = touchDate(options?.touch);
   const unstamped = TicketSchema.parse(ticket);
@@ -525,7 +540,7 @@ export async function prepareTicketWrite(
   const wrapDir = resolve(root, ".story");
   const target = ticketFilePath(root, unstamped.id);
   await ensureEntityDir(target, wrapDir);
-  assertNotMisnamed(heldResolutionContext(root, options?.resolutionContext), "tickets", unstamped.id, target);
+  checkMisnamed(unstamped.id, target);
   const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${unstamped.id}.json`);
   const parsed = date === null ? unstamped : touchUpdated(unstamped, prior, date);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
@@ -607,6 +622,24 @@ export async function writeTicketUnlocked(
   } else {
     await atomicWrite(target, content);
   }
+}
+
+/**
+ * `writeTicketUnlocked` without the refusal over unparseable records; a visible
+ * misnamed claimant still refuses. Returns the records written past. Only
+ * `releaseOwnClaim` (core/own-claim-release.ts) may call this.
+ */
+export async function writeTicketPastUnparseable(ticket: Ticket, root: string): Promise<readonly string[]> {
+  let writtenPast: readonly string[] = [];
+  const { target, content } = await prepareTicketWriteChecked(ticket, root, undefined, (id, path) => {
+    const { claimants, unparseable } = heldResolutionContext(root, undefined).misnamedPastUnparseable("tickets", id);
+    refuseMisnamedClaimants(claimants, "tickets", id, path);
+    writtenPast = unparseable;
+  });
+  assertPreparedWritesCurrent(root, [{ target, content }]);
+  await assertWithdrawalLedgerCurrent(root, [{ op: "write", target, content }]);
+  await atomicWrite(target, content);
+  return writtenPast;
 }
 
 export async function writeTicket(

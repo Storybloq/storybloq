@@ -87,6 +87,11 @@ export interface ResolutionWriteContext {
    */
   misnamedClaimants(dir: MisnamedDir, id: string): readonly string[];
   /**
+   * The directory's visible claimants of `id` and the records that do not parse,
+   * without refusing over the latter. Only for the one write that gives back an own claim.
+   */
+  misnamedPastUnparseable(dir: MisnamedDir, id: string): { claimants: readonly string[]; unparseable: readonly string[] };
+  /**
    * The lock holder's loaded map (`<dir>/<id>` to claimants) replaces the lazy
    * directory read, except for `unverified` directories: the load left a record
    * out of the map there, so an absent entry proves nothing and the directory
@@ -238,8 +243,23 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
       // own-file refusal, so there an unparseable own file still makes the answer unknown.
       const own = `${id}.json`;
       const bad = read.unparseable.find((u) => !(dir === "tickets" && u.entry === own));
-      if (bad) throw unknownMisnamed(dir, `cannot read or parse ${bad.relPath}`, bad.err);
+      if (bad) {
+        const refusal = unknownMisnamed(dir, `cannot read or parse ${bad.relPath}`, bad.err);
+        throw new MisnamedUnparseableError(refusal.code, refusal.message, bad.err);
+      }
       return read.claimants.get(id) ?? [];
+    },
+    misnamedPastUnparseable(dir, id) {
+      let read = shared.misnamed.read.get(dir);
+      if (read === undefined) {
+        read = readMisnamedForGuard(root, dir);
+        shared.misnamed.read.set(dir, read);
+      }
+      const own = `${id}.json`;
+      return {
+        claimants: read.claimants.get(id) ?? [],
+        unparseable: read.unparseable.filter((u) => u.entry !== own).map((u) => u.relPath),
+      };
     },
     bindMisnamed(map, unverified = new Set()) {
       shared.misnamed = { bound: map, unverified, read: new Map() };
@@ -277,6 +297,12 @@ interface MisnamedRead {
   /** Records that were read but do not parse; which ids they make unknown is decided per id. */
   readonly unparseable: readonly { entry: string; relPath: string; err: unknown }[];
 }
+
+/**
+ * The misnamed answer is unknown only because a record does not parse. The one
+ * refusal `releaseOwnClaim` (core/own-claim-release.ts) can give way to.
+ */
+export class MisnamedUnparseableError extends ProjectLoaderError {}
 
 const unknownMisnamed = (dir: MisnamedDir, what: string, err: unknown) =>
   new ProjectLoaderError(

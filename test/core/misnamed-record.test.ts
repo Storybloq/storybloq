@@ -23,7 +23,11 @@ import {
   misnamedRecordMessage,
   shellQuote,
   withBootstrapLock,
+  withConflictResolutionLock,
+  withProjectLock,
+  withProjectLockForIssueSweep,
   writeIssue,
+  writeIssueUnlocked,
   writeTicket,
   writeTicketUnlocked,
 } from "../../src/core/project-loader.js";
@@ -336,5 +340,116 @@ describe("a write to a misnamed record (ISS-1405)", () => {
     ctx.bindMisnamed(new Map([["tickets/T-009", [".story/tickets/x.json"]]]));
     expect(ctx.misnamedClaimants("tickets", "T-001")).toEqual([]);
     expect(ctx.misnamedClaimants("tickets", "T-009")).toEqual([".story/tickets/x.json"]);
+  });
+});
+
+describe("a non-strict lock past a record its load could not use (ISS-1405)", () => {
+  type Dir = "tickets" | "issues";
+  type Lock = (root: string, handler: () => Promise<void>) => Promise<void>;
+  const LOCKS: readonly (readonly [string, Lock])[] = [
+    ["withProjectLock({ strict: false })", (root, handler) => withProjectLock(root, { strict: false }, handler)],
+    ["the conflict-resolution lock", (root, handler) => withConflictResolutionLock(root, handler)],
+    ["the issue-sweep lock", (root, handler) => withProjectLockForIssueSweep(root, handler)],
+  ];
+  const DIRS: readonly (readonly [Dir, string, string])[] = [["tickets", "T-001", "T-002"], ["issues", "ISS-001", "ISS-002"]];
+  const CELLS = LOCKS.flatMap(([name, lock]) => DIRS.map(([dir, id, other]) => [`${name}, ${dir}`, lock, dir, id, other] as const));
+
+  const heldWrite = (dir: Dir, id: string, root: string) =>
+    dir === "tickets" ? writeTicketUnlocked(ticket(id, "new", 10) as Ticket, root) : writeIssueUnlocked(issue(id, "new", 10) as Issue, root);
+  const directWrite = (dir: Dir, id: string, root: string) =>
+    dir === "tickets" ? writeTicket(ticket(id, "new", 10) as Ticket, root) : writeIssue(issue(id, "new", 10) as Issue, root);
+  const refusalText = (run: Promise<unknown>) =>
+    run.then(() => "no refusal", (err: unknown) => (err instanceof Error ? err.message : String(err)));
+
+  it.each(CELLS)("%s: an unparseable record refuses as the direct write does, and writes nothing", async (_n, lock, dir, id, other) => {
+    const root = project(dir, [{ name: `${other}.json`, id: other }]);
+    writeFileSync(join(root, ".story", dir, "zz.json"), "{");
+    const before = tree(root);
+    const direct = await refusalText(directWrite(dir, id, root));
+    expect(direct).toContain(`cannot read or parse .story/${dir}/zz.json`);
+    expect(await refusalText(lock(root, () => heldWrite(dir, id, root)))).toBe(direct);
+    expect(tree(root)).toEqual(before);
+  });
+
+  skipIfRoot.each(CELLS)("%s: an unreadable record refuses as the direct write does, and writes nothing", async (_n, lock, dir, id, other) => {
+    const root = project(dir, [{ name: `${other}.json`, id: other }]);
+    const locked = join(root, ".story", dir, "zz.json");
+    writeFileSync(locked, "{}");
+    chmodSync(locked, 0o000);
+    try {
+      const direct = await refusalText(directWrite(dir, id, root));
+      expect(direct).toContain(`cannot read or parse .story/${dir}/zz.json`);
+      expect(await refusalText(lock(root, () => heldWrite(dir, id, root)))).toBe(direct);
+      expect(existsSync(join(root, ".story", dir, `${id}.json`))).toBe(false);
+    } finally {
+      chmodSync(locked, 0o644);
+    }
+  });
+
+  it.each(CELLS)("%s: a schema-invalid misnamed claimant gets the rename hint, and nothing is written", async (_n, lock, dir, id) => {
+    const root = project(dir, []);
+    writeJson(join(root, ".story", dir, `${id} old.json`), { id });
+    const before = tree(root);
+    const hint = misnamedRecordMessage(id, dir, `.story/${dir}/${id} old.json`);
+    expect(await refusalText(directWrite(dir, id, root))).toBe(hint);
+    expect(await refusalText(lock(root, () => heldWrite(dir, id, root)))).toBe(hint);
+    expect(tree(root)).toEqual(before);
+  });
+
+  it.each(CELLS)("%s: a schema-invalid misnamed copy beside the canonical file gets the collision refusal", async (_n, lock, dir, id) => {
+    const root = project(dir, [{ name: `${id}.json`, id }]);
+    writeJson(join(root, ".story", dir, `${id} old.json`), { id });
+    const before = tree(root);
+    const refusal = misnamedCollisionMessage(id, dir, [`.story/${dir}/${id} old.json`, `.story/${dir}/${id}.json`]);
+    expect(await refusalText(lock(root, () => heldWrite(dir, id, root)))).toBe(refusal);
+    expect(tree(root)).toEqual(before);
+  });
+
+  it.each(CELLS)("%s: a schema-invalid record under its own name claims nothing else, so another id still writes", async (_n, lock, dir, id, other) => {
+    const root = project(dir, []);
+    writeJson(join(root, ".story", dir, `${other}.json`), { id: other });
+    await lock(root, () => heldWrite(dir, id, root));
+    expect(JSON.parse(readFileSync(join(root, ".story", dir, `${id}.json`), "utf-8")).title).toBe("new");
+  });
+
+  it.each(CELLS)("%s: a clean directory is still answered by the load when the other one has a bad record", async (_n, lock, dir, id) => {
+    const root = project(dir, []);
+    const otherDir: Dir = dir === "tickets" ? "issues" : "tickets";
+    writeFileSync(join(root, ".story", otherDir, "zz.json"), "{");
+    await lock(root, () => heldWrite(dir, id, root));
+    expect(JSON.parse(readFileSync(join(root, ".story", dir, `${id}.json`), "utf-8")).title).toBe("new");
+  });
+
+  it("a ticket's own unparseable file stays priorForGuard's refusal under a non-strict lock", async () => {
+    const root = project("tickets", []);
+    writeFileSync(join(root, ".story", "tickets", "T-001.json"), "{");
+    const before = tree(root);
+    const direct = await refusalText(writeTicket(ticket("T-001", "new", 10) as Ticket, root));
+    expect(direct).not.toContain("Cannot tell whether a misnamed file");
+    expect(direct).not.toBe("no refusal");
+    expect(await refusalText(withProjectLock(root, { strict: false }, () => heldWrite("tickets", "T-001", root)))).toBe(direct);
+    expect(tree(root)).toEqual(before);
+  });
+
+  it("the load reports which directories it could not fully answer for", async () => {
+    const root = project("tickets", [{ name: "T-002.json", id: "T-002" }]);
+    expect([...(await loadProject(root)).misnamedUnverified]).toEqual([]);
+    writeFileSync(join(root, ".story", "tickets", "zz.json"), "{");
+    expect([...(await loadProject(root)).misnamedUnverified]).toEqual(["tickets"]);
+    rmSync(join(root, ".story", "tickets", "zz.json"));
+    writeJson(join(root, ".story", "issues", "zz.json"), { id: "ISS-009" });
+    expect([...(await loadProject(root)).misnamedUnverified]).toEqual(["issues"]);
+  });
+
+  it("a directory the load could not answer for is read from disk, and only that directory", () => {
+    const root = project("tickets", [{ name: "T-001 old.json", id: "T-001" }]);
+    writeJson(join(root, ".story", "issues", "ISS-001 old.json"), issue("ISS-001", "x", 10));
+    const ctx = createResolutionWriteContext(root);
+    ctx.bindMisnamed(new Map([["issues/ISS-009", [".story/issues/x.json"]]]), new Set(["tickets"]));
+    expect(ctx.misnamedClaimants("tickets", "T-001")).toEqual([".story/tickets/T-001 old.json"]);
+    expect(ctx.misnamedClaimants("issues", "ISS-001")).toEqual([]);
+    expect(ctx.misnamedClaimants("issues", "ISS-009")).toEqual([".story/issues/x.json"]);
+    ctx.invalidate();
+    expect(ctx.misnamedClaimants("issues", "ISS-001")).toEqual([".story/issues/ISS-001 old.json"]);
   });
 });

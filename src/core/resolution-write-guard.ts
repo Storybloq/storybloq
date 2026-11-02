@@ -86,8 +86,13 @@ export interface ResolutionWriteContext {
    * is a ticket's own unparseable file, which priorForGuard refuses instead.
    */
   misnamedClaimants(dir: MisnamedDir, id: string): readonly string[];
-  /** The lock holder's loaded map (`<dir>/<id>` to claimants) replaces the lazy directory read. */
-  bindMisnamed(map: ReadonlyMap<string, readonly string[]>): void;
+  /**
+   * The lock holder's loaded map (`<dir>/<id>` to claimants) replaces the lazy
+   * directory read, except for `unverified` directories: the load left a record
+   * out of the map there, so an absent entry proves nothing and the directory
+   * read answers, with its refusals.
+   */
+  bindMisnamed(map: ReadonlyMap<string, readonly string[]>, unverified?: ReadonlySet<string>): void;
   /** Drops the config, the misnamed-file answers and every git answer: the operation changed what they were derived from. */
   invalidate(): void;
   /** Marks the context released. Called by the lock in its finally, before the lock is released. */
@@ -132,12 +137,20 @@ export class ResolutionWriteContextError extends ProjectLoaderError {
   }
 }
 
+interface MisnamedAnswers {
+  readonly bound: ReadonlyMap<string, readonly string[]> | null;
+  readonly unverified: ReadonlySet<string>;
+  readonly read: Map<MisnamedDir, MisnamedRead>;
+}
+
+const unboundMisnamed = (): MisnamedAnswers => ({ bound: null, unverified: new Set(), read: new Map() });
+
 interface SharedState {
   released: boolean;
   generation: number;
   ownsLock: () => boolean;
   config: { value: Pick<Config, "team"> | null } | null;
-  misnamed: { bound: ReadonlyMap<string, readonly string[]> } | { read: Map<MisnamedDir, MisnamedRead> };
+  misnamed: MisnamedAnswers;
   memo: Map<string, { out: string } | { err: unknown }>;
 }
 
@@ -148,7 +161,7 @@ interface SharedState {
  * `withLock`). Nothing is read unless a kind actually changes.
  */
 export function createResolutionWriteContext(root: string, git: GitRead = gitRead, ownsLock: () => boolean = () => true): ResolutionWriteContext {
-  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, misnamed: { read: new Map() }, memo: new Map() }, git);
+  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, misnamed: unboundMisnamed(), memo: new Map() }, git);
 }
 
 function contextOver(root: string, shared: SharedState, git: GitRead): ResolutionWriteContext {
@@ -214,7 +227,7 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
       shared.config = { value: config };
     },
     misnamedClaimants(dir, id) {
-      if ("bound" in shared.misnamed) return shared.misnamed.bound.get(`${dir}/${id}`) ?? [];
+      if (shared.misnamed.bound !== null && !shared.misnamed.unverified.has(dir)) return shared.misnamed.bound.get(`${dir}/${id}`) ?? [];
       let read = shared.misnamed.read.get(dir);
       if (read === undefined) {
         read = readMisnamedForGuard(root, dir);
@@ -228,19 +241,19 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
       if (bad) throw unknownMisnamed(dir, `cannot read or parse ${bad.relPath}`, bad.err);
       return read.claimants.get(id) ?? [];
     },
-    bindMisnamed(map) {
-      shared.misnamed = { bound: map };
+    bindMisnamed(map, unverified = new Set()) {
+      shared.misnamed = { bound: map, unverified, read: new Map() };
     },
     invalidate() {
       shared.config = null;
-      shared.misnamed = { read: new Map() };
+      shared.misnamed = unboundMisnamed();
       shared.memo.clear();
       shared.generation += 1;
     },
     release() {
       shared.released = true;
       shared.config = null;
-      shared.misnamed = { read: new Map() };
+      shared.misnamed = unboundMisnamed();
       shared.memo.clear();
     },
     withGit(next) {

@@ -90,6 +90,12 @@ export interface LoadResult {
    * `<dir>/<id>`, every loaded file claiming it (relative to the root, sorted).
    */
   readonly misnamedFiles: ReadonlyMap<string, readonly string[]>;
+  /**
+   * ISS-1405: the directories (`tickets`, `issues`) holding a record the load
+   * could not read, parse or accept. Such a record is not in `misnamedFiles`,
+   * so there a missing entry does not prove that no misnamed file claims the id.
+   */
+  readonly misnamedUnverified: ReadonlySet<string>;
 }
 
 // --- Read Operations ---
@@ -252,6 +258,7 @@ export async function loadProject(
   // 6. Load tickets (best-effort)
   const fileClassifications = new Map<string, "legacy" | "team">();
   const misnamedFiles = new Map<string, readonly string[]>();
+  const misnamedUnverified = new Set<string>();
   const omittedTickets: OmittedTicketRecord[] = [];
   const tickets = await loadDirectory<Ticket>(
     join(wrapDir, "tickets"),
@@ -260,7 +267,7 @@ export async function loadProject(
     warnings,
     "ticket",
     fileClassifications,
-    { omitted: omittedTickets, misnamed: misnamedFiles },
+    { omitted: omittedTickets, misnamed: misnamedFiles, misnamedUnverified },
   );
 
   // 7. Load issues (best-effort)
@@ -271,7 +278,7 @@ export async function loadProject(
     warnings,
     "issue",
     fileClassifications,
-    { misnamed: misnamedFiles },
+    { misnamed: misnamedFiles, misnamedUnverified },
   );
 
   // 7b. Load notes (best-effort)
@@ -350,7 +357,7 @@ export async function loadProject(
     }
   }
 
-  return { state, warnings, fileClassifications, misnamedFiles };
+  return { state, warnings, fileClassifications, misnamedFiles, misnamedUnverified };
 }
 
 // --- Write Operations ---
@@ -1421,7 +1428,7 @@ async function withProjectLockInternal(
     assertTeamWriteCapabilities(config);
     heldResolutionContext(absRoot, undefined).bindConfig(config);
     // ISS-1405: the writers' misnamed-file check reads what this load saw.
-    heldResolutionContext(absRoot, undefined).bindMisnamed(result.misnamedFiles);
+    heldResolutionContext(absRoot, undefined).bindMisnamed(result.misnamedFiles, result.misnamedUnverified);
 
     if (options.strict) {
       const integrityWarning = result.warnings.find((w) =>
@@ -2152,14 +2159,15 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const warnings: LoadWarning[] = [];
   const fileClassifications = new Map<string, "legacy" | "team">();
   const misnamedFiles = new Map<string, readonly string[]>();
+  const misnamedUnverified = new Set<string>();
   const omittedTickets: OmittedTicketRecord[] = [];
-  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets, misnamed: misnamedFiles });
-  const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications, { misnamed: misnamedFiles });
+  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets, misnamed: misnamedFiles, misnamedUnverified });
+  const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications, { misnamed: misnamedFiles, misnamedUnverified });
   const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings, "note", fileClassifications);
   const lessons = await loadDirectory<Lesson>(join(wrapDir, "lessons"), absRoot, LessonSchema, warnings, "lesson", fileClassifications);
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
   const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames, omittedTickets });
-  return { state, warnings, fileClassifications, misnamedFiles };
+  return { state, warnings, fileClassifications, misnamedFiles, misnamedUnverified };
 }
 
 // --- Filename Classification ---
@@ -2264,7 +2272,7 @@ async function loadDirectory<T>(
   warnings: LoadWarning[],
   entityType: EntityType,
   classifications: Map<string, "legacy" | "team">,
-  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[]; misnamed?: Map<string, readonly string[]> } = {},
+  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[]; misnamed?: Map<string, readonly string[]>; misnamedUnverified?: Set<string> } = {},
 ): Promise<T[]> {
   extras.signal?.throwIfAborted();
   if (!existsSync(dirPath)) return [];
@@ -2311,6 +2319,7 @@ async function loadDirectory<T>(
           type: "schema_error",
         });
         extras.omitted?.push({ file: relPath, reason: "schema", ...recoverableIdentity(parsed) });
+        extras.misnamedUnverified?.add(entityDir);
         continue;
       }
       const data = result.data as Record<string, unknown>;
@@ -2357,6 +2366,7 @@ async function loadDirectory<T>(
         type: "parse_error",
       });
       extras.omitted?.push({ file: relPath, reason: stage, parentage: "unknown" });
+      extras.misnamedUnverified?.add(entityDir);
     }
   }
 

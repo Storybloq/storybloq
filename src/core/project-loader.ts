@@ -34,6 +34,7 @@ import {
   DateSchema,
 } from "../models/types.js";
 import { ProjectState } from "./project-state.js";
+import { noteRecordSourceFile } from "./ref-normalization.js";
 import type { PreparedContentValidation } from "./update-write-hooks.js";
 import { localDateOf } from "./local-date.js";
 import { touchUpdated } from "./metadata-touch.js";
@@ -2434,6 +2435,7 @@ async function loadDirectory<T>(
         }
       }
       results.push(result.data);
+      noteRecordSourceFile(data, relPath);
       extras.files?.push(relPath);
       if (typeof data.id === "string") {
         const files = claimants.get(data.id);

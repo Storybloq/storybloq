@@ -2,10 +2,17 @@ import type { ProjectState } from "./project-state.js";
 
 export type RefDir = "tickets" | "issues" | "notes" | "lessons";
 
+/** The file each loaded record came from. Kept beside the record so a write never persists it. */
+const sourceFiles = new WeakMap<object, string>();
+
+export function noteRecordSourceFile(record: object, file: string): void {
+  sourceFiles.set(record, file);
+}
+
 /**
  * ISS-1418: the message for a ref that matches more than one record. Distinct ids keep the list. Records that share
  * one id are a duplicate (ISS-1404), where the list would repeat that id, so the message names the claiming files and
- * the recovery, in the loader's own duplicate_id words.
+ * the recovery, in the loader's own duplicate_id words. Distinct ids name each record's file when the loader read it.
  */
 export function ambiguousRefMessage(
   state: Pick<ProjectState, "duplicateMessageOf">,
@@ -15,7 +22,13 @@ export function ambiguousRefMessage(
 ): string {
   const ids = matches.map((m) => m.id);
   const id = ids[0];
-  if (id === undefined || ids.some((x) => x !== id)) return `Ref "${ref}" is ambiguous (matches: ${ids.join(", ")})`;
+  if (id === undefined || ids.some((x) => x !== id)) {
+    const named = matches.map((m) => {
+      const file = sourceFiles.get(m);
+      return file === undefined ? m.id : `${m.id} in ${file}`;
+    });
+    return `Ref "${ref}" is ambiguous (matches: ${named.join(", ")})`;
+  }
   const duplicate = state.duplicateMessageOf(dir, id);
   return `Ref "${ref}" is ambiguous: its ${ids.length} records share one id, ${id}. ` +
     (duplicate ?? "Run `storybloq validate` to list the files that claim it.");

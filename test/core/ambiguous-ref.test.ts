@@ -2,7 +2,7 @@
  * ISS-1418: a ref that matches records sharing one canonical id (the ISS-1404
  * duplicate) names the claiming files and the recovery, in the loader's own
  * duplicate_id words, instead of listing the same id twice. Distinct ids keep
- * today's message byte for byte.
+ * the list and name each matched file.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -116,13 +116,37 @@ describe("an ambiguous ref over a duplicated id (ISS-1418)", () => {
     );
   });
 
-  it("two distinct ids sharing a display id keep today's bytes", async () => {
+  it.each([
+    ["two hash-named records", "t-0000000000000001.json", "t-0000000000000001", "t-0000000000000002.json", "t-0000000000000002"],
+    ["a legacy record and a hash-named one", "T-002.json", "T-002", "t-0000000000000002.json", "t-0000000000000002"],
+  ])("%s sharing a display id are each named with their file", async (_name, fileA, idA, fileB, idB) => {
+    const root = project("tickets", { [fileA]: [idA, "T-001"], [fileB]: [idB, "T-001"] });
+    const { state } = await loadProject(root);
+    const message = refusal(() => resolveAndNormalizeTicketRef(state, "T-001")).message;
+    expect(message).toContain(`${idA} in .story/tickets/${fileA}`);
+    expect(message).toContain(`${idB} in .story/tickets/${fileB}`);
+    expect(message.startsWith('Ref "T-001" is ambiguous (matches: ')).toBe(true);
+  });
+
+  it("the CLI's ticket get names each matched file too", async () => {
     const root = project("tickets", {
       "t-0000000000000001.json": ["t-0000000000000001", "T-001"],
       "t-0000000000000002.json": ["t-0000000000000002", "T-001"],
     });
+    const { state, warnings } = await loadProject(root);
+    const ctx = { state, warnings, root, handoversDir: join(root, ".story", "handovers"), format: "md" as const };
+    const result = await handleTicketGet("T-001", ctx, false);
+    expect(result.output).toContain(".story/tickets/t-0000000000000001.json");
+    expect(result.output).toContain(".story/tickets/t-0000000000000002.json");
+  });
+
+  it("a record the loader did not read keeps the id alone, and no file name reaches a saved record", async () => {
+    const root = project("tickets", { "t-0000000000000001.json": ["t-0000000000000001", "T-001"] });
     const { state } = await loadProject(root);
-    expect(refusal(() => resolveAndNormalizeTicketRef(state, "T-001")).message).toBe(
+    expect(JSON.stringify(state.tickets)).not.toContain(".story/");
+    const a = makeTicket({ id: "t-0000000000000001", displayId: "T-001" } as Parameters<typeof makeTicket>[0]);
+    const b = makeTicket({ id: "t-0000000000000002", displayId: "T-001" } as Parameters<typeof makeTicket>[0]);
+    expect(refusal(() => resolveAndNormalizeTicketRef(makeState({ tickets: [a, b] }), "T-001")).message).toBe(
       'Ref "T-001" is ambiguous (matches: t-0000000000000001, t-0000000000000002)',
     );
   });

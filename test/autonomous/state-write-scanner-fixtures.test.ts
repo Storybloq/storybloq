@@ -1800,6 +1800,73 @@ export function useId(f: <T>(x: T) => T): void { void f; }
     expect(specialized(gen(body, "export declare const deps0: Deps;\n"))).toEqual([]);
   });
 
+  // ISS-1381 (review round 2): vouching is recursive. A parameter must carry Deps on every branch at every depth, through
+  // required properties and required tuple elements only; an optional member or a possibly empty collection never vouches.
+  const CARRY = `export declare function valueOr<T>(x: { value: T | number }): T;
+export declare function nestedOpt<T>(x: { a: { value?: T } }): T;
+export declare function nestedUnion<T>(x: { a: { value: T | number } }): T;
+export declare function outerUnion<T>(x: { value: T } | { other: number }): T;
+export declare function tupleOpt<T>(x: [T?]): T;
+export declare function tupleRest<T>(x: [number, ...T[]]): T;
+export declare function readonlyAll<T>(x: readonly T[]): T;
+export declare function indexed<T>(x: Record<string, T>): T;
+export declare function nestedAll<T>(x: { a: T[] }): T;
+export declare function required<T>(x: { a: { value: T } }): T;
+export declare function tupleReq<T>(x: [number, T]): T;
+export declare function everyBranch<T>(x: { value: T } | { a: { value: T } }): T;
+export declare function both<T>(x: { n: number } & { value: T }): T;
+export declare function oneOfTwo<T>(x: { n: number; value: T }): T;
+export declare const deps0: Deps;
+`;
+  it.each([
+    ["an optional property, called with an empty object", "const m: (x: { value?: Deps }) => Deps = partial;\n    await take(d, ctx, m({}));"],
+    ["a required property whose union has a branch without Deps", "const m: (x: { value: Deps | number }) => Deps = valueOr;\n    await take(d, ctx, m({ value: 1 }));"],
+    ["a nested optional property", "const m: (x: { a: { value?: Deps } }) => Deps = nestedOpt;\n    await take(d, ctx, m({ a: {} }));"],
+    ["a nested union", "const m: (x: { a: { value: Deps | number } }) => Deps = nestedUnion;\n    await take(d, ctx, m({ a: { value: 1 } }));"],
+    ["an object union with a branch without Deps", "const m: (x: { value: Deps } | { other: number }) => Deps = outerUnion;\n    await take(d, ctx, m({ other: 1 }));"],
+    ["an empty array", "const m: (x: Deps[]) => Deps = all;\n    await take(d, ctx, m([]));"],
+    ["an empty readonly array", "const m: (x: readonly Deps[]) => Deps = readonlyAll;\n    await take(d, ctx, m([]));"],
+    ["an empty array in a required property", "const m: (x: { a: Deps[] }) => Deps = nestedAll;\n    await take(d, ctx, m({ a: [] }));"],
+    ["an optional tuple element", "const m: (x: [Deps?]) => Deps = tupleOpt;\n    await take(d, ctx, m([]));"],
+    ["a tuple's rest element", "const m: (x: [number, ...Deps[]]) => Deps = tupleRest;\n    await take(d, ctx, m([1]));"],
+    ["an empty index signature", "const m: (x: Record<string, Deps>) => Deps = indexed;\n    await take(d, ctx, m({}));"],
+  ])("ISS-1381 conversion (round 2): %s never vouches", (_n, body) => {
+    expect(specialized(gen(body, CARRY))).toHaveLength(1);
+  });
+
+  it.each([
+    ["a nested required property", "const m: (x: { a: { value: Deps } }) => Deps = required;\n    await take(d, ctx, m({ a: { value: deps0 } }));"],
+    ["one required property beside another", "const m: (x: { n: number; value: Deps }) => Deps = oneOfTwo;\n    await take(d, ctx, m({ n: 1, value: deps0 }));"],
+    ["a required tuple element", "const m: (x: [number, Deps]) => Deps = tupleReq;\n    await take(d, ctx, m([1, deps0]));"],
+    ["an object union carrying Deps on every branch", "const m: (x: { value: Deps } | { a: { value: Deps } }) => Deps = everyBranch;\n    await take(d, ctx, m({ value: deps0 }));"],
+    ["a required property of one intersection member", "const m: (x: { n: number } & { value: Deps }) => Deps = both;\n    await take(d, ctx, m({ n: 1, value: deps0 }));"],
+  ])("ISS-1381 conversion (round 2): %s vouches", (_n, body) => {
+    expect(specialized(gen(body, CARRY))).toEqual([]);
+  });
+
+  // ISS-1381 (review round 2): an assertion or satisfies yields a generic callable that its own outer target still specializes.
+  const WRAPS = [
+    ["satisfies", "(make satisfies <T>() => T)"],
+    ["as", "(make as <T>() => T)"],
+    ["an angle-bracket assertion", "(< <T>() => T>make)"],
+    ["nested satisfies and as", "((make satisfies <T>() => T) as <T>() => T)"],
+  ] as const;
+  it.each(WRAPS)("ISS-1381 conversion (round 2): make wrapped in %s, assigned to () => Deps and handed to take, is UNRESOLVED", (_n, wrapped) => {
+    expect(specialized(gen(`const m: () => Deps = ${wrapped};\n    await take(d, ctx, m());`))).toHaveLength(1);
+  });
+
+  it.each(WRAPS)("ISS-1381 conversion (round 2): make wrapped in %s with no sensitive target passes", (_n, wrapped) => {
+    expect(specialized(gen(`const m: () => number = ${wrapped};\n    void m;`))).toEqual([]);
+    expect(specialized(gen(`const m = ${wrapped};\n    void m;`))).toEqual([]);
+  });
+
+  it("ISS-1381 conversion (round 2): the wrapper's operand keeps its explicit check, beside the outer conversion", () => {
+    expect(specialized(gen("const m = (make satisfies () => Deps);\n    await take(d, ctx, m());"))).toHaveLength(1);
+    expect(specialized(gen("const m = (make as () => Deps);\n    void m;"))).toHaveLength(1);
+    // satisfies keeps the operand's own type, so this line holds two conversions and each is named.
+    expect(specialized(gen("const m: () => Deps = (make satisfies () => Deps);\n    void m;"))).toHaveLength(2);
+  });
+
   // ISS-1381: a callable cannot vouch for itself; input collection never descends into a signature.
   it.each([
     ["m.call", "const deps = m.call(undefined);"],

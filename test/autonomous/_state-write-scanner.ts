@@ -2886,15 +2886,47 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       return out;
     }
     /**
-     * ISS-1381 (review round 1): a parameter vouches for S only when every call must pass S through it: it is
-     * required (no `?`, no default, not a rest) and every branch of its union carries S. An optional or rest
-     * parameter can be left out, and a branch without S can be passed instead.
+     * ISS-1381 (review rounds 1 and 2): a parameter vouches for S only when every call must pass S through it: it is
+     * required (no `?`, no default, not a rest) and its type must carry S. An optional or rest parameter can be left
+     * out, and a branch without S can be passed instead.
      */
     function vouches(q: ts.Symbol, k: SensitiveKey): boolean {
       const d = q.valueDeclaration;
       if (!d || !ts.isParameter(d) || d.questionToken || d.initializer || d.dotDotDotToken || checker.isOptionalParameter(d)) return false;
-      const t = checker.getTypeOfSymbol(q);
-      return (t.isUnion() ? t.types : [t]).every((x) => sensitiveSet(x, false).has(k));
+      return mustCarry(checker.getTypeOfSymbol(q), k);
+    }
+    /**
+     * Whether every value of t holds S: every union branch, one intersection member, a constraint, or a required
+     * property or required tuple element, at any depth. An optional member, an array, an index signature, a type
+     * argument and a signature can all be empty or never yield S, so none vouches. A cycle or an exhausted budget does not either.
+     */
+    function mustCarry(t0: ts.Type, k: SensitiveKey): boolean {
+      const onPath = new Set<ts.Type>();
+      let visits = 0;
+      const must = (t: ts.Type): boolean => {
+        if (sensitiveKey(t) === k) return true;
+        if (onPath.has(t) || ++visits > reach.budget) return false;
+        onPath.add(t);
+        const carried = mustStep(t, must);
+        onPath.delete(t);
+        return carried;
+      };
+      return must(t0);
+    }
+    function mustStep(t: ts.Type, must: (x: ts.Type) => boolean): boolean {
+      if (t.isUnion()) return t.types.every(must);
+      if (t.isIntersection()) return t.types.some(must);
+      if (t.flags & ts.TypeFlags.Instantiable) {
+        const c = checker.getBaseConstraintOfType(t);
+        return !!c && c !== t && must(c);
+      }
+      if (checker.isArrayType(t)) return false;
+      if (checker.isTupleType(t)) {
+        const flags = (t as ts.TupleTypeReference).target.elementFlags;
+        return checker.getTypeArguments(t as ts.TupleTypeReference).some((x, i) => !!(flags[i]! & ts.ElementFlags.Required) && must(x));
+      }
+      if (!(t.flags & ts.TypeFlags.Object) || opaque(t.getSymbol()?.declarations ?? [])) return false;
+      return checker.getPropertiesOfType(t).some((m) => !(m.flags & ts.SymbolFlags.Optional) && must(checker.getTypeOfSymbol(m)));
     }
     /**
      * ISS-1381 conversion check: where a generic callable is specialized to a callable target, a sensitive type in a
@@ -2925,12 +2957,14 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     /**
      * An expression the sweep compares: not a parenthesis (its operand is), not a declaration's or member's own name
      * (the checker hands a property name its value's contextual type, so the name would repeat the value's finding),
-     * and not one that has an explicit target.
+     * and not one that has an explicit target. An assertion or satisfies is itself swept: its operand meets its
+     * explicit target, and the generic callable it yields still meets the outer one.
      */
     const sweepable = (n: ts.Node): n is ts.Expression => {
       if (!ts.isIdentifier(n) && !ts.isPropertyAccessExpression(n) && !ts.isElementAccessExpression(n) && !ts.isCallExpression(n)
         && !ts.isNewExpression(n) && !ts.isTaggedTemplateExpression(n) && !ts.isArrowFunction(n) && !ts.isFunctionExpression(n)
-        && !ts.isNonNullExpression(n) && !ts.isAwaitExpression(n) && !ts.isClassExpression(n)) return false;
+        && !ts.isNonNullExpression(n) && !ts.isAwaitExpression(n) && !ts.isClassExpression(n)
+        && !ts.isAsExpression(n) && !ts.isTypeAssertionExpression(n) && !ts.isSatisfiesExpression(n)) return false;
       if ((n.parent as { name?: ts.Node }).name === n) return false;
       let up: ts.Node = n.parent;
       while (ts.isParenthesizedExpression(up)) up = up.parent;

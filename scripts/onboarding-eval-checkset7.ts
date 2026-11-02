@@ -546,16 +546,25 @@ function afterRunner(argv: readonly string[]): number | null {
   return at > 0 && subs.includes(argv[at]!) ? at + 1 : null;
 }
 
-/** What a package runner goes on to run: a command string, or an executable and its arguments; null when this is no runner. */
-function runnerTarget(argv: readonly string[]): { call: string } | { rest: readonly string[] } | null {
+/** Runner options that take no value; `--package=` carries its own. Any other option might swallow the next word. */
+const knownRunnerFlag = (w: string): boolean => ["-y", "--yes", "--no", "--"].includes(w) || w.startsWith("--package=");
+
+/**
+ * What a package runner goes on to run: a command string, an executable and
+ * its arguments, or `opaque` once it holds an option this does not know, whose
+ * value could be taken for the executable. Null when this is no runner.
+ */
+function runnerTarget(argv: readonly string[]): { call: string } | { rest: readonly string[] } | { opaque: true } | null {
   const from = afterRunner(argv);
   if (from === null) return null;
+  if (argv.slice(1, from - 1).some((w) => !knownRunnerFlag(w))) return { opaque: true };
   for (let i = from; i < argv.length; i++) {
     const w = argv[i]!;
     if (w === "-c" || w === "--call") return i + 1 < argv.length ? { call: argv[i + 1]! } : { rest: [] };
     if (w.startsWith("--call=")) return { call: w.slice("--call=".length) };
     if (w === "-p" || w === "--package") { i++; continue; }
     if (!w.startsWith("-")) return { rest: argv.slice(i) };
+    if (!knownRunnerFlag(w)) return { opaque: true };
   }
   return { rest: [] };
 }
@@ -602,6 +611,7 @@ function commandResponses(words: readonly string[], cmd: { words: readonly strin
   if (argv.length === 0 || isReader(argv)) return [];
   const target = runnerTarget(argv);
   if (target !== null) {
+    if ("opaque" in target) return NAMES_WORDS.test(argv.join(" ")) || NAMES_RESOLVE.test(text) ? [null] : [];
     if ("rest" in target) return depth > 3 ? [null] : commandResponses(target.rest, cmd, text, depth + 1, true);
     // A string the shell fills in at run time is read against the whole call.
     if (/[$`]/.test(target.call)) return NAMES_RESOLVE.test(text) ? [null] : [];

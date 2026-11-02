@@ -26,8 +26,8 @@
  * Needs dist/ built (`npm run build`) and the dist fetched
  * (`npm run compat:fetch`): skipped without it, a failure in required mode.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { spawn } from "node:child_process";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -144,12 +144,40 @@ function scratchHome(home: string): string {
 
 interface Ran { status: number | null; signal: NodeJS.Signals | null; out: string }
 
+/** Below vitest's 180 s, so a slow command fails with its own message before the test is abandoned. */
+const TEST_BUDGET_MS = 170_000;
+/** One clock over every command in a test: delay in the first eats into the next. */
+let budgetEnd = Date.now() + TEST_BUDGET_MS;
+function setRunBudget(ms: number): void { budgetEnd = Date.now() + ms; }
+
+/** Each child still running, with the moment it is fully gone. */
+const active = new Map<ChildProcess, Promise<void>>();
+const activeCount = (): number => active.size;
+
+/** Kills the whole group and waits for it; the streams are cut only if a straggler holds them open. */
+async function killAndWait(child: ChildProcess, closed: Promise<void>): Promise<void> {
+  try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+  const backstop = setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); }, 2_000);
+  await closed;
+  clearTimeout(backstop);
+}
+
+/** Runs before scratch paths go, and after every test: a child never outlives what started it. */
+async function killActive(): Promise<void> {
+  await Promise.all([...active].map(([child, closed]) => killAndWait(child, closed)));
+}
+
+afterEach(async () => { setRunBudget(0); await killActive(); });
+beforeEach(() => { setRunBudget(TEST_BUDGET_MS); });
+
 /** Past this a child is hung, not slow: below the slowest suite's patience, far above any real CLI call. */
 const RUN_DEADLINE_MS = 120_000;
 
 /** Async, so the real-HOME refusal is a rejection like any other failure. */
 async function run(command: string, args: string[], cwd: string, env: Record<string, string>, stdin = "", deadlineMs = RUN_DEADLINE_MS): Promise<Ran> {
   scratchHome(env.HOME!);
+  const limit = Math.min(deadlineMs, budgetEnd - Date.now());
+  if (limit <= 0) throw new Error(`${command} ${args.join(" ")} was not started: its test spent its deadline budget`);
   // Its own process group, so a deadline takes the whole tree: a hung CLI never outlives its test.
   const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let out = "";
@@ -157,15 +185,24 @@ async function run(command: string, args: string[], cwd: string, env: Record<str
   child.stderr.on("data", (d) => { out += String(d); });
   child.stdin.on("error", () => {});
   child.stdin.end(stdin);
+  let gone!: () => void;
+  const closed = new Promise<void>((r) => { gone = r; });
+  active.set(child, closed);
   return new Promise((done, fail) => {
+    let expired = false;
     const timer = setTimeout(() => {
-      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
-      child.stdout.destroy();
-      child.stderr.destroy();
-      fail(new Error(`${command} ${args.join(" ")} passed its ${deadlineMs} ms deadline and was killed; output so far: ${out}`));
-    }, deadlineMs);
-    child.on("error", (err) => { clearTimeout(timer); fail(err); });
-    child.on("close", (status, signal) => { clearTimeout(timer); done({ status, signal, out }); });
+      expired = true;
+      void killAndWait(child, closed).then(() => {
+        fail(new Error(`${command} ${args.join(" ")} passed its ${limit} ms deadline and was killed; output so far: ${out}`));
+      });
+    }, limit);
+    child.on("error", (err) => { clearTimeout(timer); active.delete(child); gone(); fail(err); });
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      active.delete(child);
+      gone();
+      if (!expired) done({ status, signal, out });
+    });
   });
 }
 
@@ -241,6 +278,7 @@ const read = (m: ByteMap, rel: string) => m.get(rel)?.bytes?.toString("utf-8");
 
 describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${LATEST_PUBLISHED}${skip ? ` (${skip})` : ""}`, () => {
   beforeAll(async () => {
+    setRunBudget(280_000);
     if (!existsSync(NEW_CLI)) throw new Error("dist/ is not built: run npm run build first");
     const { buildEval } = (await import("../../scripts/build-eval.mjs")) as { buildEval: (root: string) => Promise<{ built: boolean }> };
     await buildEval(PKG);
@@ -256,7 +294,8 @@ describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${LATEST_P
     await newClient(["status"], warm);
     await oldClient(["status"], warm);
   });
-  afterAll(() => {
+  afterAll(async () => {
+    await killActive();
     if (scratch) rmSync(scratch, { recursive: true, force: true });
   });
 
@@ -348,5 +387,69 @@ describe("a hung child never outlives its test", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  }, 30_000);
+});
+
+describe("the process groups a test started", () => {
+  const hung = "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{},20000)'], { stdio: 'inherit' }); console.log('pid ' + c.pid); setTimeout(()=>{},20000);";
+  const dead = async (pid: number): Promise<boolean> => {
+    for (let i = 0; i < 100; i++) {
+      try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 20)); } catch { return true; }
+    }
+    return false;
+  };
+  let home: string;
+  beforeAll(() => { home = realpathSync(mkdtempSync(join(tmpdir(), "t538-groups-"))); });
+  afterAll(() => { rmSync(home, { recursive: true, force: true }); });
+  const env = () => ({ HOME: home, PATH: process.env.PATH ?? "" });
+
+  it("one budget covers the commands in turn: delay in the first eats into the second", async () => {
+    setRunBudget(5000);
+    const started = Date.now();
+    await run(process.execPath, ["-e", "setTimeout(()=>{},3000)"], home, env());
+    const failure = await run(process.execPath, ["-e", hung], home, env()).then(() => null, (e: Error) => e);
+    expect(failure?.message).toMatch(/deadline/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 30_000);
+
+  it("a spent budget starts nothing", async () => {
+    setRunBudget(0);
+    const marker = join(home, "ran");
+    const failure = await run(process.execPath, ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`], home, env()).then(() => null, (e: Error) => e);
+    expect(failure?.message).toMatch(/was not started/);
+    expect(existsSync(marker)).toBe(false);
+  }, 30_000);
+
+  it("a deadline failure settles only after the child has closed", async () => {
+    setRunBudget(800);
+    let closedFirst = false;
+    const before = activeCount();
+    const failure = await run(process.execPath, ["-e", hung], home, env()).then(() => null, (e: Error) => { closedFirst = activeCount() === before; return e; });
+    expect(failure?.message).toMatch(/deadline/);
+    expect(closedFirst).toBe(true);
+  }, 30_000);
+
+  it("a child a test leaves running...", async () => {
+    setRunBudget(60_000);
+    void run(process.execPath, ["-e", hung], home, env()).catch(() => {});
+    await new Promise((r) => setTimeout(r, 200));
+    expect(activeCount()).toBe(1);
+  }, 30_000);
+
+  it("...is gone before the next test starts", () => {
+    expect(activeCount()).toBe(0);
+  });
+
+  it("teardown kills what is still running and waits for it", async () => {
+    setRunBudget(60_000);
+    const pending = run(process.execPath, ["-e", hung], home, env()).then((r) => r, (e: Error) => e);
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(activeCount()).toBe(1);
+    await killActive();
+    expect(activeCount()).toBe(0);
+    const settled = await pending;
+    const pid = Number(/pid (\d+)/.exec(("out" in settled ? settled.out : settled.message))?.[1]);
+    expect(pid).toBeGreaterThan(0);
+    expect(await dead(pid)).toBe(true);
   }, 30_000);
 });

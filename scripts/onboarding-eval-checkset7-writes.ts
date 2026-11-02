@@ -22,7 +22,7 @@ const READERS = new Set(["cat", "ls", "head", "tail", "wc", "grep", "rg", "find"
 const GIT_READS = new Set(["status", "diff", "log", "show"]);
 const WRITERS = new Set(["tee", "cp", "mv", "rm", "touch", "mkdir", "ln", "install", "truncate", "chmod", "dd", "rsync"]);
 /** Commands that write nothing of their own; only a redirection can make them write. */
-const QUIET = new Set(["echo", "printf", "true", "false", ":", "pwd", "date", "sleep", "which", "type", "wait", "exit", "export", "set", "unset"]);
+export const QUIET = new Set(["echo", "printf", "true", "false", ":", "pwd", "date", "sleep", "which", "type", "wait", "exit", "export", "set", "unset"]);
 const INLINE: Readonly<Record<string, RegExp>> = {
   node: /^(-e|-p|--eval|--print|-pe|-ep)$/,
   python: /^-[A-Za-z]*c$/,
@@ -137,7 +137,8 @@ function judge(cmd: ShellCommand, argv: readonly string[], context: string, inSt
     const at = args.findIndex((w) => flag.test(w));
     if (at >= 0 && mentions(args[at + 1] ?? "")) return { reason: `${bin} inline code that names .story`, entersStory: false };
     if (at >= 0 && args.slice(at + 2).some(mentions)) return { reason: `${bin} inline code with .story in its arguments`, entersStory: false };
-    if (at >= 0 && risky && args.slice(at + 1).some(expands)) return { reason: `${bin} inline code with an expansion in its arguments, in a call that names .story`, entersStory: false };
+    // Inline code can reach an inherited path through its environment or arguments, unseen: never trusted once the call names .story.
+    if (at >= 0 && risky) return { reason: `${bin} inline code in a call that names .story`, entersStory: false };
     if (cmd.heredoc && mentions(fullText)) return { reason: `${bin} reading a here-document, in a call that names .story`, entersStory: false };
     if (at >= 0 || cmd.heredoc) return { reason: null, entersStory: false };
   }

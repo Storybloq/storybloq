@@ -40,7 +40,7 @@
  */
 import { heredocStdin } from "./onboarding-eval-checkset6.js";
 import { completion, mapInvocations, readEventsLog, rule7, setupCalls, type EventsLog, type InvocationMapping } from "./onboarding-eval-checkset7-events.js";
-import { isReader, ledgerWriteFindings, shellTextOf } from "./onboarding-eval-checkset7-writes.js";
+import { isReader, ledgerWriteFindings, QUIET, shellTextOf } from "./onboarding-eval-checkset7-writes.js";
 import { parseSetupMeta } from "../src/core/setup-meta.js";
 import { effectiveEdges, parseSetupPayload, type SetupPayload } from "../src/core/setup-payload.js";
 import { effectiveRevision, planStepIds } from "../src/core/setup-apply.js";
@@ -525,12 +525,52 @@ function responseFlag(args: readonly string[]): string | null {
   return values.length === 1 ? values[0] ?? null : null;
 }
 
+const baseName = (w: string | undefined): string => (w ?? "").replace(/^.*\//, "");
+const RUNNERS = new Set(["npx", "bunx", "pnpx"]);
+const IS_PACKAGE = /^(@storybloq\/)?storybloq(@.*)?$/;
+/** Git subcommands whose arguments are text or queries; anything else, or a `-c` that can define an alias, may run what it names. */
+const GIT_DATA = new Set(["commit", "tag", "log", "show", "diff", "grep", "status"]);
+/** They run what they are fed, so the words they would run can sit anywhere in the call. */
+const FED = new Set(["sh", "bash", "zsh", "dash", "ksh", "xargs"]);
+const NAMES_WORDS = /checkpoint[\s\S]*resolve/;
+
+/** Where a storybloq invocation's own arguments start, through a package runner; null when the executable is not storybloq. */
+function storybloqArgs(argv: readonly string[]): number | null {
+  const exe = baseName(argv[0]);
+  if (exe === "storybloq") return 1;
+  if (!RUNNERS.has(exe)) return null;
+  for (let i = 1; i < argv.length; i++) {
+    const w = argv[i]!;
+    if (w.startsWith("-")) continue;
+    if (IS_PACKAGE.test(w)) return i + 1;
+    if (!argv[i - 1]!.startsWith("-")) return null;
+  }
+  return null;
+}
+
+/** The index of `resolve` when these arguments select checkpoint resolve: only options, and their values, may come first. */
+function selectsResolve(argv: readonly string[], from: number): number | null {
+  for (let i = from; i < argv.length; i++) {
+    const w = argv[i]!;
+    if (w === "checkpoint" && argv[i + 1] === "resolve") return i + 1;
+    if (!w.startsWith("-") && !(i > from && argv[i - 1]!.startsWith("-"))) return null;
+  }
+  return null;
+}
+
+/** Whether a command's arguments are data it never runs. */
+function dataOnly(argv: readonly string[]): boolean {
+  const exe = baseName(argv[0]);
+  return QUIET.has(exe) || (exe === "git" && GIT_DATA.has(argv[1] ?? ""));
+}
+
 /**
  * The response of every checkpoint resolve a shell text runs, command by
- * command, through wrappers, nested shells and live substitutions. A command
- * that may resolve one in a way this cannot read counts as an unreadable
- * response (null); a pure reader, and another storybloq command that merely
- * carries the words, resolve nothing.
+ * command, through wrappers, nested shells and live substitutions. Only
+ * storybloq selecting checkpoint resolve resolves one. A reader, an
+ * assignment, data-only arguments and any other storybloq command resolve
+ * nothing, though their live substitutions are still read. Execution this
+ * cannot read that carries the words counts as an unreadable response (null).
  */
 function shellResponses(text: string, depth = 0): (string | null)[] {
   if (depth > 3) return NAMES_RESOLVE.test(text) ? [null] : [];
@@ -539,12 +579,17 @@ function shellResponses(text: string, depth = 0): (string | null)[] {
     const u = unwrap(cmd.words);
     if (u.inner !== null) out.push(...shellResponses(u.inner, depth + 1));
     else {
-      const argv = u.argv.length > 0 ? u.argv : cmd.words;
-      const at = argv.findIndex((w, i) => w === "checkpoint" && argv[i + 1] === "resolve");
-      const own = argv[0]?.replace(/^.*\//, "") === "storybloq";
-      if (isReader(argv)) { /* reads only */ }
-      else if (at >= 0) out.push(responseFlag(argv.slice(at + 2)));
-      else if (!own && !cmd.live.some((l) => NAMES_RESOLVE.test(l)) && (NAMES_RESOLVE.test(cmd.words.join(" ")) || (cmd.heredoc && NAMES_RESOLVE.test(text)))) out.push(null);
+      const argv = u.argv;
+      const own = storybloqArgs(argv);
+      const words = cmd.words.join(" ");
+      const consecutive = argv.some((w, i) => w === "checkpoint" && argv[i + 1] === "resolve");
+      if (argv.length === 0 || isReader(argv)) { /* assigns or reads only */ }
+      else if (own !== null) {
+        const at = selectsResolve(argv, own);
+        if (at !== null) out.push(responseFlag(argv.slice(at + 1)));
+      } else if (dataOnly(argv)) { /* its arguments are data */ }
+      else if (/[$`]/.test(argv[0] ?? "") || FED.has(baseName(argv[0]))) { if (/storybloq/.test(text) && NAMES_WORDS.test(text)) out.push(null); }
+      else if (!cmd.live.some((l) => NAMES_RESOLVE.test(l)) && (consecutive || NAMES_RESOLVE.test(words) || (cmd.heredoc && NAMES_RESOLVE.test(text)))) out.push(null);
     }
     for (const live of cmd.live) out.push(...shellResponses(live, depth + 1));
   }

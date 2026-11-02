@@ -223,31 +223,56 @@ describe("milestone-demo", () => {
 });
 
 describe("empty-idea-verify", () => {
-  const tickets = [ticket("T-1"), ticket("T-2", ["T-1"])];
+  const atSetup = [{ ...ticket("T-1"), setup: { setupId: SID, key: "K2", establishes: { component: "root", stage: "test", scaffold: "K1" } } }, ticket("T-2", ["T-1"]), ticket("T-9")];
+  const finished = [ticket("T-1", [], "complete"), ticket("T-2", ["T-1"], "complete"), ticket("T-9")];
+  const inputs = { harness: { testEnabled: true }, ticketsAtSetup: atSetup, tickets: finished };
   const done = (id: string) => tool("storybloq_ticket_update", { id, status: "complete" }, "Updated");
-  it("passes when TEST is on and every ticket completes after its blockers", () => {
-    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [done("T-1"), done("T-2")] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual([]);
+  const built = (...calls: EvalCall[]) => drive("empty-idea-verify", [{ text: "Built.", calls }]);
+  const NO_T1 = "empty-idea-verify: establishment ticket T-1 never completed successfully in session 2";
+  const NO_T2 = "empty-idea-verify: T-2, which waits on establishment ticket T-1, never completed successfully in session 2";
+  it("passes when TEST is on and the establishment ticket then its dependent complete", () => {
+    expect(check(built(done("T-1"), done("T-2")), "empty-idea-verify", inputs)).toEqual([]);
   });
   it("reads the guide's own completion line too", () => {
     const guide = tool("storybloq_autonomous_guide", {}, "Ticket **T-1** completed.");
     expect(completionsOf({ name: "storybloq_autonomous_guide", command: null, input: {}, output: guide.result! })).toEqual(["T-1"]);
+    expect(check(built(guide, done("T-2")), "empty-idea-verify", inputs)).toEqual([]);
   });
   it("fails a run that completed nothing", () => {
-    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: session 2 completed no ticket"]);
+    expect(check(built(), "empty-idea-verify", inputs)).toEqual([NO_T1, NO_T2]);
+  });
+  it("fails a completion of an unrelated ticket", () => {
+    expect(check(built(done("T-9")), "empty-idea-verify", inputs)).toEqual([NO_T1, NO_T2]);
+  });
+  it("fails the establishment ticket alone", () => {
+    expect(check(built(done("T-1")), "empty-idea-verify", inputs)).toEqual([NO_T2]);
+  });
+  it("fails evidence that disagrees with the final ledger", () => {
+    const reopened = [ticket("T-1", [], "complete"), ticket("T-2", ["T-1"], "open"), ticket("T-9")];
+    expect(check(built(done("T-1"), done("T-2")), "empty-idea-verify", { ...inputs, tickets: reopened })).toEqual(["empty-idea-verify: T-2 completed in session 2, but its final status is open"]);
+    expect(check(built(done("T-1"), done("T-2")), "empty-idea-verify", { ...inputs, tickets: [ticket("T-2", ["T-1"], "complete")] })).toEqual(["empty-idea-verify: T-1 completed in session 2, but its final status is missing"]);
+  });
+  it("fails a snapshot with no establishment ticket, and one with nothing waiting on it", () => {
+    expect(check(built(done("T-1"), done("T-2")), "empty-idea-verify", { ...inputs, ticketsAtSetup: [ticket("T-1"), ticket("T-2", ["T-1"])] })).toEqual(["empty-idea-verify: the setup snapshot holds no establishment ticket"]);
+    expect(check(built(done("T-1")), "empty-idea-verify", { ...inputs, ticketsAtSetup: [atSetup[0]!], tickets: [finished[0]!] })).toEqual(["empty-idea-verify: nothing in the setup snapshot waits on establishment ticket T-1"]);
   });
   it("does not count a failed status update as a completion", () => {
     const failed = { ...done("T-1"), isError: true };
-    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [failed, done("T-2")] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: T-2 completed before its blocker T-1"]);
+    expect(check(built(failed, done("T-2")), "empty-idea-verify", inputs)).toEqual(["empty-idea-verify: T-2 completed before its blocker T-1", NO_T1]);
     const unanswered = tool("storybloq_ticket_update", { id: "T-1", status: "complete" });
-    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [unanswered] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: session 2 completed no ticket"]);
+    expect(check(built(unanswered), "empty-idea-verify", inputs)).toEqual([NO_T1, NO_T2]);
     const cli = { ...sh("storybloq ticket update T-1 --status complete", "Error: refused"), isError: true };
-    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [cli] }]), "empty-idea-verify", { harness: { testEnabled: true }, tickets })).toEqual(["empty-idea-verify: session 2 completed no ticket"]);
+    expect(check(built(cli), "empty-idea-verify", inputs)).toEqual([NO_T1, NO_T2]);
   });
   it("fails a ticket completed before its blocker, and a config without TEST", () => {
-    expect(check(drive("empty-idea-verify", [{ text: "Built.", calls: [done("T-2"), done("T-1")] }]), "empty-idea-verify", { harness: { testEnabled: false }, tickets })).toEqual([
+    expect(check(built(done("T-2"), done("T-1")), "empty-idea-verify", { ...inputs, harness: { testEnabled: false } })).toEqual([
       "empty-idea-verify: the final config does not enable the TEST stage",
       "empty-idea-verify: T-2 completed before its blocker T-1",
     ]);
+  });
+  it("holds the snapshot's order even when the final ledger lost the edge", () => {
+    const edgeless = [ticket("T-1", [], "complete"), ticket("T-2", [], "complete")];
+    expect(check(built(done("T-2"), done("T-1")), "empty-idea-verify", { ...inputs, tickets: edgeless })).toEqual(["empty-idea-verify: T-2 completed before its blocker T-1"]);
   });
 });
 

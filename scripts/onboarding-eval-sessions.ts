@@ -349,24 +349,39 @@ function orderFindings(i: VariantInputs): string[] {
   const out: string[] = [];
   if (i.harness.testEnabled !== true) out.push("empty-idea-verify: the final config does not enable the TEST stage");
   const done = new Set<string>();
-  let completions = 0;
+  const completed = new Set<string>();
   for (const t of i.ticketsAtSetup) if ((t as { status?: string }).status === "complete") for (const r of [idOf(t), displayOf(t)]) done.add(r);
-  const byRef = (ref: string) => i.tickets.find((t) => idOf(t) === ref || displayOf(t) === ref);
+  const finalOf = (ref: string) => i.tickets.find((t) => idOf(t) === ref || displayOf(t) === ref);
+  // The order the setup promised holds even if the final ledger lost the edge.
+  const atSetup = (ref: string) => i.ticketsAtSetup.find((t) => idOf(t) === ref || displayOf(t) === ref);
+  const byRef = (ref: string) => atSetup(ref) ?? finalOf(ref);
+  const blockersOf = (t: object | undefined): string[] => (t as { blockedBy?: string[] } | undefined)?.blockedBy ?? [];
   i.turns.forEach((t, n) => {
     if (sessionOf(i.sessions, n) < 2) return;
     for (const c of t.calls) for (const ref of completionsOf(c)) {
-      completions++;
       const ticket = byRef(ref);
-      for (const b of ((ticket as { blockedBy?: string[] } | undefined)?.blockedBy ?? [])) {
+      for (const b of new Set([...blockersOf(ticket), ...blockersOf(finalOf(ref))])) {
         const blocker = byRef(b);
         const names = blocker !== undefined ? [idOf(blocker), displayOf(blocker)] : [b];
         if (!names.some((x) => done.has(x))) out.push(`empty-idea-verify: ${ref} completed before its blocker ${blocker !== undefined ? displayOf(blocker) : b}`);
       }
-      if (ticket !== undefined) for (const r of [idOf(ticket), displayOf(ticket)]) done.add(r);
-      done.add(ref);
+      for (const r of ticket !== undefined ? [idOf(ticket), displayOf(ticket), ref] : [ref]) { done.add(r); completed.add(r); }
     }
   });
-  if (completions === 0) out.push("empty-idea-verify: session 2 completed no ticket");
+  const establishment = i.ticketsAtSetup.filter((t) => (t as { setup?: { establishes?: unknown } }).setup?.establishes !== undefined);
+  if (establishment.length === 0) return [...out, "empty-idea-verify: the setup snapshot holds no establishment ticket"];
+  const finished = (t: object, missing: string): void => {
+    if (!completed.has(idOf(t)) && !completed.has(displayOf(t))) { out.push(missing); return; }
+    const status = (finalOf(idOf(t)) as { status?: string } | undefined)?.status ?? "missing";
+    if (status !== "complete") out.push(`empty-idea-verify: ${displayOf(t)} completed in session 2, but its final status is ${status}`);
+  };
+  for (const e of establishment) {
+    const names = [idOf(e), displayOf(e)];
+    const waiting = i.ticketsAtSetup.filter((t) => blockersOf(t).some((b) => names.includes(b)));
+    if (waiting.length === 0) { out.push(`empty-idea-verify: nothing in the setup snapshot waits on establishment ticket ${displayOf(e)}`); continue; }
+    finished(e, `empty-idea-verify: establishment ticket ${displayOf(e)} never completed successfully in session 2`);
+    for (const t of waiting) finished(t, `empty-idea-verify: ${displayOf(t)}, which waits on establishment ticket ${displayOf(e)}, never completed successfully in session 2`);
+  }
   return out;
 }
 

@@ -7,7 +7,8 @@
  *
  * Needs dist/ built first (`npm run build`); the eval bundle is built here.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { describe, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { it, ownSeam } from "./t538-seam-owner.js";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -346,7 +347,7 @@ describe("G7: the collector", () => {
     const src = join(root, "demo.txt");
     writeFileSync(src, "hello\n");
     const events = join(scratch, "g7-evidence.jsonl");
-    setAfterWriteFault(collector(events, null, "cli", () => { throw new Error("no kill expected"); }));
+    ownSeam(collector(events, null, "cli", () => { throw new Error("no kill expected"); }));
     const out = await addCheckpointEvidence(root, cp.id, { generation: parsed.checkpoint.generation, revision: parsed.checkpoint.revision, digest: parsed.checkpoint.digest }, { file: src, actor: "owner@example.test" });
     const created = readEvents(events).find((e) => e.point === `evidence-created:${out.ref}`)!;
     expect(created.sha256).toBe(sha("hello\n"));
@@ -380,7 +381,7 @@ describe("G9: a competing writer", () => {
     const collect = collector(events, null, "cli", () => { throw new Error("no kill expected"); });
     let writer: Promise<number | null> | null = null;
     let writerOutput = "";
-    setAfterWriteFault(async (point, info) => {
+    ownSeam(async (point, info) => {
       if (point === "archive-committed") {
         // The writer shares this process's locale and zone: a contender under a different LANG/LC_*/TZ reads the
         // holder's `ps` signature differently and steals a live lock (ISS-1421, its own item). This row tests the
@@ -500,7 +501,7 @@ describe("G10: the invocation events", () => {
 
   it("two overlapping invocations in one process produce the overlap record", async () => {
     const events = join(scratch, "g10-overlap.jsonl");
-    setAfterWriteFault(collector(events, null, "mcp", () => { throw new Error("no kill expected"); }));
+    ownSeam(collector(events, null, "mcp", () => { throw new Error("no kill expected"); }));
     const io = (root: string) => ({ cwd: root, env: childEnv(), stdin: () => Buffer.from(JSON.stringify(payload())) });
     const [a, b] = await Promise.all([handleSetupApply(io(folder()), {}), handleSetupApply(io(folder()), {})]);
     expect([a.exitCode, b.exitCode]).toEqual([0, 0]);

@@ -146,6 +146,53 @@ describe("what the release may write past a record that does not parse", () => {
     expect(readTicket().claimedBySession).toBe(OTHER);
   });
 
+  describe.each([
+    ["undefined", undefined, {}],
+    ["null", null, { claimedBySession: null }],
+    ["empty", "", { claimedBySession: "" }],
+  ])("a session identity that is %s", (_name, identity, matchingStamp) => {
+    const bad = identity as unknown as string;
+    const cliClaim = { claim: { user: "someone", branch: "main", since: "2026-07-02T00:00:00.000Z" } };
+    const refusesBoth = async (extra: Record<string, unknown>) => {
+      writeFileSync(ticketPath(), ticketJson(extra));
+      breakSibling();
+      const before = readFileSync(ticketPath(), "utf-8");
+      const next = strip(JSON.parse(before) as Ticket);
+      await expect(withProjectLock(root, { strict: false }, async () => {
+        await releaseOwnClaimUnlocked(next, bad, root);
+      })).rejects.toThrow(/no session identity/);
+      expect(readFileSync(ticketPath(), "utf-8")).toBe(before);
+      const outcome = await releaseOwnClaim(root, "T-001", bad, strip);
+      expect(outcome.kind).toBe("not-released");
+      expect(readFileSync(ticketPath(), "utf-8")).toBe(before);
+    };
+
+    it("refuses over the stamp it matches, and over that stamp beside a real CLI claim", async () => {
+      await refusesBoth(matchingStamp);
+      await refusesBoth({ ...matchingStamp, ...cliClaim });
+    });
+
+    it("refuses over another session's claim", async () => {
+      await refusesBoth({ claimedBySession: OTHER });
+    });
+
+    it("refuses over a real session's assigned earmark", async () => {
+      await refusesBoth({ ...matchingStamp, earmark: earmarkOf(SID) });
+    });
+
+    it("refuses over a record whose assigned earmark names the same bad holder", async () => {
+      const { holderSession: _h, ...rest } = earmarkOf(SID);
+      const earmark = identity === undefined ? rest : { ...rest, holderSession: identity };
+      writeFileSync(ticketPath(), ticketJson({ earmark }));
+      breakSibling();
+      const before = readFileSync(ticketPath(), "utf-8");
+      await expect(withProjectLock(root, { strict: false }, async () => {
+        await releaseOwnClaimUnlocked(JSON.parse(ticketJson({ earmark: null })) as Ticket, bad, root);
+      })).rejects.toThrow();
+      expect(readFileSync(ticketPath(), "utf-8")).toBe(before);
+    });
+  });
+
   it("writes nothing when the decision is to write nothing, broken record or not", async () => {
     writeFileSync(ticketPath(), ticketJson(own));
     breakSibling();

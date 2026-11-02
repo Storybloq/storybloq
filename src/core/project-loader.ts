@@ -668,6 +668,10 @@ async function writeTicketPastUnparseable(ticket: Ticket, root: string): Promise
 export async function releaseOwnClaimUnlocked(next: Ticket, sessionId: string, root: string): Promise<readonly string[]> {
   const parsedNext = TicketSchema.parse(next);
   const rel = `.story/tickets/${parsedNext.id}.json`;
+  // An absent, null or empty identity would match the same stamp on the record.
+  if (typeof sessionId !== "string" || sessionId === "") {
+    throw new ProjectLoaderError("conflict", `Refusing the write to ${rel}: no session identity, so no claim can be shown to be this session's.`);
+  }
   const { unparseable } = heldResolutionContext(root, undefined).misnamedPastUnparseable("tickets", parsedNext.id);
   const raw = await prepareTicketWriteSeams.readPrior(ticketFilePath(root, parsedNext.id));
   const prior = TicketSchema.safeParse(raw === null ? null : priorForGuard(raw, `tickets/${parsedNext.id}.json`));

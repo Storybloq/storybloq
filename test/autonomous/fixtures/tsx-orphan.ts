@@ -8,6 +8,9 @@
  */
 import { spawn } from "node:child_process";
 
+const marker = process.argv[2];
+if (!marker) throw new Error("tsx-orphan: no marker path");
+
 const park = [
   "process.on('SIGTERM', () => {});",
   "const fs = require('node:fs');",
@@ -15,6 +18,6 @@ const park = [
   "fs.renameSync(process.argv[1] + '.tmp', process.argv[1]);",
   "setInterval(() => {}, 1000);",
 ].join(" ");
-const descendant = spawn(process.execPath, ["-e", park, process.argv[2]!], { stdio: "ignore" });
+const descendant = spawn(process.execPath, ["-e", park, marker], { stdio: "ignore" });
 descendant.unref();
 process.exit(0);

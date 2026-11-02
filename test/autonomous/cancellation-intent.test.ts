@@ -1032,6 +1032,19 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     checkAfterTeardown({ pgids: groups(launcher), pids: [descendant], dirs: [launcher.tmp] });
   }, 40_000);
 
+  it.skipIf(process.platform === "win32").each([
+    ["missing", []],
+    ["empty", [""]],
+  ] as const)("the orphan fixture refuses a %s marker and leaves no descendant", async (_name, extra) => {
+    const launcher = spawnTsx([fixture("tsx-orphan.ts"), ...extra]);
+    const completion = await launcher.done;
+    expect(completion.code).not.toBe(0);
+    expect(launcher.stderr()).toContain("tsx-orphan: no marker path");
+    expect(launcher.pgid).toBeDefined();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(groupAlive(launcher.pgid as number)).toBe(false);
+  }, 40_000);
+
   it.skipIf(process.platform === "win32")("a finished child's directory is removed by the registered teardown", async () => {
     const marker = join(sessDir, "finished");
     const spawned = spawnTsx([fixture("tsx-marker.ts"), marker]);

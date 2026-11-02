@@ -558,6 +558,7 @@ export class CodeReviewStage implements WorkflowStage {
         }));
       }
 
+      let issueNote = "";
       if (ctx.state.currentIssue) {
         const issueId = ctx.state.currentIssue.id;
         try {
@@ -572,7 +573,9 @@ export class CodeReviewStage implements WorkflowStage {
           await handleIssueUpdate(issueId, { status: "open" }, "json", ctx.root, {
             clearEarmarkForSession: ctx.state.sessionId,
           });
-        } catch { /* best-effort */ }
+        } catch (err) {
+          issueNote = `Issue ${issueId} was NOT returned to open and may still be in progress or assigned: ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
 
       ctx.updateDraft({ ticket: undefined, currentIssue: null, currentIssueExit: null, reviews: { plan: [], code: [] } });
@@ -585,6 +588,7 @@ export class CodeReviewStage implements WorkflowStage {
             "",
             `**Reason:** ${reason}`,
             ...(releaseNote ? ["", releaseNote.trim()] : []),
+            ...(issueNote ? ["", issueNote] : []),
             "",
             "Write a handover documenting why this ticket was skipped and what the next session should know.",
             "",

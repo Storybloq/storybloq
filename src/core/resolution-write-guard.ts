@@ -88,7 +88,7 @@ export interface ResolutionWriteContext {
   misnamedClaimants(dir: MisnamedDir, id: string): readonly string[];
   /**
    * The directory's visible claimants of `id` and the records that do not parse,
-   * without refusing over the latter. Only for the one write that gives back an own claim.
+   * without refusing over the latter. Only for the release of an own claim.
    */
   misnamedPastUnparseable(dir: MisnamedDir, id: string): { claimants: readonly string[]; unparseable: readonly string[] };
   /**

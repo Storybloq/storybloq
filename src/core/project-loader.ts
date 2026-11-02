@@ -624,22 +624,61 @@ export async function writeTicketUnlocked(
   }
 }
 
+const OWN_CLAIM_KEYS = new Set(["claim", "claimedBySession", "status", "earmark"]);
+
 /**
- * `writeTicketUnlocked` without the refusal over unparseable records; a visible
- * misnamed claimant still refuses. Returns the records written past. Only
- * `releaseOwnClaim` (core/own-claim-release.ts) may call this.
+ * Whether `next` differs from `prior` only by giving back what `sessionId`
+ * itself holds: its stamp, its assigned earmark, and inprogress back to open.
  */
-export async function writeTicketPastUnparseable(ticket: Ticket, root: string): Promise<readonly string[]> {
-  let writtenPast: readonly string[] = [];
+function onlyGivesBackOwnClaim(prior: Record<string, unknown>, next: Record<string, unknown>, sessionId: string): boolean {
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  for (const key of new Set([...Object.keys(prior), ...Object.keys(next)])) {
+    // The loader gives a legacy record its display id, and any write persists it.
+    if (key === "displayId" && prior.displayId === undefined && next.displayId === next.id) continue;
+    if (!OWN_CLAIM_KEYS.has(key) && !same(prior[key], next[key])) return false;
+  }
+  const ownsStamp = prior.claimedBySession === sessionId;
+  const earmark = prior.earmark as Record<string, unknown> | null | undefined;
+  const ownsEarmark = earmark?.stage === "assigned" && earmark.holderSession === sessionId;
+  if (!ownsStamp && !ownsEarmark) return false;
+  if (!same(next.earmark, prior.earmark) && !(ownsEarmark && next.earmark === null)) return false;
+  if (next.status !== prior.status && !(ownsStamp && prior.status === "inprogress" && next.status === "open")) return false;
+  if (ownsStamp) {
+    return ["claim", "claimedBySession"].every((key) => next[key] === undefined || same(next[key], prior[key]));
+  }
+  return same(next.claim, prior.claim) && same(next.claimedBySession, prior.claimedBySession);
+}
+
+/** `writeTicketUnlocked` without the refusal over unparseable records; a visible misnamed claimant still refuses. */
+async function writeTicketPastUnparseable(ticket: Ticket, root: string): Promise<void> {
   const { target, content } = await prepareTicketWriteChecked(ticket, root, undefined, (id, path) => {
-    const { claimants, unparseable } = heldResolutionContext(root, undefined).misnamedPastUnparseable("tickets", id);
-    refuseMisnamedClaimants(claimants, "tickets", id, path);
-    writtenPast = unparseable;
+    refuseMisnamedClaimants(heldResolutionContext(root, undefined).misnamedPastUnparseable("tickets", id).claimants, "tickets", id, path);
   });
   assertPreparedWritesCurrent(root, [{ target, content }]);
   await assertWithdrawalLedgerCurrent(root, [{ op: "write", target, content }]);
   await atomicWrite(target, content);
-  return writtenPast;
+}
+
+/**
+ * ISS-1405: writes `next` past records that do not parse, only when the record
+ * on disk shows it gives back nothing but `sessionId`'s own claim. Returns the
+ * records written past. Callers go through `releaseOwnClaim`
+ * (core/own-claim-release.ts); the project lock must be held.
+ */
+export async function releaseOwnClaimUnlocked(next: Ticket, sessionId: string, root: string): Promise<readonly string[]> {
+  const parsedNext = TicketSchema.parse(next);
+  const rel = `.story/tickets/${parsedNext.id}.json`;
+  const { unparseable } = heldResolutionContext(root, undefined).misnamedPastUnparseable("tickets", parsedNext.id);
+  const raw = await prepareTicketWriteSeams.readPrior(ticketFilePath(root, parsedNext.id));
+  const prior = TicketSchema.safeParse(raw === null ? null : priorForGuard(raw, `tickets/${parsedNext.id}.json`));
+  if (!prior.success || !onlyGivesBackOwnClaim(prior.data as Record<string, unknown>, parsedNext as Record<string, unknown>, sessionId)) {
+    throw new ProjectLoaderError(
+      "conflict",
+      `Refusing the write to ${rel} past ${unparseable.join(", ")}, which could not be parsed: it does more than give back this session's own claim.`,
+    );
+  }
+  await writeTicketPastUnparseable(parsedNext, root);
+  return unparseable;
 }
 
 export async function writeTicket(

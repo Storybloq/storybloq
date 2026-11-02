@@ -15,44 +15,19 @@
  * hidden, so the release can leave it as a second copy until that file is
  * repaired, when the duplicate check names it.
  *
- * `writeTicketPastUnparseable` is not to be called from anywhere else;
- * own-claim-release.test.ts fails if it is.
+ * The write and its checks live in project-loader.ts (`releaseOwnClaimUnlocked`),
+ * which checks the record on disk, so no caller can vouch for what it loaded.
  */
 
 import type { Ticket } from "../models/ticket.js";
 import { MisnamedUnparseableError } from "./resolution-write-guard.js";
-import { withProjectLock, writeTicketPastUnparseable, writeTicketUnlocked } from "./project-loader.js";
+import { releaseOwnClaimUnlocked, withProjectLock, writeTicketUnlocked } from "./project-loader.js";
 
 export type OwnClaimRelease =
   /** Nothing was asked of the ledger: `decide` returned null, or the ticket is not there. */
   | { readonly kind: "no-write" }
   | { readonly kind: "released"; readonly file: string; readonly writtenPast: readonly string[] }
   | { readonly kind: "not-released"; readonly file: string; readonly reason: string };
-
-const OWN_KEYS = new Set(["claim", "claimedBySession", "status", "earmark"]);
-
-type Loose = Record<string, unknown>;
-
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-
-/** Whether `next` differs from `loaded` only by giving back what `sessionId` itself holds. */
-function onlyGivesBackOwn(loaded: Loose, next: Loose, sessionId: string): boolean {
-  for (const key of new Set([...Object.keys(loaded), ...Object.keys(next)])) {
-    if (!OWN_KEYS.has(key) && !same(loaded[key], next[key])) return false;
-  }
-  const ownsStamp = loaded.claimedBySession === sessionId;
-  const earmark = loaded.earmark as Loose | null | undefined;
-  const ownsEarmark = earmark?.stage === "assigned" && earmark.holderSession === sessionId;
-  if (!ownsStamp && !ownsEarmark) return false;
-  if (!same(next.earmark, loaded.earmark) && !(ownsEarmark && next.earmark === null)) return false;
-  if (ownsStamp) {
-    for (const key of ["claim", "claimedBySession"]) {
-      if (next[key] !== undefined && !same(next[key], loaded[key])) return false;
-    }
-    return next.status === loaded.status || next.status === "open";
-  }
-  return same(next.claim, loaded.claim) && same(next.claimedBySession, loaded.claimedBySession) && next.status === loaded.status;
-}
 
 /**
  * Takes the project lock, loads the ticket and writes what `decide` returns
@@ -79,8 +54,8 @@ export async function releaseOwnClaim(
         await writeTicketUnlocked(next, root);
         done = { kind: "released", file, writtenPast: [] };
       } catch (err) {
-        if (!(err instanceof MisnamedUnparseableError) || !onlyGivesBackOwn(loaded as unknown as Loose, next as unknown as Loose, sessionId)) throw err;
-        done = { kind: "released", file, writtenPast: await writeTicketPastUnparseable(next, root) };
+        if (!(err instanceof MisnamedUnparseableError)) throw err;
+        done = { kind: "released", file, writtenPast: await releaseOwnClaimUnlocked(next, sessionId, root) };
       }
     });
   } catch (err) {

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ownClaimReleaseNote, releaseOwnClaim } from "../../src/core/own-claim-release.js";
+import { prepareTicketWriteSeams, releaseOwnClaimUnlocked, withProjectLock } from "../../src/core/project-loader.js";
 import type { Ticket } from "../../src/models/ticket.js";
 
 const SID = "00000000-0000-0000-0000-000000000001";
@@ -97,7 +98,8 @@ describe("what the release may write past a record that does not parse", () => {
     expect(ownClaimReleaseNote(outcome)).toContain("T-050.json");
   });
 
-  it("does not write past a record it cannot read at all", async () => {
+  const skipIfRoot = process.getuid?.() === 0 ? it.skip : it;
+  skipIfRoot("does not write past a record it cannot read at all", async () => {
     writeFileSync(ticketPath(), ticketJson(own));
     writeFileSync(ticketPath("T-009"), "{}");
     chmodSync(ticketPath("T-009"), 0o000);
@@ -105,6 +107,43 @@ describe("what the release may write past a record that does not parse", () => {
     expect(outcome.kind).toBe("not-released");
     expect(readTicket().claimedBySession).toBe(SID);
     expect(ownClaimReleaseNote(outcome)).toContain("T-009.json");
+  });
+
+  it("leaves a completed ticket that carries a stale claim of this session unchanged", async () => {
+    writeFileSync(ticketPath(), ticketJson({ ...own, status: "complete", completedDate: "2026-07-02" }));
+    breakSibling();
+    const before = readFileSync(ticketPath(), "utf-8");
+    const outcome = await releaseOwnClaim(root, "T-001", SID, strip);
+    expect(outcome.kind).toBe("not-released");
+    expect(readFileSync(ticketPath(), "utf-8")).toBe(before);
+  });
+
+  it("a refusal other than the unparseable one never reaches the release path", async () => {
+    writeFileSync(ticketPath(), ticketJson(own));
+    const original = prepareTicketWriteSeams.readPrior;
+    let calls = 0;
+    prepareTicketWriteSeams.readPrior = async (path) => {
+      calls += 1;
+      if (calls === 1) throw new Error("injected refusal");
+      return original(path);
+    };
+    try {
+      const outcome = await releaseOwnClaim(root, "T-001", SID, strip);
+      expect(outcome).toMatchObject({ kind: "not-released", reason: "injected refusal" });
+      expect(readTicket().claimedBySession).toBe(SID);
+    } finally {
+      prepareTicketWriteSeams.readPrior = original;
+    }
+  });
+
+  it("the release API checks the record on disk, not what its caller says was loaded", async () => {
+    writeFileSync(ticketPath(), ticketJson({ claimedBySession: OTHER }));
+    breakSibling();
+    const forged = JSON.parse(ticketJson({ status: "open" })) as Ticket;
+    await expect(withProjectLock(root, { strict: false }, async () => {
+      await releaseOwnClaimUnlocked(forged, SID, root);
+    })).rejects.toThrow(/T-009\.json/);
+    expect(readTicket().claimedBySession).toBe(OTHER);
   });
 
   it("writes nothing when the decision is to write nothing, broken record or not", async () => {
@@ -125,12 +164,13 @@ describe("the exemption has one door", () => {
   });
   const users = (word: string) => files(src).filter((p) => readFileSync(p, "utf-8").includes(word)).map((p) => p.slice(src.length + 1)).sort();
 
-  it("only the release function reaches the write and only that write reaches the guard's answer", () => {
-    expect(users("writeTicketPastUnparseable")).toEqual(["core/own-claim-release.ts", "core/project-loader.ts"]);
+  it("the bypass writer is private and only the release function calls the release API", () => {
+    const loader = readFileSync(join(src, "core", "project-loader.ts"), "utf-8");
+    expect(users("releaseOwnClaimUnlocked")).toEqual(["core/own-claim-release.ts", "core/project-loader.ts"]);
+    expect(users("writeTicketPastUnparseable")).toEqual(["core/project-loader.ts"]);
+    expect(loader).not.toMatch(/export[^\n]*writeTicketPastUnparseable/);
     expect(users("misnamedPastUnparseable")).toEqual(["core/project-loader.ts", "core/resolution-write-guard.ts"]);
-    expect(readFileSync(join(src, "core", "project-loader.ts"), "utf-8").match(/misnamedPastUnparseable/g)).toHaveLength(1);
-    const release = readFileSync(join(src, "core", "own-claim-release.ts"), "utf-8");
-    expect(release.match(/writeTicketPastUnparseable\(/g)).toHaveLength(1);
+    expect(loader.match(/misnamedPastUnparseable/g)).toHaveLength(2);
     expect(readFileSync(join(src, "core", "index.ts"), "utf-8")).not.toContain("own-claim-release");
   });
 

@@ -108,3 +108,23 @@ describe.each([
     expect(instruction).toContain("T-050.json");
   });
 });
+
+describe("skip_ticket on an issue at CODE_REVIEW", () => {
+  it("reports an issue that could not be returned to open, naming it and the error", async () => {
+    writeFileSync(join(root, ".story", "issues", "ISS-050.json"), JSON.stringify({
+      id: "ISS-050", title: "Some issue", status: "inprogress", severity: "high", components: [], impact: "x",
+      resolution: null, location: [], discoveredDate: "2026-07-02", resolvedDate: null, relatedTickets: [],
+    }));
+    breakSibling();
+    const sessionDir = join(root, ".story", "sessions", SID);
+    mkdirSync(join(sessionDir, "telemetry", "reviews"), { recursive: true });
+    const state = { ...sessionState("CODE_REVIEW"), ticket: undefined, currentIssue: { id: "ISS-050", title: "Some issue", severity: "high" } } as unknown as FullSessionState;
+    const ctx = new StageContext(root, sessionDir, state, recipe);
+    const result = await new CodeReviewStage().report(ctx, { completedAction: "skip_ticket", notes: "no" } as never);
+    const instruction = (result as unknown as { result: { instruction: string } }).result.instruction;
+    expect(JSON.parse(readFileSync(join(root, ".story", "issues", "ISS-050.json"), "utf-8")).status).toBe("inprogress");
+    expect(instruction).toContain("ISS-050");
+    expect(instruction).toContain("NOT returned to open");
+    expect(instruction).toContain("T-009.json");
+  });
+});

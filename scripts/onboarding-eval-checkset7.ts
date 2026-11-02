@@ -526,7 +526,9 @@ function responseFlag(args: readonly string[]): string | null {
 }
 
 const baseName = (w: string | undefined): string => (w ?? "").replace(/^.*\//, "");
+/** Package runners: a one-word command, or a command and the subcommand that runs a package. */
 const RUNNERS = new Set(["npx", "bunx", "pnpx"]);
+const RUNNER_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = { pnpm: ["dlx", "exec"], yarn: ["dlx", "exec"], npm: ["exec", "x"], bun: ["x"] };
 const IS_PACKAGE = /^(@storybloq\/)?storybloq(@.*)?$/;
 /** Git subcommands whose arguments are text or queries; anything else, or a `-c` that can define an alias, may run what it names. */
 const GIT_DATA = new Set(["commit", "tag", "log", "show", "diff", "grep", "status"]);
@@ -534,18 +536,28 @@ const GIT_DATA = new Set(["commit", "tag", "log", "show", "diff", "grep", "statu
 const FED = new Set(["sh", "bash", "zsh", "dash", "ksh", "xargs"]);
 const NAMES_WORDS = /checkpoint[\s\S]*resolve/;
 
-/** Where a storybloq invocation's own arguments start, through a package runner; null when the executable is not storybloq. */
-function storybloqArgs(argv: readonly string[]): number | null {
+/** After a runner's name and subcommand, or null when this is no package runner. */
+function afterRunner(argv: readonly string[]): number | null {
   const exe = baseName(argv[0]);
-  if (exe === "storybloq") return 1;
-  if (!RUNNERS.has(exe)) return null;
-  for (let i = 1; i < argv.length; i++) {
+  if (RUNNERS.has(exe)) return 1;
+  const subs = RUNNER_SUBCOMMANDS[exe];
+  if (subs === undefined) return null;
+  const at = argv.findIndex((w, i) => i > 0 && !w.startsWith("-"));
+  return at > 0 && subs.includes(argv[at]!) ? at + 1 : null;
+}
+
+/** What a package runner goes on to run: a command string, or an executable and its arguments; null when this is no runner. */
+function runnerTarget(argv: readonly string[]): { call: string } | { rest: readonly string[] } | null {
+  const from = afterRunner(argv);
+  if (from === null) return null;
+  for (let i = from; i < argv.length; i++) {
     const w = argv[i]!;
-    if (w.startsWith("-")) continue;
-    if (IS_PACKAGE.test(w)) return i + 1;
-    if (!argv[i - 1]!.startsWith("-")) return null;
+    if (w === "-c" || w === "--call") return i + 1 < argv.length ? { call: argv[i + 1]! } : { rest: [] };
+    if (w.startsWith("--call=")) return { call: w.slice("--call=".length) };
+    if (w === "-p" || w === "--package") { i++; continue; }
+    if (!w.startsWith("-")) return { rest: argv.slice(i) };
   }
-  return null;
+  return { rest: [] };
 }
 
 /** The index of `resolve` when these arguments select checkpoint resolve: only options, and their values, may come first. */
@@ -576,24 +588,35 @@ function shellResponses(text: string, depth = 0): (string | null)[] {
   if (depth > 3) return NAMES_RESOLVE.test(text) ? [null] : [];
   const out: (string | null)[] = [];
   for (const cmd of shellSequence(text).commands) {
-    const u = unwrap(cmd.words);
-    if (u.inner !== null) out.push(...shellResponses(u.inner, depth + 1));
-    else {
-      const argv = u.argv;
-      const own = storybloqArgs(argv);
-      const words = cmd.words.join(" ");
-      const consecutive = argv.some((w, i) => w === "checkpoint" && argv[i + 1] === "resolve");
-      if (argv.length === 0 || isReader(argv)) { /* assigns or reads only */ }
-      else if (own !== null) {
-        const at = selectsResolve(argv, own);
-        if (at !== null) out.push(responseFlag(argv.slice(at + 1)));
-      } else if (dataOnly(argv)) { /* its arguments are data */ }
-      else if (/[$`]/.test(argv[0] ?? "") || FED.has(baseName(argv[0]))) { if (/storybloq/.test(text) && NAMES_WORDS.test(text)) out.push(null); }
-      else if (!cmd.live.some((l) => NAMES_RESOLVE.test(l)) && (consecutive || NAMES_RESOLVE.test(words) || (cmd.heredoc && NAMES_RESOLVE.test(text)))) out.push(null);
-    }
+    out.push(...commandResponses(cmd.words, cmd, text, depth, false));
     for (const live of cmd.live) out.push(...shellResponses(live, depth + 1));
   }
   return out;
+}
+
+/** One command's responses; `viaRunner` means a package runner chose it, so a package name may stand for the executable. */
+function commandResponses(words: readonly string[], cmd: { words: readonly string[]; live: readonly string[]; heredoc?: unknown }, text: string, depth: number, viaRunner: boolean): (string | null)[] {
+  const u = unwrap(words as string[]);
+  if (u.inner !== null) return shellResponses(u.inner, depth + 1);
+  const argv = u.argv;
+  if (argv.length === 0 || isReader(argv)) return [];
+  const target = runnerTarget(argv);
+  if (target !== null) {
+    if ("rest" in target) return depth > 3 ? [null] : commandResponses(target.rest, cmd, text, depth + 1, true);
+    // A string the shell fills in at run time is read against the whole call.
+    if (/[$`]/.test(target.call)) return NAMES_RESOLVE.test(text) ? [null] : [];
+    return shellResponses(target.call, depth + 1);
+  }
+  const exe = baseName(argv[0]);
+  if (exe === "storybloq" || (viaRunner && IS_PACKAGE.test(argv[0]!))) {
+    const at = selectsResolve(argv, 1);
+    return at !== null ? [responseFlag(argv.slice(at + 1))] : [];
+  }
+  if (dataOnly(argv)) return [];
+  if (/[$`]/.test(argv[0] ?? "") || FED.has(exe)) return /storybloq/.test(text) && NAMES_WORDS.test(text) ? [null] : [];
+  const consecutive = argv.some((w, i) => w === "checkpoint" && argv[i + 1] === "resolve");
+  if (cmd.live.some((l) => NAMES_RESOLVE.test(l))) return [];
+  return consecutive || NAMES_RESOLVE.test(argv.join(" ")) || NAMES_RESOLVE.test(cmd.words.join(" ")) || (cmd.heredoc && NAMES_RESOLVE.test(text)) ? [null] : [];
 }
 
 /** The responses a call's checkpoint resolutions send: each a string, or null when it cannot be read; empty when it resolves none. */

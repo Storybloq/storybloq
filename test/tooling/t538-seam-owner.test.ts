@@ -1,12 +1,15 @@
-import { describe, expect } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { afterAll, describe, expect } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { evidenceFileSeams } from "../../src/core/checkpoint-evidence-files.js";
+import { transactionSeams } from "../../src/core/project-loader.js";
 import { setupApplySeams } from "../../src/core/setup-apply.js";
 import { handleSetupApply } from "../../src/cli/commands/setup-apply.js";
 import { collector } from "../../scripts/eval-fault-mcp.js";
 import { it, ownSeam } from "./t538-seam-owner.js";
 
+const seams = { fault: setupApplySeams.fault, afterCreate: evidenceFileSeams.afterCreate, afterTemp: transactionSeams.afterTemp, afterCommitEntry: transactionSeams.afterCommitEntry };
 const SID = "SS-0123abcd";
 const payload = { version: 1, setupId: SID, review: { reviewer: "codex", outcome: "approved", lines: ["Plan review: approved"] }, ownerLabel: "Sam", project: { name: "demo", type: "npm", language: "typescript" },
   quality: { level: "full", verifyApplies: false, components: [{ id: "root", workdir: ".", test: { command: "npm test", status: "established" }, build: null, verify: null }] },
@@ -31,6 +34,19 @@ describe("a run its test abandoned", () => {
   let lateInstall: Promise<void>;
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
+
+  afterAll(async () => {
+    try {
+      release();
+      await Promise.allSettled([left, lateInstall]);
+    } finally {
+      setupApplySeams.fault = seams.fault;
+      evidenceFileSeams.afterCreate = seams.afterCreate;
+      transactionSeams.afterTemp = seams.afterTemp;
+      transactionSeams.afterCommitEntry = seams.afterCommitEntry;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("is left paused in the middle of its steps", async () => {
     const collect = collector(logA, null, "cli", none);

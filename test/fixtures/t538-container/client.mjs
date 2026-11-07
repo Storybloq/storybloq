@@ -49,6 +49,13 @@ const T = {
     return out;
   },
   async interfaces() { return { dev: fs.readFileSync("/proc/net/dev", "utf8").split("\n").slice(2).map((l) => l.split(":")[0].trim()).filter(Boolean).sort(), routes: fs.readFileSync("/proc/net/route", "utf8").trim().split("\n").length - 1 }; },
+  async deathwatch() {
+    const c = dial(); await tunnelUp(c); let echoed = ""; c.on("data", (d) => { echoed += d; }); c.write("alive");
+    for (let i = 0; i < 60 && echoed !== "alive"; i++) await new Promise((r) => setTimeout(r, 50));
+    fs.writeFileSync(process.env.MARK, "up"); const t0 = Date.now();
+    const closed = await new Promise((res) => { c.on("close", () => res(true)); setTimeout(() => res(false), 15000); });
+    return { echoed, closedMs: closed ? Date.now() - t0 : null };
+  },
   async listeners() { return fs.readFileSync("/proc/net/tcp", "utf8").trim().split("\n").slice(1).map((l) => l.trim().split(/\s+/)).filter((c) => c[3] === "0A").map((c) => c[1]); },
 };
 for (const row of process.env.ROWS.split(",")) console.log(JSON.stringify({ row, value: await T[row]() }));

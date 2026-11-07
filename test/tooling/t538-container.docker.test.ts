@@ -38,7 +38,6 @@ const must = (args: readonly string[], input?: string): string => {
   return r.stdout.trim();
 };
 interface Stack { readonly id: string; readonly attempt: string; readonly proxy: string; readonly plog: () => string; readonly plines: () => Record<string, unknown>[]; }
-const OPEN = '{"conns":100000,"bytes":1099511627776}';
 
 function stack(name: string, env: Partial<ProxyEnv> = {}, deadline = 900): Stack {
   const id = `${SUITE}${name}`;
@@ -49,7 +48,7 @@ function stack(name: string, env: Partial<ProxyEnv> = {}, deadline = 900): Stack
   must(["network", "create", ...label, n.external]);
   must(["network", "connect", "--alias", "sink", n.external, sink]);
   must(volumeInitArgs(id, PROXY_IMAGE));
-  must(proxyRunArgs(id, PROXY_IMAGE, { ALLOW: "sink:8080", EXPIRY_MS: "1800000", ALLOW_PRIVATE: "1", LIMITS: OPEN, ...env }));
+  must(proxyRunArgs(id, PROXY_IMAGE, { ALLOW: "sink:8080", EXPIRY_MS: "1800000", ALLOW_PRIVATE: "1", ...env }));
   for (let i = 0; i < 50; i++) {
     if (docker(["exec", n.proxy, "test", "-S", "/vol/sock/proxy.sock"]).status === 0) break;
     spawnSync("sleep", ["0.2"]);
@@ -261,7 +260,7 @@ describe.runIf(usable)("the container, through amendment A1's transport", { time
       expect(v.got).toBe(v.sz);
     });
     it("the byte ceiling closes a tunnel while it sends and refuses what follows", () => {
-      const s = stack("by", { LIMITS: `{"bytes":${16 * 1048576},"conns":100000}` });
+      const s = stack("by", { LIMITS: `{"bytes":${16 * 1048576}}` });
       const v = rows(s, "relay", "ceiling").ceiling as { after: string };
       expect(v.after).toBe("HTTP/1.1 403 Forbidden");
       const hit = s.plines().find((l) => l["ceiling-hit"] === "upstream-bytes")!;
@@ -295,7 +294,17 @@ describe.runIf(usable)("the container, through amendment A1's transport", { time
     });
     it("proxy death closes the open tunnel, later connections fail, and a new proxy refuses the used volume", () => {
       const s = stack("pd");
+      sh(s, "mkdir -p /vol/att/tmp");
+      docker(["exec", "-i", s.attempt, "bash", "-c", "cat > /vol/att/tmp/c.mjs"], CLIENT);
+      must(["exec", "-d", "-e", "MODE=relay", "-e", "GOOD=sink:8080", "-e", "ROWS=deathwatch", "-e", "MARK=/vol/att/tmp/up", s.attempt, "bash", "-c", "node /vol/att/tmp/c.mjs > /vol/att/tmp/out 2>&1"]);
+      for (let i = 0; i < 50 && sh(s, "test -e /vol/att/tmp/up").status !== 0; i++) spawnSync("sleep", ["0.2"]);
       docker(["kill", s.proxy]);
+      let out = "";
+      for (let i = 0; i < 40 && out === ""; i++) { out = sh(s, "cat /vol/att/tmp/out").stdout.trim(); if (out === "") spawnSync("sleep", ["0.5"]); }
+      const watch = (JSON.parse(out) as { value: { echoed: string; closedMs: number | null } }).value;
+      expect(watch.echoed).toBe("alive");
+      expect(watch.closedMs, "the existing client socket closes within the bound").not.toBeNull();
+      expect(watch.closedMs!).toBeLessThan(10_000);
       expect(rows(s, "relay", "connect").connect).not.toBe("HTTP/1.1 200 OK");
       expect(rows(s, "unix", "connect").connect).not.toBe("HTTP/1.1 200 OK");
       expect(inspect(s.attempt).State.Running).toBe(true);

@@ -1,8 +1,8 @@
 // T-538 S5b-0 commit 2: the proxy, relay, supervisor, seccomp identity and launch argv, on the host.
 // The same behaviours through a real container are in t538-container.docker.test.ts.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,9 +29,10 @@ interface Rig {
   readonly received: () => number;
   readonly flooded: () => number;
   readonly lookups: () => number;
+  readonly lookupOptions: () => unknown;
   readonly exited: () => number | null;
 }
-type Opts = Record<string, unknown> & { limits?: Record<string, number>; addresses?: { address: string }[] | Error; sink?: "no-read" | "flood" };
+type Opts = Record<string, unknown> & { limits?: Record<string, number>; addresses?: { address: string }[] | Error; dns?: { v4: { address: string }[]; v6: { address: string }[] }; sink?: "no-read" | "flood" };
 
 async function withProxy(opts: Opts, body: (r: Rig) => Promise<void>): Promise<void> {
   const { startProxy, DEFAULT_LIMITS } = await import(proxyFile);
@@ -57,15 +58,24 @@ async function withProxy(opts: Opts, body: (r: Rig) => Promise<void>): Promise<v
   await new Promise<void>((r) => sink.listen(0, "127.0.0.1", r));
   const port = (sink.address() as net.AddressInfo).port;
   let lookups = 0;
+  let lookupOptions: unknown = null;
   let exited: number | null = null;
   const good = `sink.test:${port}`;
-  const lookup = (_h: string, _o: unknown, cb: (e: Error | null, a?: unknown) => void): void => {
+  const lookup = (_h: string, o: { family?: number }, cb: (e: Error | null, a?: unknown) => void): void => {
     lookups += 1;
+    lookupOptions = o;
+    if (opts.dns) {
+      // What a resolver does: AAAA answers come back unless the caller asked for IPv4 only.
+      const answers = o.family === 4 ? opts.dns.v4 : [...opts.dns.v4, ...opts.dns.v6];
+      if (answers.length === 0) cb(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+      else cb(null, answers);
+      return;
+    }
     if (opts.addresses instanceof Error) cb(opts.addresses);
     else cb(null, opts.addresses ?? [{ address: "127.0.0.1" }]);
   };
   const sock = join(root, "s", "proxy.sock");
-  const { limits, addresses: _a, sink: _s, ...rest } = opts;
+  const { limits, addresses: _a, dns: _d, sink: _s, ...rest } = opts;
   const p = startProxy({ sockPath: sock, logPath, allow: [good], plain: [], privateOk: true, expiryMs: 60_000, limits: { ...DEFAULT_LIMITS, ...limits }, lookup, exit: (c: number) => { exited = c; }, ...rest });
   await until(() => existsSync(sock));
   const logText = (): string => readFileSync(logPath, "utf8");
@@ -73,7 +83,7 @@ async function withProxy(opts: Opts, body: (r: Rig) => Promise<void>): Promise<v
     await body({
       sock, logText, good, port,
       lines: () => logText().trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>),
-      received: () => received, flooded: () => flooded, lookups: () => lookups, exited: () => exited,
+      received: () => received, flooded: () => flooded, lookups: () => lookups, lookupOptions: () => lookupOptions, exited: () => exited,
     });
   } finally {
     p.closeAll();
@@ -139,6 +149,8 @@ describe("the proxy's address checks", () => {
   it.each([
     ["one private among public", [{ address: "8.8.8.8" }, { address: "10.0.0.1" }]],
     ["the private one first", [{ address: "192.168.65.1" }, { address: "8.8.8.8" }]],
+    ["a documentation address among public", [{ address: "8.8.8.8" }, { address: "192.0.2.7" }]],
+    ["a benchmarking address among public", [{ address: "8.8.8.8" }, { address: "198.18.0.1" }]],
     ["an IPv6 answer of any class", [{ address: "8.8.8.8" }, { address: "2001:4860:4860::8888" }]],
     ["no answer", []],
   ])("refuses a listed name that resolves to %s, and connects to nothing", async (_n, addresses) => {
@@ -147,6 +159,58 @@ describe("the proxy's address checks", () => {
       expect(refusals(r)).toEqual(["private-address"]);
       expect(r.lines().some((l) => "allow" in l)).toBe(false);
     });
+  });
+  it("a dual-stack name connects to its checked IPv4 literal, asking for IPv4 only and never resolving again", async () => {
+    const seen: unknown[] = [];
+    const connect = (o: { port: number }): net.Socket => { seen.push(o); return net.connect({ host: "127.0.0.1", port: o.port, allowHalfOpen: true }); };
+    const dns = { v4: [{ address: "8.8.8.8" }, { address: "1.1.1.1" }], v6: [{ address: "2001:4860:4860::8888" }] };
+    await withProxy({ privateOk: false, dns, connect }, async (r) => {
+      const c = await openTunnel(r);
+      expect(r.lookupOptions()).toEqual({ all: true, family: 4 });
+      expect(r.lookups()).toBe(1);
+      expect(seen).toEqual([{ host: "8.8.8.8", port: r.port, family: 4, allowHalfOpen: true }]);
+      c.destroy();
+    });
+  });
+  it("a name with only IPv6 answers is refused", async () => {
+    await withProxy({ privateOk: false, dns: { v4: [], v6: [{ address: "2001:4860:4860::8888" }] } }, async (r) => {
+      expect(await ask(r, connectLine(r.good))).toBe("HTTP/1.1 403 Forbidden");
+      expect(refusals(r)).toEqual(["private-address"]);
+    });
+  });
+  it("an IPv6 answer is refused even on the stub's private route", async () => {
+    await withProxy({ privateOk: true, addresses: [{ address: "::1" }] }, async (r) => {
+      expect(await ask(r, connectLine(r.good))).toBe("HTTP/1.1 403 Forbidden");
+      expect(refusals(r)).toEqual(["private-address"]);
+    });
+  });
+  it("the policy is exactly the sixteen ruled ranges", async () => {
+    const { PROHIBITED_RANGES } = await import(proxyFile);
+    expect(PROHIBITED_RANGES).toEqual(["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32"]);
+  });
+  // First and last address refused; the neighbours are public unless another range owns them (null).
+  it.each([
+    ["0.0.0.0/8", "0.0.0.0", "0.255.255.255", null, "1.0.0.0"],
+    ["10.0.0.0/8", "10.0.0.0", "10.255.255.255", "9.255.255.255", "11.0.0.0"],
+    ["100.64.0.0/10", "100.64.0.0", "100.127.255.255", "100.63.255.255", "100.128.0.0"],
+    ["127.0.0.0/8", "127.0.0.0", "127.255.255.255", "126.255.255.255", "128.0.0.0"],
+    ["169.254.0.0/16", "169.254.0.0", "169.254.255.255", "169.253.255.255", "169.255.0.0"],
+    ["172.16.0.0/12", "172.16.0.0", "172.31.255.255", "172.15.255.255", "172.32.0.0"],
+    ["192.0.0.0/24", "192.0.0.0", "192.0.0.255", "191.255.255.255", "192.0.1.0"],
+    ["192.0.2.0/24", "192.0.2.0", "192.0.2.255", "192.0.1.255", "192.0.3.0"],
+    ["192.88.99.0/24", "192.88.99.0", "192.88.99.255", "192.88.98.255", "192.88.100.0"],
+    ["192.168.0.0/16", "192.168.0.0", "192.168.255.255", "192.167.255.255", "192.169.0.0"],
+    ["198.18.0.0/15", "198.18.0.0", "198.19.255.255", "198.17.255.255", "198.20.0.0"],
+    ["198.51.100.0/24", "198.51.100.0", "198.51.100.255", "198.51.99.255", "198.51.101.0"],
+    ["203.0.113.0/24", "203.0.113.0", "203.0.113.255", "203.0.112.255", "203.0.114.0"],
+    ["224.0.0.0/4", "224.0.0.0", "239.255.255.255", "223.255.255.255", null],
+    ["240.0.0.0/4", "240.0.0.0", "255.255.255.254", null, null],
+    ["255.255.255.255/32", "255.255.255.255", "255.255.255.255", null, null],
+  ])("the edges of %s", async (_cidr, first, last, below, above) => {
+    const { isRefusedAddress } = await import(proxyFile);
+    expect(isRefusedAddress(first), first).toBe(true);
+    expect(isRefusedAddress(last), last).toBe(true);
+    for (const n of [below, above]) if (n !== null) expect(isRefusedAddress(n), n).toBe(false);
   });
   it("a failed lookup is refused with a code, not its text", async () => {
     await withProxy({ privateOk: false, addresses: new Error("FAKETOKEN123") }, async (r) => {
@@ -275,12 +339,34 @@ describe("the proxy's configuration", () => {
     ["a trailing dot listed", { ...ok, ALLOW: "a.test.:443" }],
     ["a port out of range listed", { ...ok, ALLOW: "a.test:70000" }],
     ["an unreadable limits value", { ...ok, LIMITS: "{" }],
+    ["limits that are null", { ...ok, LIMITS: "null" }],
+    ["limits that are a list", { ...ok, LIMITS: "[1]" }],
+    ["limits that are a number", { ...ok, LIMITS: "5" }],
+    ["a limit that is a string", { ...ok, LIMITS: '{"bytes":"unlimited"}' }],
+    ["a limit that is a numeric string", { ...ok, LIMITS: '{"conns":"50"}' }],
+    ["a limit that is null", { ...ok, LIMITS: '{"bytes":null}' }],
+    ["a negative limit", { ...ok, LIMITS: '{"conns":-1}' }],
+    ["a zero limit", { ...ok, LIMITS: '{"sockets":0}' }],
+    ["a fractional limit", { ...ok, LIMITS: '{"lifeMs":1.5}' }],
+    ["an infinite limit", { ...ok, LIMITS: '{"bytes":1e400}' }],
+    ["an unknown limit", { ...ok, LIMITS: '{"burst":5}' }],
+    ["a limit named for the prototype", { ...ok, LIMITS: '{"__proto__":5}' }],
+    ["an expiry in another notation", { ...ok, EXPIRY_MS: "1e3" }],
+    ["an expiry past the attempt deadline", { ...ok, EXPIRY_MS: String(211 * 60_000 + 1) }],
   ])("refuses %s, and main exits 4", async (_n, env) => {
     const { readConfig, main } = await import(proxyFile);
     expect(readConfig(env)).toBeNull();
     let code: number | null = null;
     main(env, { sockPath: "/nonexistent/s", logPath: "/nonexistent/l" }, (c: number) => { code = c; });
     expect(code).toBe(4);
+  });
+  it.each(["conns", "bytes", "sockets", "headerMs", "headerBytes", "lifeMs", "logBytes"])("%s can tighten its ruled number, reach it, and never pass it", async (key) => {
+    const { readConfig, DEFAULT_LIMITS, MAX_EXPIRY_MS } = await import(proxyFile);
+    const ruled = DEFAULT_LIMITS[key] as number;
+    expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: 1 }) }).limits[key]).toBe(1);
+    expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: ruled }) }).limits[key]).toBe(ruled);
+    expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: ruled + 1 }) })).toBeNull();
+    expect(readConfig({ ...ok, EXPIRY_MS: String(MAX_EXPIRY_MS) }).expiryMs).toBe(211 * 60_000);
   });
   it("refuses a socket folder that holds anything, and a log that exists, so no volume is reused", async () => {
     const { main } = await import(proxyFile);
@@ -501,13 +587,26 @@ describe("the relay", () => {
 });
 
 describe("the supervisor", () => {
-  const run = (deadline: unknown, body: (child: ReturnType<typeof spawn>, root: string) => Promise<void>): Promise<void> => {
+  const run = (deadline: unknown, body: (child: ReturnType<typeof spawn>, root: string) => Promise<void>, before?: (root: string) => void): Promise<void> => {
     const root = mkdtempSync(join(tmpdir(), "t538s"));
+    before?.(root);
     const relay = join(root, "fake-relay.mjs");
     writeFileSync(relay, `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(join(root, "pid"))}, String(process.pid)); console.log("relay output"); setInterval(() => {}, 1000);`);
     const wrapper = `import(${JSON.stringify(supFile)}).then((m) => m.supervise({ deadlineSeconds: ${JSON.stringify(deadline)}, logPath: ${JSON.stringify(join(root, "relay.log"))}, relayPath: ${JSON.stringify(relay)} }));`;
     const child = spawn(process.execPath, ["-e", wrapper], { stdio: ["ignore", "pipe", "pipe"] });
-    return body(child, root).finally(() => { child.kill("SIGKILL"); rmSync(root, { recursive: true, force: true }); });
+    const gone = new Promise((res) => child.once("exit", res));
+    const pidFile = join(root, "pid");
+    return body(child, root).finally(async () => {
+      const wasRunning = child.exitCode === null && child.signalCode === null;
+      child.kill("SIGKILL");
+      await gone;
+      if (wasRunning) await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8") !== "", 2000);
+      if (existsSync(pidFile)) {
+        const p = Number(readFileSync(pidFile, "utf8"));
+        if (p > 0 && alive(p)) { process.kill(p, "SIGKILL"); await until(() => !alive(p)); }
+      }
+      rmSync(root, { recursive: true, force: true });
+    });
   };
   const exitOf = (c: ReturnType<typeof spawn>): Promise<number | null> => new Promise((res) => c.on("exit", (code) => res(code)));
   const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -550,9 +649,94 @@ describe("the supervisor", () => {
   it.each([[0], [-1], [1.5], ["x"]])("refuses the deadline %j", async (bad) => {
     await run(bad, async (child) => { expect(await exitOf(child)).toBe(2); });
   });
-  it("will not write its log through a link", () => {
-    const text = readFileSync(supFile, "utf8");
-    expect(text).toContain("O_NOFOLLOW");
+  it("will not write its log through a link", async () => {
+    const target = mkdtempSync(join(tmpdir(), "t538t"));
+    writeFileSync(join(target, "victim"), "");
+    await run(60, async (child, root) => {
+      expect(await exitOf(child)).not.toBe(0);
+      expect(existsSync(join(root, "pid"))).toBe(false);
+    }, (root) => symlinkSync(join(target, "victim"), join(root, "relay.log")));
+    expect(readFileSync(join(target, "victim"), "utf8")).toBe("");
+    rmSync(target, { recursive: true, force: true });
+  });
+  it("a failing body still leaves no relay and no folder behind", async () => {
+    let pid = 0;
+    let folder = "";
+    await expect(run(60, async (_child, root) => {
+      folder = root;
+      pid = await relayPid(root);
+      throw new Error("deliberate");
+    })).rejects.toThrow("deliberate");
+    expect(pid).toBeGreaterThan(0);
+    expect(alive(pid)).toBe(false);
+    expect(existsSync(folder)).toBe(false);
+  });
+});
+
+describe("staging the build context", { timeout: 90_000 }, () => {
+  const stageFile = join(import.meta.dirname, "..", "..", "scripts", "eval-container", "stage-context.mjs");
+  const NAMES = ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "storybloq-launcher"];
+  const made: string[] = [];
+  const temp = (): string => { const d = mkdtempSync(join(tmpdir(), "t538p")); made.push(d); return d; };
+  /** A tiny package around a copy of the script, which finds its root from its own path. */
+  const fakePackage = (): string => {
+    const root = temp();
+    const e = join(root, "scripts", "eval-container");
+    mkdirSync(e, { recursive: true });
+    cpSync(stageFile, join(e, "stage-context.mjs"));
+    for (const n of NAMES) writeFileSync(join(e, n), n);
+    writeFileSync(join(root, "scripts", "build-eval.mjs"), 'import fs from "node:fs"; fs.mkdirSync(".eval-dist", { recursive: true }); fs.writeFileSync(".eval-dist/x", "built");');
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fake-pkg", version: "1.0.0", files: ["scripts"] }));
+    writeFileSync(join(root, "package-lock.json"), "{}");
+    return root;
+  };
+  const stage = (root: string, dest: string, cwd: string): number | null => spawnSync(process.execPath, [join(root, "scripts", "eval-container", "stage-context.mjs"), dest], { cwd, encoding: "utf8", timeout: 80_000 }).status;
+  const expectStaged = (ctx: string): void => {
+    expect(readdirSync(ctx).sort()).toEqual([...NAMES, "pkg"].sort());
+    expect(readFileSync(join(ctx, "pkg", "package-lock.json"), "utf8")).toBe("{}");
+    expect(readFileSync(join(ctx, "pkg", ".eval-dist", "x"), "utf8")).toBe("built");
+    expect(JSON.parse(readFileSync(join(ctx, "pkg", "package.json"), "utf8")).name).toBe("fake-pkg");
+  };
+  it("refuses a folder that holds anything, with its contents intact and nothing built", () => {
+    const root = fakePackage();
+    const dest = temp();
+    writeFileSync(join(dest, "keep"), "mine");
+    expect(stage(root, dest, root)).toBe(2);
+    expect(readFileSync(join(dest, "keep"), "utf8")).toBe("mine");
+    expect(existsSync(join(root, ".eval-dist"))).toBe(false);
+  });
+  it("refuses the package root itself, a file and a link", () => {
+    const root = fakePackage();
+    expect(stage(root, root, root)).toBe(2);
+    expect(existsSync(join(root, "package.json"))).toBe(true);
+    const dir = temp();
+    writeFileSync(join(dir, "file"), "mine");
+    expect(stage(root, join(dir, "file"), root)).toBe(2);
+    expect(readFileSync(join(dir, "file"), "utf8")).toBe("mine");
+    const empty = temp();
+    symlinkSync(empty, join(dir, "link"));
+    expect(stage(root, join(dir, "link"), root)).toBe(2);
+    expect(readdirSync(empty)).toEqual([]);
+  });
+  it("stages into a folder it creates, and into an empty one", () => {
+    const root = fakePackage();
+    const parent = temp();
+    expect(stage(root, join(parent, "new", "ctx"), root)).toBe(0);
+    expectStaged(join(parent, "new", "ctx"));
+    const empty = temp();
+    expect(stage(root, empty, root)).toBe(0);
+    expectStaged(empty);
+  });
+  it("a relative destination from outside the package root lands where it was named", () => {
+    const root = fakePackage();
+    const outside = temp();
+    expect(stage(root, join("rel", "ctx"), outside)).toBe(0);
+    expectStaged(join(outside, "rel", "ctx"));
+    expect(existsSync(join(root, "rel"))).toBe(false);
+  });
+  it("cleans up its temporary folders", () => {
+    for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+    expect(made).toEqual([]);
   });
 });
 

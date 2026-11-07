@@ -84,14 +84,14 @@ This runs before anything is shown for approval, every time.
 
 **Open the review gate first**, in your first turn, before any question: run `storybloq setup-review gate` as a shell call of its own and follow its output. Keep the setup id it prints. When it prints the stop, send the four lines below as your whole first turn, with no discovery question, draft or review; ask discovery questions only after the owner chooses Continue without independent review.
 
-**When no reviewer can run**, or a `setup-review` command ends with this stop, send it and nothing else (or ask the same two options with `AskUserQuestion`). Stop there until the user answers.
+**When no reviewer can run**, or a `setup-review` command ends with this stop, send it and nothing else (or ask the same two options with `AskUserQuestion`). When the output has a `Reviewer unavailable:` line, send that line as printed, then the four lines. Stop there until the user answers.
 
 No supported reviewer is available to review this plan.
 How should I proceed?
 Retry the review
 Continue without independent review
 
-A retry runs `storybloq setup-review gate --setup <id>`, then the review again. Continuing records the skip for the whole setup: run `storybloq setup-review status --setup <id> --skipped`, with nothing on standard input, and later adjustments carry its lines and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
+A retry runs `storybloq setup-review gate --setup <id>`, then the review again; when the reason names a sandbox, the owner can retry from a terminal outside the agent. Continuing records the skip for the whole setup: run `storybloq setup-review status --setup <id> --skipped`, with nothing on standard input, and later adjustments carry its lines and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
 
 **Decompose the entire in-scope brief** by outcomes and real dependencies. There are no phase or ticket quotas: as many phases and tickets as the scope needs.
 

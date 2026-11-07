@@ -218,14 +218,25 @@ export function checkSetupReview(turns: readonly Cs6Turn[], opts: Cs6Options): {
     }
   });
 
-  // Rule 4: the message after an unavailable gate is the four stop lines alone.
+  // Rule 4: the message after an unavailable gate is the four stop lines alone, or (ISS-1456) one
+  // line starting "Reviewer unavailable: " immediately before them, the reason the gate printed.
   if (opts.unavailableArm) {
     const gateTurn = turns.findIndex((turn) => turn.calls.some((c) => c.command !== null && /^storybloq setup-review gate\b/.test(c.command) && c.output.includes("Reviewer probe: none available")));
     if (gateTurn < 0) failures.push("rule 4: the unavailable arm has no setup-review gate call reporting no reviewer");
-    else if (turns[gateTurn]!.text.replace(/\r\n/g, "\n").trim() !== STOP_LINES.join("\n")) failures.push(`rule 4: turn ${gateTurn + 1} is not the four stop lines alone`);
+    else if (!isUnavailableStop(turns[gateTurn]!.text)) failures.push(`rule 4: turn ${gateTurn + 1} is not the four stop lines alone`);
   }
 
   return { failures };
+}
+
+const REASON_PREFIX = "Reviewer unavailable: ";
+
+/** The four stop lines, optionally preceded by exactly one reason line, and nothing else. */
+function isUnavailableStop(text: string): boolean {
+  const ls = text.replace(/\r\n/g, "\n").trim().split("\n");
+  const stop = STOP_LINES.join("\n");
+  if (ls.join("\n") === stop) return true;
+  return ls.length === STOP_LINES.length + 1 && ls[0]!.startsWith(REASON_PREFIX) && ls.slice(1).join("\n") === stop;
 }
 
 const SHELLS = new Set(["sh", "bash", "zsh", "/bin/sh", "/bin/bash", "/bin/zsh"]);

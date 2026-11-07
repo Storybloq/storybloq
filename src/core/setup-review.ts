@@ -12,14 +12,14 @@
  * defence against deliberate forgery: the store is the user's, and so is any
  * key the CLI could keep in it.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync,
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isUtf8 } from "node:buffer";
-import { parseReviewerOutput, type SetupReviewBackend } from "./setup-review-backends.js";
+import { parseReviewerOutput, type SetupReviewBackend, type UnavailableReason } from "./setup-review-backends.js";
 import { isDirSyncUnsupported } from "./durable-dir.js";
 
 export const PACKET_SECTIONS = ["Source requirements", "Owner answers and decisions", "Existing-state evidence", "Plan"] as const;
@@ -123,6 +123,41 @@ export function storeRoot(env: NodeJS.ProcessEnv): string {
   return join(tmpdir(), `storybloq-setup-review-${uid}`);
 }
 
+/** The errors that mean this process may not write the store, as inside a sandbox (ISS-1456). */
+const UNWRITABLE = new Set(["EPERM", "EACCES", "EROFS"]);
+
+/** Test seam, not reachable through any CLI or MCP input: the preflight's one write. */
+export const storeSeams: { writeProbe: (path: string) => void } = {
+  writeProbe: (path) => writeFileSync(path, "", { mode: 0o600 }),
+};
+
+export type StorePreflight =
+  | { readonly kind: "writable" }
+  | { readonly kind: "unwritable"; readonly reason: UnavailableReason }
+  | { readonly kind: "error"; readonly error: Error };
+
+/**
+ * Whether the store can hold a file, checked before any reviewer or probe is
+ * started. Unwritable is a reason, not a storage failure: nothing a reviewer
+ * answered could be kept, so nothing is started. Any other error is a storage
+ * failure.
+ */
+export function preflightStore(root: string): StorePreflight {
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const probe = join(root, `.preflight-${process.pid}-${randomBytes(4).toString("hex")}`);
+    storeSeams.writeProbe(probe);
+    rmSync(probe, { force: true });
+    return { kind: "writable" };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code && UNWRITABLE.has(code)) {
+      return { kind: "unwritable", reason: { backend: "store", code: "store-unwritable", detail: `cannot be written from here (${code}), so no review could be kept` } };
+    }
+    return { kind: "error", error: e as Error };
+  }
+}
+
 export function projectKeyFor(cwd: string): string {
   return sha256(realpathSync(cwd)).slice(0, 16);
 }
@@ -158,6 +193,8 @@ export interface SetupState {
   probe: ProbeResult | null;
   probedAt: string;
   skipped?: { at: string };
+  /** ISS-1456: why no reviewer could start, written when probe is null. Additive; an older reader ignores it. */
+  unavailable?: { at: string; reasons: UnavailableReason[] };
 }
 
 export function readSetup(paths: SetupPaths): SetupState {
@@ -269,6 +306,8 @@ export interface FailedRecord {
   exitCode: number | null;
   outputSha256: string | null;
   error: string;
+  /** ISS-1456: set when the reviewer could not start here, e.g. "sandbox-start-denied". Additive. */
+  reasonCode?: string;
 }
 
 export type SetupReviewRecord = CompletedRecord | FailedRecord;
@@ -302,7 +341,8 @@ export function recordShape(raw: unknown, recordId: string): SetupReviewRecord |
   if (r.state === "failed") {
     const ok = FAILURES.includes(r.failure as string) && !("round" in r) && !("verdict" in r) && !("findingsCount" in r)
       && (r.exitCode === null || (typeof r.exitCode === "number" && Number.isInteger(r.exitCode)))
-      && (r.outputSha256 === null || isHex64(r.outputSha256)) && isStr(r.error);
+      && (r.outputSha256 === null || isHex64(r.outputSha256)) && isStr(r.error)
+      && (!("reasonCode" in r) || isStr(r.reasonCode));
     return ok ? (r as unknown as FailedRecord) : null;
   }
   return null;

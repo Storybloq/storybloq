@@ -199,6 +199,27 @@ describe("check set 6, the skipped package (T-536)", () => {
     turns[0] = { ...turns[0]!, text: `I could not find a reviewer.\n\n${STOP}` };
     expect(check(turns, true).failures.some((f) => f.startsWith("rule 4"))).toBe(true);
   });
+
+  // ISS-1456: the gate's reason line may come first, alone, and nowhere else.
+  const REASON = "Reviewer unavailable: codex: networking is denied in this sandbox (the start check could not open a local connection: EPERM)";
+  const rule4 = (text: string): string[] => {
+    const turns = skipped(true);
+    turns[0] = { ...turns[0]!, text };
+    return check(turns, true).failures.filter((f) => f.startsWith("rule 4"));
+  };
+
+  it("rule 4: passes the four stop lines alone and the reason line followed by them", () => {
+    expect(rule4(STOP)).toEqual([]);
+    expect(rule4(`${REASON}\n${STOP}`)).toEqual([]);
+  });
+
+  it("rule 4: fails any other extra line, two reason lines, a blank between, or the reason after the four", () => {
+    expect(rule4(`Sorry.\n${STOP}`)).toHaveLength(1);
+    expect(rule4(`${REASON}\n${REASON}\n${STOP}`)).toHaveLength(1);
+    expect(rule4(`${REASON}\n\n${STOP}`)).toHaveLength(1);
+    expect(rule4(`${STOP}\n${REASON}`)).toHaveLength(1);
+    expect(rule4(`${REASON}\n${STOP}\nSorry.`)).toHaveLength(1);
+  });
 });
 
 describe("check set 6, rule 3 (T-536)", () => {

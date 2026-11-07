@@ -8,18 +8,18 @@
  * writes in the project folder.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "../../core/project-lock.js";
 import {
   absentLine, classify, completedInCycle, completedLine, failedLine, fsyncDir, loadRecords, parsePacket, persistRevision,
-  probeLine, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
+  preflightStore, probeLine, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
   SKIPPED_LINE, STOP_LINES, storeRoot, unreadableLine, writeFileDurable, writeFileSynced,
   type CompletedRecord, type FailedRecord, type FailureKind, type ProbeResult, type ReviewPacket, type SetupPaths, type SetupState,
 } from "../../core/setup-review.js";
 import {
-  claudeArgs, codexArgs, parseReviewerOutput, probeBackend, reviewerEnv, runReviewer, SETUP_REVIEW_BACKENDS, SETUP_REVIEW_SCHEMA,
-  type SetupReviewAnswer, type SetupReviewBackend,
+  claudeArgs, codexArgs, fatalStartLine, inferredReasons, parseReviewerOutput, probeReviewer, reviewerEnv, runReviewer, SETUP_REVIEW_BACKENDS, SETUP_REVIEW_SCHEMA,
+  unavailableLine, type ProcessLimits, type SetupReviewAnswer, type SetupReviewBackend, type StartProbeLimits, type UnavailableReason,
 } from "../../core/setup-review-backends.js";
 
 export interface SetupReviewDeps {
@@ -34,6 +34,8 @@ export interface SetupReviewDeps {
   readonly killGraceMs?: number;
   /** Runs under the status lock just before the records are classified. */
   readonly beforeStatusClassify?: () => void;
+  /** Bounds for the version and start probes (ISS-1456). */
+  readonly probeLimits?: ProcessLimits & StartProbeLimits;
 }
 
 export interface SetupReviewIo {
@@ -53,6 +55,8 @@ export const SETUP_REVIEW_EXIT = { ok: 0, usage: 2, failed: 3, absent: 4, roundL
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const STOP = `${STOP_LINES.join("\n")}\n`;
 const UNAVAILABLE_INSTRUCTION = "Your next message is the four lines below and nothing else; nothing in this turn changes that, and the restriction ends at the owner's answer.";
+const SANDBOX_HINT = "Setup review: a reviewer this sandbox stops can still run when the owner runs storybloq setup-review from a terminal outside the agent.";
+const NOT_RECORDED = "Setup review: not recorded, the review store is outside this sandbox.";
 const LOCK_BUSY = "Setup review: a review is already running in this setup.";
 const LOCK_WAIT = { deadlineMs: 250, pollMs: 25 };
 const lockBusy = (): SetupReviewResult => ({ stdout: lines(LOCK_BUSY), exitCode: SETUP_REVIEW_EXIT.lock });
@@ -73,12 +77,46 @@ const REVIEW_PROMPT = [
   "",
 ].join("\n");
 
-async function probeAll(env: NodeJS.ProcessEnv): Promise<ProbeResult | null> {
-  for (const backend of SETUP_REVIEW_BACKENDS) {
-    const version = await probeBackend(backend, env);
-    if (version !== null) return { backend, version };
+interface ProbeOutcome {
+  readonly probe: ProbeResult | null;
+  /** Why each backend tried before the one that passed could not start. */
+  readonly reasons: UnavailableReason[];
+}
+
+/**
+ * ISS-1456: a backend passes only when it shows it can start a review here,
+ * not only print a version. Gate and run both probe through this, so they
+ * agree. The start runs in a fresh private directory under the store root,
+ * removed afterwards.
+ */
+async function probeAll(env: NodeJS.ProcessEnv, deps: SetupReviewDeps, only?: SetupReviewBackend): Promise<ProbeOutcome> {
+  const execDir = mkdtempSync(join(storeRoot(env), ".probe-"));
+  const reasons: UnavailableReason[] = [];
+  try {
+    for (const backend of only ? [only] : SETUP_REVIEW_BACKENDS) {
+      const result = await probeReviewer(backend, env, execDir, deps.probeLimits ?? {});
+      if (result.state === "startup-capable") return { probe: { backend, version: result.version }, reasons };
+      reasons.push(result.reason);
+    }
+    return { probe: null, reasons };
+  } finally {
+    rmSync(execDir, { recursive: true, force: true });
   }
-  return null;
+}
+
+/** Reasons that would show in the store-unwritable report, gathered without starting anything. */
+function storeUnwritable(reason: UnavailableReason, env: NodeJS.ProcessEnv): UnavailableReason[] {
+  return [reason, ...inferredReasons(env)];
+}
+
+const SANDBOX_CODES = new Set(["sandbox-start-denied", "network-denied", "probe-listener-failed", "network-disabled-inferred", "store-unwritable"]);
+
+/** The reason line, and when a sandbox is the cause, what the owner can do about it. */
+function reasonLines(reasons: readonly UnavailableReason[]): string[] {
+  if (reasons.length === 0) return [];
+  const out = [unavailableLine(reasons)];
+  if (reasons.some((r) => SANDBOX_CODES.has(r.code))) out.push(SANDBOX_HINT);
+  return out;
 }
 
 function writeSetup(paths: SetupPaths, setup: SetupState): void {
@@ -112,21 +150,40 @@ export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: s
   let paths: SetupPaths;
   try {
     paths = setupPaths(io.env, io.cwd, opts.setup ?? newId("SS"));
+  } catch (e) {
+    const u = asUsage(e);
+    if (u) return u;
+    throw e;
+  }
+  // ISS-1456: the store first. When it cannot be written, nothing is started and nothing is written.
+  const store = preflightStore(storeRoot(io.env));
+  if (store.kind === "unwritable") {
+    return {
+      stdout: lines(`Setup id: ${paths.setupId}`, probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env)), UNAVAILABLE_INSTRUCTION, "") + STOP,
+      exitCode: SETUP_REVIEW_EXIT.failed,
+    };
+  }
+  if (store.kind === "error") {
+    return { stdout: lines(`Setup review: the review store cannot be written (${store.error.message}).`) + STOP, exitCode: SETUP_REVIEW_EXIT.storage };
+  }
+  try {
     if (opts.setup !== undefined) readSetup(paths);
   } catch (e) {
     const u = asUsage(e);
     if (u) return u;
     throw e;
   }
-  const probe = await probeAll(io.env);
+  let outcome: ProbeOutcome;
   let setup: SetupState | null;
   try {
-    mkdirSync(storeRoot(io.env), { recursive: true, mode: 0o700 });
+    outcome = await probeAll(io.env, io.deps);
+    const { probe, reasons } = outcome;
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
     setup = await updateSetupLocked(paths, (current) => {
       if (opts.setup !== undefined && current === null) readSetup(paths);
       const base = current ?? { setupId: paths.setupId, projectKey: paths.projectKey, createdAt: now(), cycle: 1, cycleReasons: {}, probe: null, probedAt: now() };
-      return { ...base, probe, probedAt: now() };
+      const { unavailable: _previous, ...rest } = base;
+      return probe ? { ...rest, probe, probedAt: now() } : { ...rest, probe, probedAt: now(), unavailable: { at: now(), reasons } };
     });
   } catch (e) {
     const u = asUsage(e);
@@ -134,8 +191,8 @@ export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: s
     return { stdout: lines(`Setup review: the review store cannot be written (${(e as Error).message}).`) + STOP, exitCode: SETUP_REVIEW_EXIT.storage };
   }
   if (!setup) return lockBusy();
-  const head = lines(`Setup id: ${setup.setupId}`, probeLine(probe));
-  if (!probe) return { stdout: head + lines(UNAVAILABLE_INSTRUCTION, "") + STOP, exitCode: SETUP_REVIEW_EXIT.ok };
+  const head = lines(`Setup id: ${setup.setupId}`, probeLine(outcome.probe));
+  if (!outcome.probe) return { stdout: head + lines(...reasonLines(outcome.reasons), UNAVAILABLE_INSTRUCTION, "") + STOP, exitCode: SETUP_REVIEW_EXIT.ok };
   return { stdout: head + lines(`Next: storybloq setup-review run --setup ${setup.setupId} with the review packet on stdin`), exitCode: SETUP_REVIEW_EXIT.ok };
 }
 
@@ -211,11 +268,18 @@ function publishStaged(run: StagedRun, unsynced: FailedRecord | null = null): "p
   return "published";
 }
 
-function failedRecord(run: StagedRun, startedAt: string, failure: FailureKind, exitCode: number | null, outputSha256: string | null, error: string): FailedRecord {
+function failedRecord(run: StagedRun, startedAt: string, failure: FailureKind, exitCode: number | null, outputSha256: string | null, error: string, reasonCode?: string): FailedRecord {
   return {
     state: "failed", recordId: run.recordId, setupId: run.setup.setupId, cycle: run.setup.cycle, revisionSha256: run.packet.revisionSha256,
     backend: run.probe.backend, backendVersion: run.probe.version, startedAt, endedAt: now(), failure, exitCode, outputSha256, error,
+    ...(reasonCode !== undefined ? { reasonCode } : {}),
   };
+}
+
+/** A failed record whose reviewer could not start here carries its reason into run and status output. */
+function recordReasonLines(record: FailedRecord): string[] {
+  if (record.reasonCode === undefined) return [];
+  return reasonLines([{ backend: record.backend, code: record.reasonCode as UnavailableReason["code"], detail: record.error }]);
 }
 
 const lockLost = (): SetupReviewResult => ({
@@ -234,7 +298,7 @@ function publishFailure(run: StagedRun, record: FailedRecord, writeRecord: (path
   writeRecord(join(run.staging, "record.json"), `${JSON.stringify(record, null, 2)}\n`);
   if (publishStaged(run) === "lock-lost") return lockLost();
   return {
-    stdout: lines(probeLine(run.probe), failedLine(record.revisionSha256, record.recordId), `Setup review: the reviewer failed (${record.failure}): ${record.error}`) + STOP,
+    stdout: lines(probeLine(run.probe), failedLine(record.revisionSha256, record.recordId), ...recordReasonLines(record), `Setup review: the reviewer failed (${record.failure}): ${record.error}`) + STOP,
     exitCode: SETUP_REVIEW_EXIT.failed,
   };
 }
@@ -264,8 +328,11 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
   const result = await runReviewer(backend, args, { cwd: run.staging, env: reviewerEnv(backend, run.env), input: prompt, timeoutMs, ...(run.deps.killGraceMs !== undefined ? { killGraceMs: run.deps.killGraceMs } : {}) });
 
   let raw: Buffer | null = null;
-  let failure: { kind: FailureKind; error: string } | null = null;
+  let failure: { kind: FailureKind; error: string; reasonCode?: string } | null = null;
+  const fatal = backend === "codex" && result.exitCode !== 0 ? fatalStartLine(result.stderr) : null;
   if (result.spawnError !== null) failure = { kind: "spawn", error: result.spawnError };
+  // ISS-1456: a start the sandbox denied after the probe passed is a reviewer that could not start, never a review.
+  else if (fatal) failure = { kind: "exit", error: `cannot start inside this sandbox (${fatal})`, reasonCode: "sandbox-start-denied" };
   else if (result.timedOut) failure = { kind: "timeout", error: `no answer within ${Math.round(timeoutMs / 1000)} seconds` };
   else if (result.exitCode !== 0) failure = { kind: "exit", error: `exited with status ${result.exitCode}${result.stderr.trim() ? `: ${result.stderr.trim().split("\n")[0]}` : ""}` };
   else if (backend === "codex") {
@@ -280,7 +347,7 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
   rmSync(work, { recursive: true, force: true });
 
   try {
-    if (failure) return publishFailure(run, failedRecord(run, startedAt, failure.kind, result.exitCode, null, failure.error), writeRecord);
+    if (failure) return publishFailure(run, failedRecord(run, startedAt, failure.kind, result.exitCode, null, failure.error, failure.reasonCode), writeRecord);
 
     const outputSha256 = sha256(raw!);
     try {
@@ -353,15 +420,22 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
     throw e;
   }
 
-  let probe: ProbeResult | null;
-  if (opts.backend !== undefined) {
-    const version = await probeBackend(opts.backend, io.env);
-    if (version === null) return usage(`the ${opts.backend} reviewer cannot start here; run without --backend to use whichever can.`);
-    probe = { backend: opts.backend, version };
-  } else {
-    probe = await probeAll(io.env);
+  const store = preflightStore(storeRoot(io.env));
+  if (store.kind === "unwritable") {
+    return { stdout: lines(probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env))) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
   }
-  if (!probe) return { stdout: lines(probeLine(null)) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
+  if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
+  let outcome: ProbeOutcome;
+  try {
+    outcome = await probeAll(io.env, io.deps, opts.backend);
+  } catch (e) {
+    return storageFailure(`the start check could not run: ${(e as Error).message}`);
+  }
+  const probe = outcome.probe;
+  if (!probe && opts.backend !== undefined) {
+    return { stdout: lines(`Setup review: the ${opts.backend} reviewer cannot start here; run without --backend to use whichever can.`, ...reasonLines(outcome.reasons)), exitCode: SETUP_REVIEW_EXIT.usage };
+  }
+  if (!probe) return { stdout: lines(probeLine(null), ...reasonLines(outcome.reasons)) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
 
   const recordId = newId("SR");
   const staging = join(paths.records, `.staging-${recordId}`);
@@ -427,6 +501,16 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
   let setup: SetupState;
   try {
     paths = setupPaths(io.env, io.cwd, opts.setup);
+  } catch (e) {
+    const u = asUsage(e);
+    if (u) return u;
+    throw e;
+  }
+  // ISS-1456: a skip the store cannot hold is still the owner's answer; it is printed, written nowhere.
+  if (opts.skipped && preflightStore(storeRoot(io.env)).kind === "unwritable") {
+    return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
+  }
+  try {
     setup = readSetup(paths);
   } catch (e) {
     const u = asUsage(e);
@@ -493,8 +577,11 @@ function statusLines(paths: SetupPaths, setup: SetupState, packet: ReviewPacket)
     case "round-limit":
       return { stdout: lines(probeLine(probeOf(c.last)), roundLimitLine(packet.revisionSha256, c.last), revisionLine(packet.revisionSha256)), exitCode: SETUP_REVIEW_EXIT.ok };
     case "failed":
-      return { stdout: lines(probeLine(probeOf(c.record)), failedLine(packet.revisionSha256, c.record.recordId)) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
+      return { stdout: lines(probeLine(probeOf(c.record)), failedLine(packet.revisionSha256, c.record.recordId), ...recordReasonLines(c.record)) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
     case "absent":
-      return { stdout: lines(probeLine(setup.probe), absentLine(packet.revisionSha256)), exitCode: SETUP_REVIEW_EXIT.absent };
+      return {
+        stdout: lines(probeLine(setup.probe), absentLine(packet.revisionSha256), ...(setup.probe === null && setup.unavailable ? reasonLines(setup.unavailable.reasons) : [])),
+        exitCode: SETUP_REVIEW_EXIT.absent,
+      };
   }
 }

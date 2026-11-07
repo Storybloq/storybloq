@@ -5,8 +5,12 @@
  * byte so the record can be checked against it later.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { join } from "node:path";
 // ISS-1391's process-group machinery, shared with setup-verify (T-538 S3a-2).
-import { escalate, KILL_GRACE_MS, OWN_GROUP, release } from "./process-group.js";
+import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroup } from "./process-group.js";
 
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
@@ -48,8 +52,13 @@ export interface SetupReviewAnswer {
   readonly sessionId?: string;
 }
 
-export function codexArgs(schemaFile: string, outFile: string): string[] {
-  return ["exec", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", schemaFile, "-o", outFile, "-"];
+/**
+ * The one codex launch, shared by the start probe and the review (ISS-1456).
+ * The probe passes `overrides`, its substituted model provider; everything
+ * else is identical, so what the probe proves is what the review runs.
+ */
+export function codexArgs(schemaFile: string, outFile: string, overrides: readonly string[] = []): string[] {
+  return ["exec", ...overrides, "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", schemaFile, "-o", outFile, "-"];
 }
 
 export function claudeArgs(schemaJson: string): string[] {
@@ -139,6 +148,11 @@ function runProbe(backend: SetupReviewBackend, args: string[], env: NodeJS.Proce
   });
 }
 
+async function claudeHasFlags(env: NodeJS.ProcessEnv, limits: ProcessLimits): Promise<boolean> {
+  const help = await runProbe("claude", ["--help"], env, limits);
+  return help !== null && claudeArgs("{}").filter((a) => a.startsWith("--")).every((flag) => help.includes(flag));
+}
+
 /**
  * The backend can start a review: `--version` exits 0 within the probe
  * timeout, and for claude, `--help` lists every flag the review passes. An
@@ -148,10 +162,7 @@ function runProbe(backend: SetupReviewBackend, args: string[], env: NodeJS.Proce
 export async function probeBackend(backend: SetupReviewBackend, env: NodeJS.ProcessEnv, limits: ProcessLimits = {}): Promise<string | null> {
   const stdout = await runProbe(backend, ["--version"], env, limits);
   if (stdout === null) return null;
-  if (backend === "claude") {
-    const help = await runProbe(backend, ["--help"], env, limits);
-    if (help === null || !claudeArgs("{}").filter((a) => a.startsWith("--")).every((flag) => help.includes(flag))) return null;
-  }
+  if (backend === "claude" && !(await claudeHasFlags(env, limits))) return null;
   const version = stdout.trim().split("\n")[0]?.trim();
   return version ? version : "unknown version";
 }
@@ -198,4 +209,230 @@ export function runReviewer(command: string, args: string[], opts: { cwd: string
     child.on("close", (code) => finish({ exitCode: code, timedOut, stdout: Buffer.concat(out), stderr, spawnError: null }));
     child.stdin.end(opts.input);
   });
+}
+
+// --- Start probe (ISS-1456) -----------------------------------------------------
+
+/**
+ * Why a reviewer cannot be used. `store-unwritable` is the review store's, not
+ * a backend's: no reviewer is started when nothing it answers could be kept.
+ */
+export type UnavailableCode =
+  | "version-failed" | "flags-unsupported" | "sandbox-start-denied" | "network-denied"
+  | "probe-inconclusive" | "probe-listener-failed" | "network-disabled-inferred" | "store-unwritable";
+
+export interface UnavailableReason {
+  readonly backend: SetupReviewBackend | "store";
+  readonly code: UnavailableCode;
+  readonly detail: string;
+}
+
+export type StartProbe =
+  | { readonly state: "startup-capable"; readonly backend: SetupReviewBackend; readonly version: string }
+  | { readonly state: "unavailable"; readonly reason: UnavailableReason };
+
+/** codex prints this when its sandbox denies it what it needs at start (seen on 0.163.0). */
+const FATAL_START = /failed to initialize in-process app-server client/;
+/** codex prints this while it cannot reach its model provider (seen on 0.163.0 with networking denied). */
+const NETWORK_WAIT = /waiting for network/;
+const UNKNOWN_FLAG = /unexpected argument/;
+
+export const START_ATTEMPT_MS = 8000;
+export const START_TOTAL_MS = 20000;
+const STDERR_KEEP = 64 * 1024;
+
+const PROBE_PROMPT = "storybloq setup-review start probe. This request is answered by a local listener and never reaches a model.\n";
+const PROBE_ROUTE = "/v1/responses";
+const NONCE_HEADER = "x-storybloq-probe";
+export const PROBE_KEY_ENV = "STORYBLOQ_PROBE_KEY";
+
+export interface StartProbeLimits {
+  readonly attemptMs?: number;
+  readonly totalMs?: number;
+  readonly killGraceMs?: number;
+}
+
+/** The provider the probe substitutes, all through -c, so no config file is written or read for it. */
+export function probeOverrides(port: number, nonce: string): string[] {
+  const provider = `{ name = "storybloq-probe", base_url = "http://127.0.0.1:${port}/v1", env_key = "${PROBE_KEY_ENV}", wire_api = "responses", `
+    + `http_headers = { "X-Storybloq-Probe" = "${nonce}" }, request_max_retries = 0, stream_max_retries = 0 }`;
+  return ["-c", 'model_provider="storybloq_probe"', "-c", `model_providers.storybloq_probe=${provider}`];
+}
+
+/** Test seam, not reachable through any CLI or MCP input: how the probe's listener binds. */
+export const startProbeSeams: { listen: (server: Server, ready: () => void) => void } = {
+  listen: (server, ready) => { server.listen(0, "127.0.0.1", ready); },
+};
+
+type Attempt =
+  | { readonly kind: "reached" }
+  | { readonly kind: "listener-failed"; readonly detail: string }
+  | { readonly kind: "fatal"; readonly line: string }
+  | { readonly kind: "network"; readonly line: string }
+  | { readonly kind: "flags"; readonly line: string }
+  | { readonly kind: "inconclusive"; readonly detail: string };
+
+const lastLine = (text: string): string => text.trim().split("\n").filter((l) => l.trim()).pop()?.trim() ?? "";
+
+/**
+ * One codex start against a listener the CLI owns on 127.0.0.1. Evidence of a
+ * start is a request on the expected route carrying this attempt's nonce: the
+ * first one latches, and the group is stopped at once, so no model is ever
+ * asked and retries are ignored. Text is only ever negative evidence. The
+ * listener is closed whatever happens.
+ */
+function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number, graceMs: number): Promise<Attempt> {
+  return new Promise((resolve) => {
+    const nonce = randomBytes(16).toString("hex");
+    let reached = false;
+    const stray: string[] = [];
+    let child: ChildProcess | null = null;
+    let stderr = "";
+    let earlyLine: { kind: "fatal" | "network"; line: string } | null = null;
+    let timedOut = false;
+    let settled = false;
+    let cancel: () => void = () => {};
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      req.resume();
+      if (req.method === "POST" && req.url === PROBE_ROUTE && req.headers[NONCE_HEADER] === nonce) {
+        if (!reached) {
+          reached = true;
+          if (child) signalGroup(child, "SIGKILL");
+        }
+      } else if (stray.length < 5) {
+        stray.push(`${req.method ?? "?"} ${req.url ?? "?"}`);
+      }
+      res.writeHead(503, { connection: "close" });
+      res.end();
+    });
+    const finish = (a: Attempt): void => {
+      if (settled) return;
+      settled = true;
+      cancel();
+      server.closeAllConnections();
+      server.close();
+      resolve(a);
+    };
+    server.on("error", (e: NodeJS.ErrnoException) => {
+      if (!child) finish({ kind: "listener-failed", detail: e.code ?? e.message });
+    });
+    startProbeSeams.listen(server, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const schemaFile = join(execDir, "schema.json");
+      try {
+        writeFileSync(schemaFile, JSON.stringify(SETUP_REVIEW_SCHEMA), { mode: 0o600 });
+        child = spawn("codex", codexArgs(schemaFile, join(execDir, "out.json"), probeOverrides(port, nonce)), {
+          cwd: execDir, env: { ...reviewerEnv("codex", env), [PROBE_KEY_ENV]: "storybloq-probe-not-a-credential" },
+          stdio: ["pipe", "ignore", "pipe"], detached: OWN_GROUP,
+        });
+      } catch (e) {
+        finish({ kind: "inconclusive", detail: `codex could not be started: ${(e as Error).message}` });
+        return;
+      }
+      const started = child;
+      cancel = escalate(started, attemptMs, graceMs, () => { timedOut = true; }, () => { release(started); settle(null); });
+      started.stderr!.setEncoding("utf-8");
+      started.stderr!.on("data", (c: string) => {
+        stderr = (stderr + c).slice(-STDERR_KEEP);
+        if (earlyLine || reached) return;
+        const lines = stderr.split("\n");
+        const fatal = lines.find((l) => FATAL_START.test(l));
+        const network = lines.find((l) => NETWORK_WAIT.test(l));
+        if (fatal) earlyLine = { kind: "fatal", line: fatal.trim() };
+        else if (network) earlyLine = { kind: "network", line: network.trim() };
+        if (earlyLine) signalGroup(started, "SIGKILL");
+      });
+      started.stdin!.on("error", () => { /* a codex that exits before reading the prompt is classified below */ });
+      started.stdin!.end(PROBE_PROMPT);
+      const settle = (code: number | null): void => {
+        if (reached) return finish({ kind: "reached" });
+        const fatal = earlyLine?.kind === "fatal" ? earlyLine.line : stderr.split("\n").find((l) => FATAL_START.test(l))?.trim();
+        if (fatal) return finish({ kind: "fatal", line: fatal });
+        if (earlyLine?.kind === "network") return finish({ kind: "network", line: earlyLine.line });
+        if (code === 2 && UNKNOWN_FLAG.test(stderr)) return finish({ kind: "flags", line: stderr.split("\n").find((l) => UNKNOWN_FLAG.test(l))!.trim() });
+        const why = timedOut ? `no start within ${Math.round(attemptMs / 1000)} seconds` : `exited with status ${code ?? "unknown"} before reaching the check`;
+        const strayNote = stray.length > 0 ? `; requests without this check's nonce: ${stray.join(", ")}` : "";
+        const tail = lastLine(stderr);
+        finish({ kind: "inconclusive", detail: `${why}${tail ? `: ${tail}` : ""}${strayNote}` });
+      };
+      started.on("error", (e) => finish({ kind: "inconclusive", detail: `codex could not be started: ${e.message}` }));
+      started.on("close", (code) => settle(code));
+    });
+  });
+}
+
+/**
+ * Whether codex can actually start a review here, not only print a version.
+ * One retry when the first attempt proves nothing, inside a total bound;
+ * inconclusive never passes.
+ */
+export async function probeCodexStart(execDir: string, env: NodeJS.ProcessEnv, limits: StartProbeLimits = {}): Promise<{ ok: true } | { ok: false; code: UnavailableCode; detail: string }> {
+  const attemptMs = limits.attemptMs ?? START_ATTEMPT_MS;
+  const totalMs = limits.totalMs ?? START_TOTAL_MS;
+  const graceMs = limits.killGraceMs ?? KILL_GRACE_MS;
+  const begun = Date.now();
+  let last: Attempt | null = null;
+  for (let i = 0; i < 2; i += 1) {
+    if (i > 0 && Date.now() - begun + attemptMs > totalMs) break;
+    last = await startAttempt(execDir, env, attemptMs, graceMs);
+    if (last.kind !== "inconclusive") break;
+  }
+  switch (last!.kind) {
+    case "reached": return { ok: true };
+    case "listener-failed": return {
+      ok: false, code: "probe-listener-failed",
+      detail: last!.detail === "EPERM" || last!.detail === "EACCES"
+        ? `networking is denied in this sandbox (the start check could not open a local connection: ${last!.detail})`
+        : `the start check could not open its local listener (${last!.detail})`,
+    };
+    case "fatal": return { ok: false, code: "sandbox-start-denied", detail: `cannot start inside this sandbox (${last!.line})` };
+    case "network": return { ok: false, code: "network-denied", detail: `cannot reach its model from here (${last!.line})` };
+    case "flags": return { ok: false, code: "flags-unsupported", detail: `this version lacks a flag the review needs (${last!.line})` };
+    case "inconclusive": return { ok: false, code: "probe-inconclusive", detail: `did not show it can start: ${last!.detail}` };
+  }
+}
+
+/**
+ * Reasons known without starting anything. A Codex sandbox with networking
+ * off reports it in the environment, and claude -p cannot reach its model
+ * from there; this is inferred from the marker, never a readiness check. A
+ * stale marker (a terminal opened from inside Codex) reads the same, so the
+ * detail names the variable.
+ */
+export function inferredReasons(env: NodeJS.ProcessEnv): UnavailableReason[] {
+  if (env.CODEX_SANDBOX_NETWORK_DISABLED !== "1") return [];
+  return [{ backend: "claude", code: "network-disabled-inferred", detail: "network disabled in this sandbox, inferred from CODEX_SANDBOX_NETWORK_DISABLED=1; unset it if this terminal is not sandboxed" }];
+}
+
+/**
+ * The gate's verdict for one backend. Codex needs `execDir`, a private
+ * writable directory the start runs in; claude has no offline start check, so
+ * its verdict is the version, the flags and the inferred network state.
+ */
+export async function probeReviewer(backend: SetupReviewBackend, env: NodeJS.ProcessEnv, execDir: string, limits: ProcessLimits & StartProbeLimits = {}): Promise<StartProbe> {
+  const unavailable = (code: UnavailableCode, detail: string): StartProbe => ({ state: "unavailable", reason: { backend, code, detail } });
+  if (backend === "claude") {
+    const inferred = inferredReasons(env).find((r) => r.backend === "claude");
+    if (inferred) return { state: "unavailable", reason: inferred };
+  }
+  const stdout = await runProbe(backend, ["--version"], env, limits);
+  if (stdout === null) return unavailable("version-failed", "not installed, or did not report a version");
+  if (backend === "claude" && !(await claudeHasFlags(env, limits))) return unavailable("flags-unsupported", "this version lacks a flag the review needs");
+  const version = stdout.trim().split("\n")[0]?.trim() || "unknown version";
+  if (backend === "codex") {
+    const start = await probeCodexStart(execDir, env, limits);
+    if (!start.ok) return unavailable(start.code, start.detail);
+  }
+  return { state: "startup-capable", backend, version };
+}
+
+/** One line naming every reason, for the gate, run and status output. */
+/** The codex line that says its sandbox denied it what it needs at start, if the stderr holds one. */
+export function fatalStartLine(stderr: string): string | null {
+  return stderr.split("\n").find((l) => FATAL_START.test(l))?.trim() ?? null;
+}
+
+export function unavailableLine(reasons: readonly UnavailableReason[]): string {
+  return `Reviewer unavailable: ${reasons.map((r) => `${r.backend === "store" ? "review store" : r.backend}: ${r.detail}`).join("; ")}`;
 }

@@ -13,12 +13,55 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output" | "tamper" | "wrapper" | "escape";
+export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output" | "tamper" | "wrapper" | "escape" | "fatal";
+
+/**
+ * ISS-1456: how the fake codex answers the start probe (FAKE_CODEX_PROBE), each
+ * one a behaviour codex 0.163.0 was seen to have or a way evidence can mislead.
+ */
+export type FakeProbeMode =
+  | "reach" | "fatal" | "noise-then-fatal" | "netwait" | "badflag" | "silent" | "hang" | "nononce" | "wrongroute" | "flaky" | "reach-twice";
 
 const FAKE_SOURCE = String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
 const name = __FAKE_NAME__;
 const args = process.argv.slice(2);
+if (process.env.FAKE_SPAWN_LOG) fs.appendFileSync(process.env.FAKE_SPAWN_LOG, JSON.stringify({ name, args }) + "\n");
+const providerArg = args.find((a) => a.startsWith("model_providers.storybloq_probe="));
+if (providerArg) {
+  const base = /base_url = "([^"]+)"/.exec(providerArg)[1];
+  const nonce = /"X-Storybloq-Probe" = "([0-9a-f]+)"/.exec(providerArg)[1];
+  let probe = process.env.FAKE_CODEX_PROBE || "reach";
+  if (process.env.FAKE_PROBE_LOG) fs.appendFileSync(process.env.FAKE_PROBE_LOG, JSON.stringify({ cwd: process.cwd(), key: process.env.STORYBLOQ_PROBE_KEY ? "set" : null, pid: process.pid }) + "\n");
+  if (probe === "flaky") {
+    const count = process.env.FAKE_PROBE_LOG ? fs.readFileSync(process.env.FAKE_PROBE_LOG, "utf-8").split("\n").filter(Boolean).length : 1;
+    probe = count === 1 ? "silent" : "reach";
+  }
+  const http = require("node:http");
+  const post = (path, headers, done) => {
+    const req = http.request(base.replace(/\/v1$/, "") + path, { method: "POST", headers }, (res) => { res.resume(); res.on("end", done); });
+    req.on("error", done);
+    req.end("{}");
+  };
+  const hang = () => setInterval(() => {}, 1000);
+  const fatal = "Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)";
+  switch (probe) {
+    case "reach": post("/v1/responses", { "X-Storybloq-Probe": nonce }, hang); break;
+    case "reach-twice": post("/v1/responses", { "X-Storybloq-Probe": nonce }, () => post("/v1/responses", { "X-Storybloq-Probe": nonce }, hang)); break;
+    case "fatal": process.stderr.write(fatal + "\n"); process.exit(1); break;
+    case "noise-then-fatal":
+      process.stderr.write("mcp: server started, connection to http://127.0.0.1:1/v1 established\n");
+      post("/v1/responses", {}, () => { process.stderr.write(fatal + "\n"); process.exit(1); });
+      break;
+    case "netwait": process.stderr.write("ERROR: Reconnecting... waiting for network\n"); hang(); break;
+    case "badflag": process.stderr.write("error: unexpected argument '--ignore-user-config' found\n"); process.exit(2); break;
+    case "silent": process.exit(0); break;
+    case "hang": hang(); break;
+    case "nononce": post("/v1/responses", {}, () => process.exit(1)); break;
+    case "wrongroute": post("/v1/chat/completions", { "X-Storybloq-Probe": nonce }, () => process.exit(1)); break;
+  }
+  return;
+}
 if (args.includes("--version")) {
   const up = name.toUpperCase();
   if (process.env["FAKE_" + up + "_VERSION_FAIL"] === "1") process.exit(1);
@@ -60,6 +103,7 @@ process.stdin.on("end", () => {
   const review = { verdict: mode === "revise" ? "revise" : "approve", findings: mode === "revise" ? [{ severity: "major", requirement: "R3", description: "R3 is covered by no ticket and no coverage row" }] : [] };
   const finish = () => {
     if (mode === "exit1") { process.stderr.write("fake failure\n"); process.exit(1); }
+    if (mode === "fatal") { process.stderr.write("Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n"); process.exit(1); }
     const body = mode === "invalid" ? JSON.stringify({ verdict: "maybe", findings: "none" }) : JSON.stringify(review);
     if (name === "codex") {
       const out = args[args.indexOf("-o") + 1];

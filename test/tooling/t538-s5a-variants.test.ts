@@ -8,14 +8,14 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { driveFlow, newDriveState, setupView, finishDrive, type DriveState, type TurnResponse } from "../../scripts/onboarding-eval-drive.js";
 import { archiveProject, ARCHIVE_OMITTED_FILE, ownerScript, packageTurns, faultFor, spawnedResult } from "../../scripts/onboarding-eval-run.js";
 import {
-  applySessionChecks, demoFacts, artifactFindings, attemptBypass, completionsOf, ledgerDigest, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
+  applySessionChecks, demoFacts, artifactFindings, attemptBypass, completionsOf, ledgerDigest, ledgerState, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
   type BypassAttempt, type HarnessFacts, type SessionCheckInputs, type SessionVariant,
 } from "../../scripts/onboarding-eval-sessions.js";
 import { rule9 } from "../../scripts/onboarding-eval-checkset7.js";
@@ -310,6 +310,102 @@ describe("milestone-demo", () => {
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
+    });
+    /** The folder that is checked, swapped for a link to a folder outside at one exact step of the walk. */
+    const swapTickets = (story: string, root: string): void => {
+      renameSync(join(story, "tickets"), join(root, "moved"));
+      symlinkSync(join(root, "outside"), join(story, "tickets"));
+    };
+    const withOutside = (check: (story: string, root: string, clean: string) => void): void => {
+      withStory((story, root) => {
+        mkdirSync(join(root, "outside"));
+        writeFileSync(join(root, "outside", "T-3.json"), "outside\n");
+      }, (story) => check(story, dirname(story), ledgerState(story).digest));
+    };
+    it("a folder swapped for an outside link between its check and entering it stops the walk there, and nothing outside is read", () => {
+      const digests = ["one\n", "two\n"].map((content) => {
+        let digest = "";
+        withOutside((story, root) => {
+          writeFileSync(join(root, "outside", "T-3.json"), content);
+          const a = ledgerState(story, (step, rel) => { if (step === "enter" && rel === "tickets") swapTickets(story, root); });
+          expect(a.problems).toEqual(["tickets changed while it was being read"]);
+          digest = a.digest;
+        });
+        return digest;
+      });
+      expect(digests[0]).toBe(digests[1]);
+    });
+    it.each([["list", "tickets"], ["open", "tickets/T-3.json"], ["check", "tickets/T-3.json"]] as const)("a folder swapped for an outside link at %s of %s is still read as the folder that was entered, and the move is a finding", (when, at) => {
+      withOutside((story, root, clean) => {
+        const a = ledgerState(story, (step, rel) => { if (step === when && rel === at) swapTickets(story, root); });
+        expect(a.problems).toEqual(["tickets changed while it was being read"]);
+        expect(a.digest).toBe(clean);
+      });
+    });
+    it("a folder renamed inside the ledger while being read is no finding: the same folder is read and the way back is sound", () => {
+      withOutside((story, _root, clean) => {
+        const a = ledgerState(story, (step, rel) => { if (step === "list" && rel === "tickets") renameSync(join(story, "tickets"), join(story, "renamed")); });
+        expect(a.problems).toEqual([]);
+        expect(a.digest).toBe(clean);
+      });
+    });
+    it("a file swapped for a link just before it opens is reported, its target unread", () => {
+      withOutside((story, root) => {
+        const a = ledgerState(story, (step, rel) => { if (step === "open" && rel === "tickets/T-3.json") { rmSync(join(story, "tickets", "T-3.json")); symlinkSync(join(root, "outside", "T-3.json"), join(story, "tickets", "T-3.json")); } });
+        expect(a.problems).toEqual(["tickets/T-3.json could not be read"]);
+      });
+    });
+    it("the walk leaves the process where it found it, finding or not", () => {
+      const cwd = process.cwd();
+      withOutside((story, root) => {
+        ledgerState(story);
+        expect(process.cwd()).toBe(cwd);
+        ledgerState(story, (step, rel) => { if (step === "enter" && rel === "tickets") swapTickets(story, root); });
+        expect(process.cwd()).toBe(cwd);
+      });
+    });
+    it.skipIf(process.getuid?.() === 0)("an unreadable folder is a finding with its name and its reason, and the record and the grade are still produced", () => {
+      for (const [mode, code] of [[0o000, "EACCES"], [0o311, "EACCES"]] as const) {
+        withStory(() => {}, (story) => {
+          const tickets = join(story, "tickets");
+          chmodSync(tickets, mode);
+          try {
+            const attempt = attemptBypass(story, "T-3", () => ({ status: 1, stdout: "", stderr: "it waits on owner checkpoint T-2\n" }));
+            expect(attempt.ledgerProblems).toEqual([`tickets could not be read (${code})`]);
+            expect(attempt.exitCode).toBe(1);
+            expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3", bypass: attempt } })).toEqual([`milestone-demo: the ledger could not be read as evidence: tickets could not be read (${code})`]);
+          } finally {
+            chmodSync(tickets, 0o755);
+          }
+        });
+      }
+    });
+    it.skipIf(process.getuid?.() === 0)("a .story that cannot be read is a finding; only a missing one is an empty ledger", () => {
+      withStory(() => {}, (story) => {
+        const root = dirname(story);
+        chmodSync(root, 0o000);
+        try {
+          expect(ledgerState(story).problems).toEqual([".story could not be read (EACCES)"]);
+        } finally {
+          chmodSync(root, 0o755);
+        }
+        rmSync(story, { recursive: true });
+        expect(ledgerState(story).problems).toEqual([]);
+      });
+    });
+    it("an entry that disappears mid-walk is a finding, and the record and the grade are still produced", () => {
+      withStory(() => {}, (story) => {
+        const attempt = attemptBypass(story, "T-3", () => ({ status: 1, stdout: "", stderr: "it waits on owner checkpoint T-2\n" }), (step, rel) => { if (step === "check" && rel === "tickets/T-3.json") rmSync(join(story, "tickets", "T-3.json"), { force: true }); });
+        expect(attempt.ledgerProblems).toEqual(["tickets/T-3.json could not be read (ENOENT)"]);
+        expect(attempt.exitCode).toBe(1);
+        expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3", bypass: attempt } })).toEqual(["milestone-demo: the ledger could not be read as evidence: tickets/T-3.json could not be read (ENOENT)"]);
+      });
+    });
+    it("a link that disappears before its target is read is a finding", () => {
+      withStory((story) => { symlinkSync("/elsewhere", join(story, "l")); }, (story) => {
+        const a = ledgerState(story, (step, rel) => { if (step === "readlink" && rel === "l") rmSync(join(story, "l")); });
+        expect(a.problems).toEqual(["l could not be read (ENOENT)"]);
+      });
     });
     it("a FIFO never blocks, and is reported, and the check fails on it", () => {
       withStory((story) => { expect(spawnSync("/usr/bin/mkfifo", [join(story, "tickets", "pipe.json")]).status).toBe(0); }, (story) => {

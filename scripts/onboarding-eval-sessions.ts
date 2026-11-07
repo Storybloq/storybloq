@@ -393,42 +393,93 @@ export function regularFileDigest(path: string): string | null {
   }
 }
 
+/** The points in a ledger walk where the tree can change under it; a test acts at one to prove the walk holds. */
+export type LedgerStep = "check" | "readlink" | "enter" | "list" | "open";
+type LedgerHook = (step: LedgerStep, rel: string) => void;
+
+class LedgerWalkStopped extends Error {}
+
 /**
  * The ledger as one digest: every entry under `.story/` but the derived cache and
- * the lock. The tree is the turn's to shape, so nothing is followed: a link counts
- * by its target's text, never its bytes, and anything that is not a regular file,
- * a folder or a link is a problem to report, not something to read.
+ * the lock. The tree is the turn's to shape and a process the turn left behind can
+ * still be changing it, so nothing is followed and no path crosses a folder. Node
+ * has no openat, and the working directory does the same job: once entered and
+ * checked it stays that folder whatever is renamed, so children are named by one
+ * component. Entering a swapped link, or a way back that lands anywhere but the
+ * parent, stops the walk with a finding. A link counts by its target's text. Every
+ * failure names its path; only a missing `.story` is simply an empty ledger.
  */
-export function ledgerState(story: string): { readonly digest: string; readonly problems: readonly string[] } {
+export function ledgerState(story: string, hook?: LedgerHook): { readonly digest: string; readonly problems: readonly string[] } {
   const h = createHash("sha256");
   const problems: string[] = [];
-  const visit = (path: string, rel: string): void => {
+  const step: LedgerHook = hook ?? (() => {});
+  const label = (rel: string): string => (rel === "." ? ".story" : rel);
+  const failed = (rel: string, e: unknown): void => { problems.push(`${label(rel)} could not be read (${(e as NodeJS.ErrnoException).code ?? "unknown"})`); };
+  const stopped = (rel: string): never => { problems.push(`${label(rel)} changed while it was being read`); throw new LedgerWalkStopped(); };
+  const isSame = (a: Stats, b: Stats): boolean => a.dev === b.dev && a.ino === b.ino;
+  const folder = (rel: string, self: Stats): void => {
+    step("list", rel);
+    let names: string[];
+    try { names = readdirSync(".").sort(); } catch (e) { failed(rel, e); return; }
+    for (const name of names) {
+      const child = rel === "." ? name : `${rel}/${name}`;
+      if (child !== "cache" && child !== ".lock") entry(name, child, self);
+    }
+  };
+  /** True if the walk went in, and so has to come back. */
+  const enter = (name: string, rel: string, seen: Stats): boolean => {
+    step("enter", rel);
+    try { process.chdir(name); } catch (e) { failed(rel, e); return false; }
+    const here = lstatSync(".");
+    if (!isSame(here, seen)) stopped(rel);
+    folder(rel, here);
+    return true;
+  };
+  const entry = (name: string, rel: string, parent: Stats): void => {
+    step("check", rel);
     let st: Stats;
-    try { st = lstatSync(path); } catch { if (rel !== ".") problems.push(`${rel} could not be read`); return; }
-    if (st.isSymbolicLink()) h.update(`${rel}\u0000link\u0000${readlinkSync(path)}\n`);
-    else if (st.isDirectory()) {
-      for (const name of readdirSync(path).sort()) {
-        const child = rel === "." ? name : `${rel}/${name}`;
-        if (child !== "cache" && child !== ".lock") visit(join(path, name), child);
+    try { st = lstatSync(name); } catch (e) { failed(rel, e); return; }
+    if (st.isSymbolicLink()) {
+      step("readlink", rel);
+      try { h.update(`${rel}\u0000link\u0000${readlinkSync(name)}\n`); } catch (e) { failed(rel, e); }
+    } else if (st.isDirectory()) {
+      if (enter(name, rel, st)) {
+        try { process.chdir(".."); } catch { stopped(rel); }
+        if (!isSame(lstatSync("."), parent)) stopped(rel);
       }
     } else if (st.isFile()) {
-      const digest = regularFileDigest(path);
+      step("open", rel);
+      const digest = regularFileDigest(name);
       if (digest === null) problems.push(`${rel} could not be read`);
       else h.update(`${rel}\u0000${digest}\n`);
     } else problems.push(`${rel} is not a regular file, a folder or a link`);
   };
-  visit(story, ".");
+  const start = process.cwd();
+  try {
+    let root: Stats | null = null;
+    try { root = lstatSync(story); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") failed(".", e); }
+    if (root?.isSymbolicLink()) {
+      try { h.update(`.\u0000link\u0000${readlinkSync(story)}\n`); } catch (e) { failed(".", e); }
+    } else if (root !== null) {
+      if (!root.isDirectory()) problems.push(".story is not a folder");
+      else enter(story, ".", root);
+    }
+  } catch (e) {
+    if (!(e instanceof LedgerWalkStopped)) throw e;
+  } finally {
+    process.chdir(start);
+  }
   return { digest: h.digest("hex"), problems };
 }
 
 export const ledgerDigest = (story: string): string => ledgerState(story).digest;
 
 /** Runs the bypass through `run` (the harness's CLI launcher) and reports what it did, stderr's lines first. */
-export function attemptBypass(story: string, ticket: string, run: (args: readonly string[]) => { status: number | null; signal?: string | null; error?: Error; stdout: string; stderr: string }): BypassAttempt {
-  const before = ledgerState(story);
+export function attemptBypass(story: string, ticket: string, run: (args: readonly string[]) => { status: number | null; signal?: string | null; error?: Error; stdout: string; stderr: string }, hook?: LedgerHook): BypassAttempt {
+  const before = ledgerState(story, hook);
   const r = run(["ticket", "update", ticket, "--status", "complete"]);
   const output = `${r.stderr}\n${r.stdout}`.split("\n").map((l) => l.trim()).filter((l) => l !== "");
-  const after = ledgerState(story);
+  const after = ledgerState(story, hook);
   const ledgerProblems = [...new Set([...before.problems, ...after.problems])];
   return { ticket, exitCode: r.status, output, ledgerChanged: after.digest !== before.digest, ...(ledgerProblems.length > 0 ? { ledgerProblems } : {}), ...(r.signal ? { signal: r.signal } : {}), ...(r.error ? { error: r.error.message } : {}) };
 }

@@ -236,6 +236,90 @@ describe("milestone-demo", () => {
       rmSync(dirname(story), { recursive: true, force: true });
     }
   });
+  describe("a ledger the turn left hostile", () => {
+    const withStory = (build: (story: string, root: string) => void, check: (story: string) => void): void => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "t538l-")));
+      const story = join(root, ".story");
+      try {
+        mkdirSync(join(story, "tickets"), { recursive: true });
+        writeFileSync(join(story, "tickets", "T-3.json"), "{}\n");
+        build(story, root);
+        check(story);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    const inTime = (argv: readonly string[]): string => {
+      // A FIFO would block a plain read for ever, so the digest runs in a child with a deadline.
+      const r = spawnSync(process.execPath, [TSX, "-e", `import(${JSON.stringify(join(PKG, "scripts", "onboarding-eval-sessions.ts"))}).then((m) => console.log(JSON.stringify(m.ledgerState(${JSON.stringify(argv[0])}))))`], { encoding: "utf-8", timeout: 30_000, env: process.env });
+      expect(r.status, `${String(r.signal)} ${r.stderr}`).toBe(0);
+      return r.stdout.trim().split("\n").at(-1)!;
+    };
+    it("the file read opens no link and waits on no FIFO, whatever an earlier look at the name said", () => {
+      withStory((story, root) => {
+        writeFileSync(join(root, "plain.txt"), "x\n");
+        symlinkSync(join(root, "plain.txt"), join(story, "link"));
+        expect(spawnSync("/usr/bin/mkfifo", [join(story, "pipe")]).status).toBe(0);
+      }, (story) => {
+        const r = spawnSync(process.execPath, [TSX, "-e", `import(${JSON.stringify(join(PKG, "scripts", "onboarding-eval-sessions.ts"))}).then((m) => { console.log(JSON.stringify([m.regularFileDigest(${JSON.stringify(join(story, "link"))}), m.regularFileDigest(${JSON.stringify(join(story, "pipe"))}), m.regularFileDigest(${JSON.stringify(join(dirname(story), "plain.txt"))})])); process.exit(0); })`], { encoding: "utf-8", timeout: 30_000, env: process.env });
+        expect(r.status, `${String(r.signal)} ${r.stderr}`).toBe(0);
+        const [link, pipe, plain] = JSON.parse(r.stdout.trim().split("\n").at(-1)!) as (string | null)[];
+        expect(link).toBeNull();
+        expect(pipe).toBeNull();
+        expect(plain).toMatch(/^[0-9a-f]{64}$/);
+      });
+    });
+    it("a link to a file outside is recorded by its target, its bytes never read", () => {
+      withStory((story, root) => {
+        writeFileSync(join(root, "outside.txt"), "one\n");
+        symlinkSync(join(root, "outside.txt"), join(story, "tickets", "out.json"));
+      }, (story) => {
+        const before = ledgerDigest(story);
+        writeFileSync(join(dirname(story), "outside.txt"), "two\n");
+        expect(ledgerDigest(story)).toBe(before);
+        rmSync(join(story, "tickets", "out.json"));
+        symlinkSync("/elsewhere", join(story, "tickets", "out.json"));
+        expect(ledgerDigest(story)).not.toBe(before);
+      });
+    });
+    it("a link to a folder outside is not walked", () => {
+      withStory((story, root) => {
+        mkdirSync(join(root, "outside"));
+        writeFileSync(join(root, "outside", "a.txt"), "one\n");
+        symlinkSync(join(root, "outside"), join(story, "outside"));
+      }, (story) => {
+        const before = ledgerDigest(story);
+        writeFileSync(join(dirname(story), "outside", "a.txt"), "two\n");
+        expect(ledgerDigest(story)).toBe(before);
+      });
+    });
+    it("a folder cycle ends, with no finding", () => {
+      withStory((story) => { symlinkSync("..", join(story, "tickets", "loop")); }, (story) => {
+        expect(JSON.parse(inTime([story])).problems).toEqual([]);
+      });
+    });
+    it("a .story that is itself a link is not walked", () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "t538l-")));
+      try {
+        mkdirSync(join(root, "real"));
+        writeFileSync(join(root, "real", "a.txt"), "one\n");
+        symlinkSync(join(root, "real"), join(root, ".story"));
+        const before = ledgerDigest(join(root, ".story"));
+        writeFileSync(join(root, "real", "a.txt"), "two\n");
+        expect(ledgerDigest(join(root, ".story"))).toBe(before);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+    it("a FIFO never blocks, and is reported, and the check fails on it", () => {
+      withStory((story) => { expect(spawnSync("/usr/bin/mkfifo", [join(story, "tickets", "pipe.json")]).status).toBe(0); }, (story) => {
+        expect(JSON.parse(inTime([story])).problems).toEqual(["tickets/pipe.json is not a regular file, a folder or a link"]);
+        const attempt = attemptBypass(story, "T-3", () => ({ status: 1, stdout: "", stderr: "it waits on owner checkpoint T-2\n" }));
+        expect(attempt.ledgerProblems).toEqual(["tickets/pipe.json is not a regular file, a folder or a link"]);
+        expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3", bypass: attempt } })).toEqual(["milestone-demo: the ledger could not be read as evidence: tickets/pipe.json is not a regular file, a folder or a link"]);
+      });
+    });
+  });
   it("the bypass record keeps how the process ended", () => {
     const story = join(realpathSync(mkdtempSync(join(tmpdir(), "t538b-"))), ".story");
     try {
@@ -361,7 +445,7 @@ let text;
 if (prompt.startsWith("$story Set up") || prompt.startsWith("Inspect details") || prompt === process.env.FAKE_ADJUST) text = process.env.FAKE_PACKAGE;
 else if (prompt === "Approve setup.") text = run("storybloq setup-apply <<'STORYBLOQ_SETUP'\\n" + payload + "\\nSTORYBLOQ_SETUP");
 else if (prompt === "$story" && process.env.FAKE_RESUME === "1") text = run("storybloq setup-apply --resume --setup ${SID}");
-else if (prompt.startsWith("$story auto milestone")) { writeFileSync("rota.js", "console.log('Today: Sam waters beds 1-4');\\n"); text = "Milestone 1 is built. The demo prints: " + run("${DEMO}"); }
+else if (prompt.startsWith("$story auto milestone")) { if (process.env.FAKE_KILL_BYPASS === "1") run("L=$(command -v storybloq); cp \\"$L\\" \\"$L.real\\"; printf '%s\\\\n' '#!/bin/sh' 'case \\"$*\\" in \\"ticket update \\"*\\"--status complete\\"*) echo \\"it waits on owner checkpoint T-2\\" >&2; kill -KILL $$;; esac' 'exec \\"$0.real\\" \\"$@\\"' > \\"$L\\""); writeFileSync("rota.js", "console.log('Today: Sam waters beds 1-4');\\n"); text = "Milestone 1 is built. The demo prints: " + run("${DEMO}"); }
 else text = "Noted.";
 const lines = [{ type: "thread.started", thread_id: "th-fake" }, ...items.map((item) => ({ type: "item.completed", item })), { type: "item.completed", item: { type: "agent_message", text } }, { type: "turn.completed" }];
 process.stdout.write(lines.map((l) => JSON.stringify(l)).join("\\n") + "\\n");
@@ -522,6 +606,37 @@ describe("the runner's plumbing per variant", () => {
   it.each([[null, "SIGKILL"], [null, null], [2, null]] as const)("status %s signal %s is not a finished run", (status, signal) => {
     expect(() => expectRunnerFinished({ status, signal })).toThrow();
   });
+  it("a status update that prints the checkpoint's words and then dies by a signal is kept as no exit status, and fails the grade", () => {
+    const p = PLUMBING.find((x) => x.variant === "milestone-demo")!;
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "t538s-")));
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "codex"), `#!${process.execPath}\n${FAKE_CODEX}`, { mode: 0o755 });
+      const codexHome = join(dir, "codex-home");
+      mkdirSync(codexHome);
+      writeFileSync(join(codexHome, "auth.json"), "{}\n");
+      const payloadFile = join(dir, "payload.json");
+      writeFileSync(payloadFile, JSON.stringify(fakePayload("Robin", "Watering rota demo")));
+      const env: NodeJS.ProcessEnv = {
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, HOME: join(dir, "home"), TMPDIR: dir, CODEX_HOME: codexHome,
+        FAKE_ARGV_LOG: join(dir, "argv.log"), FAKE_PAYLOAD: payloadFile, FAKE_PACKAGE: PACKAGE, FAKE_RESUME: "0", FAKE_KILL_BYPASS: "1",
+        FAKE_ADJUST: ownerScript(readFileSync(join(PKG, "test", "fixtures", "onboarding", p.fixture, "owner-answers.md"), "utf-8")).adjustment,
+      };
+      mkdirSync(env.HOME!);
+      const out = join(dir, "out");
+      const raw = join(dir, "raw");
+      const r = spawnSync(process.execPath, [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw], { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
+      expectRunnerFinished(r);
+      const runId = readdirSync(raw)[0]!;
+      const sessions = JSON.parse(readFileSync(join(raw, runId, "sessions.json"), "utf-8")) as { harness: HarnessFacts };
+      expect(sessions.harness.bypass, JSON.stringify(sessions.harness.bypass)).toMatchObject({ exitCode: null, signal: "SIGKILL", output: expect.arrayContaining([expect.stringMatching(/waits on owner checkpoints? /)]) });
+      const record = JSON.parse(readFileSync(join(out, runId, "record.json"), "utf-8")) as { failures: string[] };
+      expect(record.failures.filter((f) => f.includes("did not exit"))).toEqual([expect.stringContaining("signal SIGKILL")]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
   for (const p of PLUMBING) {
     it(`${p.variant} leaves every artifact its contract requires`, () => {
       // A short name: tsx's IPC pipe lives at $TMPDIR/tsx-<uid>/<pid>.pipe, and a long TMPDIR truncates that socket path past 104 bytes.
@@ -572,7 +687,7 @@ describe("the runner's plumbing per variant", () => {
           expect(sessions.harness.demo?.stdout.trim()).toBe("Today: Sam waters beds 1-4");
           expect(sessions.harness.dependent).toMatch(/\S/);
           expect(sessions.harness.bypass, JSON.stringify(sessions.harness.bypass)).toMatchObject({ ticket: sessions.harness.dependent, ledgerChanged: false, output: expect.arrayContaining([expect.stringMatching(/waits on owner checkpoints? /)]) });
-          expect(sessions.harness.bypass?.exitCode).not.toBe(0);
+          expect(sessions.harness.bypass?.exitCode).toBe(1);
         }
         if (p.variant === "restart") expect(sessions.harness.report?.some((l) => l.startsWith("Checkpoint: "))).toBe(true);
       } finally {

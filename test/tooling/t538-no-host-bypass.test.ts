@@ -101,12 +101,21 @@ describe("what every host turn carries instead", () => {
   it("the same write policy on the first and the resumed form, naming the attempt's own folders", () => {
     const r = runHost(["--fixture", "empty-idea", "--variant", "none"]);
     expect(turns(r).length, r.output).toBeGreaterThan(1);
+    const first = turns(r).find((a) => a[1] !== "resume")!;
+    const project = first[first.indexOf("-C") + 1]!;
+    const work = dirname(project);
+    const expected = [join(work, "home"), join(work, "tmp"), join(work, "storybloq-global"), join(work, "storybloq-setup-review-store"), join(work, "eval-events"), join(project, ".git")];
     for (const a of turns(r)) {
-      expect(a).toContain('sandbox_mode="workspace-write"');
-      const roots = JSON.parse(a.find((x) => x.startsWith("sandbox_workspace_write.writable_roots="))!.split("=").slice(1).join("=")) as string[];
-      expect(roots.length).toBe(6);
-      expect(roots.some((p) => p.endsWith("/tmp"))).toBe(true);
-      expect(roots.some((p) => p.endsWith("/.git"))).toBe(true);
+      const configs = a.flatMap((x, i) => (x === "-c" ? [a[i + 1]!] : []));
+      expect(configs).toEqual([
+        'sandbox_mode="workspace-write"',
+        'approval_policy="never"',
+        `sandbox_workspace_write.writable_roots=${JSON.stringify(expected)}`,
+        "sandbox_workspace_write.exclude_slash_tmp=true",
+        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        'web_search="disabled"',
+        "features.multi_agent=false",
+      ]);
     }
   }, 300_000);
 });

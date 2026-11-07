@@ -1589,24 +1589,36 @@ export function codexSandboxArgs(roots: readonly string[]): string[] {
   return settings.flatMap((v) => ["-c", v]);
 }
 
-/** Everything in a Codex argv that weakens the policy; empty means it holds. */
-export function codexSandboxProblems(args: readonly string[]): string[] {
+/**
+ * Everything in a Codex argv that weakens the policy; empty means it holds. It
+ * is an allowlist: the turn's own options, and every occurrence of a setting must
+ * be the policy's exact value, since a later -c wins. A flag or a setting this
+ * does not name is refused, because either can reopen what the policy closes
+ * (--add-dir, a profile, a parent table). Past the terminator is the prompt.
+ */
+export function codexSandboxProblems(args: readonly string[], expectedRoots: readonly string[]): string[] {
   const problems: string[] = [];
   const end = args.indexOf("--");
   const options = end === -1 ? args : args.slice(0, end);
-  const configs = options.flatMap((a, i) => (a === "-c" || a === "--config" ? [options[i + 1] ?? ""] : a.startsWith("--config=") ? [a.slice("--config=".length)] : []));
-  for (const flag of ["--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"]) if (options.includes(flag)) problems.push(`${flag} is refused`);
-  options.forEach((a, i) => {
-    const value = a === "--sandbox" || a === "-s" ? options[i + 1] : a.startsWith("--sandbox=") ? a.slice("--sandbox=".length) : null;
-    if (value !== null && value !== "workspace-write") problems.push(`sandbox ${value} is refused`);
-  });
-  for (const c of configs) {
-    if (c.startsWith("sandbox_mode=") && c !== 'sandbox_mode="workspace-write"') problems.push(`${c} is refused`);
-    if (c.startsWith("sandbox_workspace_write.network_access") && !c.endsWith("=false")) problems.push(`${c} is refused`);
+  const policy = new Map(codexSandboxArgs(expectedRoots).filter((a) => a !== "-c").map((c) => { const eq = c.indexOf("="); return [c.slice(0, eq), c.slice(eq + 1)] as const; }));
+  const seen = new Set<string>();
+  const config = (c: string): void => {
+    const eq = c.indexOf("=");
+    if (eq === -1) { problems.push(`${c} has no value`); return; }
+    const key = c.slice(0, eq);
+    const want = policy.get(key);
+    if (want === undefined) problems.push(`${c} is refused: the policy does not name ${key}`);
+    else if (c.slice(eq + 1).trim() !== want) problems.push(`${c} conflicts with ${key}=${want}`);
+    else seen.add(key);
+  };
+  for (let i = 0; i < options.length; i++) {
+    const a = options[i]!;
+    if (a === "-c" || a === "--config") config(options[++i] ?? "");
+    else if (a.startsWith("--config=")) config(a.slice("--config=".length));
+    else if (a === "--model" || a === "-C") { const v = options[++i] ?? ""; if (v === "" || v.startsWith("-")) problems.push(`${a} ${v} is refused`); }
+    else if (a !== "--json" && a !== "--skip-git-repo-check" && a.startsWith("-")) problems.push(`${a} is refused`);
   }
-  const required = ['sandbox_mode="workspace-write"', 'approval_policy="never"', "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true", 'web_search="disabled"', "features.multi_agent=false"];
-  for (const r of required) if (!configs.includes(r)) problems.push(`${r} is missing`);
-  if (!configs.some((c) => c.startsWith("sandbox_workspace_write.writable_roots=["))) problems.push("writable roots are missing");
+  for (const [key, want] of policy) if (!seen.has(key)) problems.push(`${key}=${want} is missing`);
   return problems;
 }
 

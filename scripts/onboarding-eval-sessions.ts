@@ -9,7 +9,7 @@
  * Every check here is a pure function of the run's turns, its events log,
  * its invocation mapping, its final ledger and those harness facts.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, type Stats } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -158,6 +158,8 @@ export interface BypassAttempt {
   /** How a process with no exit status ended (spawnSync gives null on a signal or a timeout). */
   readonly signal?: string;
   readonly error?: string;
+  /** Entries of the ledger that could not be read as evidence, before or after the attempt. Absent when there are none. */
+  readonly ledgerProblems?: readonly string[];
 }
 
 export const NO_FACTS: HarnessFacts = { fault: null, fired: null, edits: null, demo: null, dependent: null, report: null, storeRevisions: null, testEnabled: null, bypass: null };
@@ -365,34 +367,70 @@ function demoFindings(i: VariantInputs): string[] {
     else if (b.exitCode === null) out.push(`milestone-demo: the status update on ${b.ticket} did not exit (signal ${b.signal ?? "none"}, error ${b.error ?? "none"})`);
     else if (!b.output.some((l) => /waits on owner checkpoints? /.test(l))) out.push(`milestone-demo: the status update on ${b.ticket} was refused for another reason ("${b.output.join(" | ")}")`);
     if (b.ledgerChanged) out.push(`milestone-demo: the status update on ${b.ticket} changed the ledger`);
+    for (const p of b.ledgerProblems ?? []) out.push(`milestone-demo: the ledger could not be read as evidence: ${p}`);
   }
   return out;
 }
 
-/** The ledger's bytes as one digest: every file under `.story/` but the derived cache and the lock. */
-export function ledgerDigest(story: string): string {
-  const files: string[] = [];
-  const walk = (dir: string): void => {
-    for (const name of readdirSync(dir).sort()) {
-      const path = join(dir, name);
-      const rel = relative(story, path).split(sep).join("/");
-      if (rel === "cache" || rel === ".lock") continue;
-      if (statSync(path).isDirectory()) walk(path);
-      else files.push(rel);
-    }
-  };
-  if (existsSync(story)) walk(story);
-  const h = createHash("sha256");
-  for (const rel of files) h.update(`${rel}\u0000`).update(createHash("sha256").update(readFileSync(join(story, rel))).digest("hex")).update("\n");
-  return h.digest("hex");
+/**
+ * A regular file's bytes as a digest, or null if the path is anything else. It
+ * opens without following a link and without waiting on a FIFO, then trusts only
+ * the type of what it opened, since the name can change after any earlier look.
+ */
+export function regularFileDigest(path: string): string | null {
+  let fd: number;
+  try { fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch { return null; }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    const h = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(1 << 20);
+    for (let n = readSync(fd, chunk); n > 0; n = readSync(fd, chunk)) h.update(chunk.subarray(0, n));
+    return h.digest("hex");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
+
+/**
+ * The ledger as one digest: every entry under `.story/` but the derived cache and
+ * the lock. The tree is the turn's to shape, so nothing is followed: a link counts
+ * by its target's text, never its bytes, and anything that is not a regular file,
+ * a folder or a link is a problem to report, not something to read.
+ */
+export function ledgerState(story: string): { readonly digest: string; readonly problems: readonly string[] } {
+  const h = createHash("sha256");
+  const problems: string[] = [];
+  const visit = (path: string, rel: string): void => {
+    let st: Stats;
+    try { st = lstatSync(path); } catch { if (rel !== ".") problems.push(`${rel} could not be read`); return; }
+    if (st.isSymbolicLink()) h.update(`${rel}\u0000link\u0000${readlinkSync(path)}\n`);
+    else if (st.isDirectory()) {
+      for (const name of readdirSync(path).sort()) {
+        const child = rel === "." ? name : `${rel}/${name}`;
+        if (child !== "cache" && child !== ".lock") visit(join(path, name), child);
+      }
+    } else if (st.isFile()) {
+      const digest = regularFileDigest(path);
+      if (digest === null) problems.push(`${rel} could not be read`);
+      else h.update(`${rel}\u0000${digest}\n`);
+    } else problems.push(`${rel} is not a regular file, a folder or a link`);
+  };
+  visit(story, ".");
+  return { digest: h.digest("hex"), problems };
+}
+
+export const ledgerDigest = (story: string): string => ledgerState(story).digest;
 
 /** Runs the bypass through `run` (the harness's CLI launcher) and reports what it did, stderr's lines first. */
 export function attemptBypass(story: string, ticket: string, run: (args: readonly string[]) => { status: number | null; signal?: string | null; error?: Error; stdout: string; stderr: string }): BypassAttempt {
-  const before = ledgerDigest(story);
+  const before = ledgerState(story);
   const r = run(["ticket", "update", ticket, "--status", "complete"]);
   const output = `${r.stderr}\n${r.stdout}`.split("\n").map((l) => l.trim()).filter((l) => l !== "");
-  return { ticket, exitCode: r.status, output, ledgerChanged: ledgerDigest(story) !== before, ...(r.signal ? { signal: r.signal } : {}), ...(r.error ? { error: r.error.message } : {}) };
+  const after = ledgerState(story);
+  const ledgerProblems = [...new Set([...before.problems, ...after.problems])];
+  return { ticket, exitCode: r.status, output, ledgerChanged: after.digest !== before.digest, ...(ledgerProblems.length > 0 ? { ledgerProblems } : {}), ...(r.signal ? { signal: r.signal } : {}), ...(r.error ? { error: r.error.message } : {}) };
 }
 
 function orderFindings(i: VariantInputs): string[] {

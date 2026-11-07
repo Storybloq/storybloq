@@ -432,7 +432,7 @@ function runTurn(o: Options, ctx: { readonly project: string; readonly env: Node
   const bin = ctx.clientBin;
   const args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: ctx.claudeArgs, sessionId: ctx.sessionId, first: ctx.first, writableRoots: ctx.writableRoots }, prompt);
   if (o.client === "codex") {
-    const weak = codexSandboxProblems(args);
+    const weak = codexSandboxProblems(args, ctx.writableRoots);
     if (weak.length > 0) throw new Error(`onboarding-eval: the turn's sandbox does not hold: ${weak.join("; ")}`);
   }
   const r = spawnSync(bin, args, { cwd: ctx.project, env: ctx.env, encoding: "utf-8", timeout: o.timeoutMs, maxBuffer: 512 * 1024 * 1024 });

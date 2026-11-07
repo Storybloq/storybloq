@@ -1,18 +1,36 @@
 /**
  * T-538 S5b-0 commit 4: every check the harness can record has a declared-dependency row, and every row
- * names a check that exists (plan section 9). The keys are derived from the sources, by rule number for
- * the two checksets and by finding source or message for the session and inspect checks, so a rule whose
- * body changes keeps its key and a rule added or removed fails here.
+ * names a check that exists (plan section 9). The keys are derived from the sources, by the rule number
+ * of the checksets' executable failure messages and by finding source or message for the session and
+ * inspect checks, so a rule whose body changes keeps its key and a rule added or removed fails here.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { ASSERTION_DEPS } from "../../scripts/onboarding-eval-assertion-deps.js";
 
 const SCRIPTS = join(__dirname, "..", "..", "scripts");
 const src = (f: string): string => readFileSync(join(SCRIPTS, f), "utf-8");
 
-const ruleKeys = (fn: string, text: string): string[] => [...new Set([...text.matchAll(/\bRule (\d+)\b/g)].map((m) => `${fn}:rule-${m[1]}`))];
+/**
+ * The rules a checkset can fail, read from its executable failure messages: every string or template
+ * literal that starts `rule N:`. The TypeScript parser keeps comments out, so a rule's doc comment is
+ * neither needed nor enough; what counts is a failure the code can record.
+ */
+function ruleKeys(fn: string, text: string): string[] {
+  const sf = ts.createSourceFile("x.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const found = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n)) {
+      const m = /^rule (\d+):/.exec(n.text);
+      if (m) found.add(`${fn}:rule-${m[1]}`);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return [...found];
+}
 
 /** inspectAfter's body, from its declaration to the first closing brace at column 0. */
 function inspectBody(text: string): string {
@@ -26,7 +44,7 @@ const slug = (template: string): string => template.replace(/\$\{[^}]*\}/g, "x")
 function inspectKeys(body: string): string[] {
   const keys: string[] = [];
   for (const line of body.split("\n")) {
-    if (!/\bfail\(s,/.test(line)) continue;
+    if (!/\bfail\(s,/.test(line) || /^\s*(\/\/|\*|\/\*)/.test(line)) continue;
     const loop = /for \(const f of ([A-Za-z_.]+)/.exec(line);
     if (loop) { keys.push(`inspect:${loop[1]}`); continue; }
     const msg = /\bfail\(s, \{[^}]*\}, (["`])(.*?)\1\)/.exec(line);
@@ -45,7 +63,7 @@ function sessionKeys(text: string): string[] {
 function sourceKeys(sources: { checkset6: string; checkset7: string[]; sessions: string; drive: string }): string[] {
   return [
     ...ruleKeys("setup-review", sources.checkset6),
-    ...ruleKeys("setup-run", sources.checkset7.join("\n")),
+    ...new Set(sources.checkset7.flatMap((t) => ruleKeys("setup-run", t))),
     ...sessionKeys(sources.sessions),
     ...inspectKeys(inspectBody(sources.drive)),
   ];
@@ -75,20 +93,28 @@ describe("assertion-deps covers every check, and only checks that exist", () => 
     const count = (p: string): number => k.filter((x) => x.startsWith(p)).length;
     expect([count("setup-review:"), count("setup-run:"), count("session:"), count("inspect:")]).toEqual([4, 10, 6, 17]);
   });
-  it("a rule in a source without a row fails, and a row naming a rule no source has fails", () => {
+  it("a failure the code can record without a row fails, and a row whose failures are gone fails, comments either way", () => {
     const s = real();
-    const added = sourceKeys({ ...s, checkset6: `${s.checkset6}\n// Rule 5: a new rule\n` });
+    // An executable rule 5 with no numbered comment anywhere.
+    const added = sourceKeys({ ...s, checkset6: `${s.checkset6}\nexport const extra = (f: string[]): void => { f.push("rule 5: a new rule"); };\n` });
+    expect(s.checkset6).not.toMatch(/Rule 5\b/);
     expect(compareKeys(added, Object.keys(ASSERTION_DEPS)).missingRows).toEqual(["setup-review:rule-5"]);
-    const removed = sourceKeys({ ...s, checkset7: s.checkset7.map((t) => t.replace(/\bRule 10\b/g, "Rule ten")) });
+    // Rule 10's failures removed, its comments kept.
+    const removed = sourceKeys({ ...s, checkset7: s.checkset7.map((t) => t.replace(/([`"])rule 10:/g, "$1check ten:")) });
+    expect(s.checkset7.join("\n")).toMatch(/Rule 10\b/);
     expect(compareKeys(removed, Object.keys(ASSERTION_DEPS)).orphanRows).toEqual(["setup-run:rule-10"]);
+    // A comment alone names no rule.
+    const commentOnly = sourceKeys({ ...s, checkset6: `${s.checkset6}\n// Rule 6: only a comment\n/** Rule 7: only a doc comment */\n` });
+    expect(compareKeys(commentOnly, Object.keys(ASSERTION_DEPS))).toEqual({ missingRows: [], orphanRows: [], duplicates: [] });
     const newSite = sourceKeys({ ...s, drive: s.drive.replace("export function inspectAfter(", "export function inspectAfter(\n  fail(s, { kind: \"inspection\" }, \"a new site\");\n") });
     expect(compareKeys(newSite, Object.keys(ASSERTION_DEPS)).missingRows).toEqual(["inspect:a-new-site"]);
   });
   it("a rule whose body changes keeps its key (cpm-w12's rule 4 edit changes the body, not the number)", () => {
     const s = real();
-    const at = s.checkset6.indexOf("Rule 4");
-    expect(at).toBeGreaterThan(-1);
-    const edited = `${s.checkset6.slice(0, at + 6)} (rewritten body for the test)${s.checkset6.slice(at + 6).replace(/[a-z]{6,}/g, "rewritten")}`;
+    expect(s.checkset6).toMatch(/"rule 4:/);
+    // Every rule 4 failure reworded after its prefix, and its comment rewritten.
+    const edited = s.checkset6.replace(/([`"])rule 4: [^`"]*/g, "$1rule 4: rewritten for the test").replace(/Rule 4: [^\n]*/g, "Rule 4: rewritten");
+    expect(edited).not.toBe(s.checkset6);
     expect(ruleKeys("setup-review", edited).sort()).toEqual(ruleKeys("setup-review", s.checkset6).sort());
   });
   it("what a check reads blocks it, and what it does not read does not", async () => {

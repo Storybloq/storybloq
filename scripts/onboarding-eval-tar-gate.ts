@@ -141,7 +141,8 @@ export class TarGate extends Transform {
         if (this.skip > 0 || this.acc.length > 0) throw new GateRefusal("the archive is truncated");
         throw new GateRefusal("the archive ends without its end-of-archive blocks");
       }
-      if (this.acc.length > 0) throw new GateRefusal("the archive ends inside a block after its end");
+      // Padding after the end marker is counted in `total` only, so whole blocks are checked here.
+      if (this.acc.length > 0 || this.total % BLOCK !== 0) throw new GateRefusal("the archive ends inside a block after its end");
       cb();
     } catch (e) {
       cb(this.refuse(e));

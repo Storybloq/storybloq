@@ -55,6 +55,8 @@ export interface Extraction {
   readonly rootsMissing: readonly string[];
   readonly notMaterialized: readonly NotMaterialized[];
   readonly omitted: readonly string[];
+  /** The pack's A records: other names for the credential. Any one refuses publication, and they are kept here. */
+  readonly aliases: readonly string[];
   readonly ignoredPaxKeys: number;
   readonly errors: readonly string[];
 }
@@ -139,7 +141,8 @@ export function clearStaging(hostRoot: string): string[] {
 
 /**
  * Reads one archive into `final/<profile>/`. The archive file is opened without following a link and
- * must be a regular file. Every failure fails the whole archive: the staging folder is removed and
+ * must be a regular file. A pack that reported an error or an alias of the credential is a failure too.
+ * Every failure fails the whole archive: the staging folder is removed and
  * `complete` is false, never a partial success. The result is written beside the final tree, either way, one file per try.
  */
 export async function readArchive(i: ReadInputs): Promise<Extraction> {
@@ -240,6 +243,10 @@ export async function readArchive(i: ReadInputs): Promise<Extraction> {
     const disagreement = compareReadings(gate.entries, parsed);
     if (disagreement !== null) throw new GateRefusal(disagreement);
     archiveSha256 = hash.digest("hex");
+    // A well-formed archive is not proof of a whole pack: a failed find or tar leaves evidence out without
+    // breaking the stream, and an alias is credential content under an innocent name.
+    if (i.records.errors.length > 0) throw new GateRefusal("the pack reported errors, so the archive may be missing evidence");
+    if (i.records.aliases.length > 0) throw new GateRefusal(`the archive carries another name for the credential: ${i.records.aliases.join(", ")}`);
     for (const [owner, g] of groups) for (const p of [...g].sort()) notMaterialized.push({ path: p, class: "collision", ...(p === owner ? {} : { target: owner }) });
     for (const [path, target] of links) notMaterialized.push({ path, class: "symlink", target, escapes: linkReach(path, target, links) });
     complete = true;
@@ -258,6 +265,7 @@ export async function readArchive(i: ReadInputs): Promise<Extraction> {
   const result: Extraction = {
     archiveSha256, complete, profile: i.profile, counts,
     rootsMissing: [...i.records.missing], notMaterialized: complete ? notMaterialized : [], omitted: [...i.records.omitted],
+    aliases: [...i.records.aliases],
     ignoredPaxKeys: gate.ignoredPaxKeys, errors,
   };
   const at = openSync(extractionPath(i.hostRoot, i.profile, i.attempt), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);

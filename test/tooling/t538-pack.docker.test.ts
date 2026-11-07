@@ -76,7 +76,7 @@ const nm = (x: Extraction, path: string) => x.notMaterialized.find((n) => n.path
 
 const NORMAL = String.raw`set -e
 cd /vol/att; mkdir -p project/.story/tickets project/src store/rec/SR-1 global eval-events reviewers/launches home/.codex/sessions/2026
-printf '{"auth":"FAKE-NOT-A-CREDENTIAL"}' > home/.codex/auth.json; ln home/.codex/auth.json project/innocent-name.txt
+printf '{"auth":"FAKE-NOT-A-CREDENTIAL"}' > home/.codex/auth.json
 echo '{}' > project/.story/tickets/t.json; echo a > project/src/a.ts; echo r > store/rec/SR-1/record.json; echo e > eval-events/events.jsonl; echo s > home/.codex/sessions/2026/r.jsonl
 mkdir -p project/node_modules/x project/deep/node_modules/y project/.venv/z; echo big > project/node_modules/x/f; echo y > project/deep/node_modules/y/f
 ln -s /etc/passwd project/link-out; ln -s link-out project/link-chain; ln -s ../../../../etc/shadow project/src/link-rel; ln -s loop2 project/loop1; ln -s loop1 project/loop2; ln -s src project/inside
@@ -108,9 +108,16 @@ describe.runIf(usable)("the attempt profile through production's helper", () => 
     expect([normal.exit, normal.x.complete, normal.x.rootsMissing, normal.x.errors]).toEqual([0, true, [], []]);
     expect(readFileSync(join(finalDir(normal.host, "attempt"), "store/rec/SR-1/record.json"), "utf8")).toBe("r\n");
   });
-  it("another name for the credential is an A record", () => {
-    expect(normal.records.aliases).toEqual(["/vol/att/project/innocent-name.txt"]);
+  it("a credential with no other name gives no A record", () => {
+    expect([normal.records.aliases, normal.x.aliases]).toEqual([[], []]);
   });
+  it("another name for the credential is an A record, and nothing is published", async () => {
+    const id = `${SUITE}a`;
+    const p = await pack(id, IMAGE, layout(id, IMAGE, "/vol/att", "eval", "mkdir -p /vol/att/project /vol/att/home/.codex; printf FAKE > /vol/att/home/.codex/auth.json; ln /vol/att/home/.codex/auth.json /vol/att/project/innocent-name.txt\n"), "/vol/att", "attempt");
+    expect(p.records.aliases).toEqual(["/vol/att/project/innocent-name.txt"]);
+    expect([p.x.complete, p.x.aliases]).toEqual([false, ["/vol/att/project/innocent-name.txt"]]);
+    expect(existsSync(finalDir(p.host, "attempt"))).toBe(false);
+  }, 240_000);
   it("links: kept as metadata, judged from the archive, never created; escapes are violations", () => {
     const x = normal.x;
     expect([nm(x, "project/link-out")?.escapes, nm(x, "project/link-chain")?.escapes, nm(x, "project/src/link-rel")?.escapes, nm(x, "project/loop1")?.escapes, nm(x, "project/inside")?.escapes, nm(x, "project/long-link")?.escapes])
@@ -166,13 +173,32 @@ describe.runIf(usable)("the attempt profile through production's helper", () => 
 });
 
 describe.runIf(usable)("the judge, live and proxy profiles", () => {
-  it("judge: its roots only, the alias scan on", async () => {
+  it("judge: its roots only", async () => {
     const id = `${SUITE}j`;
-    const p = await pack(id, IMAGE, layout(id, IMAGE, "/vol/att", "eval", "mkdir -p /vol/att/out /vol/att/home/.codex/sessions /vol/att/project; echo v > /vol/att/out/verdict.json; printf FAKE > /vol/att/home/.codex/auth.json; ln /vol/att/home/.codex/auth.json /vol/att/out/copy\n"), "/vol/att", "judge");
-    expect([p.exit, p.x.complete, p.x.rootsMissing]).toEqual([0, true, []]);
+    const p = await pack(id, IMAGE, layout(id, IMAGE, "/vol/att", "eval", "mkdir -p /vol/att/out /vol/att/home/.codex/sessions /vol/att/project; echo v > /vol/att/out/verdict.json; printf FAKE > /vol/att/home/.codex/auth.json\n"), "/vol/att", "judge");
+    expect([p.exit, p.x.complete, p.x.rootsMissing, p.x.aliases]).toEqual([0, true, [], []]);
     expect(readFileSync(join(finalDir(p.host, "judge"), "out/verdict.json"), "utf8")).toBe("v\n");
     expect(existsSync(join(finalDir(p.host, "judge"), "project"))).toBe(false);
-    expect(p.records.aliases).toEqual(["/vol/att/out/copy"]);
+  }, 240_000);
+  it("judge: an alias of the credential under out/ is an A record, and nothing is published", async () => {
+    const id = `${SUITE}k`;
+    const p = await pack(id, IMAGE, layout(id, IMAGE, "/vol/att", "eval", "mkdir -p /vol/att/out /vol/att/home/.codex; printf FAKE > /vol/att/home/.codex/auth.json; ln /vol/att/home/.codex/auth.json /vol/att/out/copy\n"), "/vol/att", "judge");
+    expect([p.records.aliases, p.x.complete, p.x.aliases]).toEqual([["/vol/att/out/copy"], false, ["/vol/att/out/copy"]]);
+    expect(existsSync(finalDir(p.host, "judge"))).toBe(false);
+  }, 240_000);
+  it("live: the fake credential hard-linked into .story is an A record, and nothing is published", async () => {
+    const id = `${SUITE}w`;
+    const p = await pack(id, IMAGE, layout(id, IMAGE, "/vol/att", "eval", "mkdir -p /vol/att/project/.story /vol/att/home/.codex; printf FAKE > /vol/att/home/.codex/auth.json; ln /vol/att/home/.codex/auth.json /vol/att/project/.story/notes.json\n"), "/vol/att", "live");
+    expect([p.records.aliases, p.x.complete, p.x.aliases]).toEqual([["/vol/att/project/.story/notes.json"], false, ["/vol/att/project/.story/notes.json"]]);
+    expect(existsSync(finalDir(p.host, "live"))).toBe(false);
+  }, 240_000);
+  it("live: a credential path that cannot be checked fails the pack closed", async () => {
+    const id = `${SUITE}c`;
+    const p = await pack(id, IMAGE, layout(id, IMAGE, "/vol/att", "eval", "mkdir -p /vol/att/project/.story /vol/att/home; echo x > /vol/att/home/.codex\n"), "/vol/att", "live");
+    expect(p.exit).toBe(70);
+    expect(p.records.errors.join()).toMatch(/the credential could not be checked: .*Not a directory/);
+    expect(p.x.complete).toBe(false);
+    expect(existsSync(finalDir(p.host, "live"))).toBe(false);
   }, 240_000);
   it("live: the project's .story only, read from the project folder", async () => {
     const id = `${SUITE}v`;

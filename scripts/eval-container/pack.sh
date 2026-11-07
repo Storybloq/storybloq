@@ -8,11 +8,13 @@
 profile="${1:-}"; deadline="${2:-1200}"
 if [ -z "${PACK_INNER:-}" ]; then export PACK_INNER=1; exec timeout -k 5 "$deadline" /bin/bash "$0" "$@"; fi
 set -euo pipefail
-alias_scan=no
+# Every profile on the attempt volume scans for other names of the credential. The proxy volume holds
+# no credential file (the proxy gets it in its environment) and a hard link cannot cross volumes.
+alias_scan=yes
 case "$profile" in
-  attempt) cwd=/vol/att; roots=(project store global eval-events reviewers home/.codex/sessions); alias_scan=yes;;
-  judge)   cwd=/vol/att; roots=(out home/.codex/sessions); alias_scan=yes;;
-  proxy)   cwd=/vol/proxy; roots=(log);;
+  attempt) cwd=/vol/att; roots=(project store global eval-events reviewers home/.codex/sessions);;
+  judge)   cwd=/vol/att; roots=(out home/.codex/sessions);;
+  proxy)   cwd=/vol/proxy; roots=(log); alias_scan=no;;
   live)    cwd=/vol/att/project; roots=(.story);;
   *) printf 'E\0unknown profile\0' >&2; exit 64;;
 esac
@@ -29,8 +31,17 @@ fi
 tar --format=pax --null --no-recursion -T "$list" --no-xattrs --numeric-owner -cf - 2>>"$err" || status=$?
 # Another name for the credential file would carry it out under an innocent path. The scan fails
 # closed: if it cannot finish, the pack fails, since an alias it did not see is not proof of none.
-if [ "$alias_scan" = yes ] && { [ -e /vol/att/home/.codex/auth.json ] || [ -L /vol/att/home/.codex/auth.json ]; }; then
-  find /vol/att -samefile /vol/att/home/.codex/auth.json -not -path /vol/att/home/.codex/auth.json -printf 'A\0%p\0' > "$rec.a" 2>>"$err" || { status=$?; printf 'alias scan did not finish ' >> "$err"; }
+# Only a credential that is not there needs no scan; any other failure to stat it fails the pack.
+cred=/vol/att/home/.codex/auth.json
+if [ "$alias_scan" = yes ]; then
+  if seen=$(stat -c %i -- "$cred" 2>&1); then
+    find /vol/att -samefile "$cred" -not -path "$cred" -printf 'A\0%p\0' > "$rec.a" 2>>"$err" || { status=$?; printf 'alias scan did not finish ' >> "$err"; }
+  else
+    case "$seen" in
+      *"No such file or directory"*) ;;
+      *) status=70; printf 'the credential could not be checked: %s ' "$seen" >> "$err";;
+    esac
+  fi
 fi
 cat "$rec" "$rec.o" "$rec.s" "$rec.a" >&2
 if [ -s "$err" ]; then tr '\n\0' '  ' < "$err" | { printf 'E\0' >&2; cat >&2; printf '\0' >&2; }; fi

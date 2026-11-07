@@ -10,7 +10,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PACK_LIMITS, type PackLimits } from "../../scripts/onboarding-eval-tar-gate.js";
-import { clearStaging, extractionPath, finalDir, linkReach, linkViolations, parsePackRecords, readArchive, stagingDir, type Extraction, type PackRecords } from "../../scripts/onboarding-eval-reader.js";
+import { clearStaging, extractionPath, finalDir, HOST_PATH_MAX, linkReach, linkViolations, parsePackRecords, readArchive, stagingDir, type Extraction, type PackRecords } from "../../scripts/onboarding-eval-reader.js";
 
 // --- a test-only tar builder -----------------------------------------------------------------------
 
@@ -113,9 +113,25 @@ describe("a clean archive", () => {
     const x = await read(tar());
     expect([x.complete, x.counts.entries]).toEqual([true, 0]);
   });
-  it("carries the records: missing roots, omitted folders, sockets as special, tool messages as errors", async () => {
-    const x = await read(tar(dir("project")), { records: { missing: ["store"], omitted: ["project/node_modules"], sockets: ["project/sock"], errors: ["tar: a message"], aliases: [] } });
-    expect([x.rootsMissing, x.omitted, nm(x, "project/sock")?.class, x.errors]).toEqual([["store"], ["project/node_modules"], "special", ["pack: tar: a message"]]);
+  it("carries the records: missing roots, omitted folders, sockets as special", async () => {
+    const x = await read(tar(dir("project")), { records: { ...NO_RECORDS, missing: ["store"], omitted: ["project/node_modules"], sockets: ["project/sock"] } });
+    expect([x.complete, x.rootsMissing, x.omitted, nm(x, "project/sock")?.class, x.errors]).toEqual([true, ["store"], ["project/node_modules"], "special", []]);
+  });
+  it("a valid archive whose pack reported an error is not complete and publishes nothing, the message kept", async () => {
+    const x = await read(tar(dir("project"), file("project/a.txt", "a")), { records: { ...NO_RECORDS, errors: ["find: a folder could not be read"] } });
+    expect(x.complete).toBe(false);
+    expect(x.errors).toEqual(["pack: find: a folder could not be read", "archive: the pack reported errors, so the archive may be missing evidence"]);
+    expect(existsSync(finalDir(host, "attempt"))).toBe(false);
+    expect(existsSync(stagingDir(host, "attempt", 1))).toBe(false);
+  });
+  it("an archive with an A record publishes nothing: the alias would be credential content under another name", async () => {
+    const x = await read(tar(dir("project"), file("project/innocent.txt", "FAKE")), { records: { ...NO_RECORDS, aliases: ["/vol/att/project/innocent.txt"] } });
+    expect(x.complete).toBe(false);
+    expect(x.aliases).toEqual(["/vol/att/project/innocent.txt"]);
+    expect(x.errors.join("\n")).toMatch(/another name for the credential: \/vol\/att\/project\/innocent\.txt/);
+    expect(existsSync(finalDir(host, "attempt"))).toBe(false);
+    expect(existsSync(stagingDir(host, "attempt", 1))).toBe(false);
+    expect(JSON.parse(readFileSync(extractionPath(host, "attempt", 1), "utf-8")).aliases).toEqual(["/vol/att/project/innocent.txt"]);
   });
   it("counts pax keys it reads past, but not the times", async () => {
     const x = await read(tar(pax(rec("mtime", "1.5"), rec("atime", "1"), rec("ctime", "1"), rec("uname", "eval"), rec("comment", "x")), file("f", "1")));
@@ -218,8 +234,15 @@ describe("names", () => {
     expect(x.notMaterialized.map((n) => n.class)).toEqual(["refused-name"]);
   });
   it("a path longer than the host allows is too-long, and the rest is written", async () => {
-    const deep = Array.from({ length: 6 }, () => "d".repeat(200)).join("/");
-    const x = await read(tar(pax(rec("path", `project/${deep}/f`)), file("short", "x"), file("ok.txt", "ok")));
+    // Sized from the host's own limit, so the destination is over it on macOS and on Linux while the
+    // archive path stays inside the gate's pathBytes.
+    const need = HOST_PATH_MAX - Buffer.byteLength(stagingDir(host, "attempt", 1)) + 1;
+    const segs: string[] = [];
+    while (Buffer.byteLength(`project/${segs.join("/")}/f`) < need) segs.push("d".repeat(200));
+    const long = `project/${segs.join("/")}/f`;
+    expect(Buffer.byteLength(long)).toBeLessThanOrEqual(PACK_LIMITS.pathBytes);
+    expect(Buffer.byteLength(join(stagingDir(host, "attempt", 1), long))).toBeGreaterThanOrEqual(HOST_PATH_MAX);
+    const x = await read(tar(pax(rec("path", long)), file("short", "x"), file("ok.txt", "ok")));
     expect(x.notMaterialized.map((n) => n.class)).toEqual(["too-long"]);
     expect(readFileSync(final("ok.txt"), "utf-8")).toBe("ok");
   });
@@ -256,7 +279,7 @@ describe("special entries", () => {
 });
 
 describe("assertions over what was not shown", () => {
-  const ex = (o: Partial<Extraction>): Extraction => ({ archiveSha256: "x", complete: true, profile: "attempt", counts: { entries: 0, files: 0, folders: 0, bytes: 0 }, rootsMissing: [], notMaterialized: [], omitted: [], ignoredPaxKeys: 0, errors: [], ...o });
+  const ex = (o: Partial<Extraction>): Extraction => ({ archiveSha256: "x", complete: true, profile: "attempt", counts: { entries: 0, files: 0, folders: 0, bytes: 0 }, rootsMissing: [], notMaterialized: [], omitted: [], aliases: [], ignoredPaxKeys: 0, errors: [], ...o });
   it("a link several levels below a declared tree blocks it; a sibling file still runs", async () => {
     const { blockedBy } = await import("../../scripts/onboarding-eval-assertion-deps.js");
     const x = ex({ notMaterialized: [{ path: "project/.story/tickets/a/b/c/link", class: "symlink", target: "x", escapes: "inside" }] });
@@ -297,6 +320,13 @@ describe("refused whole: the structure", () => {
   it("no end blocks after the last entry", async () => { await refused(body(), /without its end-of-archive blocks/); });
   it("one zero block only", async () => { await refused(Buffer.concat([body(), Buffer.alloc(512)]), /without its end-of-archive blocks/); });
   it("data after the end marker", async () => { await refused(Buffer.concat([tar(dir("project")), Buffer.from("tail")]), /data after the end/); });
+  it.each([1, 511])("%i zero bytes after the padded end are a part block, refused", async (n) => {
+    await refused(Buffer.concat([tar(dir("project")), Buffer.alloc(n)]), /ends inside a block after its end/);
+  });
+  it("a whole extra zero block after the end is padding, accepted", async () => {
+    const x = await read(Buffer.concat([tar(dir("project")), Buffer.alloc(512)]));
+    expect([x.complete, x.errors]).toEqual([true, []]);
+  });
   it("an entry after a lone zero block", async () => { await refused(tar(dir("project"), Buffer.alloc(512), file("f", "1")), /zero block inside the archive/); });
   it("a directory or link that carries data", async () => { await refused(tar(header({ name: "d/", flag: "5", size: 1 }), pad(Buffer.from("x"))), /directory entry that carries data/); });
 });

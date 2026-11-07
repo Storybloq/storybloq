@@ -8,13 +8,13 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { driveFlow, newDriveState, setupView, finishDrive, type DriveState, type TurnResponse } from "../../scripts/onboarding-eval-drive.js";
 import { archiveProject, ARCHIVE_OMITTED_FILE, ownerScript, packageTurns, faultFor, spawnedResult } from "../../scripts/onboarding-eval-run.js";
-import { walkNoFollow } from "../../scripts/onboarding-eval-walk.js";
+import { readBounded, walkNoFollow } from "../../scripts/onboarding-eval-walk.js";
 import {
   applySessionChecks, demoFacts, artifactFindings, attemptBypass, completionsOf, ledgerDigest, ledgerState, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
   type BypassAttempt, type HarnessFacts, type SessionCheckInputs, type SessionVariant,
@@ -883,7 +883,7 @@ describe("the final-tree archive reads the turn's tree without following it (pen
       expect(r.problems).toEqual(["project/keep.txt could not be read (EIO)"]);
     } finally { rmSync(t.root, { recursive: true, force: true }); }
   });
-  it("an unreadable folder inside a left-out dependency folder is still named", () => {
+  it.skipIf(process.getuid?.() === 0)("an unreadable folder inside a left-out dependency folder is still named", () => {
     const t = tree();
     try {
       mkdirSync(join(t.project, "node_modules", "locked"), { recursive: true });
@@ -921,7 +921,7 @@ describe("the final-tree archive reads the turn's tree without following it (pen
       expect(written(t.dest).join()).not.toContain("SENTINEL-OUTSIDE");
     } finally { rmSync(t.root, { recursive: true, force: true }); }
   });
-  it("an unreadable folder and file are each named by path, and the rest is still copied", () => {
+  it.skipIf(process.getuid?.() === 0)("an unreadable folder and file are each named by path, and the rest is still copied", () => {
     const t = tree();
     try {
       mkdirSync(join(t.project, "locked"));
@@ -945,6 +945,59 @@ describe("the final-tree archive reads the turn's tree without following it (pen
       });
       expect(r.problems).toEqual(["project/brief could not be read (ENOENT)", "project/keep.txt could not be read (ENOENT)"]);
       expect(readFileSync(join(t.dest, "src", "a.ts"), "utf-8")).toBe("a\n");
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a copy over the byte budget names each file it did not copy, keeps none of it, and copies within the budget", () => {
+    const t = tree();
+    try {
+      // big.bin is read first and charged a whole chunk before it runs out; giving that back is what lets
+      // keep.txt (5 bytes) and src/a.ts (2 bytes) fit; without it only 6 bytes would be left for their 7.
+      const budget = (1 << 20) + 6;
+      writeFileSync(join(t.project, "big.bin"), Buffer.alloc(2 << 20, 0x61));
+      const r = archiveProject(t.project, t.dest, undefined, budget);
+      expect(r.problems).toEqual([`project/big.bin was not copied: the archive is over its ${budget} byte budget`]);
+      expect(existsSync(join(t.dest, "big.bin"))).toBe(false);
+      expect(readFileSync(join(t.dest, "keep.txt"), "utf-8")).toBe("keep\n");
+      expect(JSON.parse(readFileSync(join(t.dest, ARCHIVE_OMITTED_FILE), "utf-8")).problems).toEqual(r.problems);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("the budget is shared across the tree: files that each fit run it out together", () => {
+    const t = tree();
+    try {
+      // The walk reads keep.txt (5 bytes) before src/a.ts (2 bytes); 6 bytes hold the first only.
+      const r = archiveProject(t.project, t.dest, undefined, 6);
+      expect(r.problems).toEqual(["project/src/a.ts was not copied: the archive is over its 6 byte budget"]);
+      expect(readFileSync(join(t.dest, "keep.txt"), "utf-8")).toBe("keep\n");
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a sparse file whose size is far over the budget stops at the budget, read a chunk at a time", () => {
+    const t = tree();
+    try {
+      const big = join(t.project, "sparse.bin");
+      writeFileSync(big, "");
+      truncateSync(big, 64 * 1024 * 1024 * 1024);
+      const r = archiveProject(t.project, t.dest, undefined, 4 << 20);
+      expect(r.problems).toEqual([`project/sparse.bin was not copied: the archive is over its ${4 << 20} byte budget`]);
+      expect(existsSync(join(t.dest, "sparse.bin"))).toBe(false);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a file that grew after it was looked at is held to the budget by what is read, not by its stat", () => {
+    const t = tree();
+    try {
+      const grow = join(t.project, "grow.log");
+      writeFileSync(grow, "x");
+      const r = archiveProject(t.project, t.dest, (step, rel) => { if (step === "open" && rel === "grow.log") appendFileSync(grow, Buffer.alloc(5000, 0x62)); }, 1000);
+      expect(r.problems).toEqual(["project/grow.log was not copied: the archive is over its 1000 byte budget"]);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("readBounded returns the bytes within its limit and over one byte past it", () => {
+    const t = tree();
+    try {
+      const f = join(t.project, "five.txt");
+      writeFileSync(f, "12345");
+      const at = (limit: number) => { const fd = openSync(f, "r"); try { return readBounded(fd, limit); } finally { closeSync(fd); } };
+      expect(at(5)).toEqual({ bytes: Buffer.from("12345") });
+      expect(at(4)).toEqual({ over: 4 });
     } finally { rmSync(t.root, { recursive: true, force: true }); }
   });
   it("leaves the working folder where it was, whatever the walk met", () => {

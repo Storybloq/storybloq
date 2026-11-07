@@ -2,7 +2,7 @@
 // note of 2026-11-07 on the ticket: the no-follow, descriptor-relative traversal and path-specific
 // error handling that the ledger digest got at commit 1 apply to every such read. The ledger digest
 // keeps its own copy until commit 8 moves the capture reads here.
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, type Stats } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, writeSync, type Stats } from "node:fs";
 
 /** The points where the tree can change under the walk; a test acts at one to prove the walk holds. */
 export type WalkStep = "check" | "readlink" | "enter" | "verify" | "verify-back" | "list" | "open";
@@ -20,16 +20,55 @@ export interface WalkVisitor {
 
 class WalkStopped extends Error {}
 
-/** A descriptor's bytes, or the error code that stopped the read. */
-export function readAll(fd: number): { readonly bytes: Buffer } | { readonly code: string } {
+const CHUNK = 1 << 20;
+const codeOf = (e: unknown): string => (e as NodeJS.ErrnoException).code ?? "unknown";
+
+/**
+ * A descriptor's bytes, at most `limit` of them, for a caller that needs a Buffer. The limit holds while
+ * reading, so a sparse or growing file stops at it instead of filling memory: one byte past it is "over".
+ */
+export function readBounded(fd: number, limit: number): { readonly bytes: Buffer } | { readonly code: string } | { readonly over: number } {
   const parts: Buffer[] = [];
-  const chunk = Buffer.allocUnsafe(1 << 20);
+  let total = 0;
+  const chunk = Buffer.allocUnsafe(CHUNK);
   try {
-    for (let n = readSync(fd, chunk); n > 0; n = readSync(fd, chunk)) parts.push(Buffer.from(chunk.subarray(0, n)));
+    for (;;) {
+      const n = readSync(fd, chunk, 0, CHUNK, null);
+      if (n === 0) break;
+      total += n;
+      if (total > limit) return { over: limit };
+      parts.push(Buffer.from(chunk.subarray(0, n)));
+    }
   } catch (e) {
-    return { code: (e as NodeJS.ErrnoException).code ?? "unknown" };
+    return { code: codeOf(e) };
   }
   return { bytes: Buffer.concat(parts) };
+}
+
+/** A byte budget shared across one copy: every file's bytes count against it as they are read. */
+export interface ByteBudget { left: number; readonly limit: number }
+export const byteBudget = (limit: number): ByteBudget => ({ left: limit, limit });
+
+/**
+ * Copies `from` to `to` one chunk at a time, charging `budget` as it reads, so memory stays one chunk and a
+ * file that grows or claims a huge sparse size stops at the budget. Returns null, a read error code, or
+ * { over } when the budget ran out; either failure refunds what the file was charged, since the caller
+ * removes it. A write failure is the caller's and throws.
+ */
+export function copyBounded(from: number, to: number, budget: ByteBudget): null | { readonly code: string } | { readonly over: number } {
+  const chunk = Buffer.allocUnsafe(CHUNK);
+  // A file that is not copied gives its bytes back: the caller removes what was written of it.
+  let charged = 0;
+  const refund = (): void => { budget.left += charged; };
+  for (;;) {
+    let n: number;
+    try { n = readSync(from, chunk, 0, CHUNK, null); } catch (e) { refund(); return { code: codeOf(e) }; }
+    if (n === 0) return null;
+    if (n > budget.left) { refund(); return { over: budget.limit }; }
+    budget.left -= n;
+    charged += n;
+    for (let off = 0; off < n;) off += writeSync(to, chunk, off, n - off);
+  }
 }
 
 /**
@@ -89,7 +128,7 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
         let opened: Stats;
         try { opened = fstatSync(fd); } catch (e) { failed(rel, e); return; }
         if (!opened.isFile() || !isSame(opened, st)) { problems.push(`${name(rel)} changed while it was being read`); return; }
-        // A read failure is the visitor's to name (readAll below); a write failure is the harness's and throws.
+        // A read failure is the visitor's to name (readBounded, copyBounded above); a write failure is the harness's and throws.
         const code = v.file(rel, fd, opened);
         if (code !== null) problems.push(`${name(rel)} could not be read (${code})`);
       } finally {

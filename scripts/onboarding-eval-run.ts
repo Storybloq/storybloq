@@ -47,12 +47,12 @@
  * regrade/NNN/ beside the record (onboarding-eval-regrade.ts).
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { readAll, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
+import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 
 import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from "./headless-common.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
@@ -190,6 +190,9 @@ export const ARCHIVE_OMITTED_DIRS: ReadonlySet<string> = new Set(["node_modules"
 /** The record, inside the archive, of what it left out. */
 export const ARCHIVE_OMITTED_FILE = ".eval-archive-omitted.json";
 
+/** The most `archiveProject` copies of a turn's files, all together; past it each file is a named problem. */
+export const ARCHIVE_BYTE_BUDGET = 512 << 20;
+
 export interface OmittedDir { readonly path: string; readonly files: number; readonly bytes: number }
 export interface ArchiveResult { readonly omitted: readonly OmittedDir[]; readonly problems: readonly string[] }
 
@@ -200,8 +203,9 @@ export interface ArchiveResult { readonly omitted: readonly OmittedDir[]; readon
  * followed, a FIFO is never waited on, and every entry it could not read is a finding naming its path, kept in
  * the same record. A failure to write is the harness's own and throws.
  */
-export function archiveProject(project: string, dest: string, hook?: WalkHook): ArchiveResult {
+export function archiveProject(project: string, dest: string, hook?: WalkHook, budgetBytes = ARCHIVE_BYTE_BUDGET): ArchiveResult {
   const out = resolve(dest);
+  const budget = byteBudget(budgetBytes);
   const omitted: OmittedDir[] = [];
   const problems: string[] = [];
   const measure = (rel: string): void => {
@@ -226,9 +230,14 @@ export function archiveProject(project: string, dest: string, hook?: WalkHook): 
     folder: (rel) => { if (rel !== ".") mkdirSync(join(out, rel)); },
     link: (rel, target) => { symlinkSync(target, join(out, rel)); },
     file: (rel, fd, st) => {
-      const r = readAll(fd);
+      // Descriptor to descriptor under one budget for the whole tree: a model-sized file never sits in memory.
+      const to = openSync(join(out, rel), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, st.mode & 0o777);
+      let r: ReturnType<typeof copyBounded>;
+      try { r = copyBounded(fd, to, budget); } finally { closeSync(to); }
+      if (r === null) return null;
+      rmSync(join(out, rel), { force: true });
       if ("code" in r) return r.code;
-      writeFileSync(join(out, rel), r.bytes, { flag: "wx", mode: st.mode & 0o777 });
+      problems.push(`project/${rel} was not copied: the archive is over its ${r.over} byte budget`);
       return null;
     },
   }, { hook });

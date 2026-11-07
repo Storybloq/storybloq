@@ -10,7 +10,7 @@ import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 // ISS-1391's process-group machinery, shared with setup-verify (T-538 S3a-2).
-import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroup } from "./process-group.js";
+import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroup, trackGroup, untrackGroup } from "./process-group.js";
 
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
@@ -259,9 +259,10 @@ export function probeOverrides(port: number, nonce: string): string[] {
   return ["-c", 'model_provider="storybloq_probe"', "-c", `model_providers.storybloq_probe=${provider}`];
 }
 
-/** Test seam, not reachable through any CLI or MCP input: how the probe's listener binds. */
-export const startProbeSeams: { listen: (server: Server, ready: () => void) => void } = {
+/** Test seams, not reachable through any CLI or MCP input: how the probe's listener binds, and how it signals codex's group. */
+export const startProbeSeams: { listen: (server: Server, ready: () => void) => void; signal: (child: ChildProcess, signal: NodeJS.Signals) => void } = {
   listen: (server, ready) => { server.listen(0, "127.0.0.1", ready); },
+  signal: (child, signal) => signalGroup(child, signal),
 };
 
 type Attempt =
@@ -278,10 +279,16 @@ const lastLine = (text: string): string => text.trim().split("\n").filter((l) =>
  * One codex start against a listener the CLI owns on 127.0.0.1. Evidence of a
  * start is a request on the expected route carrying this attempt's nonce: the
  * first one latches, and the group is stopped at once, so no model is ever
- * asked and retries are ignored. Text is only ever negative evidence. The
- * listener is closed whatever happens.
+ * asked and retries are ignored. Text is only ever negative evidence.
+ *
+ * Everything happens before `deadline`, an absolute time shared by every
+ * attempt: the listener, the start, and the stop. The attempt's own bound and
+ * its two grace periods are clamped to the time left, and at the deadline the
+ * attempt ends whatever state it is in. On every way it ends, codex's process
+ * group is stopped (SIGKILL, once) and released, so nothing codex left behind
+ * outlives it, and the listener is closed.
  */
-function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number, graceMs: number): Promise<Attempt> {
+function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number, graceMs: number, deadline: number): Promise<Attempt> {
   return new Promise((resolve) => {
     const nonce = randomBytes(16).toString("hex");
     let reached = false;
@@ -291,13 +298,21 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
     let earlyLine: { kind: "fatal" | "network"; line: string } | null = null;
     let timedOut = false;
     let settled = false;
-    let cancel: () => void = () => {};
+    let stopped = false;
+    const timers: NodeJS.Timeout[] = [];
+    const later = (fn: () => void, ms: number): void => { timers.push(setTimeout(fn, Math.max(0, ms))); };
+    const stopGroup = (): void => {
+      if (stopped || !child) return;
+      stopped = true;
+      startProbeSeams.signal(child, "SIGKILL");
+    };
+    const stopOnExit = (): void => { if (child) signalGroup(child, "SIGKILL"); };
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       req.resume();
       if (req.method === "POST" && req.url === PROBE_ROUTE && req.headers[NONCE_HEADER] === nonce) {
         if (!reached) {
           reached = true;
-          if (child) signalGroup(child, "SIGKILL");
+          stopGroup();
         }
       } else if (stray.length < 5) {
         stray.push(`${req.method ?? "?"} ${req.url ?? "?"}`);
@@ -308,15 +323,28 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
     const finish = (a: Attempt): void => {
       if (settled) return;
       settled = true;
-      cancel();
+      if (child) {
+        stopGroup();
+        release(child);
+        untrackGroup(child);
+      }
+      for (const t of timers) clearTimeout(t);
+      process.removeListener("exit", stopOnExit);
       server.closeAllConnections();
       server.close();
       resolve(a);
     };
+    // The hard end: whatever is still running, listener setup included.
+    later(() => {
+      if (reached) return finish({ kind: "reached" });
+      timedOut = true;
+      finish({ kind: "inconclusive", detail: "no start within the start check's total bound" });
+    }, deadline - Date.now());
     server.on("error", (e: NodeJS.ErrnoException) => {
       if (!child) finish({ kind: "listener-failed", detail: e.code ?? e.message });
     });
     startProbeSeams.listen(server, () => {
+      if (settled) return;
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
       const schemaFile = join(execDir, "schema.json");
@@ -331,7 +359,20 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         return;
       }
       const started = child;
-      cancel = escalate(started, attemptMs, graceMs, () => { timedOut = true; }, () => { release(started); settle(null); });
+      trackGroup(started);
+      process.once("exit", stopOnExit);
+      // The attempt's bound and its stop, clamped so they end by the deadline.
+      const left = deadline - Date.now();
+      const grace = Math.max(0, Math.min(graceMs, Math.floor(left / 4)));
+      const bound = Math.max(0, Math.min(attemptMs, left - 2 * grace));
+      later(() => {
+        timedOut = true;
+        startProbeSeams.signal(started, "SIGTERM");
+        later(() => {
+          stopGroup();
+          later(() => settle(null), grace);
+        }, grace);
+      }, bound);
       started.stderr!.setEncoding("utf-8");
       started.stderr!.on("data", (c: string) => {
         stderr = (stderr + c).slice(-STDERR_KEEP);
@@ -341,7 +382,7 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         const network = lines.find((l) => NETWORK_WAIT.test(l));
         if (fatal) earlyLine = { kind: "fatal", line: fatal.trim() };
         else if (network) earlyLine = { kind: "network", line: network.trim() };
-        if (earlyLine) signalGroup(started, "SIGKILL");
+        if (earlyLine) stopGroup();
       });
       started.stdin!.on("error", () => { /* a codex that exits before reading the prompt is classified below */ });
       started.stdin!.end(PROBE_PROMPT);
@@ -351,7 +392,7 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         if (fatal) return finish({ kind: "fatal", line: fatal });
         if (earlyLine?.kind === "network") return finish({ kind: "network", line: earlyLine.line });
         if (code === 2 && UNKNOWN_FLAG.test(stderr)) return finish({ kind: "flags", line: stderr.split("\n").find((l) => UNKNOWN_FLAG.test(l))!.trim() });
-        const why = timedOut ? `no start within ${Math.round(attemptMs / 1000)} seconds` : `exited with status ${code ?? "unknown"} before reaching the check`;
+        const why = timedOut ? `no start within ${(bound / 1000).toFixed(1)} seconds` : `exited with status ${code ?? "unknown"} before reaching the check`;
         const strayNote = stray.length > 0 ? `; requests without this check's nonce: ${stray.join(", ")}` : "";
         const tail = lastLine(stderr);
         finish({ kind: "inconclusive", detail: `${why}${tail ? `: ${tail}` : ""}${strayNote}` });
@@ -371,11 +412,12 @@ export async function probeCodexStart(execDir: string, env: NodeJS.ProcessEnv, l
   const attemptMs = limits.attemptMs ?? START_ATTEMPT_MS;
   const totalMs = limits.totalMs ?? START_TOTAL_MS;
   const graceMs = limits.killGraceMs ?? KILL_GRACE_MS;
-  const begun = Date.now();
+  // One absolute deadline for both attempts, their listeners and their stops.
+  const deadline = Date.now() + totalMs;
   let last: Attempt | null = null;
   for (let i = 0; i < 2; i += 1) {
-    if (i > 0 && Date.now() - begun + attemptMs > totalMs) break;
-    last = await startAttempt(execDir, env, attemptMs, graceMs);
+    if (i > 0 && deadline - Date.now() < attemptMs) break;
+    last = await startAttempt(execDir, env, attemptMs, graceMs, deadline);
     if (last.kind !== "inconclusive") break;
   }
   switch (last!.kind) {

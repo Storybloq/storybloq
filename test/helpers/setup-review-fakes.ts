@@ -20,7 +20,8 @@ export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | 
  * one a behaviour codex 0.163.0 was seen to have or a way evidence can mislead.
  */
 export type FakeProbeMode =
-  | "reach" | "fatal" | "noise-then-fatal" | "netwait" | "badflag" | "silent" | "hang" | "nononce" | "wrongroute" | "flaky" | "reach-twice";
+  | "reach" | "fatal" | "noise-then-fatal" | "netwait" | "badflag" | "silent" | "hang" | "nononce" | "wrongroute" | "flaky" | "reach-twice"
+  | "orphan" | "late-then-stubborn" | "slow-reach";
 
 const FAKE_SOURCE = String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
@@ -47,7 +48,27 @@ if (providerArg) {
   const fatal = "Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)";
   switch (probe) {
     case "reach": post("/v1/responses", { "X-Storybloq-Probe": nonce }, hang); break;
-    case "reach-twice": post("/v1/responses", { "X-Storybloq-Probe": nonce }, () => post("/v1/responses", { "X-Storybloq-Probe": nonce }, hang)); break;
+    case "reach-twice": {
+      const answered = (n) => { if (process.env.FAKE_RESP_LOG) fs.appendFileSync(process.env.FAKE_RESP_LOG, n + "\n"); };
+      post("/v1/responses", { "X-Storybloq-Probe": nonce }, () => { answered(1); post("/v1/responses", { "X-Storybloq-Probe": nonce }, () => { answered(2); hang(); }); });
+      break;
+    }
+    case "orphan": {
+      // A child in this process group, its stdio closed, outlives the leader, which exits without a request.
+      const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], { stdio: "ignore" });
+      fs.appendFileSync(process.env.FAKE_ORPHAN_LOG, child.pid + "\n");
+      child.unref();
+      setTimeout(() => process.exit(1), 50);
+      break;
+    }
+    case "slow-reach": setTimeout(() => post("/v1/responses", { "X-Storybloq-Probe": nonce }, hang), Number(process.env.FAKE_LATE_MS)); break;
+    case "late-then-stubborn": {
+      const count = fs.readFileSync(process.env.FAKE_PROBE_LOG, "utf-8").split("\n").filter(Boolean).length;
+      if (count === 1) { setTimeout(() => process.exit(1), Number(process.env.FAKE_LATE_MS)); break; }
+      process.on("SIGTERM", () => {});
+      hang();
+      break;
+    }
     case "fatal": process.stderr.write(fatal + "\n"); process.exit(1); break;
     case "noise-then-fatal":
       process.stderr.write("mcp: server started, connection to http://127.0.0.1:1/v1 established\n");

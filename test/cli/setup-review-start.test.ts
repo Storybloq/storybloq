@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
 import { projectKeyFor, recordShape, SKIPPED_LINE, STOP_LINES, storeSeams } from "../../src/core/setup-review.js";
 import { inferredReasons, probeCodexStart, probeReviewer, startProbeSeams } from "../../src/core/setup-review-backends.js";
+import { signalGroup } from "../../src/core/process-group.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, scratchDirsCreated, type FakeBin } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -18,6 +19,9 @@ vi.setConfig({ testTimeout: 30_000 });
 const STOP = STOP_LINES.join("\n");
 const FAST = { attemptMs: 1_500, totalMs: 4_000, killGraceMs: 200 };
 const realListen = startProbeSeams.listen;
+const realSignal = startProbeSeams.signal;
+/** Scheduling slack on an absolute bound: timers, a reap, a listener close. */
+const SLACK_MS = 150;
 const realWriteProbe = storeSeams.writeProbe;
 
 let project: string;
@@ -77,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   startProbeSeams.listen = realListen;
+  startProbeSeams.signal = realSignal;
   storeSeams.writeProbe = realWriteProbe;
   removeScratchDirs();
 });
@@ -106,8 +111,15 @@ describe("the codex start probe (ISS-1456)", () => {
     expect(reviews()).toBe(0);
   });
 
-  it("a second request after the latch changes nothing", async () => {
-    expect(await codexStart("reach-twice")).toEqual({ ok: true });
+  it("a second request after the latch changes nothing: both are answered, the pass latches once, and the stop starts once", async () => {
+    const respLog = join(fake.dir, "..", "responses.log");
+    const signals: string[] = [];
+    // The real stop, held back so codex can make its second request first.
+    startProbeSeams.signal = (child, sig) => { signals.push(sig); setTimeout(() => signalGroup(child, sig), 400); };
+    extraEnv = { FAKE_CODEX_PROBE: "reach-twice", FAKE_RESP_LOG: respLog };
+    expect(await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), FAST)).toEqual({ ok: true });
+    expect(readFileSync(respLog, "utf-8")).toBe("1\n2\n");
+    expect(signals).toEqual(["SIGKILL"]);
     expect(probes()).toHaveLength(1);
   });
 
@@ -142,13 +154,58 @@ describe("the codex start probe (ISS-1456)", () => {
     expect(probes()).toHaveLength(2);
   });
 
-  it("a codex that never answers is stopped at each attempt's bound, and the retry stays inside the total bound", async () => {
+  it("a codex that never answers is stopped at each attempt's bound, and both attempts and their stops end by the total bound", async () => {
     const started = Date.now();
     const r = await codexStart("hang");
     expect(r).toMatchObject({ ok: false, code: "probe-inconclusive", detail: expect.stringContaining("no start within") });
     expect(probes()).toHaveLength(2);
-    expect(Date.now() - started).toBeLessThan(FAST.totalMs + 3 * FAST.killGraceMs + 1_000);
+    expect(Date.now() - started).toBeLessThan(FAST.totalMs + SLACK_MS);
     for (const p of probes()) expect(alive(p.pid)).toBe(false);
+  });
+
+  it("a late inconclusive first attempt, then a codex that ignores SIGTERM: the retry and its stop are clamped to the total bound", async () => {
+    // Today's grace periods would carry the second attempt past the total: 1.4 s + 1.5 s + 0.4 s.
+    const limits = { attemptMs: 1_500, totalMs: 3_000, killGraceMs: 400 };
+    extraEnv = { FAKE_CODEX_PROBE: "late-then-stubborn", FAKE_LATE_MS: "1400" };
+    const started = Date.now();
+    const r = await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), limits);
+    expect(r).toMatchObject({ ok: false, code: "probe-inconclusive" });
+    expect(probes()).toHaveLength(2);
+    expect(Date.now() - started).toBeLessThan(limits.totalMs + SLACK_MS);
+    for (const p of probes()) expect(alive(p.pid)).toBe(false);
+  });
+
+  it("a grace period longer than the time left is clamped, so it does not take the start window: a codex that reaches the listener after 300 ms passes", async () => {
+    extraEnv = { FAKE_CODEX_PROBE: "slow-reach", FAKE_LATE_MS: "300" };
+    const started = Date.now();
+    expect(await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), { attemptMs: 1_000, totalMs: 1_200, killGraceMs: 1_000 })).toEqual({ ok: true });
+    expect(Date.now() - started).toBeLessThan(1_200 + SLACK_MS);
+    expect(probes()).toHaveLength(1);
+  });
+
+  it("a listener that never becomes ready ends at the total bound, and codex is never started", async () => {
+    startProbeSeams.listen = () => { /* never ready */ };
+    const started = Date.now();
+    const r = await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), { attemptMs: 500, totalMs: 800, killGraceMs: 100 });
+    expect(r).toMatchObject({ ok: false, code: "probe-inconclusive" });
+    expect(Date.now() - started).toBeLessThan(800 + SLACK_MS);
+    expect(spawns()).toEqual([]);
+  });
+
+  it("a codex that exits without a request is stopped with its whole group: a child it left behind is gone", async () => {
+    const orphans = join(fake.dir, "..", "orphans.log");
+    extraEnv = { FAKE_CODEX_PROBE: "orphan", FAKE_ORPHAN_LOG: orphans };
+    const pids = (): number[] => (existsSync(orphans) ? readFileSync(orphans, "utf-8").split("\n").filter(Boolean).map(Number) : []);
+    try {
+      const r = await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), FAST);
+      expect(r).toMatchObject({ ok: false, code: "probe-inconclusive", detail: expect.stringContaining("exited with status 1") });
+      expect(pids()).toHaveLength(2);
+      const until = Date.now() + 1_000;
+      while (pids().some(alive) && Date.now() < until) await new Promise((res) => setTimeout(res, 25));
+      for (const pid of pids()) expect(alive(pid)).toBe(false);
+    } finally {
+      for (const pid of pids()) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    }
   });
 
   it("no retry when it would pass the total bound", async () => {

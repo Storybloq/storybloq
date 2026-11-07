@@ -87,6 +87,7 @@
     "vitest": "^3",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@openai/mcp-extensions": "0.1.0",
-    "esbuild": "0.25.12"
+    "esbuild": "0.25.12",
+    "tar-stream": "2.2.0"
   }
 }

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   ALLOWED_ENV, asAttemptPath, decideOutcome, DOCKER_ENDPOINT, DOCKER_EXE, type EnvelopeLine, type ExecSpec, lineAgrees, LINUX_SIGNALS, makeDockerTransport, parseEnvelopeLine, STDIN_LIMIT, WATCHDOG_MARGIN_SECONDS,
 } from "../../scripts/onboarding-eval-transport.js";
@@ -269,6 +269,20 @@ describe("the docker call", () => {
     expect([stream.cliStatus, stream.child, stream.outcome]).toEqual([null, null, "ambiguous"]);
     expect(Date.now() - started).toBeLessThan(15_000);
   }, 30_000);
+  it("the watchdog is cleared when the stream ends: no timer is left to kill anything later", async () => {
+    const f = fake({ stdout: "done\n", line: OK });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const before = vi.getTimerCount();
+      const r = await makeDockerTransport({ ...f.config, watchdogMarginSeconds: 0 }).execStream(spec({ timeoutSeconds: 1 }), () => {});
+      expect([r.cliStatus, r.outcome]).toEqual([0, "ok"]);
+      expect(vi.getTimerCount()).toBe(before);
+      vi.advanceTimersByTime(5_000);
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("compares the daemon's id to the manifest's", () => {
     expect(fake({ daemon: "abc\n" }).t.daemonProblem("abc")).toBeNull();
     expect(fake({ daemon: "abc\n" }).t.daemonProblem("xyz")).toMatch(/not the manifest/);

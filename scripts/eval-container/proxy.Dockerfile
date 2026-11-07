@@ -2,4 +2,6 @@
 FROM node@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
 LABEL cpm-t538-image=proxy
 COPY proxy.mjs /opt/proxy.mjs
-RUN chmod 444 /opt/proxy.mjs
+# The proxy log is packed by the proxy profile of the same script the attempt image carries.
+COPY pack.sh /opt/eval/pack.sh
+RUN chmod 444 /opt/proxy.mjs && chmod 555 /opt/eval/pack.sh

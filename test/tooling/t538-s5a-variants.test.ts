@@ -8,12 +8,13 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { driveFlow, newDriveState, setupView, finishDrive, type DriveState, type TurnResponse } from "../../scripts/onboarding-eval-drive.js";
 import { archiveProject, ARCHIVE_OMITTED_FILE, ownerScript, packageTurns, faultFor, spawnedResult } from "../../scripts/onboarding-eval-run.js";
+import { walkNoFollow } from "../../scripts/onboarding-eval-walk.js";
 import {
   applySessionChecks, demoFacts, artifactFindings, attemptBypass, completionsOf, ledgerDigest, ledgerState, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
   type BypassAttempt, type HarnessFacts, type SessionCheckInputs, type SessionVariant,
@@ -617,7 +618,7 @@ describe("the archive's own record file", () => {
   it("a project's symlink at that name is not followed: the record is a new regular file and the target is unchanged", () => {
     const p = planted(true);
     try {
-      expect(archiveProject(p.project, p.dest).map((o) => o.path)).toEqual(["node_modules"]);
+      expect(archiveProject(p.project, p.dest).omitted.map((o) => o.path)).toEqual(["node_modules"]);
       expect(readFileSync(p.sentinel, "utf-8")).toBe("untouched\n");
       expect(lstatSync(join(p.dest, ARCHIVE_OMITTED_FILE)).isFile()).toBe(true);
       expect(JSON.parse(readFileSync(join(p.dest, ARCHIVE_OMITTED_FILE), "utf-8")).omitted[0].path).toBe("node_modules");
@@ -627,7 +628,7 @@ describe("the archive's own record file", () => {
   it("with nothing omitted the planted link is not copied either", () => {
     const p = planted(false);
     try {
-      expect(archiveProject(p.project, p.dest)).toEqual([]);
+      expect(archiveProject(p.project, p.dest)).toEqual({ omitted: [], problems: [] });
       expect(() => lstatSync(join(p.dest, ARCHIVE_OMITTED_FILE))).toThrow(/ENOENT/);
     } finally { rmSync(p.root, { recursive: true, force: true }); }
   });
@@ -701,7 +702,8 @@ describe("the final-tree archive", () => {
       put(".venv/lib/site.py", "12");
       put("src/venv.txt", "not a folder");
       const dest = join(dir, "project.after");
-      const omitted = archiveProject(project, dest);
+      const { omitted, problems } = archiveProject(project, dest);
+      expect(problems).toEqual([]);
       const expected = [{ path: ".venv", files: 1, bytes: 2 }, { path: "node_modules", files: 2, bytes: 8 }, { path: "web/node_modules", files: 1, bytes: 7 }];
       expect(omitted).toEqual(expected);
       expect(JSON.parse(readFileSync(join(dest, ARCHIVE_OMITTED_FILE), "utf-8"))).toEqual({ omitted: expected });
@@ -711,7 +713,7 @@ describe("the final-tree archive", () => {
       expect(readFileSync(join(dest, "src", "venv.txt"), "utf-8")).toBe("not a folder");
       // Nothing to leave out: no record file either.
       const clean = join(dir, "clean");
-      expect(archiveProject(join(project, ".story"), clean)).toEqual([]);
+      expect(archiveProject(join(project, ".story"), clean)).toEqual({ omitted: [], problems: [] });
       expect(readdirSync(clean)).toEqual(["tickets"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -812,4 +814,145 @@ describe("the runner's plumbing per variant", () => {
       }
     }, 300_000);
   }
+});
+
+describe("the final-tree archive reads the turn's tree without following it (pen note 2026-11-07)", () => {
+  function tree(): { root: string; project: string; dest: string; outside: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "t538w-")));
+    const project = join(root, "project");
+    const outside = join(root, "outside");
+    mkdirSync(join(project, "src"), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, "secret.txt"), "SENTINEL-OUTSIDE\n");
+    writeFileSync(join(project, "src", "a.ts"), "a\n");
+    writeFileSync(join(project, "keep.txt"), "keep\n");
+    return { root, project, dest: join(root, "dest"), outside };
+  }
+  /** Every regular file the archive wrote, with its text. */
+  const written = (dir: string): string[] => {
+    const out: string[] = [];
+    const walk = (d: string): void => { for (const n of readdirSync(d)) { const p = join(d, n); const st = lstatSync(p); if (st.isDirectory()) walk(p); else if (st.isFile()) out.push(readFileSync(p, "utf-8")); } };
+    walk(dir);
+    return out;
+  };
+  it("an outside link is kept as a link and its target is never read", () => {
+    const t = tree();
+    try {
+      symlinkSync(join(t.outside, "secret.txt"), join(t.project, "out-file"));
+      symlinkSync(t.outside, join(t.project, "src", "out-dir"));
+      expect(archiveProject(t.project, t.dest).problems).toEqual([]);
+      expect(readlinkSync(join(t.dest, "out-file"))).toBe(join(t.outside, "secret.txt"));
+      expect(lstatSync(join(t.dest, "src", "out-dir")).isSymbolicLink()).toBe(true);
+      expect(written(t.dest).join()).not.toContain("SENTINEL-OUTSIDE");
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a folder cycle ends: links to the parent and to itself are links", () => {
+    const t = tree();
+    try {
+      symlinkSync("..", join(t.project, "src", "up"));
+      symlinkSync(".", join(t.project, "src", "self"));
+      expect(archiveProject(t.project, t.dest).problems).toEqual([]);
+      expect(readlinkSync(join(t.dest, "src", "up"))).toBe("..");
+      expect(readdirSync(join(t.dest, "src")).sort()).toEqual(["a.ts", "self", "up"]);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a FIFO is named and never waited on", () => {
+    const t = tree();
+    try {
+      expect(spawnSync("mkfifo", [join(t.project, "src", "pipe")]).status).toBe(0);
+      const r = archiveProject(t.project, t.dest);
+      expect(r.problems).toEqual(["project/src/pipe is not a regular file, a folder or a link"]);
+      expect(existsSync(join(t.dest, "src", "pipe"))).toBe(false);
+      expect(JSON.parse(readFileSync(join(t.dest, ARCHIVE_OMITTED_FILE), "utf-8")).problems).toEqual(r.problems);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a folder swapped for a link to outside, as the walk enters it, stops the walk with a finding", () => {
+    const t = tree();
+    try {
+      const r = archiveProject(t.project, t.dest, (step, rel) => {
+        if (step === "enter" && rel === "src") { renameSync(join(t.project, "src"), join(t.project, "src.old")); symlinkSync(t.outside, join(t.project, "src")); }
+      });
+      expect(r.problems).toEqual(["project/src changed while it was being read"]);
+      expect(written(t.dest).join()).not.toContain("SENTINEL-OUTSIDE");
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a read that fails after the open is named by path with its code", () => {
+    const t = tree();
+    try {
+      const r = walkNoFollow(t.project, "project", { link: () => {}, file: (rel) => (rel === "keep.txt" ? "EIO" : null) });
+      expect(r.problems).toEqual(["project/keep.txt could not be read (EIO)"]);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("an unreadable folder inside a left-out dependency folder is still named", () => {
+    const t = tree();
+    try {
+      mkdirSync(join(t.project, "node_modules", "locked"), { recursive: true });
+      writeFileSync(join(t.project, "node_modules", "locked", "x"), "x\n");
+      chmodSync(join(t.project, "node_modules", "locked"), 0o000);
+      try {
+        const r = archiveProject(t.project, t.dest);
+        expect(r.problems).toEqual(["project/node_modules/locked could not be read (EACCES)"]);
+        expect(r.omitted.map((o) => o.path)).toEqual(["node_modules"]);
+      } finally { chmodSync(join(t.project, "node_modules", "locked"), 0o700); }
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a folder moved out from under the walk while it is inside stops the walk on the way back", () => {
+    const t = tree();
+    try {
+      writeFileSync(join(t.outside, "z.txt"), "SENTINEL-OUTSIDE\n");
+      const cwd = process.cwd();
+      const r = archiveProject(t.project, t.dest, (step, rel) => {
+        // Inside project/src: src moves into outside/, so ".." from it is no longer project.
+        if (step === "check" && rel === "src/a.ts") renameSync(join(t.project, "src"), join(t.outside, "src"));
+      });
+      expect(r.problems).toEqual(["project/src changed while it was being read"]);
+      expect(written(t.dest).join()).not.toContain("SENTINEL-OUTSIDE");
+      expect(process.cwd()).toBe(cwd);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("a file swapped for a link or a FIFO between the look and the open is a finding, and nothing outside is read", () => {
+    const t = tree();
+    try {
+      const r = archiveProject(t.project, t.dest, (step, rel) => {
+        if (step === "open" && rel === "keep.txt") { rmSync(join(t.project, "keep.txt")); symlinkSync(join(t.outside, "secret.txt"), join(t.project, "keep.txt")); }
+        if (step === "open" && rel === "src/a.ts") { rmSync(join(t.project, "src", "a.ts")); spawnSync("mkfifo", [join(t.project, "src", "a.ts")]); }
+      });
+      expect(r.problems).toEqual(["project/keep.txt could not be read (ELOOP)", "project/src/a.ts changed while it was being read"]);
+      expect(written(t.dest).join()).not.toContain("SENTINEL-OUTSIDE");
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("an unreadable folder and file are each named by path, and the rest is still copied", () => {
+    const t = tree();
+    try {
+      mkdirSync(join(t.project, "locked"));
+      writeFileSync(join(t.project, "locked", "x"), "x\n");
+      writeFileSync(join(t.project, "closed.txt"), "c\n");
+      chmodSync(join(t.project, "locked"), 0o000);
+      chmodSync(join(t.project, "closed.txt"), 0o000);
+      const r = archiveProject(t.project, t.dest);
+      expect(r.problems).toEqual(["project/closed.txt could not be read (EACCES)", "project/locked could not be read (EACCES)"]);
+      expect(readFileSync(join(t.dest, "keep.txt"), "utf-8")).toBe("keep\n");
+      expect(readFileSync(join(t.dest, "src", "a.ts"), "utf-8")).toBe("a\n");
+    } finally { chmodSync(join(t.project, "locked"), 0o700); rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("an entry that disappears mid-walk is named, and a folder that disappears as it is entered too", () => {
+    const t = tree();
+    try {
+      mkdirSync(join(t.project, "brief"));
+      const r = archiveProject(t.project, t.dest, (step, rel) => {
+        if (step === "check" && rel === "keep.txt") rmSync(join(t.project, "keep.txt"));
+        if (step === "enter" && rel === "brief") rmSync(join(t.project, "brief"), { recursive: true });
+      });
+      expect(r.problems).toEqual(["project/brief could not be read (ENOENT)", "project/keep.txt could not be read (ENOENT)"]);
+      expect(readFileSync(join(t.dest, "src", "a.ts"), "utf-8")).toBe("a\n");
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
+  it("leaves the working folder where it was, whatever the walk met", () => {
+    const t = tree();
+    const before = process.cwd();
+    try {
+      archiveProject(t.project, t.dest, (step, rel) => { if (step === "enter" && rel === "src") { renameSync(join(t.project, "src"), join(t.project, "src.old")); symlinkSync(t.outside, join(t.project, "src")); } });
+      expect(process.cwd()).toBe(before);
+    } finally { rmSync(t.root, { recursive: true, force: true }); }
+  });
 });

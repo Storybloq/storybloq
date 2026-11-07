@@ -686,7 +686,7 @@ describe("the supervisor", () => {
 
 describe("staging the build context", { timeout: 90_000 }, () => {
   const stageFile = join(import.meta.dirname, "..", "..", "scripts", "eval-container", "stage-context.mjs");
-  const NAMES = ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "envelope.mjs", "storybloq-launcher"];
+  const NAMES = ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "envelope.mjs", "pack.sh", "storybloq-launcher"];
   const made: string[] = [];
   const temp = (): string => { const d = mkdtempSync(join(tmpdir(), "t538p")); made.push(d); return d; };
   /** A tiny package around a copy of the script, which finds its root from its own path. */

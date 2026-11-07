@@ -52,6 +52,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { readAll, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 
 import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from "./headless-common.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
@@ -190,37 +191,53 @@ export const ARCHIVE_OMITTED_DIRS: ReadonlySet<string> = new Set(["node_modules"
 export const ARCHIVE_OMITTED_FILE = ".eval-archive-omitted.json";
 
 export interface OmittedDir { readonly path: string; readonly files: number; readonly bytes: number }
+export interface ArchiveResult { readonly omitted: readonly OmittedDir[]; readonly problems: readonly string[] }
 
 /**
  * Copies the final project tree to `dest`, symlinks kept verbatim, skipping every dependency install folder
- * at any depth; each skipped folder is recorded with its file count and byte size (symlinks not followed)
- * in `dest`/ARCHIVE_OMITTED_FILE. Lockfiles are ordinary files and stay. Returns the omissions.
+ * at any depth; each skipped folder is recorded with its file count and byte size in `dest`/ARCHIVE_OMITTED_FILE.
+ * Lockfiles are ordinary files and stay. The tree is the turn's, so the read is walkNoFollow's: nothing is
+ * followed, a FIFO is never waited on, and every entry it could not read is a finding naming its path, kept in
+ * the same record. A failure to write is the harness's own and throws.
  */
-export function archiveProject(project: string, dest: string): OmittedDir[] {
+export function archiveProject(project: string, dest: string, hook?: WalkHook): ArchiveResult {
+  const out = resolve(dest);
   const omitted: OmittedDir[] = [];
-  const measure = (dir: string): { files: number; bytes: number } => {
+  const problems: string[] = [];
+  const measure = (rel: string): void => {
     let files = 0;
     let bytes = 0;
-    for (const name of readdirSync(dir)) {
-      const st = lstatSync(join(dir, name));
-      if (st.isDirectory()) { const m = measure(join(dir, name)); files += m.files; bytes += m.bytes; }
-      else { files += 1; bytes += st.size; }
-    }
-    return { files, bytes };
+    const counted = walkNoFollow(basename(rel), `project/${rel}`, {
+      link: (_r) => { files += 1; },
+      file: (_r, _fd, st) => { files += 1; bytes += st.size; return null; },
+    });
+    problems.push(...counted.problems);
+    omitted.push({ path: rel, files, bytes });
   };
-  cpSync(project, dest, {
-    recursive: true, verbatimSymlinks: true,
-    filter: (src) => {
+  mkdirSync(out, { recursive: true });
+  const walked = walkNoFollow(resolve(project), "project", {
+    include: (rel, st) => {
       // The record's name at the top belongs to the harness; a project's file or link there is never carried over.
-      if (relative(project, src) === ARCHIVE_OMITTED_FILE) return false;
-      if (!ARCHIVE_OMITTED_DIRS.has(basename(src)) || !lstatSync(src).isDirectory()) return true;
-      omitted.push({ path: relative(project, src).split(sep).join("/"), ...measure(src) });
+      if (rel === ARCHIVE_OMITTED_FILE) return false;
+      if (!st.isDirectory() || !ARCHIVE_OMITTED_DIRS.has(basename(rel))) return true;
+      measure(rel);
       return false;
     },
-  });
+    folder: (rel) => { if (rel !== ".") mkdirSync(join(out, rel)); },
+    link: (rel, target) => { symlinkSync(target, join(out, rel)); },
+    file: (rel, fd, st) => {
+      const r = readAll(fd);
+      if ("code" in r) return r.code;
+      writeFileSync(join(out, rel), r.bytes, { flag: "wx", mode: st.mode & 0o777 });
+      return null;
+    },
+  }, { hook });
+  problems.push(...walked.problems);
   omitted.sort((a, b) => a.path.localeCompare(b.path));
-  if (omitted.length > 0) writeFileSync(join(dest, ARCHIVE_OMITTED_FILE), `${JSON.stringify({ omitted }, null, 2)}\n`, { flag: "wx" });
-  return omitted;
+  if (omitted.length > 0 || problems.length > 0) {
+    writeFileSync(join(out, ARCHIVE_OMITTED_FILE), `${JSON.stringify({ omitted, ...(problems.length > 0 ? { problems } : {}) }, null, 2)}\n`, { flag: "wx" });
+  }
+  return { omitted, problems };
 }
 
 export function materializeFixture(fixture: string, dest: string): string {
@@ -743,7 +760,8 @@ async function main(): Promise<void> {
     packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);
-  archiveProject(project, join(rawDir, "project.after"));
+  const archived = archiveProject(project, join(rawDir, "project.after"));
+  for (const p of archived.problems) process.stderr.write(`archive: ${p}\n`);
   process.stdout.write(`${runId} ${verdict.verdict}\n${verdict.reasons.map((f) => `  - ${f}`).join("\n")}\n`);
   // 0 only for a full PASS, which needs --finalize with a judge result; mechanical success alone is 3 (pending).
   process.exitCode = verdict.verdict === "FAIL" ? 1 : verdict.verdict === "PENDING_SEMANTIC" ? 3 : 0;

@@ -26,4 +26,4 @@ run("tar", ["-xzf", join(ctx, tarball), "-C", join(ctx, "pkg"), "--strip-compone
 unlinkSync(join(ctx, tarball));
 cpSync(join(root, "package-lock.json"), join(ctx, "pkg", "package-lock.json"));
 cpSync(join(root, ".eval-dist"), join(ctx, "pkg", ".eval-dist"), { recursive: true });
-for (const name of ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "envelope.mjs", "storybloq-launcher"]) cpSync(join(here, name), join(ctx, name));
+for (const name of ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "envelope.mjs", "pack.sh", "storybloq-launcher"]) cpSync(join(here, name), join(ctx, name));

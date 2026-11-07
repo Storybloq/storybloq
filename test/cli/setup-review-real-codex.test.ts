@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { REVIEW_PACKET } from "../helpers/setup-review-fakes.js";
@@ -59,6 +60,18 @@ function cli(b: Box, args: string[], opts: { sandbox?: ":workspace" | ":read-onl
   const [cmd, argv] = opts.sandbox ? [BIN, ["sandbox", "-P", opts.sandbox, "-C", b.project, "--", ...command]] : [command[0]!, command.slice(1)];
   const r = spawnSync(cmd, argv, { cwd: b.project, env: { ...b.env, ...(opts.sandbox ? TURN : {}) }, input: opts.input ?? "", encoding: "utf-8", timeout: 90_000 });
   return { code: r.status, out: r.stdout, err: r.stderr };
+}
+
+/** A 127.0.0.1 port nothing listens on: bound by the OS, then released. */
+function closedPort(): Promise<number> {
+  return new Promise((res, rej) => {
+    const server = createServer();
+    server.once("error", rej);
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      server.close(() => res(port));
+    });
+  });
 }
 
 const setupId = (out: string): string => /^Setup id: (SS-[0-9a-f]{8})$/m.exec(out)![1]!;
@@ -140,13 +153,16 @@ describe.runIf(REAL)("the real codex start (ISS-1456, opt-in)", () => {
     expect(storeEntries(b)).toEqual(before);
   }, 120_000);
 
-  it("the binary's own facts the probe reads: the fatal start line under read-only", () => {
+  it("the binary's own facts the probe reads: the fatal start line under read-only, with the provider at a closed localhost port", async () => {
     const b = box();
     const exec = join(b.root, "exec");
-    const r = spawnSync(BIN, ["sandbox", "-P", ":read-only", "-C", exec, "--", BIN, "exec", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "-"], {
-      cwd: exec, env: b.env, input: "probe\n", encoding: "utf-8", timeout: 30_000,
+    const { probeOverrides, PROBE_KEY_ENV } = await import("../../src/core/setup-review-backends.js");
+    const port = await closedPort();
+    const r = spawnSync(BIN, ["sandbox", "-P", ":read-only", "-C", exec, "--", BIN, "exec", ...probeOverrides(port, "0".repeat(32)), "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "-"], {
+      cwd: exec, env: { ...b.env, [PROBE_KEY_ENV]: "storybloq-probe-not-a-credential" }, input: "probe\n", encoding: "utf-8", timeout: 30_000,
     });
     expect(r.stderr).toMatch(/failed to initialize in-process app-server client: Operation not permitted/);
+    expect(r.status).not.toBe(0);
     expect(dirname(exec)).toBe(b.root);
   }, 60_000);
 });

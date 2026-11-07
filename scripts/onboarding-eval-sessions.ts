@@ -394,7 +394,7 @@ export function regularFileDigest(path: string): string | null {
 }
 
 /** The points in a ledger walk where the tree can change under it; a test acts at one to prove the walk holds. */
-export type LedgerStep = "check" | "readlink" | "enter" | "list" | "open";
+export type LedgerStep = "check" | "readlink" | "enter" | "verify" | "verify-back" | "list" | "open";
 type LedgerHook = (step: LedgerStep, rel: string) => void;
 
 class LedgerWalkStopped extends Error {}
@@ -416,6 +416,10 @@ export function ledgerState(story: string, hook?: LedgerHook): { readonly digest
   const label = (rel: string): string => (rel === "." ? ".story" : rel);
   const failed = (rel: string, e: unknown): void => { problems.push(`${label(rel)} could not be read (${(e as NodeJS.ErrnoException).code ?? "unknown"})`); };
   const stopped = (rel: string): never => { problems.push(`${label(rel)} changed while it was being read`); throw new LedgerWalkStopped(); };
+  /** Where the walk stands now. A failure here leaves the folder unverified, so nothing more is read from it. */
+  const identity = (rel: string): Stats => {
+    try { return lstatSync("."); } catch (e) { failed(rel, e); throw new LedgerWalkStopped(); }
+  };
   const isSame = (a: Stats, b: Stats): boolean => a.dev === b.dev && a.ino === b.ino;
   const folder = (rel: string, self: Stats): void => {
     step("list", rel);
@@ -430,7 +434,8 @@ export function ledgerState(story: string, hook?: LedgerHook): { readonly digest
   const enter = (name: string, rel: string, seen: Stats): boolean => {
     step("enter", rel);
     try { process.chdir(name); } catch (e) { failed(rel, e); return false; }
-    const here = lstatSync(".");
+    step("verify", rel);
+    const here = identity(rel);
     if (!isSame(here, seen)) stopped(rel);
     folder(rel, here);
     return true;
@@ -445,7 +450,8 @@ export function ledgerState(story: string, hook?: LedgerHook): { readonly digest
     } else if (st.isDirectory()) {
       if (enter(name, rel, st)) {
         try { process.chdir(".."); } catch { stopped(rel); }
-        if (!isSame(lstatSync("."), parent)) stopped(rel);
+        step("verify-back", rel);
+        if (!isSame(identity(rel), parent)) stopped(rel);
       }
     } else if (st.isFile()) {
       step("open", rel);

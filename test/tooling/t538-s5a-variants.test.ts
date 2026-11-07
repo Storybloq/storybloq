@@ -393,6 +393,27 @@ describe("milestone-demo", () => {
         expect(ledgerState(story).problems).toEqual([]);
       });
     });
+    it.skipIf(process.getuid?.() === 0).each([
+      ["right after entering it", "verify", "tickets"],
+      ["right after coming back to its parent", "verify-back", "."],
+    ] as const)("a folder whose search permission is revoked %s stops the walk with its name and reason, and the finding persists", (_when, at, revoked) => {
+      withStory(() => {}, (story) => {
+        const target = revoked === "." ? story : join(story, revoked);
+        const cwd = process.cwd();
+        try {
+          const attempt = attemptBypass(story, "T-3", () => {
+            chmodSync(target, 0o755);
+            return { status: 1, stdout: "", stderr: "it waits on owner checkpoint T-2\n" };
+          }, (step, rel) => { if (step === at && rel === "tickets") chmodSync(target, 0o000); });
+          expect(process.cwd()).toBe(cwd);
+          expect(attempt.exitCode).toBe(1);
+          expect(attempt.ledgerProblems).toEqual(["tickets could not be read (EACCES)"]);
+          expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3", bypass: attempt } })).toEqual(["milestone-demo: the ledger could not be read as evidence: tickets could not be read (EACCES)"]);
+        } finally {
+          chmodSync(target, 0o755);
+        }
+      });
+    });
     it("an entry that disappears mid-walk is a finding, and the record and the grade are still produced", () => {
       withStory(() => {}, (story) => {
         const attempt = attemptBypass(story, "T-3", () => ({ status: 1, stdout: "", stderr: "it waits on owner checkpoint T-2\n" }), (step, rel) => { if (step === "check" && rel === "tickets/T-3.json") rmSync(join(story, "tickets", "T-3.json"), { force: true }); });

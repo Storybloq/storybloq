@@ -42,7 +42,8 @@ describe("process-identity", () => {
       return;
     }
     expect(inspectProcessIdentitySync(process.pid, sig)).toBe("alive");
-    expect(inspectProcessIdentitySync(process.pid, "darwin:bogus")).toBe("dead");
+    // ISS-1421: on Darwin a legacy mismatch proves nothing, the text depends on the caller's environment.
+    expect(inspectProcessIdentitySync(process.pid, "darwin:bogus")).toBe(process.platform === "darwin" ? "unknown" : "dead");
   });
 
   it("captureProcessSignatureSync yields null on an unsupported platform; a live holder stays unknown, never dead", () => {

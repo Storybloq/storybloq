@@ -58,7 +58,15 @@ import * as fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { safeUnlinkLock } from "../autonomous/liveness.js";
-import { captureProcessSignatureSync, inspectProcessIdentitySync, type ProcessIdentity } from "./process-identity.js";
+import {
+  captureProcessSignatureSync,
+  inspectProcessIdentitySync,
+  legacyVerdict,
+  ownPinnedSignatureSync,
+  parsePinnedSignature,
+  pinnedVerdict,
+  type ProcessIdentity,
+} from "./process-identity.js";
 import { ProjectLoaderError } from "./errors.js";
 
 const LOCK_MAX_BYTES = 4_096;
@@ -121,6 +129,8 @@ interface ProjectLockBody {
   token: string;
   acquiredAt: number;
   processSignature: string | null;
+  /** ISS-1421: the environment-independent identity, Darwin only; omitted if it cannot be read. */
+  pinnedSignature?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -191,29 +201,31 @@ function ownSignature(): string | null {
   return ownSignatureCache;
 }
 
-function classifyIdentityCached(pid: number, signature: string | null, token: string): ProcessIdentity {
+function classifyIdentityCached(pid: number, signature: string | null, pinnedSignature: unknown, token: string): ProcessIdentity {
   if (pid === process.pid) {
     // A recorded pid equal to our own does NOT prove the record is ours: the
-    // OS can reuse a dead holder's pid for us after a crash. A recorded
-    // signature that mismatches our own current one is proof of exactly that
-    // PID reuse and must classify "dead" -- shortcutting to "alive" here
-    // (as an earlier version of this function did, unconditionally) would
-    // make such a stale lock permanently unreclaimable for this process's
-    // entire lifetime, since every future check would hit this same
-    // self-pid branch without ever comparing signatures. Only a NULL
-    // recorded signature (nothing to contradict us) or an unresolvable own
-    // signature (can't verify either way) is treated as "alive" -- both are
-    // the "cannot disprove it's us" case, not proof that it's a stranger.
+    // OS can reuse a dead holder's pid for us after a crash. A differing start
+    // is proof of exactly that and classifies "dead"; shortcutting to "alive"
+    // here would make such a stale lock unreclaimable for this process's whole
+    // lifetime. A legacy mismatch is not proof on Darwin, because the value
+    // depends on the environment it was captured in (legacyVerdict). A NULL
+    // recorded signature or an unresolvable own signature with no pinned field
+    // is the "cannot disprove it's us" case and stays "alive".
+    const recorded = process.platform === "darwin" ? parsePinnedSignature(pinnedSignature) : null;
+    if (recorded) {
+      const own = parsePinnedSignature(ownPinnedSignatureSync());
+      return pinnedVerdict(recorded, own);
+    }
     if (signature == null) return "alive";
     const mine = ownSignature();
     if (mine == null) return "alive";
-    return mine === signature ? "alive" : "dead";
+    return legacyVerdict(signature, mine);
   }
   const now = Date.now();
   pruneIdentityCacheIfDue(now);
   const cached = identityCache.get(token);
   if (cached && now - cached.cachedAt < IDENTITY_CACHE_TTL_MS) return cached.identity;
-  const identity = inspectProcessIdentitySync(pid, signature);
+  const identity = inspectProcessIdentitySync(pid, signature, pinnedSignature);
   identityCache.set(token, { identity, cachedAt: now });
   return identity;
 }
@@ -276,7 +288,7 @@ function inspectHolder(lockPath: string): HolderInspection {
     if (!body || !Number.isInteger(body.pid) || (body.pid as number) <= 0 || typeof body.token !== "string" || !body.token) {
       return { state: "poll", ino: st.ino, token: null };
     }
-    const identity = classifyIdentityCached(body.pid as number, body.processSignature ?? null, body.token);
+    const identity = classifyIdentityCached(body.pid as number, body.processSignature ?? null, body.pinnedSignature, body.token);
     if (identity === "dead") return { state: "dead", ino: st.ino, token: body.token };
     return { state: "poll", ino: st.ino, token: body.token };
   } finally {
@@ -520,7 +532,14 @@ export async function acquireProjectLockAsync(lockPath: string, opts: ProjectLoc
   const token = randomBytes(16).toString("hex");
   const pid = process.pid;
   const processSignature = captureProcessSignatureSync(pid);
-  const body: ProjectLockBody = { pid, token, acquiredAt: Date.now(), processSignature };
+  const pinnedSignature = ownPinnedSignatureSync();
+  const body: ProjectLockBody = {
+    pid,
+    token,
+    acquiredAt: Date.now(),
+    processSignature,
+    ...(pinnedSignature ? { pinnedSignature } : {}),
+  };
   // randomUUID() (122 bits of entropy), created with O_EXCL: two concurrent
   // acquireProjectLockAsync calls in the SAME process (different projects, or
   // a burst against the same one) must never collide on this path -- a

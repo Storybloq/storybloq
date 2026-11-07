@@ -11,7 +11,7 @@ import { canonicalHash, sha256 } from "./canonical.js";
 import { assertBusEnabled } from "./config.js";
 import { BusError } from "./errors.js";
 import { durableCreate, durableUnlink, durableWrite, listRegularJsonFiles, readJsonNoFollow, rejectPathSymlink, syncDirectory } from "./io.js";
-import { acquireHardenedLock, captureProcessSignature, inspectProcessIdentity, releaseHardenedLock, withHardenedLock } from "./lock.js";
+import { acquireHardenedLock, capturePinnedSignature, captureProcessSignature, inspectProcessIdentity, releaseHardenedLock, withHardenedLock } from "./lock.js";
 import { assertBusLayout, endpointLockPath, endpointMailboxPath, resolveBusPaths, type BusPaths } from "./paths.js";
 import { normalizeBusText } from "./security.js";
 import {
@@ -249,9 +249,14 @@ async function gitBinding(root: string): Promise<{ branch: string | null; worktr
 async function processRefFor(surface: BusSurface, candidate: ProcessCandidate | null): Promise<BusProcessRef | null> {
   if (surface === "codex_desktop" || !candidate) return null;
   const signature = await captureProcessSignature(candidate.pid);
-  return signature
-    ? { pid: candidate.pid, signature, capturedAt: new Date().toISOString() }
-    : null;
+  if (!signature) return null;
+  const pinnedSignature = await capturePinnedSignature(candidate.pid);
+  return {
+    pid: candidate.pid,
+    signature,
+    capturedAt: new Date().toISOString(),
+    ...(pinnedSignature ? { pinnedSignature } : {}),
+  };
 }
 
 export async function listEndpoints(root: string): Promise<{ endpoints: BusEndpoint[]; findings: string[] }> {
@@ -348,7 +353,7 @@ export function endpointAddressees(
 
 export async function endpointLiveness(endpoint: BusEndpoint): Promise<"attached" | "offline" | "unknown"> {
   if (endpoint.surface === "codex_desktop" || !endpoint.processRef) return "unknown";
-  const state = await inspectProcessIdentity(endpoint.processRef.pid, endpoint.processRef.signature);
+  const state = await inspectProcessIdentity(endpoint.processRef.pid, endpoint.processRef.signature, endpoint.processRef.pinnedSignature);
   return state === "alive" ? "attached" : state === "dead" ? "offline" : "unknown";
 }
 
@@ -918,6 +923,7 @@ export async function consumeCompactionSuccession(input: {
 
 // ISS-940 test-only seams. All null in production (never in any hot path's cost).
 export const __testing = {
+  processRefFor,
   // Fires in withEndpointLock immediately after its locked read, before the
   // handler runs. Pass null to clear.
   setAfterEndpointReadHook(hook: ((endpointId: string) => Promise<void>) | null): void {

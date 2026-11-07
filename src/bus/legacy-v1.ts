@@ -31,6 +31,7 @@ const ProcessRefSchema = z.object({
   pid: z.number().int().positive(),
   signature: z.string().min(1).max(512),
   capturedAt: IsoTimestampSchema,
+  pinnedSignature: z.unknown().optional(),
 }).passthrough();
 
 export const V1InstanceSchema = z.object({
@@ -559,7 +560,7 @@ export async function listV1Endpoints(paths: V1Paths, opts: { strictTemps?: bool
 
 export async function v1EndpointLiveness(endpoint: V1Endpoint): Promise<"attached" | "offline" | "unknown"> {
   if (endpoint.surface === "codex_desktop" || !endpoint.processRef) return "unknown";
-  const state = await inspectProcessIdentity(endpoint.processRef.pid, endpoint.processRef.signature);
+  const state = await inspectProcessIdentity(endpoint.processRef.pid, endpoint.processRef.signature, endpoint.processRef.pinnedSignature);
   return state === "alive" ? "attached" : state === "dead" ? "offline" : "unknown";
 }
 

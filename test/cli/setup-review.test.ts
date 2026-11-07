@@ -311,7 +311,7 @@ describe("concurrency, through the repo's hardened lock (T-536)", () => {
     try {
       await new Promise((r) => setTimeout(r, 100));
       const lock = join(setupDir(id), "run.lock");
-      writeFileSync(lock, JSON.stringify({ pid: sleeper.pid, token: "reused", acquiredAt: Date.now() - 60_000, processSignature: "darwin:not-this-process" }));
+      writeFileSync(lock, JSON.stringify({ pid: sleeper.pid, token: "reused", acquiredAt: Date.now() - 60_000, processSignature: "darwin:not-this-process", pinnedSignature: `darwin2:${process.geteuid?.() ?? 0}:1000` }));
       expect((await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id })).exitCode).toBe(0);
       expect(reviews()).toBe(1);
       writeFileSync(lock, JSON.stringify({ pid: sleeper.pid, token: "live", acquiredAt: Date.now(), processSignature: captureProcessSignatureSync(sleeper.pid!) }));

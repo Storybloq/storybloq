@@ -81,10 +81,10 @@ describe("Storybloq Bus hardened lock", () => {
       .rejects.toMatchObject({ code: "corrupt" });
   });
 
-  it("classifies a reused live PID with a mismatched signature as dead", async () => {
+  it("classifies a live PID with a mismatched signature as dead on Linux, unknown on Darwin", async () => {
     if (process.platform !== "darwin" && process.platform !== "linux") return;
     await expect(__testing.inspectProcess(process.pid, "mismatched-process-signature"))
-      .resolves.toBe("dead");
+      .resolves.toBe(process.platform === "darwin" ? "unknown" : "dead");
   });
 
   it("rejects a lock-file symlink without touching its target", async () => {

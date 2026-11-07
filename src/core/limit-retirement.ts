@@ -17,7 +17,13 @@ import { dirname, join } from "node:path";
 import { readBoundedFileDetailed } from "./bounded-read.js";
 import { resolveSymlinkTarget } from "./symlink-write.js";
 import { withSettingsWriteLock } from "./settings-write-lock.js";
-import { captureProcessSignatureSync, inspectProcessIdentitySync, type ProcessIdentity } from "./process-identity.js";
+import {
+  captureProcessSignatureSync,
+  inspectProcessIdentitySync,
+  ownPinnedSignatureSync,
+  verifyIdentityForSignalSync,
+  type ProcessIdentity,
+} from "./process-identity.js";
 import { hasArgvSignature, probeArgvSignature, safeUnlinkLock } from "../autonomous/liveness.js";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "./project-lock.js";
 import {
@@ -746,7 +752,7 @@ export function removeLedgerUnderLock(
     const token = isRecord(body) && typeof body.token === "string" && body.token !== "" ? body.token : null;
     if (pid === null || token === null || !isRecord(body)) return `${lockPath}: no holder pid or token, left in place`;
     const signature = typeof body.processSignature === "string" ? body.processSignature : null;
-    const identity = inspectProcessIdentitySync(pid, signature);
+    const identity = inspectProcessIdentitySync(pid, signature, body.pinnedSignature);
     if (identity !== "dead") {
       return `${lockPath}: held by ${identity === "alive" ? "a live" : "an unverifiable"} ledger writer (pid ${pid}), left in place`;
     }
@@ -757,10 +763,18 @@ export function removeLedgerUnderLock(
   const token = randomUUID();
   const now = Date.now();
   const tmp = `${lockPath}.tmp.${process.pid}.${randomUUID()}`;
+  const pinnedSignature = ownPinnedSignatureSync();
   try {
     fs.writeFileSync(
       tmp,
-      JSON.stringify({ pid: process.pid, token, acquiredAt: now, renewedAt: now, processSignature: captureProcessSignatureSync(process.pid) }),
+      JSON.stringify({
+        pid: process.pid,
+        token,
+        acquiredAt: now,
+        renewedAt: now,
+        processSignature: captureProcessSignatureSync(process.pid),
+        ...(pinnedSignature ? { pinnedSignature } : {}),
+      }),
       { flag: "wx", mode: 0o600 },
     );
   } catch (err) {
@@ -805,7 +819,8 @@ export function removeLedgerUnderLock(
 // ---------------------------------------------------------------------------
 
 export interface WakerStopDeps {
-  readonly inspect: (pid: number, signature: string | null) => ProcessIdentity;
+  /** The signalling verifier, never the liveness classifier: pinned equality alone grants no signal. */
+  readonly inspect: (pid: number, signature: string | null, pinnedSignature?: unknown) => ProcessIdentity;
   /** Both waker markers present in the pid's argv. */
   readonly isWakerArgv: (pid: number) => boolean;
   readonly signal: (pid: number, signal: NodeJS.Signals) => void;
@@ -824,7 +839,7 @@ const WAKER_TERM_WAIT_MS = 5_000;
 const WAKER_POLL_MS = 250;
 
 export const DEFAULT_WAKER_STOP_DEPS: WakerStopDeps = {
-  inspect: (pid, signature) => inspectProcessIdentitySync(pid, signature),
+  inspect: (pid, signature, pinnedSignature) => verifyIdentityForSignalSync(pid, signature, pinnedSignature),
   isWakerArgv: (pid) => hasArgvSignature(pid, ["waker-run", WAKER_ARGV_SENTINEL]),
   signal: (pid, sig) => process.kill(pid, sig),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -849,9 +864,10 @@ export async function stopRetiredWaker(lockPath: string, deps: WakerStopDeps = D
   const pid = isRecord(body) ? positiveInt(body.pid) : null;
   if (pid === null || !isRecord(body)) return { kind: "refused", reason: `${lockPath}: no holder pid, left in place` };
   const signature = typeof body.processSignature === "string" ? body.processSignature : null;
+  const pinnedSignature = body.pinnedSignature;
   const file = { dev: read.dev, ino: read.ino };
 
-  const first = deps.inspect(pid, signature);
+  const first = deps.inspect(pid, signature, pinnedSignature);
   if (first === "dead") return { kind: "not-running", ...file };
   if (first === "unknown") return { kind: "refused", reason: `waker ${pid}: identity unverifiable, not signalled` };
   if (!deps.isWakerArgv(pid)) return { kind: "refused", reason: `waker ${pid}: argv is not the waker's, not signalled` };
@@ -859,7 +875,7 @@ export async function stopRetiredWaker(lockPath: string, deps: WakerStopDeps = D
   const waitGone = async (): Promise<ProcessIdentity> => {
     for (let waited = 0; waited < WAKER_TERM_WAIT_MS; waited += WAKER_POLL_MS) {
       await deps.sleep(WAKER_POLL_MS);
-      const now = deps.inspect(pid, signature);
+      const now = deps.inspect(pid, signature, pinnedSignature);
       if (now !== "alive") return now;
     }
     return "alive";
@@ -882,7 +898,7 @@ export async function stopRetiredWaker(lockPath: string, deps: WakerStopDeps = D
   const killFailed = send("SIGKILL");
   if (killFailed !== null) return { kind: "refused", reason: killFailed };
   await deps.sleep(WAKER_POLL_MS);
-  const afterKill = deps.inspect(pid, signature);
+  const afterKill = deps.inspect(pid, signature, pinnedSignature);
   if (afterKill === "dead") return { kind: "stopped", ...file, killed: true };
   return { kind: "refused", reason: `waker ${pid}: still ${afterKill} after SIGKILL` };
 }

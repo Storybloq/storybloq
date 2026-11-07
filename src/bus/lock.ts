@@ -8,6 +8,17 @@ import { z } from "zod";
 import { BusError } from "./errors.js";
 import { canonicalHash } from "./canonical.js";
 import { syncDirectory } from "./io.js";
+import {
+  __processIdentitySeams,
+  formatPinnedSignature,
+  legacyVerdict,
+  parsePinnedPsOutput,
+  parsePinnedSignature,
+  PINNED_PS_FIELDS,
+  pinnedPsEnv,
+  pinnedVerdict,
+  type PinnedIdentity,
+} from "../core/process-identity.js";
 
 const execFileAsync = promisify(execFile);
 const LOCK_MAX_BYTES = 4096;
@@ -84,10 +95,13 @@ export async function captureProcessSignature(pid: number): Promise<string | nul
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
     if (process.platform === "darwin") {
-      const { stdout } = await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "uid=,lstart=,command="], {
-        timeout: 500,
-        maxBuffer: 128 * 1024,
-      });
+      const seam = __processIdentitySeams.psOutput;
+      const stdout = seam
+        ? seam("legacy", pid)
+        : (await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "uid=,lstart=,command="], {
+            timeout: 500,
+            maxBuffer: 128 * 1024,
+          })).stdout;
       const normalized = stdout.trim().replace(/\s+/g, " ");
       return normalized ? `darwin:${canonicalHash(normalized)}` : null;
     }
@@ -110,18 +124,43 @@ export async function captureProcessSignature(pid: number): Promise<string | nul
 
 export type ProcessState = "alive" | "dead" | "unknown";
 
-export async function inspectProcessIdentity(pid: number, expectedSignature: string | null): Promise<ProcessState> {
+async function readPinnedIdentity(pid: number): Promise<PinnedIdentity | null> {
+  if (process.platform !== "darwin" || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const seam = __processIdentitySeams.psOutput;
+    const stdout = seam
+      ? seam("pinned", pid)
+      : (await execFileAsync("/bin/ps", ["-p", String(pid), "-o", PINNED_PS_FIELDS], {
+          timeout: 500,
+          maxBuffer: 128 * 1024,
+          env: pinnedPsEnv(),
+        })).stdout;
+    return parsePinnedPsOutput(stdout);
+  } catch {
+    return null;
+  }
+}
+
+export async function capturePinnedSignature(pid: number): Promise<string | null> {
+  const identity = await readPinnedIdentity(pid);
+  return identity ? formatPinnedSignature(identity) : null;
+}
+
+/** Async form of core/process-identity.ts inspectProcessIdentitySync; the same table. */
+export async function inspectProcessIdentity(
+  pid: number,
+  expectedSignature: string | null,
+  pinnedSignature?: unknown,
+): Promise<ProcessState> {
   try {
     process.kill(pid, 0);
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return "dead";
-    return "unknown";
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") return "dead";
   }
+  const recorded = process.platform === "darwin" ? parsePinnedSignature(pinnedSignature) : null;
+  if (recorded) return pinnedVerdict(recorded, await readPinnedIdentity(pid));
   if (!expectedSignature) return "unknown";
-  const actual = await captureProcessSignature(pid);
-  if (!actual) return "unknown";
-  return actual === expectedSignature ? "alive" : "dead";
+  return legacyVerdict(expectedSignature, await captureProcessSignature(pid));
 }
 
 type LockReadResult =

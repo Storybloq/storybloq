@@ -348,6 +348,8 @@ export const BusProcessRefSchema = z.object({
   pid: z.number().int().positive(),
   signature: z.string().min(1).max(512),
   capturedAt: IsoTimestampSchema,
+  // ISS-1421. Unknown on purpose: a malformed value falls to `signature`, it does not fail the record.
+  pinnedSignature: z.unknown().optional(),
 }).passthrough();
 export type BusProcessRef = z.infer<typeof BusProcessRefSchema>;
 

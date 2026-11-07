@@ -25,9 +25,9 @@ import { join } from "node:path";
 const identitySpy = vi.hoisted(() => ({ calls: 0 }));
 vi.mock("../../src/core/process-identity.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/core/process-identity.js")>();
-  const inspectProcessIdentitySync = ((pid: number, sig: string | null) => {
+  const inspectProcessIdentitySync = ((pid: number, sig: string | null, pinned?: unknown) => {
     identitySpy.calls += 1;
-    return actual.inspectProcessIdentitySync(pid, sig);
+    return actual.inspectProcessIdentitySync(pid, sig, pinned);
   }) as typeof actual.inspectProcessIdentitySync;
   return { ...actual, inspectProcessIdentitySync };
 });
@@ -245,7 +245,7 @@ describe("project-lock", () => {
     expect(existsSync(lockPath)).toBe(true);
   });
 
-  it("PID reuse (live but different pid, mismatched signature) is treated as dead and stolen -- platform gated", async () => {
+  it("PID reuse (live but different pid) is reclaimed on proof: a differing start on Darwin, a mismatch on Linux -- platform gated", async () => {
     // Uses a REAL, non-self pid deliberately: this test targets the general
     // (non-self) pid-reuse path. The self-pid-specific variant (our own
     // current pid reused for a stale record with a mismatched signature) is
@@ -254,7 +254,13 @@ describe("project-lock", () => {
     const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
     await new Promise<void>((resolve) => child.once("spawn", () => resolve()));
     try {
-      writeLockBody(lockPath, { pid: child.pid!, token: "pidreuse0", acquiredAt: Date.now(), processSignature: "darwin:not-our-signature" });
+      writeLockBody(lockPath, {
+        pid: child.pid!,
+        token: "pidreuse0",
+        acquiredAt: Date.now(),
+        processSignature: "darwin:not-our-signature",
+        pinnedSignature: `darwin2:${process.geteuid?.() ?? 0}:1000`,
+      });
       if (SIG_SUPPORTED) {
         const handle = await acquireProjectLockAsync(lockPath, { deadlineMs: 1000, pollMs: 20 });
         expect(handle).toBeTruthy();
@@ -268,7 +274,7 @@ describe("project-lock", () => {
     }
   });
 
-  it("self-pid record with a mismatched signature (our pid reused from a stale holder) is reclaimed, not treated as always-alive -- platform gated", async () => {
+  it("self-pid record proving reuse (our pid taken from a stale holder) is reclaimed, not treated as always-alive -- platform gated", async () => {
     // Directly proves the code-review fix: classifyIdentityCached's self-pid
     // shortcut must still compare signatures rather than unconditionally
     // returning "alive", or a lock stamped with our own current pid -- but
@@ -280,6 +286,7 @@ describe("project-lock", () => {
       token: "self-pid-stale",
       acquiredAt: Date.now(),
       processSignature: "darwin:definitely-not-our-real-signature",
+      pinnedSignature: `darwin2:${process.geteuid?.() ?? 0}:1000`,
     });
     const handle = await acquireProjectLockAsync(lockPath, { deadlineMs: 1000, pollMs: 20 });
     expect(handle).toBeTruthy();

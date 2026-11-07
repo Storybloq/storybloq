@@ -110,9 +110,14 @@ for (const [kind, field] of [["ticket", "order"], ["issue", "order"], ["lesson",
   }
 }
 // Known differences, pinned (ISS-1409): Foundation refuses these texts at parse.
-add("ticket", "known difference: 1e400 in an unknown field", JSON.stringify(bases.ticket).replace(/}$/, `,"big":1e400}`));
-add("ticket", "known difference: 1e400 in priority", JSON.stringify(bases.ticket).replace(/"priority":"p1"/, `"priority":1e400`));
-add("ticket", "known difference: escaped lone surrogate", JSON.stringify(bases.ticket).replace(/"title":"t"/, `"title":"\\ud800"`));
+add("ticket", "1e400 in an unknown field", JSON.stringify(bases.ticket).replace(/}$/, `,"big":1e400}`));
+add("ticket", "1e400 in priority", JSON.stringify(bases.ticket).replace(/"priority":"p1"/, `"priority":1e400`));
+add("ticket", "escaped lone surrogate", JSON.stringify(bases.ticket).replace(/"title":"t"/, `"title":"\\ud800"`));
+add("ticket", "escaped lone surrogate beside an invalid status", JSON.stringify(bases.ticket).replace(/"title":"t"/, `"title":"\\ud800"`).replace(/"status":"open"/, `"status":"nope"`));
+add("ticket", "lone surrogate as a key", JSON.stringify(bases.ticket).replace(/}$/, `,"\\ud800":1,"\\ud801":2}`));
+add("ticket", "lone surrogate as a key beside an invalid status", JSON.stringify(bases.ticket).replace(/}$/, `,"\\ud800":1}`).replace(/"status":"open"/, `"status":"nope"`));
+add("issue", "a key canonically equal to a field name, before it", JSON.stringify(bases.issue).replace(/^{/, `{"dedupe\u212Aey":5,`));
+add("ticket", "canonically equal unknown keys", JSON.stringify(bases.ticket).replace(/}$/, `,"\u00e9":1,"e\u0301":2}`));
 
 // UTF-16 lengths with supplementary characters.
 const emoji = "\u{1F600}";
@@ -308,6 +313,12 @@ stagesRaw("not quite numbers stay in place", '{"01":1,"-1":true,"1.5":"x","42949
 stagesRaw("a repeated key keeps its first place and last value", '{"a":1,"b":true,"a":"x"}');
 stagesRaw("a repeated key made good", '{"a":1,"b":true,"a":{}}');
 stagesRaw("accepted", '{"a":{},"b":{"x":1}}');
+// Keys are UTF-16 units: canonically equivalent keys and distinct lone surrogates stay apart.
+stagesRaw("canonically equal keys, both invalid", '{"\u00e9":1,"e\u0301":true}');
+stagesRaw("canonically equal keys, invalid then an object", '{"\u00e9":1,"e\u0301":{}}');
+stagesRaw("canonically equal keys, escaped", '{"\\u00e9":1,"e\\u0301":true}');
+stagesRaw("distinct lone surrogates, both invalid", '{"\\ud800":1,"\\ud801":true}');
+stagesRaw("distinct lone surrogates, invalid then an object", '{"\\ud800":1,"\\ud801":{}}');
 
 const roadmapBase: Json = { title: "r", date: "2026-01-01", phases: [], blockers: [] };
 const roadmap = (label: string, changes: Json) => list("roadmap", label, { ...roadmapBase, ...changes });

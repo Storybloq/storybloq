@@ -5,7 +5,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectProcessIdentity } from "../../src/bus/lock.js";
 import { initProject } from "../../src/core/init.js";
@@ -69,6 +69,37 @@ const LSTART = "Wed Sep  9 12:15:15 2026";
 const START = parseLstart(LSTART)!;
 const pinned = (uid: number, start = START) => `darwin2:${uid}:${start}`;
 
+/**
+ * A contender writes `<lock>.tmp.<pid>.<uuid>` before its first link attempt
+ * and keeps it while it waits, so this file is the proof it reached the lock.
+ * A contender that has not reached the lock proves nothing by not writing.
+ */
+async function waitForLockAttempt(lockPath: string, child: ChildProcess, timeoutMs: number): Promise<void> {
+  const prefix = `${basename(lockPath)}.tmp.${child.pid}.`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (readdirSync(dirname(lockPath)).some((name) => name.startsWith(prefix))) return;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`the contender exited (${child.exitCode ?? child.signalCode}) with no lock attempt seen`);
+    }
+    if (Date.now() >= deadline) throw new Error(`the contender did not attempt the lock within ${timeoutMs}ms`);
+    await new Promise((done) => setTimeout(done, 20));
+  }
+}
+
+/** Once the contender has reached the lock, it gets a window to wrongly take it and write. */
+async function expectHeldAgainst(
+  lockPath: string,
+  child: ChildProcess,
+  file: string,
+  before: string,
+  attemptTimeoutMs = 30_000,
+): Promise<void> {
+  await waitForLockAttempt(lockPath, child, attemptTimeoutMs);
+  await new Promise((done) => setTimeout(done, 1_000));
+  expect(readFileSync(file, "utf-8"), "the CLI wrote inside the hold").toBe(before);
+}
+
 /** Answers ps through the seam: `legacy` and `pinned` give stdout, or throw for a failed or timed out ps. */
 function fakePs(answers: { legacy?: () => string; pinned?: () => string }): void {
   __processIdentitySeams.psOutput = (form) => {
@@ -130,8 +161,7 @@ describe.runIf(process.platform === "darwin")("a different environment on Darwin
     children.push(child);
     const exited = new Promise<number | null>((done) => child.once("exit", (code) => done(code)));
     try {
-      await new Promise((done) => setTimeout(done, 2_000));
-      expect(readFileSync(file, "utf-8"), "the CLI wrote inside the hold").toBe(before);
+      await expectHeldAgainst(join(root, ".story", ".lock"), child, file, before);
       releaseProjectLock(handle);
       released = true;
       expect(await exited).toBe(0);
@@ -140,6 +170,18 @@ describe.runIf(process.platform === "darwin")("a different environment on Darwin
       if (!released) releaseProjectLock(handle);
     }
   }, 60_000);
+
+  it.each([
+    ["exits at startup", ["-e", "process.exit(3)"], /exited \(3\) with no lock attempt seen/],
+    ["never attempts the lock", ["-e", "setTimeout(() => {}, 30000)"], /did not attempt the lock within 300ms/],
+  ])("a contender that %s fails the hold check instead of passing it", async (_label, args, message) => {
+    const dir = tempDir();
+    const file = join(dir, "ticket.json");
+    writeFileSync(file, "same");
+    const child = spawn(process.execPath, args as string[], { stdio: "ignore" });
+    children.push(child);
+    await expect(expectHeldAgainst(join(dir, ".lock"), child, file, "same", 300)).rejects.toThrow(message as RegExp);
+  });
 
   it("the limit ledger lock of a live holder is left in place by a different-environment reader", async () => {
     const pid = await liveChild();

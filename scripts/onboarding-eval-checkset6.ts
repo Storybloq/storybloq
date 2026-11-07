@@ -218,12 +218,13 @@ export function checkSetupReview(turns: readonly Cs6Turn[], opts: Cs6Options): {
     }
   });
 
-  // Rule 4: the message after an unavailable gate is the four stop lines alone, or (ISS-1456) one
-  // line starting "Reviewer unavailable: " immediately before them, the reason the gate printed.
+  // Rule 4: the message after an unavailable gate is the four stop lines alone, or (ISS-1456), when
+  // that gate call printed a "Reviewer unavailable: " line, exactly that line immediately before them.
   if (opts.unavailableArm) {
-    const gateTurn = turns.findIndex((turn) => turn.calls.some((c) => c.command !== null && /^storybloq setup-review gate\b/.test(c.command) && c.output.includes("Reviewer probe: none available")));
+    const isGate = (c: EvalCall): boolean => c.command !== null && /^storybloq setup-review gate\b/.test(c.command) && c.output.includes("Reviewer probe: none available");
+    const gateTurn = turns.findIndex((turn) => turn.calls.some(isGate));
     if (gateTurn < 0) failures.push("rule 4: the unavailable arm has no setup-review gate call reporting no reviewer");
-    else if (!isUnavailableStop(turns[gateTurn]!.text)) failures.push(`rule 4: turn ${gateTurn + 1} is not the four stop lines alone`);
+    else if (!isUnavailableStop(turns[gateTurn]!.text, turns[gateTurn]!.calls.filter(isGate).pop()!.output)) failures.push(`rule 4: turn ${gateTurn + 1} is not the four stop lines alone, after the gate's reason line when it printed one`);
   }
 
   return { failures };
@@ -231,12 +232,11 @@ export function checkSetupReview(turns: readonly Cs6Turn[], opts: Cs6Options): {
 
 const REASON_PREFIX = "Reviewer unavailable: ";
 
-/** The four stop lines, optionally preceded by exactly one reason line, and nothing else. */
-function isUnavailableStop(text: string): boolean {
-  const ls = text.replace(/\r\n/g, "\n").trim().split("\n");
-  const stop = STOP_LINES.join("\n");
-  if (ls.join("\n") === stop) return true;
-  return ls.length === STOP_LINES.length + 1 && ls[0]!.startsWith(REASON_PREFIX) && ls.slice(1).join("\n") === stop;
+/** The four stop lines, preceded by the gate's own reason line exactly when the gate printed one, and nothing else. */
+function isUnavailableStop(text: string, gateOutput: string): boolean {
+  const reason = gateOutput.replace(/\r\n/g, "\n").split("\n").find((l) => l.startsWith(REASON_PREFIX));
+  const expected = [...(reason === undefined ? [] : [reason]), ...STOP_LINES].join("\n");
+  return text.replace(/\r\n/g, "\n").trim() === expected;
 }
 
 const SHELLS = new Set(["sh", "bash", "zsh", "/bin/sh", "/bin/bash", "/bin/zsh"]);

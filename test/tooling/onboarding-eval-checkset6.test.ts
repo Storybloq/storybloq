@@ -200,17 +200,18 @@ describe("check set 6, the skipped package (T-536)", () => {
     expect(check(turns, true).failures.some((f) => f.startsWith("rule 4"))).toBe(true);
   });
 
-  // ISS-1456: the gate's reason line may come first, alone, and nowhere else.
+  // ISS-1456: the gate's own reason line, exactly as that gate call printed it, may come first, and nowhere else.
   const REASON = "Reviewer unavailable: codex: networking is denied in this sandbox (the start check could not open a local connection: EPERM)";
-  const rule4 = (text: string): string[] => {
+  const rule4 = (text: string, gateReason: string | null = REASON): string[] => {
     const turns = skipped(true);
-    turns[0] = { ...turns[0]!, text };
+    const output = gateReason === null ? gateOut : gateOut.replace("Reviewer probe: none available\n", `Reviewer probe: none available\n${gateReason}\n`);
+    turns[0] = { ...turns[0]!, text, calls: [{ command: "storybloq setup-review gate", output }] };
     return check(turns, true).failures.filter((f) => f.startsWith("rule 4"));
   };
 
-  it("rule 4: passes the four stop lines alone and the reason line followed by them", () => {
-    expect(rule4(STOP)).toEqual([]);
+  it("rule 4: passes the gate's reason line followed by the four lines, and the four lines alone when the gate printed no reason", () => {
     expect(rule4(`${REASON}\n${STOP}`)).toEqual([]);
+    expect(rule4(STOP, null)).toEqual([]);
   });
 
   it("rule 4: fails any other extra line, two reason lines, a blank between, or the reason after the four", () => {
@@ -219,6 +220,12 @@ describe("check set 6, the skipped package (T-536)", () => {
     expect(rule4(`${REASON}\n\n${STOP}`)).toHaveLength(1);
     expect(rule4(`${STOP}\n${REASON}`)).toHaveLength(1);
     expect(rule4(`${REASON}\n${STOP}\nSorry.`)).toHaveLength(1);
+  });
+
+  it("rule 4: fails an altered reason, a reason the gate never printed, and a printed reason left out", () => {
+    expect(rule4(`${REASON.replace("EPERM", "EACCES")}\n${STOP}`)).toHaveLength(1);
+    expect(rule4(`${REASON}\n${STOP}`, null)).toHaveLength(1);
+    expect(rule4(STOP)).toHaveLength(1);
   });
 });
 

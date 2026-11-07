@@ -31,6 +31,7 @@ const at = a.indexOf("/opt/eval/envelope.mjs"); const execId = a[at + 1];
 if (b.hang) setTimeout(() => {}, 120000);
 if (b.stdout) process.stdout.write(b.stdout);
 if (b.stderr) process.stderr.write(b.stderr);
+if (b.raw !== undefined) process.stderr.write("\\0EVAL-ENVELOPE " + execId + " " + b.raw + "\\n");
 if (b.line) process.stderr.write("\\0EVAL-ENVELOPE " + (b.lineId ?? execId) + " " + JSON.stringify(b.line) + "\\n");
 if (b.after) process.stderr.write(b.after);
 process.exitCode = b.status ?? 0;
@@ -110,6 +111,10 @@ describe("the envelope line", () => {
     ["an unknown timeout word", framed("e1", { ...OK, timedOut: "maybe" })],
     ["a negative count", framed("e1", { ...OK, stdinAccepted: -1 })],
     ["nothing", Buffer.alloc(0)],
+    ["a null payload", framed("e1", null)],
+    ["an array payload", framed("e1", [OK])],
+    ["a number payload", framed("e1", 7)],
+    ["a text payload", framed("e1", "ok")],
   ])("%s is no line", (_n, buf) => expect(parseEnvelopeLine(buf, "e1")).toBeNull());
   it("the last of two is the one read", () => {
     const r = parseEnvelopeLine(Buffer.concat([framed("e1", { ...OK, status: 9 }), framed("e1", OK)]), "e1");
@@ -186,6 +191,13 @@ describe("the docker call", () => {
     expect(r.stdinAccepted).toBeNull();
     expect(r.stderr.toString()).toContain("someone-else");
   });
+  it.each(["null", "[]", "7"])("a final line carrying %s is ambiguous with stderr kept, and does not throw", (raw) => {
+    const f = fake({ stderr: "before\n", raw, inspect: { State: { Running: true } } });
+    const r = f.t.execSync(spec());
+    expect([r.outcome, r.child, r.timedOut]).toEqual(["ambiguous", null, null]);
+    expect(r.stderr.toString()).toContain("before\n");
+    expect(r.stderr.toString()).toContain(`EVAL-ENVELOPE`);
+  });
   it("text after the line leaves the line unread", () => {
     const f = fake({ line: OK, after: "x\n", inspect: { State: { Running: true } } });
     expect(f.t.execSync(spec()).outcome).toBe("ambiguous");
@@ -221,6 +233,23 @@ describe("the docker call", () => {
     expect([r.overLimit, r.stdout.length]).toEqual(["stdout", 10]);
     const e = await fake({ stderr: "y".repeat(9000), line: OK, inspect: { State: { Running: true } } }).t.execStream(spec({ stderrLimit: 10 }), () => {});
     expect(e.overLimit).toBe("stderr");
+  });
+  const unstartable = (kind: "ENOENT" | "EACCES") => {
+    const f = fake({});
+    if (kind === "EACCES") { chmodSync(f.config.exe, 0o644); return { ...f.config }; }
+    return { ...f.config, exe: join(root, "no-such-docker") };
+  };
+  it.each(["ENOENT", "EACCES"] as const)("a docker that cannot start (%s) settles once, ambiguous, with its reason kept", async (kind) => {
+    const t = makeDockerTransport(unstartable(kind));
+    const seen: string[] = [];
+    const r = await t.execStream(spec(), (l) => seen.push(l.toString()));
+    expect([r.cliStatus, r.child, r.timedOut, r.outcome, seen]).toEqual([null, null, null, "ambiguous", []]);
+    expect(r.stderr.toString()).toContain(kind);
+    const withStdin = await t.execStream(spec({ stdin: Buffer.from("x") }), () => {});
+    expect([withStdin.cliStatus, withStdin.outcome]).toEqual([null, "ambiguous"]);
+    const sync = t.execSync(spec());
+    expect([sync.cliStatus, sync.child, sync.outcome]).toEqual([null, null, "ambiguous"]);
+    expect(sync.stderr.toString()).toContain(kind);
   });
   it("a stream over a limit does not wait for the CLI to finish", async () => {
     const started = Date.now();

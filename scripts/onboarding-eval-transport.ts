@@ -60,6 +60,7 @@ export function parseEnvelopeLine(stderr: Buffer, execId: string): { readonly li
   if (text.includes("\n")) return null;
   let o: unknown;
   try { o = JSON.parse(text); } catch { return null; }
+  if (o === null || typeof o !== "object" || Array.isArray(o)) return null;
   const v = o as Partial<EnvelopeLine>;
   const statusOk = v.status === null || (Number.isInteger(v.status) && (v.status as number) >= 0 && (v.status as number) <= 255);
   const signalOk = v.signal === null || (typeof v.signal === "string" && Object.hasOwn(LINUX_SIGNALS, v.signal));
@@ -88,6 +89,8 @@ export interface DockerConfig {
   /** The host watchdog's margin past the envelope's own timeout; only a test shortens it. */
   readonly watchdogMarginSeconds?: number;
 }
+
+const launchFailure = (e: Error): Buffer => Buffer.from(`docker did not run to its end: ${(e as NodeJS.ErrnoException).code ?? e.message}\n`);
 
 export function makeDockerTransport(c: DockerConfig): ExecTransport {
   if (!/^[0-9a-f]{64}$/.test(c.containerId)) throw new Error("a container is addressed by its 64-hex id, never its name");
@@ -126,27 +129,31 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
     execSync(spec) {
       const execId = randomUUID();
       const r = spawnSync(c.exe, argsFor(spec, execId), { env, input: spec.stdin ?? undefined, stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"], timeout: (spec.timeoutSeconds + margin) * 1000, maxBuffer: Math.max(spec.stdoutLimit, spec.stderrLimit + 4096) + 1 });
-      return result(spec, execId, r.status, r.stdout ?? Buffer.alloc(0), r.stderr ?? Buffer.alloc(0), null);
+      const err = r.stderr ?? Buffer.alloc(0);
+      return result(spec, execId, r.status, r.stdout ?? Buffer.alloc(0), r.status === null && r.error ? Buffer.concat([err, launchFailure(r.error)]) : err, null);
     },
     execStream(spec, onLine) {
       const execId = randomUUID();
-      const child = spawn(c.exe, argsFor(spec, execId), { env, stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"] });
+      const args = argsFor(spec, execId);
+      const failed = (e: Error): ExecResult => result(spec, execId, null, Buffer.alloc(0), launchFailure(e), null);
+      let child;
+      try { child = spawn(c.exe, args, { env, stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"] }); } catch (e) { return Promise.resolve(failed(e as Error)); }
       const outs: Buffer[] = [];
       const errs: Buffer[] = [];
       let outSize = 0;
       let errSize = 0;
       let cutOff: "stdout" | "stderr" | null = null;
       let pending = Buffer.alloc(0);
-      const stopReading = (which: "stdout" | "stderr"): void => { cutOff ??= which; child.stdout!.destroy(); child.stderr!.destroy(); child.kill("SIGKILL"); };
+      const stopReading = (which: "stdout" | "stderr"): void => { cutOff ??= which; child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGKILL"); };
       const watchdog = setTimeout(() => child.kill("SIGKILL"), (spec.timeoutSeconds + margin) * 1000);
-      child.stdout!.on("data", (d: Buffer) => {
+      child.stdout?.on("data", (d: Buffer) => {
         outs.push(d);
         outSize += d.length;
         if (outSize > spec.stdoutLimit) return stopReading("stdout");
         pending = Buffer.concat([pending, d]);
         for (let nl = pending.indexOf(0x0a); nl >= 0; nl = pending.indexOf(0x0a)) { onLine(pending.subarray(0, nl)); pending = pending.subarray(nl + 1); }
       });
-      child.stderr!.on("data", (d: Buffer) => {
+      child.stderr?.on("data", (d: Buffer) => {
         errs.push(d);
         errSize += d.length;
         if (errSize > spec.stderrLimit + 4096) stopReading("stderr");
@@ -154,10 +161,16 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
       child.stdin?.on("error", () => {});
       child.stdin?.end(spec.stdin);
       return new Promise((res) => {
-        child.on("close", (status) => {
+        let settled = false;
+        const settle = (status: number | null, extra: Buffer | null): void => {
+          if (settled) return;
+          settled = true;
           clearTimeout(watchdog);
-          res(result(spec, execId, status, Buffer.concat(outs), Buffer.concat(errs), cutOff));
-        });
+          res(result(spec, execId, status, Buffer.concat(outs), Buffer.concat(extra === null ? errs : [...errs, extra]), cutOff));
+        };
+        // A docker that could not start: no status, its reason kept as evidence.
+        child.on("error", (e) => settle(null, launchFailure(e)));
+        child.on("close", (status) => settle(status, null));
       });
     },
     inspect: () => inspectNow().doc,

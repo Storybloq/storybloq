@@ -88,11 +88,70 @@ describe("the launch-shape predicate", () => {
     });
   });
 
+  describe.each(ROLES)("%s: every field is required", (role) => {
+    const doc = fixture(role);
+    const paths: string[] = [];
+    for (const [k, v] of Object.entries(doc)) {
+      paths.push(k);
+      if (["HostConfig", "Config", "NetworkSettings", "State"].includes(k)) for (const kk of Object.keys(v as object)) paths.push(`${k}.${kk}`);
+    }
+    it.each(paths)("refuses %s gone", (path) => {
+      const [a, b] = path.split(".");
+      expect(problemsAfter(role, (d) => { if (b === undefined) delete d[a!]; else delete d[a!][b]; }).join()).toContain(path);
+    });
+    const net = Object.keys(doc.NetworkSettings.Networks)[0]!;
+    it.each(Object.keys(doc.NetworkSettings.Networks[net]))("refuses endpoint key %s gone", (key) => {
+      expect(problemsAfter(role, (d) => { delete d.NetworkSettings.Networks[net][key]; }).join()).toContain(key);
+    });
+    it.each(doc.HostConfig.Mounts.flatMap((m: object, i: number) => Object.keys(m).map((k) => [i, k])))("refuses mount %i key %s gone", (i, key) => {
+      expect(problemsAfter(role, (d) => { delete d.HostConfig.Mounts[i][key]; }).join()).toContain("HostConfig.Mounts");
+    });
+    it.each(doc.Mounts.flatMap((m: object, i: number) => Object.keys(m).map((k) => [i, k])))("refuses shown mount %i key %s gone", (i, key) => {
+      expect(problemsAfter(role, (d) => { delete d.Mounts[i][key]; }).join()).toContain("Mounts");
+    });
+    it.each([["a word", "x"], ["a fraction", 1.5], ["null", null], ["a negative", -1]])("refuses State.Pid as %s", (_n, v) => {
+      expect(problemsAfter(role, (d) => { d.State.Pid = v; }).join()).toContain("State.Pid");
+    });
+    it.each(["State.StartedAt", "State.FinishedAt", "Created"])("refuses %s of the wrong type", (path) => {
+      for (const v of ["yesterday", 5, null, ""]) {
+        const [a, b] = path.split(".");
+        expect(problemsAfter(role, (d) => { if (b === undefined) d[a!] = v; else d[a!][b] = v; }).join()).toContain(path);
+      }
+    });
+    it.each([["OOMKilled", true], ["Dead", true], ["ExitCode", 1], ["Error", "boom"]])("refuses State.%s as %j", (k, v) => {
+      expect(problemsAfter(role, (d) => { d.State[k as string] = v; }).join()).toContain(`State.${k}`);
+    });
+    it("refuses an extra mount option and an extra endpoint property", () => {
+      expect(problemsAfter(role, (d) => { d.HostConfig.Mounts[0].BindOptions = { Propagation: "shared" }; }).join()).toContain("HostConfig.Mounts");
+      expect(problemsAfter(role, (d) => { d.HostConfig.Mounts[0].Consistency = "cached"; }).join()).toContain("HostConfig.Mounts");
+      expect(problemsAfter(role, (d) => { d.Mounts[0].Extra = 1; }).join()).toContain("Mounts");
+      expect(problemsAfter(role, (d) => { d.Mounts[0].Propagation = "shared"; }).join()).toContain("Mounts");
+      expect(problemsAfter(role, (d) => { d.Mounts[0].Mode = "rw"; }).join()).toContain("Mounts");
+      expect(problemsAfter(role, (d) => { d.NetworkSettings.Networks[net].DNSNames = ["x"]; }).join()).toContain("DNSNames: an unknown key");
+      expect(problemsAfter(role, (d) => { d.NetworkSettings.Networks[net].DriverOpts = { a: "b" }; }).join()).toContain("DriverOpts");
+      expect(problemsAfter(role, (d) => { d.NetworkSettings.Networks[net].IPAMConfig = { IPv4Address: "1.2.3.4" }; }).join()).toContain("IPAMConfig");
+      expect(problemsAfter(role, (d) => { d.NetworkSettings.Networks[net].Aliases = ["evil"]; }).join()).toContain("Aliases");
+      expect(problemsAfter(role, (d) => { d.NetworkSettings.Networks[net].NetworkID = "other"; }).join()).toContain("NetworkID");
+      expect(problemsAfter(role, (d) => { d.NetworkSettings.Networks[net].EndpointID = "other"; }).join()).toContain("EndpointID");
+    });
+  });
+  it("a sandbox with a process id of 0 refuses, and a helper with one refuses", () => {
+    expect(problemsAfter("attempt", (d) => { d.State.Pid = 0; }).join()).toContain("State.Pid");
+    expect(problemsAfter("pack", (d) => { d.State.Pid = 5; }).join()).toContain("State.Pid");
+  });
+  it("the proxy refuses a tmpfs by being there at all, and its endpoint address must be an address", () => {
+    expect(problemsAfter("proxy", (d) => { d.HostConfig.Tmpfs = {}; }).join()).toContain("Tmpfs");
+    const net = Object.keys(fixture("proxy").NetworkSettings.Networks)[0]!;
+    expect(problemsAfter("proxy", (d) => { d.NetworkSettings.Networks[net].IPAddress = "here"; }).join()).toContain("IPAddress");
+    expect(problemsAfter("proxy", (d) => { d.NetworkSettings.Networks[net].Gateway = 5; }).join()).toContain("Gateway");
+    expect(problemsAfter("proxy", (d) => { d.NetworkSettings.Networks[net].IPPrefixLen = "16"; }).join()).toContain("IPPrefixLen");
+    expect(problemsAfter("proxy", (d) => { d.NetworkSettings.Networks[net].MacAddress = 5; }).join()).toContain("MacAddress");
+  });
   it.each(["attempt", "probe", "judge", "proxy"] as const)("%s refuses a stopped container", (role) => {
-    expect(problemsAfter(role, (d) => { d.State.Status = "exited"; d.State.Running = false; }).join()).toContain("not running");
+    expect(problemsAfter(role, (d) => { d.State.Status = "exited"; d.State.Running = false; }).join()).toContain("State.Status");
   });
   it("the helper is judged before it starts, so a running one refuses", () => {
-    expect(problemsAfter("pack", (d) => { d.State.Status = "running"; d.State.Running = true; }).join()).toContain("not created");
+    expect(problemsAfter("pack", (d) => { d.State.Status = "running"; d.State.Running = true; }).join()).toContain("State.Status");
   });
 
   it.each(["attempt", "probe", "judge"] as const)("%s holds A1's shape", (role) => {

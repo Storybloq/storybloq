@@ -32,12 +32,37 @@
  * command runs as written, so no readiness token is asked of it.
  */
 import { spawn } from "node:child_process";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
+import { join } from "node:path";
 import { runOwnedGroup } from "./process-group.js";
 
 /** How often readiness is polled, and the longest one ownership observation (lsof, then ps) may take. */
 export const READINESS_POLL_MS = 100;
 export const OWNERSHIP_QUERY_MS = 5000;
+
+const MACOS_LSOF = "/usr/sbin/lsof";
+
+/**
+ * Where lsof is. macOS has one fixed path and PATH has no say in it. Elsewhere
+ * (Debian keeps it at /usr/bin) it is the first absolute PATH entry with a
+ * runnable lsof; a relative entry could resolve into the project under check.
+ * With none, the fixed path stands, and the availability check refuses on it.
+ */
+export function resolveLsofPath(platform: NodeJS.Platform, pathEnv: string | undefined): string {
+  if (platform === "darwin") return MACOS_LSOF;
+  for (const dir of (pathEnv ?? "").split(":")) {
+    if (!dir.startsWith("/")) continue;
+    const candidate = join(dir, "lsof");
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not here: the next entry.
+    }
+  }
+  return MACOS_LSOF;
+}
 
 /**
  * Test seams, not reachable through any CLI or MCP input: where lsof and ps
@@ -54,7 +79,7 @@ export const serveSeams: {
   afterOwnership2: () => void | Promise<void>;
   duringShutdown: () => void | Promise<void>;
 } = {
-  lsofPath: "/usr/sbin/lsof",
+  lsofPath: resolveLsofPath(process.platform, process.env.PATH),
   psPath: "/bin/ps",
   ownershipQueryMs: OWNERSHIP_QUERY_MS,
   afterPortCheck: () => {},

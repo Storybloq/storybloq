@@ -46,6 +46,15 @@ function listen(port: number, host: string): Promise<Server> {
   });
 }
 
+async function hasIpv6Loopback(): Promise<boolean> {
+  const code = await listen(0, "::1").then(async (s) => {
+    open.splice(open.indexOf(s), 1);
+    await new Promise((r) => s.close(r));
+    return null;
+  }, (e: NodeJS.ErrnoException) => e.code);
+  return code === null;
+}
+
 async function freePort(): Promise<number> {
   const s = await listen(0, "127.0.0.1");
   const port = (s.address() as { port: number }).port;
@@ -118,7 +127,9 @@ describe("a verified VERIFY", () => {
     await listen(port, "127.0.0.1");
   });
 
-  it("ignores a listener on [::1], which cannot accept 127.0.0.1", async () => {
+  it("ignores a listener on [::1], which cannot accept 127.0.0.1", async (ctx) => {
+    // A host or container with no IPv6 loopback cannot hold this listener, so it has no such case.
+    if (!(await hasIpv6Loopback())) return ctx.skip();
     const port = await freePort();
     const root = await ready(port);
     let other: Server | null = null;
@@ -236,7 +247,16 @@ describe("a VERIFY that does not verify writes nothing and prints its run", () =
     await fails(root, new RegExp(`^Verification failed: app verify: foreign listener: pid ${process.pid} outside the group listens on ${port}\\.`));
   });
 
-  it("a foreign listener that appears after the response is foreign-listener", async () => {
+  it.runIf(process.platform === "linux")("on Linux a wildcard listener cannot bind beside the group's 127.0.0.1, so a late foreign listener cannot arise this way", async () => {
+    const port = await freePort();
+    const root = await ready(port);
+    let bind: unknown = null;
+    serveSeams.afterResponse = async () => { bind = await listen(port, "0.0.0.0").catch((e: NodeJS.ErrnoException) => e.code); };
+    expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(0);
+    expect(bind).toBe("EADDRINUSE");
+  });
+
+  it.skipIf(process.platform === "linux")("a foreign listener that appears after the response is foreign-listener", async () => {
     const port = await freePort();
     const root = await ready(port);
     serveSeams.afterResponse = async () => { await listen(port, "0.0.0.0"); };

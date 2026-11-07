@@ -1,9 +1,8 @@
 import { afterEach, afterAll, beforeEach } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { compareConfig, snapshotConfigAt, snapshotProductionConfig, type ConfigSnapshot } from "./helpers/git-config-tripwire.js";
+import { compareConfig, CONFIG_SNAPSHOT_BASENAME, PROBE_DIR_ENV, snapshotConfigAt, snapshotProductionConfig, type ConfigSnapshot } from "./helpers/git-config-tripwire.js";
 import { clearIsolationViolation, recordedIsolationViolation } from "./helpers/git-fixture.js";
 import { PROJECT_ROOT_ENV_VAR, LEGACY_PROJECT_ROOT_ENV_VAR } from "../src/core/project-root-shared.js";
 
@@ -95,7 +94,6 @@ afterEach(clearAmbientProjectRoot);
  * one case this must not allow, and one `git rev-parse` per worker is cheap.
  */
 const PKG_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
-const CONFIG_SNAPSHOT_FILE = join(tmpdir(), "storybloq-iss1220-git-config-snapshot.json");
 
 function baseline(): ConfigSnapshot | null {
   try {
@@ -106,8 +104,11 @@ function baseline(): ConfigSnapshot | null {
     const override = process.env.STORYBLOQ_ISS1220_CONFIG_PATH;
     if (override !== undefined && override !== "") return snapshotConfigAt(override);
 
-    if (existsSync(CONFIG_SNAPSHOT_FILE)) {
-      return JSON.parse(readFileSync(CONFIG_SNAPSHOT_FILE, "utf-8")) as ConfigSnapshot;
+    // ISS-1420: this run's own directory, from the global setup.
+    const runDir = process.env[PROBE_DIR_ENV];
+    const snapshotFile = runDir ? join(runDir, CONFIG_SNAPSHOT_BASENAME) : null;
+    if (snapshotFile !== null && existsSync(snapshotFile)) {
+      return JSON.parse(readFileSync(snapshotFile, "utf-8")) as ConfigSnapshot;
     }
     return snapshotProductionConfig(PKG_ROOT);
   } catch {

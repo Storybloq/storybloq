@@ -16,6 +16,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { createHash } from "node:crypto";
 
+/** ISS-1420: names this run's own snapshot directory, set by the global setup for its workers. */
+export const PROBE_DIR_ENV = "STORYBLOQ_E2E_PROBE_DIR";
+export const CONFIG_SNAPSHOT_BASENAME = "git-config-snapshot.json";
+
 export interface ConfigSnapshot {
   /** Absolute path to the watched config file. */
   readonly path: string;

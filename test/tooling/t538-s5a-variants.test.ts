@@ -8,15 +8,15 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { driveFlow, newDriveState, setupView, finishDrive, type DriveState, type TurnResponse } from "../../scripts/onboarding-eval-drive.js";
-import { ownerScript, packageTurns, faultFor } from "../../scripts/onboarding-eval-run.js";
+import { archiveProject, ARCHIVE_OMITTED_FILE, ownerScript, packageTurns, faultFor, spawnedResult } from "../../scripts/onboarding-eval-run.js";
 import {
-  applySessionChecks, demoFacts, artifactFindings, completionsOf, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
-  type HarnessFacts, type SessionCheckInputs, type SessionVariant,
+  applySessionChecks, demoFacts, artifactFindings, attemptBypass, completionsOf, ledgerDigest, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
+  type BypassAttempt, type HarnessFacts, type SessionCheckInputs, type SessionVariant,
 } from "../../scripts/onboarding-eval-sessions.js";
 import { rule9 } from "../../scripts/onboarding-eval-checkset7.js";
 import type { EventsLog, InvocationMapping, SetupEvent } from "../../scripts/onboarding-eval-checkset7-events.js";
@@ -189,16 +189,17 @@ describe("milestone-demo", () => {
     { text: "Reopened and added the follow-up." },
     { text: "Ticket T-3 waits on owner checkpoint T-2, not yet approved or retired." },
   ];
+  const refused: BypassAttempt = { ticket: "T-3", exitCode: 1, output: ["storybloq: skill files not refreshed", "Cannot update T-3: it waits on owner checkpoint T-2, not yet approved or retired."], ledgerChanged: false };
   it("passes when the demo ran, printed the rubric's line, and the dependent comes back checkpoint-blocked", () => {
-    expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3" } })).toEqual([]);
+    expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo, dependent: "T-3", bypass: refused } })).toEqual([]);
   });
   it("fails a demo shown by narration only", () => {
     const narrated = [{ text: "Milestone 1 is built; it prints the rota line." }, ...run.slice(1)];
-    expect(check(drive("milestone-demo", narrated), "milestone-demo", { harness: { demo, dependent: "T-3" } })).toEqual(["milestone-demo: the demo was shown by narration only; no call before the approval ran node rota.js"]);
+    expect(check(drive("milestone-demo", narrated), "milestone-demo", { harness: { demo, dependent: "T-3", bypass: refused } })).toEqual(["milestone-demo: the demo was shown by narration only; no call before the approval ran node rota.js"]);
   });
   it("fails a demo that printed something else, and a dependent run that went ahead", () => {
     const s = drive("milestone-demo", [...run.slice(0, 3), { text: "Built T-3." }]);
-    expect(check(s, "milestone-demo", { harness: { demo: { ...demo, stdout: "Today: nobody" }, dependent: "T-3" } })).toEqual([
+    expect(check(s, "milestone-demo", { harness: { demo: { ...demo, stdout: "Today: nobody" }, dependent: "T-3", bypass: refused } })).toEqual([
       "milestone-demo: the demo command printed \"Today: nobody\", not the rubric's \"Today: Sam waters beds 1-4\"",
       "milestone-demo: the targeted run on T-3 did not come back checkpoint-blocked",
     ]);
@@ -209,11 +210,48 @@ describe("milestone-demo", () => {
     ["a spawn error", { status: null, error: "spawnSync /bin/sh ETIMEDOUT" }, "status none, signal none, error spawnSync /bin/sh ETIMEDOUT"],
     ["a record with no status", { status: undefined }, "status none, signal none, error none"],
   ])("fails a demo with the right stdout and %s", (_label, over, detail) => {
-    expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo: { ...demo, ...over } as never, dependent: "T-3" } })).toEqual([`milestone-demo: the demo command did not exit 0 (${detail})`]);
+    expect(check(drive("milestone-demo", run), "milestone-demo", { harness: { demo: { ...demo, ...over } as never, dependent: "T-3", bypass: refused } })).toEqual([`milestone-demo: the demo command did not exit 0 (${detail})`]);
   });
   it("records what the demo's process did", () => {
     expect(demoFacts("c", "e", { status: 3, signal: null, stdout: "x" })).toEqual({ command: "c", expected: "e", stdout: "x", status: 3, signal: null, error: null });
     expect(demoFacts("c", "e", { status: null, signal: "SIGTERM", stdout: null, error: new Error("boom") })).toEqual({ command: "c", expected: "e", stdout: "", status: null, signal: "SIGTERM", error: "boom" });
+  });
+  it("fails a status update that never exited, even with the checkpoint's words and an unchanged ledger", () => {
+    const s = drive("milestone-demo", run);
+    const with_ = (bypass: BypassAttempt) => check(s, "milestone-demo", { harness: { demo, dependent: "T-3", bypass } });
+    expect(with_({ ...refused, exitCode: null, signal: "SIGKILL" })).toEqual(["milestone-demo: the status update on T-3 did not exit (signal SIGKILL, error none)"]);
+    expect(with_({ ...refused, exitCode: null, error: "spawnSync ETIMEDOUT" })).toEqual(["milestone-demo: the status update on T-3 did not exit (signal none, error spawnSync ETIMEDOUT)"]);
+    expect(with_({ ...refused, exitCode: null })).toEqual(["milestone-demo: the status update on T-3 did not exit (signal none, error none)"]);
+  });
+  it("a process killed by a signal or never started reaches the record as no exit status, with how it ended", () => {
+    const story = join(realpathSync(mkdtempSync(join(tmpdir(), "t538b-"))), ".story");
+    try {
+      mkdirSync(story);
+      const killed = attemptBypass(story, "T-3", () => spawnedResult(spawnSync("/bin/sh", ["-c", "kill -KILL $$"], { encoding: "utf-8" })));
+      expect(killed).toMatchObject({ exitCode: null, signal: "SIGKILL" });
+      const missing = attemptBypass(story, "T-3", () => spawnedResult(spawnSync("/nonexistent/storybloq", [], { encoding: "utf-8" })));
+      expect(missing.exitCode).toBeNull();
+      expect(missing.error).toMatch(/ENOENT/);
+    } finally {
+      rmSync(dirname(story), { recursive: true, force: true });
+    }
+  });
+  it("the bypass record keeps how the process ended", () => {
+    const story = join(realpathSync(mkdtempSync(join(tmpdir(), "t538b-"))), ".story");
+    try {
+      mkdirSync(story);
+      expect(attemptBypass(story, "T-3", () => ({ status: null, signal: "SIGTERM", error: new Error("boom"), stdout: "", stderr: "" }))).toMatchObject({ exitCode: null, signal: "SIGTERM", error: "boom" });
+    } finally {
+      rmSync(dirname(story), { recursive: true, force: true });
+    }
+  });
+  it("fails a status update that went around the checkpoint, one refused for another reason, one that wrote, and none at all", () => {
+    const s = drive("milestone-demo", run);
+    const with_ = (bypass: BypassAttempt | null) => check(s, "milestone-demo", { harness: { demo, dependent: "T-3", bypass } });
+    expect(with_({ ...refused, exitCode: 0, output: ["Updated T-3"] })).toEqual(["milestone-demo: the status update completing T-3 went through"]);
+    expect(with_({ ...refused, output: ["storybloq: skill files not refreshed", "Ticket T-3 not found"] })).toEqual(["milestone-demo: the status update on T-3 was refused for another reason (\"storybloq: skill files not refreshed | Ticket T-3 not found\")"]);
+    expect(with_({ ...refused, ledgerChanged: true })).toEqual(["milestone-demo: the status update on T-3 changed the ledger"]);
+    expect(with_(null)).toEqual(["milestone-demo: the harness made no status-update attempt on T-3"]);
   });
   it("fails a missing follow-up (rule 9)", () => {
     const followUp = { titlePattern: "^Add tap to rota line", checkpoint: { kind: "acceptance" as const, owner: "Robin" } };
@@ -308,7 +346,8 @@ const RUNNER = join(PKG, "scripts", "onboarding-eval-run.ts");
 /** A Codex stand-in: answers by prompt, runs real shell commands (the eval CLI on PATH among them) and reports them as Codex JSONL. */
 const FAKE_CODEX = `
 const { spawnSync } = require("node:child_process");
-const { readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 const prompt = process.argv[process.argv.length - 1];
 const items = [];
 const run = (command) => {
@@ -361,6 +400,124 @@ function expectRunnerFinished(r: { status: number | null; signal?: NodeJS.Signal
   expect([0, 1], `status ${String(r.status)} signal ${String(r.signal ?? null)}\n${r.stdout ?? ""}\n${r.stderr ?? ""}`).toContain(r.status);
 }
 
+describe("the archive's own record file", () => {
+  /** A project whose tree holds a symlink at the record's name, pointing at a file outside. */
+  function planted(withDependencies: boolean): { root: string; project: string; dest: string; sentinel: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "t538a-")));
+    const project = join(root, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, "app.js"), "1\n");
+    if (withDependencies) { mkdirSync(join(project, "node_modules")); writeFileSync(join(project, "node_modules", "x.js"), "x\n"); }
+    const sentinel = join(root, "sentinel.txt");
+    writeFileSync(sentinel, "untouched\n");
+    symlinkSync(sentinel, join(project, ARCHIVE_OMITTED_FILE));
+    return { root, project, dest: join(root, "dest"), sentinel };
+  }
+  it("a project's symlink at that name is not followed: the record is a new regular file and the target is unchanged", () => {
+    const p = planted(true);
+    try {
+      expect(archiveProject(p.project, p.dest).map((o) => o.path)).toEqual(["node_modules"]);
+      expect(readFileSync(p.sentinel, "utf-8")).toBe("untouched\n");
+      expect(lstatSync(join(p.dest, ARCHIVE_OMITTED_FILE)).isFile()).toBe(true);
+      expect(JSON.parse(readFileSync(join(p.dest, ARCHIVE_OMITTED_FILE), "utf-8")).omitted[0].path).toBe("node_modules");
+      expect(existsSync(join(p.dest, "app.js"))).toBe(true);
+    } finally { rmSync(p.root, { recursive: true, force: true }); }
+  });
+  it("with nothing omitted the planted link is not copied either", () => {
+    const p = planted(false);
+    try {
+      expect(archiveProject(p.project, p.dest)).toEqual([]);
+      expect(() => lstatSync(join(p.dest, ARCHIVE_OMITTED_FILE))).toThrow(/ENOENT/);
+    } finally { rmSync(p.root, { recursive: true, force: true }); }
+  });
+  it("only the top-level name is the record: a deeper file of that name is project content", () => {
+    const p = planted(false);
+    try {
+      mkdirSync(join(p.project, "docs"));
+      writeFileSync(join(p.project, "docs", ARCHIVE_OMITTED_FILE), "mine\n");
+      archiveProject(p.project, p.dest);
+      expect(readFileSync(join(p.dest, "docs", ARCHIVE_OMITTED_FILE), "utf-8")).toBe("mine\n");
+    } finally { rmSync(p.root, { recursive: true, force: true }); }
+  });
+  it("a link already at the destination is refused, not written through", () => {
+    const p = planted(true);
+    try {
+      mkdirSync(p.dest);
+      symlinkSync(p.sentinel, join(p.dest, ARCHIVE_OMITTED_FILE));
+      expect(() => archiveProject(p.project, p.dest)).toThrow(/EEXIST/);
+      expect(readFileSync(p.sentinel, "utf-8")).toBe("untouched\n");
+    } finally { rmSync(p.root, { recursive: true, force: true }); }
+  });
+});
+
+describe("the harness's status-update bypass", () => {
+  it("keeps every output line, stderr first, and sees a ledger write but not a cache or lock write", () => {
+    const story = join(realpathSync(mkdtempSync(join(tmpdir(), "t538b-"))), ".story");
+    try {
+      mkdirSync(join(story, "tickets"), { recursive: true });
+      mkdirSync(join(story, "cache"));
+      writeFileSync(join(story, "tickets", "T-3.json"), "{\"status\":\"open\"}\n");
+      const before = ledgerDigest(story);
+      const seen: (readonly string[])[] = [];
+      const quiet = attemptBypass(story, "T-3", (args) => {
+        seen.push(args);
+        writeFileSync(join(story, "cache", "derived.json"), "{}\n");
+        writeFileSync(join(story, ".lock"), "1\n");
+        return { status: 1, stdout: "after\n", stderr: "storybloq: an advisory\n\n  Cannot update T-3: it waits on owner checkpoint T-2, not yet approved or retired.\n" };
+      });
+      expect(seen).toEqual([["ticket", "update", "T-3", "--status", "complete"]]);
+      expect(quiet).toEqual({ ticket: "T-3", exitCode: 1, output: ["storybloq: an advisory", "Cannot update T-3: it waits on owner checkpoint T-2, not yet approved or retired.", "after"], ledgerChanged: false });
+      expect(ledgerDigest(story)).toBe(before);
+      const wrote = attemptBypass(story, "T-3", () => {
+        writeFileSync(join(story, "tickets", "T-3.json"), "{\"status\":\"complete\"}\n");
+        return { status: 0, stdout: "Updated T-3\n", stderr: "" };
+      });
+      expect(wrote).toEqual({ ticket: "T-3", exitCode: 0, output: ["Updated T-3"], ledgerChanged: true });
+      const added = attemptBypass(story, "T-3", () => {
+        writeFileSync(join(story, "tickets", "T-9.json"), "{}\n");
+        return { status: 1, stdout: "", stderr: "" };
+      });
+      expect(added.ledgerChanged).toBe(true);
+      expect(added.output).toEqual([]);
+    } finally {
+      rmSync(dirname(story), { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the final-tree archive", () => {
+  it("leaves dependency install folders out at any depth, records each with its size, and keeps lockfiles and the ledger", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "t538a-")));
+    try {
+      const project = join(dir, "project");
+      const put = (rel: string, text: string): void => { mkdirSync(dirname(join(project, rel)), { recursive: true }); writeFileSync(join(project, rel), text); };
+      put(".story/tickets/T-1.json", "{}\n");
+      put("package-lock.json", "{\"lockfileVersion\":3}\n");
+      put("rota.js", "console.log(1)\n");
+      put("node_modules/a/index.js", "12345");
+      put("node_modules/a/node_modules/b/x.js", "123");
+      put("web/node_modules/c.js", "1234567");
+      put(".venv/lib/site.py", "12");
+      put("src/venv.txt", "not a folder");
+      const dest = join(dir, "project.after");
+      const omitted = archiveProject(project, dest);
+      const expected = [{ path: ".venv", files: 1, bytes: 2 }, { path: "node_modules", files: 2, bytes: 8 }, { path: "web/node_modules", files: 1, bytes: 7 }];
+      expect(omitted).toEqual(expected);
+      expect(JSON.parse(readFileSync(join(dest, ARCHIVE_OMITTED_FILE), "utf-8"))).toEqual({ omitted: expected });
+      expect(readdirSync(dest).sort()).toEqual([".eval-archive-omitted.json", ".story", "package-lock.json", "rota.js", "src", "web"]);
+      expect(readdirSync(join(dest, "web"))).toEqual([]);
+      expect(readFileSync(join(dest, ".story", "tickets", "T-1.json"), "utf-8")).toBe("{}\n");
+      expect(readFileSync(join(dest, "src", "venv.txt"), "utf-8")).toBe("not a folder");
+      // Nothing to leave out: no record file either.
+      const clean = join(dir, "clean");
+      expect(archiveProject(join(project, ".story"), clean)).toEqual([]);
+      expect(readdirSync(clean)).toEqual(["tickets"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the runner's plumbing per variant", () => {
   it.each([[null, "SIGKILL"], [null, null], [2, null]] as const)("status %s signal %s is not a finished run", (status, signal) => {
     expect(() => expectRunnerFinished({ status, signal })).toThrow();
@@ -381,7 +538,7 @@ describe("the runner's plumbing per variant", () => {
         writeFileSync(payloadFile, JSON.stringify(fakePayload("Robin", "Watering rota demo")));
         const env: NodeJS.ProcessEnv = {
           PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, HOME: join(dir, "home"), TMPDIR: dir, CODEX_HOME: codexHome,
-          FAKE_PAYLOAD: payloadFile, FAKE_PACKAGE: PACKAGE, FAKE_RESUME: p.resume ? "1" : "0",
+          FAKE_ARGV_LOG: join(dir, "argv.log"), FAKE_PAYLOAD: payloadFile, FAKE_PACKAGE: PACKAGE, FAKE_RESUME: p.resume ? "1" : "0",
           FAKE_ADJUST: ownerScript(readFileSync(join(PKG, "test", "fixtures", "onboarding", p.fixture, "owner-answers.md"), "utf-8")).adjustment,
         };
         mkdirSync(env.HOME!);
@@ -390,6 +547,10 @@ describe("the runner's plumbing per variant", () => {
         const args = [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw, ...(p.fault ? ["--fault", p.fault] : [])];
         const r = spawnSync(process.execPath, args, { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
         expectRunnerFinished(r);
+        // Plan line 806: these runs reach every later session, so the whole run is read for the client's bypass flag.
+        const argvs = readFileSync(join(dir, "argv.log"), "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
+        expect(argvs.filter((a) => a[0] === "exec" && a[1] === "resume").length, p.variant).toBeGreaterThan(0);
+        expect(argvs.filter((a) => (a.includes("--") ? a.slice(0, a.indexOf("--")) : a).some((x) => ["--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"].includes(x)))).toEqual([]);
         const runId = readdirSync(raw)[0]!;
         const names = readdirSync(join(raw, runId));
         const events = readFileSync(join(raw, runId, "events.jsonl"), "utf-8");
@@ -403,11 +564,15 @@ describe("the runner's plumbing per variant", () => {
         const sessions = JSON.parse(readFileSync(join(raw, runId, "sessions.json"), "utf-8")) as { sessions: { session: number }[]; harness: HarnessFacts };
         if (p.variant === "milestone-demo") expect(sessions.harness.demo).toHaveProperty("status");
         expect(sessions.sessions.length).toBeGreaterThanOrEqual(2);
+        // T-538 S5b: the final project tree is archived beside the transcript, so a result cites inspected files.
+        expect(names).toContain("project.after");
         if (p.fault) expect(sessions.harness.fired).toBe(true);
         if (p.variant === "interrupted-edited") expect(sessions.harness.edits).not.toBeNull();
         if (p.variant === "milestone-demo") {
           expect(sessions.harness.demo?.stdout.trim()).toBe("Today: Sam waters beds 1-4");
           expect(sessions.harness.dependent).toMatch(/\S/);
+          expect(sessions.harness.bypass, JSON.stringify(sessions.harness.bypass)).toMatchObject({ ticket: sessions.harness.dependent, ledgerChanged: false, output: expect.arrayContaining([expect.stringMatching(/waits on owner checkpoints? /)]) });
+          expect(sessions.harness.bypass?.exitCode).not.toBe(0);
         }
         if (p.variant === "restart") expect(sessions.harness.report?.some((l) => l.startsWith("Checkpoint: "))).toBe(true);
       } finally {

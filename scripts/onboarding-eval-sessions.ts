@@ -144,9 +144,23 @@ export interface HarnessFacts {
   readonly storeRevisions: number | null;
   /** Whether the final config enables the TEST stage (empty-idea-verify). */
   readonly testEnabled: boolean | null;
+  /** milestone-demo (T-538 S5b): the harness's own status update completing the gated dependent, after the last session. */
+  readonly bypass: BypassAttempt | null;
 }
 
-export const NO_FACTS: HarnessFacts = { fault: null, fired: null, edits: null, demo: null, dependent: null, report: null, storeRevisions: null, testEnabled: null };
+/** An ordinary `ticket update --status complete` on a checkpoint-gated ticket: its exit, its output lines, and whether the ledger moved. */
+export interface BypassAttempt {
+  readonly ticket: string;
+  readonly exitCode: number | null;
+  /** Every non-empty output line, stderr's before stdout's: the CLI may print advisories ahead of its answer. */
+  readonly output: readonly string[];
+  readonly ledgerChanged: boolean;
+  /** How a process with no exit status ended (spawnSync gives null on a signal or a timeout). */
+  readonly signal?: string;
+  readonly error?: string;
+}
+
+export const NO_FACTS: HarnessFacts = { fault: null, fired: null, edits: null, demo: null, dependent: null, report: null, storeRevisions: null, testEnabled: null, bypass: null };
 
 export interface SessionsFile {
   readonly sessions: readonly SessionSpan[];
@@ -342,7 +356,43 @@ function demoFindings(i: VariantInputs): string[] {
   const last = i.sessions.at(-1);
   const blocked = last !== undefined && last.session >= 3 && i.turns.slice(last.turns[0], last.turns[1]).some((t) => /waits on owner checkpoints? /.test(t.text) || t.calls.some((c) => /waits on owner checkpoints? /.test(c.output)));
   if (!blocked) out.push(`milestone-demo: the targeted run on ${i.harness.dependent ?? "the dependent"} did not come back checkpoint-blocked`);
+  // T-538 S5b: an ordinary status update is the other way around the checkpoint; it must be refused by the checkpoint, writing nothing.
+  const b = i.harness.bypass;
+  if (b === null) out.push(`milestone-demo: the harness made no status-update attempt on ${i.harness.dependent ?? "the dependent"}`);
+  else {
+    if (b.exitCode === 0) out.push(`milestone-demo: the status update completing ${b.ticket} went through`);
+    // No exit status is no refusal, whatever the process printed before it died.
+    else if (b.exitCode === null) out.push(`milestone-demo: the status update on ${b.ticket} did not exit (signal ${b.signal ?? "none"}, error ${b.error ?? "none"})`);
+    else if (!b.output.some((l) => /waits on owner checkpoints? /.test(l))) out.push(`milestone-demo: the status update on ${b.ticket} was refused for another reason ("${b.output.join(" | ")}")`);
+    if (b.ledgerChanged) out.push(`milestone-demo: the status update on ${b.ticket} changed the ledger`);
+  }
   return out;
+}
+
+/** The ledger's bytes as one digest: every file under `.story/` but the derived cache and the lock. */
+export function ledgerDigest(story: string): string {
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      const rel = relative(story, path).split(sep).join("/");
+      if (rel === "cache" || rel === ".lock") continue;
+      if (statSync(path).isDirectory()) walk(path);
+      else files.push(rel);
+    }
+  };
+  if (existsSync(story)) walk(story);
+  const h = createHash("sha256");
+  for (const rel of files) h.update(`${rel}\u0000`).update(createHash("sha256").update(readFileSync(join(story, rel))).digest("hex")).update("\n");
+  return h.digest("hex");
+}
+
+/** Runs the bypass through `run` (the harness's CLI launcher) and reports what it did, stderr's lines first. */
+export function attemptBypass(story: string, ticket: string, run: (args: readonly string[]) => { status: number | null; signal?: string | null; error?: Error; stdout: string; stderr: string }): BypassAttempt {
+  const before = ledgerDigest(story);
+  const r = run(["ticket", "update", ticket, "--status", "complete"]);
+  const output = `${r.stderr}\n${r.stdout}`.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+  return { ticket, exitCode: r.status, output, ledgerChanged: ledgerDigest(story) !== before, ...(r.signal ? { signal: r.signal } : {}), ...(r.error ? { error: r.error.message } : {}) };
 }
 
 function orderFindings(i: VariantInputs): string[] {

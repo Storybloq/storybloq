@@ -47,9 +47,9 @@
  * regrade/NNN/ beside the record (onboarding-eval-regrade.ts).
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -60,7 +60,7 @@ import {
   type PackageTurn, type StoryReader, type TurnResponse, type Variant,
 } from "./onboarding-eval-drive.js";
 import {
-  CHECK_SET_VERSION, claudeTurn, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, recipeContract, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
+  CHECK_SET_VERSION, claudeTurn, codexSandboxProblems, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, recipeContract, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
   type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { applySetupReviewChecks, STORE_COPY } from "./onboarding-eval-checkset6.js";
@@ -68,7 +68,7 @@ import { applySetupRunChecks, cs7FinalLedger, type Cs7FinalLedger, type FollowUp
 import type { InvocationMapping } from "./onboarding-eval-checkset7-events.js";
 import { buildEval, EVAL_DIST } from "./build-eval.mjs";
 import {
-  applySessionChecks, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, observeEvidence, OBSERVATIONS_RAW, ownerEdits, sessionScript,
+  applySessionChecks, attemptBypass, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, observeEvidence, OBSERVATIONS_RAW, ownerEdits, sessionScript,
   sessionSpans, SESSIONS_RAW, sessionsText, setupIdOf, storeRevisionCount, SESSION_VARIANTS, variantFixture, type HarnessFacts, type SessionVariant,
   demoFacts,
 } from "./onboarding-eval-sessions.js";
@@ -122,6 +122,11 @@ function parseArgs(argv: readonly string[]): Options {
     timeoutMs: Number(get("timeout-ms", String(40 * 60_000))),
     maxBudgetUsd: Number(get("max-budget-usd", "15")),
   };
+}
+
+/** A finished process as the bypass record reads it: with no exit status, how it ended is the whole story. */
+export function spawnedResult(r: { status: number | null; signal: NodeJS.Signals | null; error?: Error; stdout: string | null; stderr: string | null }): { status: number | null; signal: NodeJS.Signals | null; error?: Error; stdout: string; stderr: string } {
+  return { status: r.status, signal: r.signal, ...(r.error ? { error: r.error } : {}), stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
 /** The fault selector a variant takes: `--fault` is refused for any variant but interrupted*, and those require one. */
@@ -179,6 +184,45 @@ export function packageTurns(variant: Variant, script: OwnerScript): PackageTurn
 
 
 /** A standalone copy of the fixture project: placeholders dropped, git-untrackable scaffold dirs created. */
+/** Dependency install folders the archive leaves out (T-538 S5b): no rule reads them, and 18 runs of them would eat the disk. */
+export const ARCHIVE_OMITTED_DIRS: ReadonlySet<string> = new Set(["node_modules", "bower_components", ".pnpm-store", ".venv", "venv"]);
+/** The record, inside the archive, of what it left out. */
+export const ARCHIVE_OMITTED_FILE = ".eval-archive-omitted.json";
+
+export interface OmittedDir { readonly path: string; readonly files: number; readonly bytes: number }
+
+/**
+ * Copies the final project tree to `dest`, symlinks kept verbatim, skipping every dependency install folder
+ * at any depth; each skipped folder is recorded with its file count and byte size (symlinks not followed)
+ * in `dest`/ARCHIVE_OMITTED_FILE. Lockfiles are ordinary files and stay. Returns the omissions.
+ */
+export function archiveProject(project: string, dest: string): OmittedDir[] {
+  const omitted: OmittedDir[] = [];
+  const measure = (dir: string): { files: number; bytes: number } => {
+    let files = 0;
+    let bytes = 0;
+    for (const name of readdirSync(dir)) {
+      const st = lstatSync(join(dir, name));
+      if (st.isDirectory()) { const m = measure(join(dir, name)); files += m.files; bytes += m.bytes; }
+      else { files += 1; bytes += st.size; }
+    }
+    return { files, bytes };
+  };
+  cpSync(project, dest, {
+    recursive: true, verbatimSymlinks: true,
+    filter: (src) => {
+      // The record's name at the top belongs to the harness; a project's file or link there is never carried over.
+      if (relative(project, src) === ARCHIVE_OMITTED_FILE) return false;
+      if (!ARCHIVE_OMITTED_DIRS.has(basename(src)) || !lstatSync(src).isDirectory()) return true;
+      omitted.push({ path: relative(project, src).split(sep).join("/"), ...measure(src) });
+      return false;
+    },
+  });
+  omitted.sort((a, b) => a.path.localeCompare(b.path));
+  if (omitted.length > 0) writeFileSync(join(dest, ARCHIVE_OMITTED_FILE), `${JSON.stringify({ omitted }, null, 2)}\n`, { flag: "wx" });
+  return omitted;
+}
+
 export function materializeFixture(fixture: string, dest: string): string {
   const project = join(dest, "project");
   cpSync(join(FIXTURES, fixture, "project"), project, { recursive: true });
@@ -290,6 +334,7 @@ export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: 
   };
   under("HOME");
   under("CODEX_HOME");
+  if (client === "codex") under("TMPDIR");
   if (client === "claude") under("CLAUDE_CONFIG_DIR");
   // Check set 7: the evaluation entry's events log and fault selector are the runner's own.
   const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT"]);
@@ -383,9 +428,13 @@ function rolloutLines(codexHome: string, threadId: string): Record<string, unkno
   return lines;
 }
 
-function runTurn(o: Options, ctx: { readonly project: string; readonly env: NodeJS.ProcessEnv; readonly clientBin: string; readonly claudeArgs: readonly string[]; sessionId: string | null; first: boolean }, prompt: string): TurnResult {
+function runTurn(o: Options, ctx: { readonly project: string; readonly env: NodeJS.ProcessEnv; readonly clientBin: string; readonly claudeArgs: readonly string[]; readonly writableRoots: readonly string[]; sessionId: string | null; first: boolean }, prompt: string): TurnResult {
   const bin = ctx.clientBin;
-  const args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: ctx.claudeArgs, sessionId: ctx.sessionId, first: ctx.first }, prompt);
+  const args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: ctx.claudeArgs, sessionId: ctx.sessionId, first: ctx.first, writableRoots: ctx.writableRoots }, prompt);
+  if (o.client === "codex") {
+    const weak = codexSandboxProblems(args);
+    if (weak.length > 0) throw new Error(`onboarding-eval: the turn's sandbox does not hold: ${weak.join("; ")}`);
+  }
   const r = spawnSync(bin, args, { cwd: ctx.project, env: ctx.env, encoding: "utf-8", timeout: o.timeoutMs, maxBuffer: 512 * 1024 * 1024 });
   const raw = r.stdout ?? "";
   const stderr = r.stderr ?? "";
@@ -482,6 +531,11 @@ async function main(): Promise<void> {
   const home = join(work, "home");
   mkdirSync(home, { recursive: true });
   env.HOME = home;
+  // ISS-1455: the attempt's temp folder is its own, under the one attempt tree, and writable by name.
+  const attemptTmp = join(work, "tmp");
+  mkdirSync(attemptTmp, { recursive: true });
+  env.TMPDIR = attemptTmp;
+  const writableRoots = [home, attemptTmp, env.STORYBLOQ_GLOBAL_DIR, setupReviewStore, dirname(eventsFile), join(project, ".git")];
   const launcher = installCliLauncher(join(work, "cli-bin"));
   env.PATH = `${dirname(launcher)}${delimiter}${env.PATH ?? ""}`;
   let claudeArgs: string[] = [];
@@ -522,7 +576,7 @@ async function main(): Promise<void> {
 
   const before = treeDigest(project);
   const exclusion = runtimeExclusion(project);
-  const ctx = { project, env, clientBin, claudeArgs, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
+  const ctx = { project, env, clientBin, claudeArgs, writableRoots, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
   const state = newDriveState(CHECK_SET_VERSION);
   let turnNo = 0;
   // The owner's side of the conversation; each step spawns one turn and records its raw output.
@@ -595,6 +649,13 @@ async function main(): Promise<void> {
   }
   // The evidence as the last session left it.
   if (session === "milestone-demo") observations.push(...observeEvidence(project, { kind: "turn", index: state.turns.length }));
+  // T-538 S5b: then the harness's own ordinary status update on the gated dependent, which the checkpoint must refuse.
+  if (session === "milestone-demo" && facts.dependent !== null) {
+    facts.bypass = attemptBypass(join(project, ".story"), facts.dependent, (args) => {
+      const r = spawnSync(launcher, args, { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
+      return spawnedResult(r);
+    });
+  }
   if (CHECK_SET_VERSION >= 6) {
     applySetupReviewChecks(state, setupReviewStore, variant);
     // Always present for check set 6, empty when nothing ran, so a missing copy is a loss the regrade names.
@@ -682,7 +743,7 @@ async function main(): Promise<void> {
     packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);
-  cpSync(project, join(rawDir, "project.after"), { recursive: true, verbatimSymlinks: true });
+  archiveProject(project, join(rawDir, "project.after"));
   process.stdout.write(`${runId} ${verdict.verdict}\n${verdict.reasons.map((f) => `  - ${f}`).join("\n")}\n`);
   // 0 only for a full PASS, which needs --finalize with a judge result; mechanical success alone is 3 (pending).
   process.exitCode = verdict.verdict === "FAIL" ? 1 : verdict.verdict === "PENDING_SEMANTIC" ? 3 : 0;

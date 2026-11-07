@@ -1564,6 +1564,50 @@ export interface TurnSpec {
   readonly claudeArgs: readonly string[];
   readonly sessionId: string | null;
   readonly first: boolean;
+  /** Codex only: what a turn may write. Required there: a turn is never built without its sandbox. */
+  readonly writableRoots?: readonly string[];
+}
+
+/**
+ * ISS-1455: the policy every Codex turn carries. The setting does not persist in
+ * a session and `exec resume` has no --sandbox flag, so both forms pass it by -c.
+ * Without the two exclusions, workspace-write allows all of /tmp and TMPDIR. A
+ * write sandbox is not a read barrier: a tool in a turn can still read the
+ * linked credential. Web search and child agents are off because each is a way
+ * out that this policy does not cover.
+ */
+export function codexSandboxArgs(roots: readonly string[]): string[] {
+  const settings = [
+    'sandbox_mode="workspace-write"',
+    'approval_policy="never"',
+    `sandbox_workspace_write.writable_roots=[${roots.map((r) => JSON.stringify(r)).join(",")}]`,
+    "sandbox_workspace_write.exclude_slash_tmp=true",
+    "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+    'web_search="disabled"',
+    "features.multi_agent=false",
+  ];
+  return settings.flatMap((v) => ["-c", v]);
+}
+
+/** Everything in a Codex argv that weakens the policy; empty means it holds. */
+export function codexSandboxProblems(args: readonly string[]): string[] {
+  const problems: string[] = [];
+  const end = args.indexOf("--");
+  const options = end === -1 ? args : args.slice(0, end);
+  const configs = options.flatMap((a, i) => (a === "-c" || a === "--config" ? [options[i + 1] ?? ""] : a.startsWith("--config=") ? [a.slice("--config=".length)] : []));
+  for (const flag of ["--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"]) if (options.includes(flag)) problems.push(`${flag} is refused`);
+  options.forEach((a, i) => {
+    const value = a === "--sandbox" || a === "-s" ? options[i + 1] : a.startsWith("--sandbox=") ? a.slice("--sandbox=".length) : null;
+    if (value !== null && value !== "workspace-write") problems.push(`sandbox ${value} is refused`);
+  });
+  for (const c of configs) {
+    if (c.startsWith("sandbox_mode=") && c !== 'sandbox_mode="workspace-write"') problems.push(`${c} is refused`);
+    if (c.startsWith("sandbox_workspace_write.network_access") && !c.endsWith("=false")) problems.push(`${c} is refused`);
+  }
+  const required = ['sandbox_mode="workspace-write"', 'approval_policy="never"', "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true", 'web_search="disabled"', "features.multi_agent=false"];
+  for (const r of required) if (!configs.includes(r)) problems.push(`${r} is missing`);
+  if (!configs.some((c) => c.startsWith("sandbox_workspace_write.writable_roots=["))) problems.push("writable roots are missing");
+  return problems;
 }
 
 /**
@@ -1573,7 +1617,8 @@ export interface TurnSpec {
  */
 export function turnArgs(t: TurnSpec, prompt: string): string[] {
   if (t.client === "claude") return ["-p", ...t.claudeArgs, ...(t.first ? ["--session-id", t.sessionId!] : ["--resume", t.sessionId!]), "--", prompt];
-  const common = ["--json", "--model", t.model, "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"];
+  if (t.writableRoots === undefined) throw new Error("onboarding-eval: a Codex turn needs its writable roots");
+  const common = ["--json", "--model", t.model, ...codexSandboxArgs(t.writableRoots), "--skip-git-repo-check"];
   return t.first ? ["exec", ...common, "-C", t.project, "--", prompt] : ["exec", "resume", t.sessionId!, ...common, "--", prompt];
 }
 

@@ -562,9 +562,12 @@ describe("runner safety", () => {
     expect(isolationProblems({ ...ok, CODEX_HOME: "/Users/me/.codex" }, work, "claude").join()).toContain("CODEX_HOME=/Users/me/.codex is outside");
     expect(isolationProblems({ HOME: ok.HOME }, work, "claude").join()).toContain("CODEX_HOME is not set");
     expect(isolationProblems({ ...ok, CODEX_THREAD_ID: "t" }, work, "codex").join()).toContain("CODEX_THREAD_ID is inherited");
-    expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME }, work, "codex")).toEqual([]);
+    expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME, TMPDIR: `${work}/tmp` }, work, "codex")).toEqual([]);
+    // ISS-1455: a Codex turn's temp folder is the attempt's own; workspace-write is told to leave any other out.
+    expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME }, work, "codex").join()).toContain("TMPDIR is not set");
+    expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME, TMPDIR: "/tmp" }, work, "codex").join()).toContain("TMPDIR=/tmp is outside");
     // The runner's own per-run variables pass: the setup review store (check set 6) and the events log and fault (check set 7).
-    expect(isolationProblems({ ...ok, STORYBLOQ_SETUP_REVIEW_DIR: `${work}/storybloq-setup-review-store`, STORYBLOQ_EVAL_EVENTS: `${work}/eval-events/events.jsonl`, STORYBLOQ_EVAL_FAULT: "step:handover" }, work, "codex")).toEqual([]);
+    expect(isolationProblems({ ...ok, TMPDIR: `${work}/tmp`, STORYBLOQ_SETUP_REVIEW_DIR: `${work}/storybloq-setup-review-store`, STORYBLOQ_EVAL_EVENTS: `${work}/eval-events/events.jsonl`, STORYBLOQ_EVAL_FAULT: "step:handover" }, work, "codex")).toEqual([]);
   });
 
   it("splits the fixture into briefs and implementation files", () => {
@@ -639,7 +642,7 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
   const run1Command = verbatim<string>("run1-command.json");
 
   it("ends option parsing before the prompt on every client form, so a `- ` answer is the prompt (run 3)", () => {
-    const base = { model: "m", project: "/p", claudeArgs: ["--disallowedTools", "Agent", "Task"], sessionId: "s" };
+    const base = { model: "m", project: "/p", claudeArgs: ["--disallowedTools", "Agent", "Task"], sessionId: "s", writableRoots: ["/w"] };
     for (const spec of [
       { ...base, client: "codex" as const, first: true },
       { ...base, client: "codex" as const, first: false },

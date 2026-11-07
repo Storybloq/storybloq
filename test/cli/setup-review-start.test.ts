@@ -343,4 +343,21 @@ describe("a store this process may not write (ISS-1456)", () => {
     expect(recorded.stdout).not.toContain("not recorded");
     expect(setupJson(real)).toHaveProperty("skipped");
   });
+
+  it("skip on a store that fails any other way is a storage failure, with an existing setup: nothing is written", async () => {
+    const id = setupIdOf(await handleSetupReviewGate(io(), {}));
+    const before = setupJson(id);
+    storeSeams.writeProbe = () => { throw errno("EIO"); };
+    const skip = await handleSetupReviewStatus(io(), { setup: id, skipped: true });
+    expect(skip.exitCode).toBe(6);
+    expect(skip.stdout).not.toContain(SKIPPED_LINE);
+    expect(setupJson(id)).toEqual(before);
+  });
+
+  it("skip on a store that fails any other way is a storage failure, with no setup state at all", async () => {
+    storeSeams.writeProbe = () => { throw errno("EIO"); };
+    const skip = await handleSetupReviewStatus(io(), { setup: "SS-0000abcd", skipped: true });
+    expect(skip.exitCode).toBe(6);
+    expect(skip.stdout).not.toContain(SKIPPED_LINE);
+  });
 });

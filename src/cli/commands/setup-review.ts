@@ -507,8 +507,11 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
     throw e;
   }
   // ISS-1456: a skip the store cannot hold is still the owner's answer; it is printed, written nowhere.
-  if (opts.skipped && preflightStore(storeRoot(io.env)).kind === "unwritable") {
-    return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
+  // Any other storage failure is exit 6, before the setup is read.
+  if (opts.skipped) {
+    const store = preflightStore(storeRoot(io.env));
+    if (store.kind === "unwritable") return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
+    if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   }
   try {
     setup = readSetup(paths);

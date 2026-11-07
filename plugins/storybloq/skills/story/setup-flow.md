@@ -91,7 +91,7 @@ How should I proceed?
 Retry the review
 Continue without independent review
 
-A retry runs `storybloq setup-review gate --setup <id>`, then the review again; when the reason names a sandbox, the owner can retry from a terminal outside the agent. Continuing records the skip for the whole setup: run `storybloq setup-review status --setup <id> --skipped`, with nothing on standard input, and later adjustments carry its lines and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
+A retry runs `storybloq setup-review gate --setup <id>`, then the review again; when the reason names a sandbox, the owner can retry from a terminal outside the agent. After a `review store:` reason nothing was kept, so that retry is `storybloq setup-review gate` without `--setup`, and its new id is used from then on. Continuing records the skip for the whole setup: run `storybloq setup-review status --setup <id> --skipped`, with nothing on standard input, and later adjustments carry its lines and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
 
 **Decompose the entire in-scope brief** by outcomes and real dependencies. There are no phase or ticket quotas: as many phases and tickets as the scope needs.
 

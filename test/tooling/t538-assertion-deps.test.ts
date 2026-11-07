@@ -14,18 +14,60 @@ const SCRIPTS = join(__dirname, "..", "..", "scripts");
 const src = (f: string): string => readFileSync(join(SCRIPTS, f), "utf-8");
 
 /**
- * The rules a checkset can fail, read from its executable failure messages: every string or template
- * literal that starts `rule N:`. The TypeScript parser keeps comments out, so a rule's doc comment is
- * neither needed nor enough; what counts is a failure the code can record.
+ * The rules a checkset can fail, read from the code that records failures, never from comments or from
+ * literals nothing records. A failure site is the argument of a `failures.push` or `findings.push` call, or
+ * a string a `rule*` function returns (rule2Plan's shape). Each site's leading text is resolved: string and
+ * template literals, `+` over them, and a template that starts with a const bound to such a literal (the
+ * `where` of rule 10). A spread, a bare identifier or a call hands over findings made at sites of their own.
+ * A site that resolves to "rule" without a readable `rule N:` is refused with its line, never skipped.
  */
 function ruleKeys(fn: string, text: string): string[] {
   const sf = ts.createSourceFile("x.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const found = new Set<string>();
-  const visit = (n: ts.Node): void => {
-    if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n)) {
-      const m = /^rule (\d+):/.exec(n.text);
-      if (m) found.add(`${fn}:rule-${m[1]}`);
+  const consts = new Map<string, ts.Expression>();
+  const collect = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && ts.isVariableDeclarationList(n.parent) && (n.parent.flags & ts.NodeFlags.Const)) consts.set(n.name.text, n.initializer);
+    ts.forEachChild(n, collect);
+  };
+  collect(sf);
+  /** The static text a failure expression starts with, or null when it hands over findings made elsewhere. */
+  const lead = (e: ts.Expression, depth = 0): string | null => {
+    if (depth > 8) return null;
+    if (ts.isParenthesizedExpression(e)) return lead(e.expression, depth + 1);
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
+    if (ts.isTemplateExpression(e)) {
+      if (e.head.text !== "") return e.head.text;
+      const first = e.templateSpans[0]!;
+      const bound = ts.isIdentifier(first.expression) ? consts.get(first.expression.text) : undefined;
+      const inner = bound ? lead(bound, depth + 1) : null;
+      return inner === null ? "" : inner;
     }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = lead(e.left, depth + 1);
+      if (left === null) return null;
+      const whole = ts.isStringLiteral(e.left) || ts.isNoSubstitutionTemplateLiteral(e.left) || (ts.isBinaryExpression(e.left) && e.left.operatorToken.kind === ts.SyntaxKind.PlusToken);
+      const right = whole ? lead(e.right, depth + 1) : null;
+      return right === null ? left : left + right;
+    }
+    if (ts.isConditionalExpression(e)) { const a = lead(e.whenTrue, depth + 1); return a !== null && /^rule\b/.test(a) ? a : lead(e.whenFalse, depth + 1); }
+    return null;
+  };
+  const found = new Set<string>();
+  const site = (e: ts.Expression): void => {
+    const t = lead(e);
+    if (t === null || !/^rule\b/i.test(t)) return;
+    const m = /^rule (\d+):/.exec(t);
+    if (!m) throw new Error(`a failure site whose rule cannot be read, line ${sf.getLineAndCharacterOfPosition(e.getStart()).line + 1}: ${e.getText().slice(0, 80)}`);
+    found.add(`${fn}:rule-${m[1]}`);
+  };
+  const ruleFunction = (n: ts.Node): boolean => {
+    for (let p: ts.Node | undefined = n.parent; p; p = p.parent) if (ts.isFunctionDeclaration(p)) return p.name !== undefined && /^rule\d/.test(p.name.text);
+    return false;
+  };
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && /(^|\.)(failures|findings)$/.test(n.expression.expression.getText())) {
+      for (const a of n.arguments) if (!ts.isSpreadElement(a)) site(a);
+    }
+    if (ts.isReturnStatement(n) && n.expression && ruleFunction(n)) site(n.expression);
     ts.forEachChild(n, visit);
   };
   visit(sf);
@@ -96,13 +138,22 @@ describe("assertion-deps covers every check, and only checks that exist", () => 
   it("a failure the code can record without a row fails, and a row whose failures are gone fails, comments either way", () => {
     const s = real();
     // An executable rule 5 with no numbered comment anywhere.
-    const added = sourceKeys({ ...s, checkset6: `${s.checkset6}\nexport const extra = (f: string[]): void => { f.push("rule 5: a new rule"); };\n` });
+    const added = sourceKeys({ ...s, checkset6: `${s.checkset6}\nexport const extra = (failures: string[]): void => { failures.push("rule 5: a new rule"); };\n` });
     expect(s.checkset6).not.toMatch(/Rule 5\b/);
     expect(compareKeys(added, Object.keys(ASSERTION_DEPS)).missingRows).toEqual(["setup-review:rule-5"]);
     // Rule 10's failures removed, its comments kept.
     const removed = sourceKeys({ ...s, checkset7: s.checkset7.map((t) => t.replace(/([`"])rule 10:/g, "$1check ten:")) });
     expect(s.checkset7.join("\n")).toMatch(/Rule 10\b/);
     expect(compareKeys(removed, Object.keys(ASSERTION_DEPS)).orphanRows).toEqual(["setup-run:rule-10"]);
+    // A literal nothing records names no rule: rule 10's failures gone, an unused copy of its text kept.
+    const masked = sourceKeys({ ...s, checkset7: s.checkset7.map((t) => `${t.replace(/([`"])rule 10:/g, "$1check ten:")}\nconst old = "rule 10: retired";\n`) });
+    expect(compareKeys(masked, Object.keys(ASSERTION_DEPS)).orphanRows).toEqual(["setup-run:rule-10"]);
+    // A failure assembled by concatenation is counted.
+    const joined = sourceKeys({ ...s, checkset6: `${s.checkset6}\nexport const extra2 = (failures: string[]): void => { failures.push("rule " + "11: new check"); };\n` });
+    expect(compareKeys(joined, Object.keys(ASSERTION_DEPS)).missingRows).toEqual(["setup-review:rule-11"]);
+    // A failure whose rule is computed cannot be read, and the inventory refuses it by line.
+    const dynamic = { ...s, checkset6: `${s.checkset6}\nexport const extra3 = (failures: string[], n: number): void => { failures.push("rule " + n + ": computed"); };\n` };
+    expect(() => sourceKeys(dynamic)).toThrow(/a failure site whose rule cannot be read, line \d+: "rule " \+ n/);
     // A comment alone names no rule.
     const commentOnly = sourceKeys({ ...s, checkset6: `${s.checkset6}\n// Rule 6: only a comment\n/** Rule 7: only a doc comment */\n` });
     expect(compareKeys(commentOnly, Object.keys(ASSERTION_DEPS))).toEqual({ missingRows: [], orphanRows: [], duplicates: [] });

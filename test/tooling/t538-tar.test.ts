@@ -234,14 +234,16 @@ describe("names", () => {
     expect(x.notMaterialized.map((n) => n.class)).toEqual(["refused-name"]);
   });
   it("a path longer than the host allows is too-long, and the rest is written", async () => {
-    // Sized from the host's own limit, so the destination is over it on macOS and on Linux while the
-    // archive path stays inside the gate's pathBytes.
-    const need = HOST_PATH_MAX - Buffer.byteLength(stagingDir(host, "attempt", 1)) + 1;
-    const segs: string[] = [];
-    while (Buffer.byteLength(`project/${segs.join("/")}/f`) < need) segs.push("d".repeat(200));
-    const long = `project/${segs.join("/")}/f`;
+    // The relative path that makes the destination exactly the host limit: whole 200-byte components,
+    // then a last one sized to land on it, every component within 255 bytes.
+    const staging = stagingDir(host, "attempt", 1);
+    const need = HOST_PATH_MAX - Buffer.byteLength(staging) - 1;
+    let long = "project";
+    while (need - Buffer.byteLength(long) - 1 > 255) long += `/${"d".repeat(200)}`;
+    long += `/${"f".repeat(need - Buffer.byteLength(long) - 1)}`;
+    expect(long.split("/").every((c) => Buffer.byteLength(c) >= 1 && Buffer.byteLength(c) <= 255)).toBe(true);
     expect(Buffer.byteLength(long)).toBeLessThanOrEqual(PACK_LIMITS.pathBytes);
-    expect(Buffer.byteLength(join(stagingDir(host, "attempt", 1), long))).toBeGreaterThanOrEqual(HOST_PATH_MAX);
+    expect(Buffer.byteLength(join(staging, long))).toBe(HOST_PATH_MAX);
     const x = await read(tar(pax(rec("path", long)), file("short", "x"), file("ok.txt", "ok")));
     expect(x.notMaterialized.map((n) => n.class)).toEqual(["too-long"]);
     expect(readFileSync(final("ok.txt"), "utf-8")).toBe("ok");

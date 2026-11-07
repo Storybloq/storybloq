@@ -9,7 +9,7 @@ COPY pkg /opt/storybloq
 RUN cd /opt/storybloq && npm ci --omit=dev --ignore-scripts --silent
 # The project folder exists in the image, owned by eval, so --workdir does not create it as root.
 RUN useradd -m -u 1001 -U eval && mkdir -p /vol/att/project && chown -R eval:eval /vol/att
-COPY relay.mjs sup.mjs /opt/eval/
+COPY relay.mjs sup.mjs envelope.mjs /opt/eval/
 COPY storybloq-launcher /opt/eval/bin/storybloq
 RUN chmod -R a+rX /opt/eval && chmod 555 /opt/eval/bin/storybloq
 USER eval

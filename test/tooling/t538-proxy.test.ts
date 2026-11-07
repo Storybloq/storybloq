@@ -363,11 +363,22 @@ describe("the proxy's configuration", () => {
   it.each(["conns", "bytes", "sockets", "headerMs", "headerBytes", "lifeMs", "logBytes"])("%s can tighten its ruled number, reach it, and never pass it", async (key) => {
     const { readConfig, DEFAULT_LIMITS, MAX_EXPIRY_MS } = await import(proxyFile);
     const ruled = DEFAULT_LIMITS[key] as number;
-    expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: 1 }) }).limits[key]).toBe(1);
+    const low = key === "logBytes" ? 65536 : 1;
+    expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: low }) }).limits[key]).toBe(low);
     expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: ruled }) }).limits[key]).toBe(ruled);
     expect(readConfig({ ...ok, LIMITS: JSON.stringify({ [key]: ruled + 1 }) })).toBeNull();
     expect(readConfig({ ...ok, EXPIRY_MS: String(MAX_EXPIRY_MS) }).expiryMs).toBe(211 * 60_000);
   });
+  it("the smallest log limit still holds its reserved records, and the next size down is refused", async () => {
+    const { readConfig } = await import(proxyFile);
+    expect(readConfig({ ...ok, LIMITS: '{"logBytes":65535}' })).toBeNull();
+    await withProxy({ limits: { logBytes: 65536, conns: 100_000, sockets: 64 } }, async (r) => {
+      for (let round = 0; round < 110 && !r.logText().includes("logFull"); round++) await Promise.all(Array.from({ length: 20 }, () => ask(r, "GET / HTTP/1.1\r\n\r\n")));
+      expect(r.logText()).toContain("logFull");
+      await Promise.all(Array.from({ length: 20 }, () => ask(r, "GET / HTTP/1.1\r\n\r\n")));
+      expect(statSync(join(r.sock, "..", "..", "l", "proxy.log")).size).toBeLessThanOrEqual(65536);
+    });
+  }, 60_000);
   it("refuses a socket folder that holds anything, and a log that exists, so no volume is reused", async () => {
     const { main } = await import(proxyFile);
     const root = mkdtempSync(join(tmpdir(), "t538c"));
@@ -675,7 +686,7 @@ describe("the supervisor", () => {
 
 describe("staging the build context", { timeout: 90_000 }, () => {
   const stageFile = join(import.meta.dirname, "..", "..", "scripts", "eval-container", "stage-context.mjs");
-  const NAMES = ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "storybloq-launcher"];
+  const NAMES = ["Dockerfile", "proxy.Dockerfile", "proxy.mjs", "relay.mjs", "sup.mjs", "envelope.mjs", "storybloq-launcher"];
   const made: string[] = [];
   const temp = (): string => { const d = mkdtempSync(join(tmpdir(), "t538p")); made.push(d); return d; };
   /** A tiny package around a copy of the script, which finds its root from its own path. */
@@ -800,7 +811,7 @@ describe("the launch argv and the images", () => {
     for (const absent of ["--publish", "-p", "--dns", "--add-host", "--privileged", "--cap-add", "--volumes-from", "--device", "--pid", "--ipc", "--uts", "--userns", "-e", "--env"]) expect(attempt, absent).not.toContain(absent);
   });
   it("the attempt runs section 4's limits and the narrow profile", () => {
-    expect(value(attempt, "--user")).toEqual(["eval"]);
+    expect(value(attempt, "--user")).toEqual(["1001:1001"]);
     expect(attempt).toContain("--read-only");
     expect(value(attempt, "--cap-drop")).toEqual(["ALL"]);
     expect(value(attempt, "--security-opt")).toEqual(["no-new-privileges", `seccomp=${join(DIR, "seccomp-attempt.json")}`]);

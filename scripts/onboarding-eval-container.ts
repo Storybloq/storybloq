@@ -13,6 +13,7 @@ export const SECCOMP_FILE_SHA256 = "2cb512e0b6c5062bb05e0975de5aed06ffd4e010dcb8
 /** The compacted form `docker inspect` shows in HostConfig.SecurityOpt. */
 export const SECCOMP_COMPACT_SHA256 = "9c0f88a604fb362190d287b001f8140305cd3a5321a9628383fa97e21e42b864";
 export const PROXY_UID_GID = "10001:1001";
+export const ATTEMPT_UID_GID = "1001:1001";
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
@@ -38,20 +39,27 @@ export function securityOptProblems(role: "attempt" | "other", securityOpt: read
 }
 
 /** Section 4's objects for one attempt. */
-export const containerNames = (id: string) => ({
-  attempt: `t538-att-${id}`,
-  proxy: `t538-proxy-${id}`,
-  attemptVolume: `t538-att-${id}`,
-  socketVolume: `t538-sock-${id}`,
-  proxyVolume: `t538-plog-${id}`,
-  external: `t538-ext-${id}`,
-});
+export type SandboxRole = "attempt" | "probe" | "judge";
+export const containerNames = (id: string, role: SandboxRole = "attempt") => {
+  // A1 point 5: a judge or networked probe has the same topology with its own objects.
+  const own = role === "attempt" ? id : `${role}-${id}`;
+  const box = role === "attempt" ? "att" : role;
+  return {
+    attempt: `t538-${box}-${id}`,
+    proxy: `t538-proxy-${own}`,
+    attemptVolume: `t538-${box}-${id}`,
+    socketVolume: `t538-sock-${own}`,
+    proxyVolume: `t538-plog-${own}`,
+    external: `t538-ext-${own}`,
+    pack: `t538-pack-${own}`,
+  };
+};
 
 const labels = (id: string, role: string): string[] => ["--label", `cpm-t538-attempt=${id}`, "--label", `cpm-t538-role=${role}`];
 
 /** A1 point 1: deterministic ownership on a fresh socket volume and proxy-log volume, before any launch. */
-export function volumeInitArgs(id: string, proxyImage: string): readonly string[] {
-  const n = containerNames(id);
+export function volumeInitArgs(id: string, proxyImage: string, role: SandboxRole = "attempt"): readonly string[] {
+  const n = containerNames(id, role);
   return ["run", "--rm", ...labels(id, "init"), "--network", "none", "--user", "0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER",
     "--mount", `type=volume,source=${n.socketVolume},target=/vol/sock`,
     "--mount", `type=volume,source=${n.proxyVolume},target=/vol/proxy,volume-nocopy=true`,
@@ -68,8 +76,8 @@ export interface ProxyEnv {
 }
 
 /** Section 4's proxy column as A1 changes it: its external network, its log and socket mounts, nothing else. */
-export function proxyRunArgs(id: string, proxyImage: string, env: ProxyEnv): readonly string[] {
-  const n = containerNames(id);
+export function proxyRunArgs(id: string, proxyImage: string, env: ProxyEnv, role: SandboxRole = "attempt"): readonly string[] {
+  const n = containerNames(id, role);
   return ["run", "-d", "--init", "--name", n.proxy, ...labels(id, "proxy"),
     "--user", PROXY_UID_GID, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--memory", "128m", "--memory-swap", "128m", "--pids-limit", "64", "--cpus", "1",
@@ -81,10 +89,10 @@ export function proxyRunArgs(id: string, proxyImage: string, env: ProxyEnv): rea
 }
 
 /** Section 4's attempt launch as A1 changes it: no network interface, the project and socket mounts only. */
-export function attemptRunArgs(id: string, image: string, deadlineSeconds: number, profilePath = SECCOMP_PROFILE_PATH): readonly string[] {
-  const n = containerNames(id);
-  return ["run", "-d", "--init", "--name", n.attempt, ...labels(id, "attempt"),
-    "--user", "eval", "--read-only", "--cap-drop", "ALL",
+export function attemptRunArgs(id: string, image: string, deadlineSeconds: number, profilePath = SECCOMP_PROFILE_PATH, role: SandboxRole = "attempt"): readonly string[] {
+  const n = containerNames(id, role);
+  return ["run", "-d", "--init", "--name", n.attempt, ...labels(id, role),
+    "--user", ATTEMPT_UID_GID, "--read-only", "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges", "--security-opt", `seccomp=${profilePath}`,
     "--memory", "2g", "--memory-swap", "2g", "--pids-limit", "512", "--cpus", "2",
     "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=256m",
@@ -92,6 +100,16 @@ export function attemptRunArgs(id: string, image: string, deadlineSeconds: numbe
     "--mount", `type=volume,source=${n.attemptVolume},target=/vol/att`,
     "--mount", `type=volume,source=${n.socketVolume},target=/vol/sock,readonly`,
     "--entrypoint", "node", image, "/opt/eval/sup.mjs", String(deadlineSeconds)];
+}
+
+/** Section 9's helper shape, created before start so its id can be recorded and it can be inspected. */
+export function packCreateArgs(id: string, image: string, volume: string, target: string, profile: string): readonly string[] {
+  return ["create", "--init", "--name", containerNames(id).pack, ...labels(id, "pack"),
+    "--user", "0", "--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges",
+    "--memory", "512m", "--memory-swap", "512m", "--pids-limit", "32", "--cpus", "1",
+    "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m", "--network", "none", "--restart", "no",
+    "--mount", `type=volume,source=${volume},target=${target},readonly`,
+    "--entrypoint", "sh", image, "/opt/eval/pack.sh", profile];
 }
 
 export const profileBytes = (): string => readFileSync(SECCOMP_PROFILE_PATH, "utf8");

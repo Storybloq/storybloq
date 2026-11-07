@@ -70,6 +70,9 @@ export function listEntryIsValid(entry) {
   return net.isIP(host) === 0 && !host.endsWith(".") && Number(port) <= 65535;
 }
 
+/** Below this the fixed reserve could not hold the log's counter and ceiling records. */
+export const MIN_LOG_BYTES = 65536;
+
 /** Section 12's ruled numbers are ceilings: LIMITS may tighten one, never raise or disable it. */
 function readLimits(text) {
   let parsed;
@@ -78,6 +81,7 @@ function readLimits(text) {
   for (const [key, value] of Object.entries(parsed)) {
     if (!Object.hasOwn(DEFAULT_LIMITS, key)) return null;
     if (!Number.isSafeInteger(value) || value <= 0 || value > DEFAULT_LIMITS[key]) return null;
+    if (key === "logBytes" && value < MIN_LOG_BYTES) return null;
   }
   return { ...DEFAULT_LIMITS, ...parsed };
 }

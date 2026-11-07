@@ -1,0 +1,3 @@
+#!/bin/sh
+# Every client-side CLI call runs the evaluation bundle, which refuses to start without STORYBLOQ_EVAL_EVENTS.
+exec node /opt/storybloq/.eval-dist/eval-cli.js --entry cli "$@"

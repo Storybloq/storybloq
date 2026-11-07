@@ -1,5 +1,5 @@
 import type { ProjectState } from "./project-state.js";
-import { maxSequentialNumber } from "./id-allocation.js";
+import { assertAllocatableIdNumber, maxSequentialNumber, readIdNumber } from "./id-allocation.js";
 
 export interface AllocationResult {
   displayId: string;
@@ -76,12 +76,14 @@ export async function reserveDisplayId(
   const numRegex = new RegExp(`^${refNamespace}/${prefix}-(\\d+)$`);
   for (const refName of existingRefs) {
     const match = refName.match(numRegex);
-    if (match?.[1]) existingNums.add(parseInt(match[1], 10));
+    if (match?.[1]) existingNums.add(readIdNumber(match[1], `${prefix}-${match[1]}`));
   }
 
   let next = Math.max(localMaxNum(type, state), ...existingNums) + 1;
 
   for (let attempt = 0; attempt < 5; attempt++) {
+    // ISS-1452: a lost race moves next on, so every candidate is checked before it is published.
+    assertAllocatableIdNumber(next);
     const displayId = `${prefix}-${String(next).padStart(3, "0")}`;
     const refName = `${refNamespace}/${displayId}`;
     const payload = JSON.stringify({

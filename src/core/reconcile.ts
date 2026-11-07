@@ -7,6 +7,7 @@ import type { Arrangement } from "../models/arrangement.js";
 import type { ProjectState } from "./project-state.js";
 import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX, LESSON_ID_REGEX } from "../models/types.js";
 import {
+  assertAllocatableIdNumber,
   maxSequentialNumber,
   TICKET_NUMERIC_REGEX,
   ISSUE_NUMERIC_REGEX,
@@ -153,7 +154,7 @@ function reconcileEntityType<T extends EntityWithTimestamp & Record<string, unkn
   displayPrefix: string,
   numericRegex: RegExp,
   context?: ReconcileContext,
-): { renames: ReconcileRename[]; nextSeq: number } {
+): { renames: ReconcileRename[] } {
   const activeItems = items.filter((item) => (item as Record<string, unknown>).lifecycle !== "deleted");
   const groups = new Map<string, T[]>();
   for (const item of activeItems) {
@@ -171,7 +172,9 @@ function reconcileEntityType<T extends EntityWithTimestamp & Record<string, unkn
   // over active items only, but a renamed loser must never be handed a displayId a
   // tombstone still holds (its displayId/previousDisplayIds), or restoring/surfacing
   // that tombstone would resurrect a duplicate reconcile itself created.
-  let nextSeq = maxSequentialNumber(items as readonly Resolvable[], numericRegex) + 1;
+  // ISS-1452: read only when something is renamed, since it refuses a huge id and
+  // a ledger with nothing to rename must stay plannable, for --ci above all.
+  let nextSeq: number | undefined;
   const renames: ReconcileRename[] = [];
 
   for (const [displayId, group] of groups) {
@@ -182,6 +185,8 @@ function reconcileEntityType<T extends EntityWithTimestamp & Record<string, unkn
     const losers = sorted.slice(1);
 
     for (const loser of losers) {
+      nextSeq ??= maxSequentialNumber(items as readonly Resolvable[], numericRegex) + 1;
+      assertAllocatableIdNumber(nextSeq);
       const newDisplayId = `${displayPrefix}${String(nextSeq).padStart(3, "0")}`;
       nextSeq++;
 
@@ -197,7 +202,7 @@ function reconcileEntityType<T extends EntityWithTimestamp & Record<string, unkn
     }
   }
 
-  return { renames, nextSeq };
+  return { renames };
 }
 
 /**

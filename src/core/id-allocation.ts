@@ -5,6 +5,7 @@ import type { Lesson } from "../models/lesson.js";
 import type { ProjectState } from "./project-state.js";
 import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX, LESSON_ID_REGEX } from "../models/types.js";
 import { generateCanonicalId, type CanonicalPrefix } from "./canonical-id.js";
+import { ProjectLoaderError } from "./errors.js";
 
 // ISS-709: single source for the anchored numeric display-ID regexes, shared by
 // the reconcile core + CLI. (remote-refs.ts intentionally uses looser,
@@ -13,6 +14,26 @@ export const TICKET_NUMERIC_REGEX = /^T-(\d+)[a-z]?$/;
 export const ISSUE_NUMERIC_REGEX = /^ISS-(\d+)$/;
 export const NOTE_NUMERIC_REGEX = /^N-(\d+)$/;
 export const LESSON_NUMERIC_REGEX = /^L-(\d+)$/;
+
+/**
+ * ISS-1452: reads an id's number. A number at or past MAX_SAFE_INTEGER has no
+ * safe next number, and past it the parse rounds through a double, so the next
+ * id would bear no relation to its predecessor. Refuses instead of minting one.
+ */
+export function readIdNumber(digits: string, holder: string): number {
+  const number = parseInt(digits, 10);
+  if (number >= Number.MAX_SAFE_INTEGER) {
+    throw new ProjectLoaderError("conflict", `Cannot allocate an id: ${holder} holds an id whose number is too large`);
+  }
+  return number;
+}
+
+/** ISS-1452: for a number reached by adding to a read one. The limit itself is a usable id. */
+export function assertAllocatableIdNumber(number: number): void {
+  if (!Number.isSafeInteger(number)) {
+    throw new ProjectLoaderError("conflict", "Cannot allocate an id: the highest existing number is too large");
+  }
+}
 
 /**
  * Next ticket ID: scan existing IDs, find max numeric part, return T-(max+1).
@@ -25,7 +46,7 @@ export function nextTicketID(tickets: readonly Ticket[]): string {
     if (!TICKET_ID_REGEX.test(t.id)) continue;
     const match = t.id.match(TICKET_NUMERIC_REGEX);
     if (match?.[1]) {
-      const num = parseInt(match[1], 10);
+      const num = readIdNumber(match[1], t.id);
       if (num > max) max = num;
     }
   }
@@ -42,7 +63,7 @@ export function nextIssueID(issues: readonly Issue[]): string {
     if (!ISSUE_ID_REGEX.test(i.id)) continue;
     const match = i.id.match(ISSUE_NUMERIC_REGEX);
     if (match?.[1]) {
-      const num = parseInt(match[1], 10);
+      const num = readIdNumber(match[1], i.id);
       if (num > max) max = num;
     }
   }
@@ -59,7 +80,7 @@ export function nextNoteID(notes: readonly Note[]): string {
     if (!NOTE_ID_REGEX.test(n.id)) continue;
     const match = n.id.match(NOTE_NUMERIC_REGEX);
     if (match?.[1]) {
-      const num = parseInt(match[1], 10);
+      const num = readIdNumber(match[1], n.id);
       if (num > max) max = num;
     }
   }
@@ -76,7 +97,7 @@ export function nextLessonID(lessons: readonly Lesson[]): string {
     if (!LESSON_ID_REGEX.test(l.id)) continue;
     const match = l.id.match(LESSON_NUMERIC_REGEX);
     if (match?.[1]) {
-      const num = parseInt(match[1], 10);
+      const num = readIdNumber(match[1], l.id);
       if (num > max) max = num;
     }
   }
@@ -101,7 +122,7 @@ export function maxSequentialNumber(
   const extract = (s: string) => {
     const m = s.match(numericRegex);
     if (m?.[1]) {
-      const n = parseInt(m[1], 10);
+      const n = readIdNumber(m[1], s);
       if (n > max) max = n;
     }
   };

@@ -286,4 +286,101 @@ describe("T-481 B4: reconcile never stamps updatedDate", () => {
     const loser = JSON.parse(readFileSync(join(issues, "i-0000000000000002.json"), "utf-8"));
     expect(loser).toEqual({ ...loserPrior, displayId: "ISS-002", previousDisplayIds: ["ISS-001"] });
   });
+
+  describe("at the safe integer limit (ISS-1452)", () => {
+    const LIMIT = Number.MAX_SAFE_INTEGER;
+
+    function writeNote(root: string, suffix: string, displayId: string, createdDate = "2026-01-01"): void {
+      writeJson(join(root, ".story", "notes", `n-000000000000000${suffix}.json`), {
+        id: `n-000000000000000${suffix}`,
+        displayId,
+        title: null,
+        content: "x",
+        tags: [],
+        status: "active",
+        createdDate,
+        updatedDate: createdDate,
+      });
+    }
+
+    function writeTicket(root: string, suffix: string, displayId: string, createdDate = "2026-01-01"): void {
+      writeJson(join(root, ".story", "tickets", `t-000000000000000${suffix}.json`), {
+        id: `t-000000000000000${suffix}`,
+        displayId,
+        title: "x",
+        type: "task",
+        status: "open",
+        phase: "p1",
+        order: 10,
+        description: "",
+        createdDate,
+        completedDate: null,
+        blockedBy: [],
+        parentTicket: null,
+      });
+    }
+
+    function bytes(root: string): Record<string, string> {
+      const out: Record<string, string> = {};
+      for (const dir of ["tickets", "notes"]) {
+        for (const name of readdirSync(join(root, ".story", dir))) {
+          out[`${dir}/${name}`] = readFileSync(join(root, ".story", dir, name), "utf-8");
+        }
+      }
+      return out;
+    }
+
+    it.each([
+      ["--ci", { dryRun: false, ci: true }],
+      ["a dry run", { dryRun: true, ci: false }],
+      ["an apply", { dryRun: false, ci: false }],
+    ])("a huge id with nothing to rename is clean under %s", async (_label, flags) => {
+      const root = createProject();
+      writeTicket(root, "1", "T-9223372036854775807");
+      const before = bytes(root);
+      const result = await handleReconcile(root, { ...flags, format: "md" });
+      expect(result.exitCode).toBe(ExitCode.OK);
+      expect(bytes(root)).toEqual(before);
+    });
+
+    it("a duplicate that needs a number past a huge id refuses and changes nothing", async () => {
+      const root = createProject();
+      writeTicket(root, "1", "T-001");
+      writeTicket(root, "2", "T-001", "2026-02-01");
+      writeTicket(root, "3", "T-9223372036854775807");
+      const before = bytes(root);
+      await expect(handleReconcile(root, { dryRun: false, ci: false, format: "md" })).rejects.toMatchObject({ code: "conflict" });
+      expect(bytes(root)).toEqual(before);
+    });
+
+    it("renames that run past the limit refuse and change nothing", async () => {
+      const root = createProject();
+      writeTicket(root, "1", `T-${LIMIT - 1}`);
+      writeTicket(root, "2", `T-${LIMIT - 1}`, "2026-02-01");
+      writeTicket(root, "3", `T-${LIMIT - 1}`, "2026-03-01");
+      const before = bytes(root);
+      await expect(handleReconcile(root, { dryRun: false, ci: false, format: "md" })).rejects.toMatchObject({ code: "conflict" });
+      expect(bytes(root)).toEqual(before);
+    });
+
+    it("a note rename taking the last safe number leaves no number for the mapping note, and changes nothing", async () => {
+      const root = createProject();
+      writeNote(root, "1", `N-${LIMIT - 1}`);
+      writeNote(root, "2", `N-${LIMIT - 1}`, "2026-02-01");
+      const before = bytes(root);
+      await expect(handleReconcile(root, { dryRun: false, ci: false, format: "md" })).rejects.toMatchObject({ code: "conflict" });
+      expect(bytes(root)).toEqual(before);
+    });
+
+    it("room for both the rename and the mapping note succeeds", async () => {
+      const root = createProject();
+      writeNote(root, "1", `N-${LIMIT - 2}`);
+      writeNote(root, "2", `N-${LIMIT - 2}`, "2026-02-01");
+      const result = await handleReconcile(root, { dryRun: false, ci: false, format: "md" });
+      expect(result.exitCode).toBe(ExitCode.OK);
+      const notes = Object.values(bytes(root)).map((text) => JSON.parse(text).displayId);
+      expect(notes).toContain(`N-${LIMIT - 1}`);
+      expect(notes).toContain(`N-${LIMIT}`);
+    });
+  });
 });

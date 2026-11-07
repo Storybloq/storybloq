@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ConfigSchema } from "../../src/models/config.js";
@@ -100,5 +100,56 @@ describe("reserveDisplayId", () => {
         ownerId: "t-owner0000000001",
       }),
     ]);
+  });
+
+  describe("at the safe integer limit (ISS-1452)", () => {
+    const LIMIT = Number.MAX_SAFE_INTEGER;
+    const stateAt = (number: number) => makeState({
+      tickets: [makeTicket({ id: "t-canonical0000001", displayId: `T-${number}` })],
+      config: { ...minimalConfig, team: { enabled: true, idAllocator: "git-refs" } },
+    });
+    const remoteRefs = (remote: string) => fixtureGit(remote, ["for-each-ref", "--format=%(refname)"]).trim();
+
+    /** Every push is rejected and logged, the way a lost race reaches the retry loop. */
+    function rejectEveryPush(remote: string): string {
+      const log = join(remote, "attempted-refs.log");
+      const hook = join(remote, "hooks", "pre-receive");
+      writeFileSync(hook, `#!/bin/sh\nwhile read old new ref; do echo "$ref" >> "${log}"; done\nexit 1\n`);
+      chmodSync(hook, 0o755);
+      return log;
+    }
+
+    it("a maximum just below the limit reserves the limit", async () => {
+      const { root } = createRepoWithRemote();
+      await expect(reserveDisplayId(root, "ticket", stateAt(LIMIT - 1))).resolves.toEqual({ displayId: `T-${LIMIT}`, reserved: true });
+    });
+
+    it("a lost race at the limit never pushes a number past it", async () => {
+      const { root, remote } = createRepoWithRemote();
+      const log = rejectEveryPush(remote);
+      await expect(reserveDisplayId(root, "ticket", stateAt(LIMIT - 1))).rejects.toMatchObject({ code: "conflict" });
+      expect(readFileSync(log, "utf-8").trim().split("\n")).toEqual([`refs/storybloq/ids/tickets/T-${LIMIT}`]);
+      expect(remoteRefs(remote)).toBe("");
+    });
+
+    it("a local maximum at the limit refuses before any push", async () => {
+      const { root, remote } = createRepoWithRemote();
+      const log = rejectEveryPush(remote);
+      await expect(reserveDisplayId(root, "ticket", stateAt(LIMIT))).rejects.toMatchObject({ code: "conflict" });
+      expect(existsSync(log)).toBe(false);
+    });
+
+    it.each([String(LIMIT), "9223372036854775807"])("a reservation on the remote numbered %s refuses before any push", async (number) => {
+      const { root, remote } = createRepoWithRemote();
+      fixtureGit(root, ["push", "origin", `HEAD:refs/storybloq/ids/tickets/T-${number}`]);
+      const before = remoteRefs(remote);
+      const log = rejectEveryPush(remote);
+      await expect(reserveDisplayId(root, "ticket", stateAt(1))).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringContaining(`T-${number}`),
+      });
+      expect(existsSync(log)).toBe(false);
+      expect(remoteRefs(remote)).toBe(before);
+    });
   });
 });

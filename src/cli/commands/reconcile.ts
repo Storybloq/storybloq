@@ -5,7 +5,7 @@ import { computeReconcilePlan, computeRebalancePlan, type EntityType, type Recon
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { formatReconcileResult, ExitCode, successEnvelope, type ExitCodeValue } from "../../core/output-formatter.js";
 import { authoriseIssueBytes, authoriseTicketBytes, withProjectLock, runTransactionUnlocked } from "../../core/project-loader.js";
-import { nextNoteID, allocateTeamNoteId, NOTE_NUMERIC_REGEX } from "../../core/id-allocation.js";
+import { assertAllocatableIdNumber, nextNoteID, allocateTeamNoteId, NOTE_NUMERIC_REGEX } from "../../core/id-allocation.js";
 import { listReservations } from "../../core/remote-refs.js";
 import { ENABLE_GIT_REFS_REMEDY } from "../../core/branch-allocation-warning.js";
 import type { ProjectState } from "../../core/project-state.js";
@@ -255,7 +255,10 @@ function buildMappingNoteOp(
         return m?.[1] ? Math.max(max, parseInt(m[1], 10)) : max;
       }, 0);
     const allocNum = parseInt(alloc.displayId.replace(/^N-0*/, ""), 10) || 0;
-    noteDisplayId = `N-${String(Math.max(allocNum, maxFromNoteRenames + 1)).padStart(3, "0")}`;
+    const noteNumber = Math.max(allocNum, maxFromNoteRenames + 1);
+    // ISS-1452: a rename can take the last safe number, which leaves none for this note.
+    assertAllocatableIdNumber(noteNumber);
+    noteDisplayId = `N-${String(noteNumber).padStart(3, "0")}`;
   } else {
     noteId = nextNoteID(state.notes);
     noteDisplayId = undefined;

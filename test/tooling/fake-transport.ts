@@ -102,7 +102,8 @@ export function makeFakeTransport(o: FakeOptions): FakeTransport {
       timers.push(setTimeout(() => {
         timedOut = "term";
         stopChild("SIGTERM");
-        timers.push(setTimeout(() => { timedOut = "kill"; stopChild("SIGKILL"); }, grace));
+        // A stub settles on TERM at once; a grace timer made after that would outlive the call.
+        if (!done) timers.push(setTimeout(() => { timedOut = "kill"; stopChild("SIGKILL"); }, grace));
       }, spec.timeoutSeconds * 1000));
       if (stubbed !== null) {
         // A stub ends on TERM, as a well-behaved client does.

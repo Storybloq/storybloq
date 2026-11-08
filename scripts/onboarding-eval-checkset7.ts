@@ -661,7 +661,11 @@ export function rule8(turns: readonly Cs7Turn[], allCalls: readonly EvalCall[], 
     if (!e.point.startsWith("evidence-created:")) continue;
     const ref = e.point.slice("evidence-created:".length);
     const seen = (observations ?? []).filter((o) => o.ref === ref);
-    if (seen.length === 0) failures.push(`rule 8: evidence ${ref} was created, but nothing observed it afterwards`);
+    // A folder above it that failed its observation (a link, a swap, a refused project root) is a change
+    // to everything under it, not an absence.
+    const above = seen.length > 0 ? [] : (observations ?? []).filter((o) => ref.startsWith(`${o.ref}/`) && !/^[0-9a-f]{64}$/.test(o.sha256));
+    for (const o of above) failures.push(`rule 8: evidence ${ref} changed: created as ${String(e.sha256).slice(0, 12)}, observed as ${o.sha256.slice(0, 12)} at ${o.at.kind} ${o.at.index} (${o.ref})`);
+    if (seen.length === 0 && above.length === 0) failures.push(`rule 8: evidence ${ref} was created, but nothing observed it afterwards`);
     for (const o of seen) {
       if (o.sha256 !== e.sha256) failures.push(`rule 8: evidence ${ref} changed: created as ${String(e.sha256).slice(0, 12)}, observed as ${o.sha256.slice(0, 12)} at ${o.at.kind} ${o.at.index}`);
     }

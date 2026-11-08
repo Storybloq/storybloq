@@ -648,6 +648,8 @@ export function storeRevisionCount(storeRoot: string, setupId: string): number {
 export const EVIDENCE_NOT_READ = { link: "symlink", other: "not-a-file", failed: "unreadable", changed: "changed", over: "over-limit" } as const;
 /** An evidence file is a short document; one past this is recorded as over the limit, never read on. */
 export const EVIDENCE_LIMIT = 16 * 1048576;
+/** The evidence folder, project-relative: where a failure of the project root itself is recorded. */
+export const EVIDENCE_ROOT = "docs/checkpoints";
 
 /**
  * Every evidence file under the project's docs/checkpoints/, by its project-relative path, digested now.
@@ -660,7 +662,12 @@ export const EVIDENCE_LIMIT = 16 * 1048576;
 export function observeEvidence(projectRoot: string, at: EvidenceObservation["at"], hook?: WalkHook): EvidenceObservation[] {
   const out: EvidenceObservation[] = [];
   const inScope = (rel: string): boolean => rel === "docs" || rel === "docs/checkpoints" || rel.startsWith("docs/checkpoints/");
-  const fail = (rel: string, sha256: string): void => { if (rel !== "." && inScope(rel)) out.push({ ref: rel, sha256, at }); };
+  // A root the walk refuses (a link, not a folder, unreadable, or swapped while entered) is one failed
+  // observation of the whole evidence folder, never an empty list that reads as a project with no evidence.
+  const fail = (rel: string, sha256: string): void => {
+    if (rel === ".") out.push({ ref: EVIDENCE_ROOT, sha256, at });
+    else if (inScope(rel)) out.push({ ref: rel, sha256, at });
+  };
   walkNoFollow(projectRoot, "project", {
     // Above the checkpoints folder only the folders on the way are walked; any other entry there is not evidence.
     include: (rel, st) => (rel === "docs" ? st.isDirectory() || st.isSymbolicLink() : inScope(rel)),

@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { treeDigest } from "../../scripts/onboarding-eval-lib.js";
 import { asAttemptPath, type ExecSpec, STDIN_LIMIT } from "../../scripts/onboarding-eval-transport.js";
 import { makeFakeTransport } from "./fake-transport.js";
@@ -108,6 +108,21 @@ describe("the fake's exec contract, the same for a real and a stubbed command", 
       expect([r.outcome, r.timedOut, r.child, r.cliStatus]).toEqual(["ok", "term", { status: null, signal: "SIGTERM" }, 143]);
     });
   }
+});
+
+describe("the fake leaves no timer behind", () => {
+  it("a stub that settles on the timeout's TERM leaves no KILL grace timer running", async () => {
+    const t = makeFakeTransport({ tree: mkdtempSync(join(root, "t-")), stub: () => ({ status: 0, stdout: "out", delayMs: 60_000 }) });
+    vi.useFakeTimers();
+    try {
+      const pending = t.exec(spec({ argv: ["client"], timeoutSeconds: 1 }));
+      await vi.advanceTimersByTimeAsync(1000);
+      const r = await pending;
+      expect([r.timedOut, r.child, vi.getTimerCount()]).toEqual(["term", { status: null, signal: "SIGTERM" }, 0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("the fake's live capture: production's retry and predicate on its own tries", () => {

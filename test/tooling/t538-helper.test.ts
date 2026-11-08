@@ -3,7 +3,7 @@
 // its import closure, and the built bundle answers exactly as the host functions do on the same tree.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ import { HELPER_OPS, liveTry, processCount, readBytesAt, rolloutLinesUnder, runO
 import { runtimeExclusion, treeDigest } from "../../scripts/onboarding-eval-lib.js";
 import { rule8 } from "../../scripts/onboarding-eval-checkset7.js";
 import type { EventsLog } from "../../scripts/onboarding-eval-checkset7-events.js";
-import { EVIDENCE_LIMIT, EVIDENCE_NOT_READ, ledgerState, observeEvidence } from "../../scripts/onboarding-eval-sessions.js";
+import { EVIDENCE_LIMIT, EVIDENCE_NOT_READ, EVIDENCE_ROOT, ledgerState, observeEvidence } from "../../scripts/onboarding-eval-sessions.js";
 import { walkNoFollow } from "../../scripts/onboarding-eval-walk.js";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -229,6 +229,33 @@ describe("observe-evidence (ISS-1467)", () => {
     expect(observeEvidence(p, at)).toEqual([]);
     symlinkSync(join(root, "elsewhere"), join(p, "docs", "checkpoints"));
     expect(observeEvidence(p, at)).toEqual([{ ref: "docs/checkpoints", sha256: EVIDENCE_NOT_READ.link, at }]);
+  });
+  it("a project root the walk refuses is a failed observation of the evidence folder, never an empty list", () => {
+    const real = project();
+    const linked = join(root, `linked-root-${Date.now()}`);
+    symlinkSync(real, linked);
+    expect(observeEvidence(linked, at)).toEqual([{ ref: EVIDENCE_ROOT, sha256: EVIDENCE_NOT_READ.other, at }]);
+    const swapped = project();
+    const elsewhere = project();
+    const r = observeEvidence(swapped, at, (step, rel) => { if (step === "enter" && rel === ".") { renameSync(swapped, `${swapped}-gone`); renameSync(elsewhere, swapped); } });
+    expect(r).toEqual([{ ref: EVIDENCE_ROOT, sha256: EVIDENCE_NOT_READ.changed, at }]);
+    const shut = project();
+    chmodSync(shut, 0o000);
+    try {
+      expect(observeEvidence(shut, at)).toEqual([{ ref: EVIDENCE_ROOT, sha256: EVIDENCE_NOT_READ.failed, at }]);
+    } finally {
+      chmodSync(shut, 0o755);
+    }
+  });
+  it("rule 8 reports created evidence under a folder that failed its observation as changed, naming what it saw", () => {
+    const log = { events: [{ point: "evidence-created:docs/checkpoints/m1/evidence.md", sha256: hex("seen\n") }] } as unknown as EventsLog;
+    expect(rule8([], [], log, [{ ref: EVIDENCE_ROOT, sha256: EVIDENCE_NOT_READ.changed, at }])).toEqual([`rule 8: evidence docs/checkpoints/m1/evidence.md changed: created as ${hex("seen\n").slice(0, 12)}, observed as changed at turn 2 (docs/checkpoints)`]);
+    expect(rule8([], [], log, [{ ref: "docs", sha256: EVIDENCE_NOT_READ.link, at }])).toEqual([`rule 8: evidence docs/checkpoints/m1/evidence.md changed: created as ${hex("seen\n").slice(0, 12)}, observed as symlink at turn 2 (docs)`]);
+    // Only a failed observation of a folder above speaks for what is under it: a digest there does not,
+    // and a sibling whose name merely starts the same is not above it.
+    const unseen = ["rule 8: evidence docs/checkpoints/m1/evidence.md was created, but nothing observed it afterwards"];
+    expect(rule8([], [], log, [{ ref: "docs/checkpoints/m1", sha256: hex("x"), at }])).toEqual(unseen);
+    expect(rule8([], [], log, [{ ref: "docs/checkpoints/m", sha256: EVIDENCE_NOT_READ.link, at }])).toEqual(unseen);
   });
   it("a linked docs folder is one failed observation and is never followed, though its target holds checkpoints", () => {
     const p = mkdtempSync(join(root, "p-"));

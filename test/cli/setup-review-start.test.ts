@@ -12,7 +12,6 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
 import { projectKeyFor, recordShape, SKIPPED_LINE, STOP_LINES, storeSeams } from "../../src/core/setup-review.js";
-import type { ChildProcess } from "node:child_process";
 import { CHARACTERISED_CODEX_VERSIONS, CODEX_ISOLATION_FLAGS, codexArgs, inferredReasons, probeCodexStart, probeReviewer, startProbeSeams } from "../../src/core/setup-review-backends.js";
 import { signalGroup } from "../../src/core/process-group.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, scratchDirsCreated, type FakeBin } from "../helpers/setup-review-fakes.js";
@@ -178,16 +177,23 @@ describe("the codex start probe (ISS-1456)", () => {
     const limits = { attemptMs: 1_500, totalMs: 3_000, killGraceMs: 400 };
     const started = Date.now();
     extraEnv = { FAKE_CODEX_PROBE: "late-then-stubborn", FAKE_LATE_UNTIL: String(started + 1_400) };
-    const stopped = new Set<ChildProcess>();
+    const sent: Array<[number | undefined, NodeJS.Signals]> = [];
     const realSignal = startProbeSeams.signal;
     startProbeSeams.signal = (child, sig) => {
-      stopped.add(child);
+      sent.push([child.pid, sig]);
       realSignal(child, sig);
     };
     const r = await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), limits);
     expect(r).toMatchObject({ ok: false, code: "probe-inconclusive" });
-    // A retry was started and the probe had to stop it: the late first attempt ended by itself.
-    expect(stopped.size).toBeGreaterThanOrEqual(1);
+    // Two distinct attempts: the fake tells them apart by its own probe log (the first line is the first
+    // attempt), and each logs its pid. The second, which ignores SIGTERM, is the one the probe had to stop:
+    // SIGTERM at its clamped bound, then SIGKILL.
+    const attempts = probes();
+    expect(attempts).toHaveLength(2);
+    const [first, second] = attempts.map((p) => p.pid);
+    expect(first).not.toBe(second);
+    const toSecond = sent.filter(([pid]) => pid === second).map(([, sig]) => sig);
+    expect(toSecond.slice(0, 2)).toEqual(["SIGTERM", "SIGKILL"]);
     expect(Date.now() - started).toBeLessThan(limits.totalMs + SLACK_MS);
     for (const p of probes()) expect(alive(p.pid)).toBe(false);
   });

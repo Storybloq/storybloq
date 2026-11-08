@@ -137,7 +137,7 @@ export function storeRoot(env: NodeJS.ProcessEnv): string {
 }
 
 /** The errors that mean this process may not write the store, as inside a sandbox (ISS-1456). */
-const UNWRITABLE = new Set(["EPERM", "EACCES", "EROFS"]);
+export const UNWRITABLE: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EROFS"]);
 
 /** Test seam, not reachable through any CLI or MCP input: the preflight's one write. */
 export const storeSeams: { writeProbe: (path: string) => void } = {

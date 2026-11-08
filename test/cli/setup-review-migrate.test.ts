@@ -12,6 +12,7 @@ import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, t
 import { setupPaths, storeRoot, storeRootSeams, storeSeams } from "../../src/core/setup-review.js";
 import { legacyStoreRoot, migrateSeams, placeSetup, publicationLockPath } from "../../src/core/setup-review-migrate.js";
 import { acquireProjectLockAsync, releaseProjectLock } from "../../src/core/project-lock.js";
+import { ProjectLoaderError } from "../../src/core/errors.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, type FakeBin } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -46,7 +47,7 @@ afterEach(() => {
 });
 
 /** The environment before ISS-1457 is simulated by naming the old store as the override. */
-function io(opts: { legacy?: boolean; stdin?: string } = {}): SetupReviewIo {
+function io(opts: { legacy?: boolean; stdin?: string; deps?: SetupReviewIo["deps"] } = {}): SetupReviewIo {
   return {
     cwd: project,
     env: { PATH: fake.path, FAKE_LOG: fake.log, FAKE_STDIN_DIR: fake.stdinDir, FAKE_CODEX_PROBE: "reach", HOME: home, ...(opts.legacy ? { STORYBLOQ_SETUP_REVIEW_DIR: legacyStoreRoot() } : {}) },
@@ -54,7 +55,7 @@ function io(opts: { legacy?: boolean; stdin?: string } = {}): SetupReviewIo {
       if (opts.stdin === undefined) throw new Error("stdin must not be read");
       return Buffer.from(opts.stdin);
     },
-    deps: { timeoutMs: 2_000, killGraceMs: 200, probeLimits: FAST },
+    deps: { timeoutMs: 2_000, killGraceMs: 200, probeLimits: FAST, ...opts.deps },
   };
 }
 const idOf = (r: SetupReviewResult): string => /^Setup id: (SS-[0-9a-f]{8})$/m.exec(r.stdout)![1]!;
@@ -358,15 +359,62 @@ describe("moving a setup from the old store", () => {
     const files = all.filter((p) => !dirs.includes(p));
     for (const f of files) chmodSync(f, 0o400);
     for (const d of dirs) chmodSync(d, 0o500);
+    let lockAttempts = 0;
+    const counted = { acquireStatusLock: ((...a: Parameters<typeof acquireProjectLockAsync>) => { lockAttempts++; return acquireProjectLockAsync(...a); }) as typeof acquireProjectLockAsync };
     try {
-      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET, deps: counted }), { setup: id });
       expect(r).toEqual(want);
+      // The store check already said unwritable, so the run lock is never even tried.
+      expect(lockAttempts).toBe(0);
+      // A revision the store does not hold yet cannot be kept there: exit 6, as before.
+      const fresh = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET.replace("one-hour", "five-hour"), deps: counted }), { setup: id });
+      expect(fresh.exitCode).toBe(6);
+      expect(fresh.stdout).toContain("the revision could not be kept");
     } finally {
       for (const d of dirs) chmodSync(d, 0o700);
       for (const f of files) chmodSync(f, 0o600);
     }
     expect(tree(root)).toEqual(before);
     expect(existsSync(publicationLockPath(newPaths(id)))).toBe(false);
+  });
+
+  describe("a plain status's run lock is busy only when it is held (ISS-1457 round 3)", () => {
+    it("held by another run: exit 7, busy, as before", async () => {
+      const id = idOf(await handleSetupReviewGate(io(), {}));
+      const held = await acquireProjectLockAsync(newPaths(id).lock);
+      try {
+        const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+        expect(r).toEqual({ stdout: "Setup review: a review is already running in this setup.\n", exitCode: 7 });
+      } finally {
+        releaseProjectLock(held);
+      }
+    });
+
+    it.skipIf(process.getuid?.() === 0)("a permission error taking it, on a store whose check passed (only the setup folder denies writes): status reads and reports without the lock", async () => {
+      const id = idOf(await handleSetupReviewGate(io(), {}));
+      await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+      const want = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      const dir = newPaths(id).dir;
+      const before = tree(dir);
+      chmodSync(dir, 0o500);
+      try {
+        const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+        expect(r).toEqual(want);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+      expect(tree(dir)).toEqual(before);
+      expect(existsSync(newPaths(id).lock)).toBe(false);
+    });
+
+    it("any other failure taking it: exit 6 naming the errno, never busy", async () => {
+      const id = idOf(await handleSetupReviewGate(io(), {}));
+      const eio = { acquireStatusLock: (async () => { throw new ProjectLoaderError("io_error", "Failed to acquire project lock", Object.assign(new Error("EIO: i/o error, link"), { code: "EIO" })); }) as typeof acquireProjectLockAsync };
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET, deps: eio }), { setup: id });
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toContain("the run lock could not be taken (EIO)");
+      expect(r.stdout).not.toContain("already running");
+    });
   });
 
   it.skipIf(process.getuid?.() === 0)("a legacy-only setup with a destination that denies every write: status exit 3, no lock, no revision, nothing moved", async () => {

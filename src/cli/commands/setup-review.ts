@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "../../core/project-lock.js";
 import {
   absentLine, classify, completedInCycle, completedLine, failedLine, fsyncDir, loadRecords, parsePacket, persistRevision,
-  preflightStore, probeLine, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
+  preflightStore, probeLine, UNWRITABLE, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
   SKIPPED_LINE, STOP_LINES, storeRoot, unreadableLine, writeFileDurable, writeFileSynced,
   type CompletedRecord, type FailedRecord, type FailureKind, type ProbeResult, type ReviewPacket, type SetupPaths, type SetupState,
 } from "../../core/setup-review.js";
@@ -37,6 +37,8 @@ export interface SetupReviewDeps {
   readonly killGraceMs?: number;
   /** Runs under the status lock just before the records are classified. */
   readonly beforeStatusClassify?: () => void;
+  /** The status run lock (a test seam for a lock failure no file mode can produce). */
+  readonly acquireStatusLock?: typeof acquireProjectLockAsync;
   /** Bounds for the version and start probes (ISS-1456). */
   readonly probeLimits?: ProcessLimits & StartProbeLimits;
 }
@@ -609,11 +611,22 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
     throw e;
   }
   // Under the run lock: a record a run has renamed in but not yet synced is never read as published.
-  let lock: ProjectLockHandle;
-  try {
-    lock = await acquireProjectLockAsync(paths.lock, LOCK_WAIT);
-  } catch {
-    return lockBusy();
+  // ISS-1457 round 3: a store that denies writes holds no run that could be renaming one in, so a status
+  // there reads without the lock. The lock is reported busy only when it is held: its own wait or legacy
+  // refusal, which carries no cause. A permission error taking it (the store check passed, the setup folder
+  // denies writes) is the same unwritable case; any other failure is exit 6 naming it. The residual: a run
+  // that held the lock before the store went read-only may be mid-rename until its own writes fail.
+  let lock: ProjectLockHandle | null = null;
+  const lockless = store.kind === "unwritable";
+  if (!lockless) {
+    try {
+      lock = await (io.deps.acquireStatusLock ?? acquireProjectLockAsync)(paths.lock, LOCK_WAIT);
+    } catch (e) {
+      const cause = (e as { cause?: unknown }).cause;
+      if (cause === undefined) return lockBusy();
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (!(code && UNWRITABLE.has(code))) return storageFailure(`the run lock could not be taken (${code ?? (cause as Error).message ?? String(cause)})`);
+    }
   }
   try {
     try {
@@ -626,7 +639,7 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
     io.deps.beforeStatusClassify?.();
     return statusLines(paths, setup, packet);
   } finally {
-    releaseProjectLock(lock);
+    if (lock) releaseProjectLock(lock);
   }
 }
 

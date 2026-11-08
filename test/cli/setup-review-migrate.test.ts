@@ -410,16 +410,20 @@ describe("moving a setup from the old store", () => {
       }
     });
 
-    for (const [name, write] of [
-      ["unparseable", (f: string) => writeFileSync(f, "{ not json")],
-      ["the wrong shape", (f: string) => writeFileSync(f, JSON.stringify({ cycle: "one" }))],
-      ["naming another setup", (f: string) => writeFileSync(f, readFileSync(f, "utf-8").replace(/"setupId": "SS-[0-9a-f]{8}"/, '"setupId": "SS-00000000"'))],
+    // T-536's readSetup answers a record that does not parse with its "No such setup" text and a
+    // record that parses but is wrong with its "damaged" text; both stay exit 2 and keep T-536's words.
+    const NO_SUCH = "No such setup. Run storybloq setup-review gate first and keep its setup id.";
+    const DAMAGED = "The setup record is damaged. Run storybloq setup-review gate to open a new setup.";
+    for (const [name, write, message] of [
+      ["unparseable", (f: string) => writeFileSync(f, "{ not json"), NO_SUCH],
+      ["the wrong shape", (f: string) => writeFileSync(f, JSON.stringify({ cycle: "one" })), DAMAGED],
+      ["naming another setup", (f: string) => writeFileSync(f, readFileSync(f, "utf-8").replace(/"setupId": "SS-[0-9a-f]{8}"/, '"setupId": "SS-00000000"')), DAMAGED],
     ] as const) {
-      it(`${name}: T-536's damaged record, exit 2`, async () => {
+      it(`${name}: T-536's answer, exit 2`, async () => {
         const { status, run } = await damaged(write);
         for (const r of [status, run]) {
           expect(r.exitCode).toBe(2);
-          expect(r.stdout).toContain("The setup record is damaged. Run storybloq setup-review gate to open a new setup.");
+          expect(r.stdout).toContain(message);
         }
       });
     }

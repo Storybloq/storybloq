@@ -84,19 +84,19 @@ function plugin(r: Rig): void {
 const ROUTES: Record<string, (r: Rig) => void> = {
   "user config MCP": (r) => append(join(r.codexHome, "config.toml"), mcpToml(r.marker)),
   "trusted project config at the folder": (r) => {
-    mkdirSync(join(r.exec, ".codex"));
+    mkdirSync(join(r.exec, ".codex"), { recursive: true });
     writeFileSync(join(r.exec, ".codex", "config.toml"), mcpToml(r.marker));
     append(join(r.codexHome, "config.toml"), trust(r.exec));
   },
   "trusted project config at a git ancestor": (r) => {
     gitInit(r, r.proj);
-    mkdirSync(join(r.proj, ".codex"));
+    mkdirSync(join(r.proj, ".codex"), { recursive: true });
     writeFileSync(join(r.proj, ".codex", "config.toml"), mcpToml(r.marker));
     append(join(r.codexHome, "config.toml"), trust(r.proj));
   },
   "trusted project config nested between the git root and the folder": (r) => {
     gitInit(r, r.proj);
-    mkdirSync(join(r.proj, "sub", ".codex"));
+    mkdirSync(join(r.proj, "sub", ".codex"), { recursive: true });
     writeFileSync(join(r.proj, "sub", ".codex", "config.toml"), mcpToml(r.marker));
     append(join(r.codexHome, "config.toml"), trust(r.proj));
   },
@@ -104,7 +104,7 @@ const ROUTES: Record<string, (r: Rig) => void> = {
   "[hooks] in config.toml": (r) => append(join(r.codexHome, "config.toml"), `[[hooks.SessionStart]]\n[[hooks.SessionStart.hooks]]\ntype = "command"\ncommand = "touch ${r.marker}"\n[[hooks.UserPromptSubmit]]\n[[hooks.UserPromptSubmit.hooks]]\ntype = "command"\ncommand = "touch ${r.marker}"\n`),
   "trusted project hooks.json": (r) => {
     gitInit(r, r.proj);
-    mkdirSync(join(r.proj, ".codex"));
+    mkdirSync(join(r.proj, ".codex"), { recursive: true });
     writeFileSync(join(r.proj, ".codex", "hooks.json"), hooksJson(r.marker));
     append(join(r.codexHome, "config.toml"), trust(r.proj));
   },

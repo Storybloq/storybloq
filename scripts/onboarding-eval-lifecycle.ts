@@ -69,12 +69,15 @@ async function settleWithin<T>(p: Promise<T>, ms: number, ops: Pick<CleanupOps, 
  */
 export async function bounded<T>(run: (deadline: number, signal: AbortSignal) => Promise<T>, deadline: number | null, settleBy: number, ops: Pick<CleanupOps, "now" | "wait">): Promise<Bounded<T>> {
   if (deadline === null) return { failed: "under a minute left, not started" };
+  if (ops.now() >= deadline) return { failed: "its deadline had already passed, not started" };
   const cancel = new AbortController();
   const fail = (e: unknown): Bounded<T> => ({ failed: `failed (${e instanceof Error ? e.message : String(e)})` });
   let work: Promise<Bounded<T>>;
   try { work = run(deadline, cancel.signal).then((value): Bounded<T> => ({ value }), fail); } catch (e) { work = Promise.resolve(fail(e)); }
   const first = await settleWithin(work, Math.max(0, deadline - ops.now()), ops);
-  if (first !== null) return first;
+  // Accepted only when it settled by the deadline on the injected clock: synchronous work inside `run` can
+  // finish late and hand back a settled promise that beats the timer. A late settlement takes the timer's path.
+  if (first !== null && ops.now() <= deadline) return first;
   cancel.abort();
   const after = await settleWithin(work, Math.max(0, settleBy - ops.now()), ops);
   if (after !== null) return { failed: "did not finish by its deadline and stopped when cancelled" };

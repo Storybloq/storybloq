@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { budgetFrom } from "../../scripts/onboarding-eval-limits.js";
-import { classifyStop, closeQuarantine, quarantineCheck, retainTar, runCleanup, writeQuarantine, type CleanupOps, type StepResult, type StopCause } from "../../scripts/onboarding-eval-lifecycle.js";
+import { bounded, classifyStop, closeQuarantine, quarantineCheck, retainTar, runCleanup, writeQuarantine, type CleanupOps, type StepResult, type StopCause } from "../../scripts/onboarding-eval-lifecycle.js";
 
 const MIN = 60_000;
 const T0 = 1_800_000_000_000;
@@ -264,6 +264,41 @@ describe("runCleanup: every awaited operation is bounded by its deadline and can
     expect(o).toMatchObject({ disposition: "packed", retention: "done", cleanup: "objects-left" });
     expect(o.findings).toEqual([`cleanup: the removal ${STILL}, so labelled objects may be left`]);
     expect(f.at()).toBe(end);
+  });
+  it("a pack whose synchronous work ends past its deadline hands back a success that is not used; the retry runs", async () => {
+    const f = fake(start);
+    // The first try's synchronous work moves the clock to one millisecond past its deadline, plus its 1 s.
+    let skew = 0;
+    const o = await runCleanup(b, cause, {
+      ...f.ops,
+      now: () => f.ops.now() + skew,
+      attemptPack: (d, n, sig) => { if (n === 1) skew = d + 1 - f.ops.now(); return f.ops.attemptPack(d, n, sig); },
+    });
+    expect(o.findings).toEqual([`attempt pack try 1: ${STOPPED}`]);
+    expect(f.calls).toEqual(["stop-record", "stop", "confirm", "proxy-pack", "attempt-pack-1", "clear-staging", "attempt-pack-2", "state", "retain", "remove"]);
+    expect(o.disposition).toBe("packed");
+  });
+  it("a retention whose synchronous work ends past its deadline is pending, not done", async () => {
+    let t = start;
+    const f = fake(start);
+    const o = await runCleanup(b, cause, { ...f.ops, now: () => Math.max(t, f.ops.now()), retain: async (d) => { t = d + 1; return OK; } });
+    expect(o.retention).toBe("pending");
+    expect(o.findings[0]).toBe(`retention-pending: ${STOPPED}`);
+  });
+  it("an already-expired deadline is not started", async () => {
+    let started = false;
+    const r = await bounded(async () => { started = true; return 1; }, T0, Number.MAX_SAFE_INTEGER, { now: () => T0, wait: async () => {} });
+    expect(r).toEqual({ failed: "its deadline had already passed, not started" });
+    expect(started).toBe(false);
+    const ok = await bounded(async () => 1, T0 + 1, Number.MAX_SAFE_INTEGER, { now: () => T0, wait: (_ms, sig) => new Promise((res) => sig.addEventListener("abort", () => res(), { once: true })) });
+    expect(ok).toEqual({ value: 1 });
+  });
+  it("a value settled exactly at the deadline is used; one millisecond later is not", async () => {
+    const never = (_ms: number, sig: AbortSignal) => new Promise<void>((res) => sig.addEventListener("abort", () => res(), { once: true }));
+    let t = T0;
+    expect(await bounded(async () => { t = T0 + 10; return "v"; }, T0 + 10, T0 + 99, { now: () => t, wait: never })).toEqual({ value: "v" });
+    t = T0;
+    expect(await bounded(async () => { t = T0 + 11; return "v"; }, T0 + 10, T0 + 99, { now: () => t, wait: never })).toEqual({ failed: STOPPED });
   });
   it("an operation that throws is a failure with its message, not an escaped rejection", async () => {
     const f = fake(start, { throws: ["retain", "remove"] });

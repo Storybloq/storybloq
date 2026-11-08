@@ -318,7 +318,11 @@ describe("nothing planted under HOME starts through the real launch builder (ISS
   it("the fake models the route: started without the flags, it runs what was planted", () => {
     const marker = join(home, "MARKER");
     plant(marker);
-    spawnSync(join(fake.dir, "codex"), ["exec", "-"], { env: { PATH: fake.path, HOME: home }, input: "" });
+    // Its answer goes to a file under the scratch home, never to the package folder this suite runs in.
+    const before = readdirSync(process.cwd()).sort();
+    spawnSync(join(fake.dir, "codex"), ["exec", "-o", join(home, "out.json"), "-"], { cwd: home, env: { PATH: fake.path, HOME: home }, input: "" });
+    expect(readdirSync(process.cwd()).sort()).toEqual(before);
+    expect(existsSync(join(process.cwd(), "exec"))).toBe(false);
     expect(existsSync(marker)).toBe(true);
     expect(existsSync(`${marker}.hook`)).toBe(true);
   });

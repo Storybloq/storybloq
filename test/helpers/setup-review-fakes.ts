@@ -157,8 +157,9 @@ process.stdin.on("end", () => {
     if (mode === "fatal") { process.stderr.write("Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n"); process.exit(1); }
     const body = mode === "invalid" ? JSON.stringify({ verdict: "maybe", findings: "none" }) : JSON.stringify(review);
     if (name === "codex") {
-      const out = args[args.indexOf("-o") + 1];
-      if (mode !== "no-output") fs.writeFileSync(out, body);
+      // No -o, no file: a call without one must never write into whatever folder it runs in.
+      const o = args.indexOf("-o");
+      if (mode !== "no-output" && o >= 0 && args[o + 1]) fs.writeFileSync(args[o + 1], body);
     } else {
       const structured = JSON.parse(body);
       process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "", structured_output: structured, session_id: "fake-session" }));

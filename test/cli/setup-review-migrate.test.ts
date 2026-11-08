@@ -274,6 +274,18 @@ describe("moving a setup from the old store", () => {
     expect(existsSync(newPaths(id).setupFile)).toBe(true);
   });
 
+  it("a never-moved setup with a revision file cut short refuses as damaged, naming the file and the recovery", async () => {
+    const id = idOf(await handleSetupReviewGate(io(), {}));
+    await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+    const rev = readdirSync(newPaths(id).revisions)[0]!;
+    writeFileSync(join(newPaths(id).revisions, rev), "cut sh");
+    const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout).toContain(`the setup record at ${newPaths(id).dir} is damaged (revision ${rev} does not match its hash)`);
+    expect(r.stdout).toContain(`move ${newPaths(id).dir} aside and run a fresh gate with --setup from a terminal outside the agent`);
+    expect(existsSync(join(newPaths(id).revisions, rev))).toBe(true);
+  });
+
   it("with the override set, the old store is never looked at", async () => {
     const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
     const other = makeScratchDir("sr-mig-other-");

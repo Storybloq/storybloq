@@ -75,12 +75,58 @@ function legacyOf(paths: SetupPaths, env: NodeJS.ProcessEnv): SetupPaths | null 
  */
 function destinationState(paths: SetupPaths, legacy: SetupPaths | null): "present" | "absent" | { readonly broken: string } {
   if (!complete(paths)) return "absent";
-  if (legacy === null) return "present";
-  const problem = dataProblem(paths, true);
+  // With an old copy, every file must be present and valid. Without one, a record that is present but does
+  // not validate keeps its exit 8 answer (T-536); what that answer never covered is refused here.
+  const problem = legacy === null ? missingProblem(paths) : dataProblem(paths, true);
   return problem === null ? "present" : { broken: problem };
 }
 
-function brokenRefusal(paths: SetupPaths, legacy: SetupPaths, problem: string): Placement {
+/** A file the store published that is missing or cannot be read, or a revision whose hash does not match. */
+function missingProblem(paths: SetupPaths): string | null {
+  const unread = (e: unknown): boolean => (e as NodeJS.ErrnoException).code !== undefined;
+  try {
+    readFileSync(paths.setupFile);
+  } catch (e) {
+    return `its setup.json cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"})`;
+  }
+  let records: string[] = [];
+  try {
+    records = readdirSync(paths.records);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") return `its records cannot be read (${(e as Error).message})`;
+  }
+  for (const name of records) {
+    if (!/^SR-/.test(name)) continue;
+    try {
+      readFileSync(join(paths.records, name, "record.json"));
+    } catch (e) {
+      if (unread(e)) return `record ${name} has no readable record.json (${(e as NodeJS.ErrnoException).code})`;
+    }
+  }
+  let revisions: string[] = [];
+  try {
+    revisions = readdirSync(paths.revisions);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") return `its revisions cannot be read (${(e as Error).message})`;
+  }
+  for (const name of revisions) {
+    const m = /^([0-9a-f]{64})\.md$/.exec(name);
+    if (!m) continue;
+    let body: Buffer;
+    try {
+      body = readFileSync(join(paths.revisions, name));
+    } catch (e) {
+      return `revision ${name} cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"})`;
+    }
+    if (sha256(body) !== m[1]) return `revision ${name} does not match its hash`;
+  }
+  return null;
+}
+
+function brokenRefusal(paths: SetupPaths, legacy: SetupPaths | null, problem: string): Placement {
+  if (legacy === null) {
+    return { kind: "refused", detail: `the setup record at ${paths.dir} is damaged (${problem}). To recover, move ${paths.dir} aside and run a fresh gate with --setup from a terminal outside the agent` };
+  }
   return { kind: "refused", detail: `${paths.dir} is an incomplete copy of the setup (${problem}); it was left as it is. The setup is still at ${legacy.dir}: move ${paths.dir} aside, then try again` };
 }
 
@@ -172,7 +218,7 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   const fromLegacy = legacy !== null;
   const first = destinationState(paths, legacy);
   if (first === "present") return { kind: "present" };
-  if (first !== "absent") return brokenRefusal(paths, legacy!, first.broken);
+  if (first !== "absent") return brokenRefusal(paths, legacy, first.broken);
   if (!fromLegacy && !create) return { kind: "absent" };
 
   // The publication lock first: a second caller waits for a move in progress and then finds the setup whole,
@@ -188,7 +234,7 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   try {
     const state = destinationState(paths, legacy);
     if (state === "present") return { kind: "present" };
-    if (state !== "absent") return brokenRefusal(paths, legacy!, state.broken);
+    if (state !== "absent") return brokenRefusal(paths, legacy, state.broken);
     if (fromLegacy) {
       try {
         legacyLock = await acquireProjectLockAsync(legacy.lock, LEGACY_LOCK_WAIT);

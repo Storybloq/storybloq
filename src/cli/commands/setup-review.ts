@@ -21,7 +21,7 @@ import {
   claudeArgs, codexArgs, fatalStartLine, inferredReasons, parseReviewerOutput, probeReviewer, reviewerEnv, runReviewer, SETUP_REVIEW_BACKENDS, SETUP_REVIEW_SCHEMA,
   unavailableLine, type ProcessLimits, type SetupReviewAnswer, type SetupReviewBackend, type StartProbeLimits, type UnavailableReason,
 } from "../../core/setup-review-backends.js";
-import { checkCodexHome, checkExecLocation } from "../../core/setup-review-trust.js";
+import { checkCodexHome, checkExecLocation, repositoryBoundary } from "../../core/setup-review-trust.js";
 import { placeSetup, setupInPlace } from "../../core/setup-review-migrate.js";
 import { RELAY_CAP_BYTES, runSupervised, STDOUT_LIMIT_BYTES } from "../../core/setup-review-supervisor.js";
 
@@ -97,15 +97,17 @@ async function probeAll(env: NodeJS.ProcessEnv, cwd: string, deps: SetupReviewDe
   const reasons: UnavailableReason[] = [];
   try {
     // ISS-1457: no reviewer starts in a folder another user or a project could have planted configuration in.
-    const location = checkExecLocation(execDir, storeRoot(env), env);
+    const location = checkExecLocation(execDir, storeRoot(env), env, repositoryBoundary(cwd));
     if (!location.ok) return { probe: null, reasons: [{ backend: "store", code: "untrusted-location", detail: location.detail }, ...inferredReasons(env)] };
     for (const backend of only ? [only] : SETUP_REVIEW_BACKENDS) {
       const codexHome = backend === "codex" ? checkCodexHome(env, cwd) : null;
-      if (codexHome) {
-        reasons.push(codexHome);
+      if (codexHome && !codexHome.ok) {
+        reasons.push(codexHome.reason);
         continue;
       }
-      const result = await probeReviewer(backend, env, execDir, deps.probeLimits ?? {});
+      // The probe runs against the canonical CODEX_HOME that was checked, never the path as given.
+      const probeEnv = codexHome?.ok ? { ...env, CODEX_HOME: codexHome.codexHome } : env;
+      const result = await probeReviewer(backend, probeEnv, execDir, deps.probeLimits ?? {});
       if (result.state === "startup-capable") return { probe: { backend, version: result.version }, reasons };
       reasons.push(result.reason);
     }
@@ -356,16 +358,17 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
 
   if (!verifyProjectLockOwnership(run.lock)) return lockLost();
   // ISS-1457: the probe checked its own folder; the review's folder is checked the same way before the reviewer starts.
-  const location = checkExecLocation(run.staging, storeRoot(run.env), run.env);
+  const location = checkExecLocation(run.staging, storeRoot(run.env), run.env, repositoryBoundary(run.cwd));
   const codexHome = backend === "codex" ? checkCodexHome(run.env, run.cwd) : null;
-  const refusal = !location.ok ? `untrusted location: ${location.detail}` : codexHome ? `untrusted CODEX_HOME: ${codexHome.detail}` : null;
+  const refusal = !location.ok ? `untrusted location: ${location.detail}` : codexHome && !codexHome.ok ? `untrusted CODEX_HOME: ${codexHome.reason.detail}` : null;
   const startedAt = now();
   if (refusal) {
     rmSync(work, { recursive: true, force: true });
-    return publishFailure(run, failedRecord(run, startedAt, "spawn", null, null, refusal, codexHome ? "untrusted-codex-home" : "untrusted-location"), writeRecord);
+    return publishFailure(run, failedRecord(run, startedAt, "spawn", null, null, refusal, codexHome && !codexHome.ok ? "untrusted-codex-home" : "untrusted-location"), writeRecord);
   }
+  const childEnv = codexHome?.ok ? { ...run.env, CODEX_HOME: codexHome.codexHome } : run.env;
   // ISS-1457: the reviewer runs only under the supervisor, which stops its whole group even if this process dies.
-  const result = await runSupervised(backend, args, { cwd: run.staging, env: reviewerEnv(backend, run.env), input: prompt, timeoutMs, ...(run.deps.killGraceMs !== undefined ? { killGraceMs: run.deps.killGraceMs } : {}) });
+  const result = await runSupervised(backend, args, { cwd: run.staging, env: reviewerEnv(backend, childEnv), input: prompt, timeoutMs, ...(run.deps.killGraceMs !== undefined ? { killGraceMs: run.deps.killGraceMs } : {}) });
 
   let raw: Buffer | null = null;
   let failure: { kind: FailureKind; error: string; reasonCode?: string } | null = null;

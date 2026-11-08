@@ -153,7 +153,7 @@ const chunks = [];
 process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("end", () => {
   const stdin = Buffer.concat(chunks);
-  if (log) fs.appendFileSync(log, JSON.stringify({ name, args, cwd: process.cwd(), claudecode: process.env.CLAUDECODE ?? null, claudeSession: Object.keys(process.env).filter((k) => k.startsWith("CLAUDE_CODE_")) }) + "\n");
+  if (log) fs.appendFileSync(log, JSON.stringify({ name, args, cwd: process.cwd(), claudecode: process.env.CLAUDECODE ?? null, claudeSession: Object.keys(process.env).filter((k) => k.startsWith("CLAUDE_CODE_")), codexHome: process.env.CODEX_HOME ?? null }) + "\n");
   if (process.env.FAKE_STDIN_DIR) fs.writeFileSync(require("node:path").join(process.env.FAKE_STDIN_DIR, name + "-" + Date.now() + "-" + process.pid + ".stdin"), stdin);
   const review = { verdict: mode === "revise" ? "revise" : "approve", findings: mode === "revise" ? [{ severity: "major", requirement: "R3", description: "R3 is covered by no ticket and no coverage row" }] : [] };
   const finish = () => {
@@ -195,7 +195,7 @@ export interface FakeBin {
   readonly stdinDir: string;
   /** PATH: the scratch bin alone, holding the fakes that exist and a link to node. */
   readonly path: string;
-  invocations(): Array<{ name: string; args: string[]; cwd: string; claudecode: string | null; claudeSession: string[] }>;
+  invocations(): Array<{ name: string; args: string[]; cwd: string; claudecode: string | null; claudeSession: string[]; codexHome: string | null }>;
   stdins(): Buffer[];
 }
 

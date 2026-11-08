@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { createHash } from "node:crypto";
 import { fork, spawn, spawnSync } from "node:child_process";
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -512,6 +512,18 @@ describe("probe identity and the skip path (T-536)", () => {
     expect(r.exitCode).toBe(0);
     const s = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
     expect(s.stdout.split("\n")[0]).toBe("Reviewer probe: claude 9.9.9 (Claude Code)");
+  });
+
+  it("codex is given the canonical CODEX_HOME that was checked, never the link it was named by (ISS-1457)", async () => {
+    const real = join(home, "codex-real");
+    mkdirSync(real, { recursive: true, mode: 0o700 });
+    symlinkSync(real, join(home, "codex-link"));
+    extraEnv = { CODEX_HOME: join(home, "codex-link") };
+    const id = await openSetup();
+    expect((await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id })).exitCode).toBe(0);
+    const codex = fake.invocations().filter((i) => i.name === "codex");
+    expect(codex.length).toBeGreaterThan(0);
+    expect(codex.map((i) => i.codexHome)).toEqual(codex.map(() => realpathSync(real)));
   });
 
   it("a valid 2 MiB answer parses (ISS-1457)", async () => {

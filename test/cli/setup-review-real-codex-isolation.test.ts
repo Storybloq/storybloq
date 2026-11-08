@@ -4,13 +4,16 @@
  * configured, planted as an MCP server or hook that writes a marker, run once
  * without the isolation flags (the marker appears: the route is real) and once
  * through the real launch builder (no marker). Scratch HOME, CODEX_HOME and
- * TMPDIR, the probe's dummy key, the provider at a closed 127.0.0.1 port, so
- * nothing leaves the machine. The ordinary suite never depends on this file.
+ * TMPDIR, the probe's dummy key, the provider at a 127.0.0.1 listener that
+ * answers 500, so nothing leaves the machine. Each launch must show its
+ * nonce-carrying request reached that listener. The ordinary suite never depends on this file.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { createServer as createHttpServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexArgs, PROBE_KEY_ENV, probeOverrides } from "../../src/core/setup-review-backends.js";
@@ -24,15 +27,22 @@ afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 });
 
-function closedPort(): Promise<number> {
-  return new Promise((res, rej) => {
-    const server = createServer();
-    server.once("error", rej);
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as AddressInfo).port;
-      server.close(() => res(port));
-    });
+/**
+ * A listener on 127.0.0.1 that answers every request with 500, nothing leaves
+ * the machine, and records whether a request carrying this launch's nonce
+ * reached the model-request route: the proof a launch got past argument and
+ * config parsing, as the C1 probe takes it.
+ */
+async function nonceListener(nonce: string): Promise<{ port: number; reached: () => boolean; close: () => Promise<void> }> {
+  let reached = false;
+  const server = createHttpServer((req, res) => {
+    if (req.method === "POST" && req.url === "/v1/responses" && req.headers["x-storybloq-probe"] === nonce) reached = true;
+    req.resume();
+    res.statusCode = 500;
+    res.end("probe");
   });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  return { port: (server.address() as AddressInfo).port, reached: () => reached, close: () => new Promise((done) => server.close(() => done())) };
 }
 
 interface Rig {
@@ -111,26 +121,43 @@ const ROUTES: Record<string, (r: Rig) => void> = {
   plugin,
 };
 
-/** Runs codex once from `exec`, with the hook-trust bypass when asked, and says whether the marker appeared. */
+/**
+ * Runs codex once from `exec`, with the hook-trust bypass when asked, and says
+ * whether the marker appeared. Every launch must show it reached the model
+ * request (the nonce at our listener); one that did not, a spawn error, or a
+ * timeout fails the row with its diagnostics, so a launch codex rejected for
+ * a bad flag can never pass as "nothing started".
+ */
 async function launch(r: Rig, isolated: boolean, bypass: boolean, extra: string[] = []): Promise<boolean> {
-  const port = await closedPort();
-  const built = codexArgs(join(r.root, "work", "schema.json"), join(r.root, "work", "out.json"), [...probeOverrides(port, "0".repeat(32)), ...extra]);
+  const nonce = randomBytes(16).toString("hex");
+  const listener = await nonceListener(nonce);
+  const port = listener.port;
+  const built = codexArgs(join(r.root, "work", "schema.json"), join(r.root, "work", "out.json"), [...probeOverrides(port, nonce), ...extra]);
   writeFileSync(join(r.root, "work", "schema.json"), JSON.stringify({ type: "object" }));
   const withoutFlags = isolated ? built : stripIsolation(built);
   const argv = bypass ? [withoutFlags[0]!, BYPASS, ...withoutFlags.slice(1)] : withoutFlags;
   // Asynchronous, so the test worker keeps answering its runner while codex runs.
+  let stderr = "";
+  let spawnError: string | null = null;
+  let timedOut = false;
+  let status = "";
   await new Promise<void>((done) => {
     const child = spawn(BIN, argv, {
-      cwd: r.exec, stdio: ["pipe", "ignore", "ignore"],
+      cwd: r.exec, stdio: ["pipe", "ignore", "pipe"],
       env: { HOME: r.home, CODEX_HOME: r.codexHome, TMPDIR: join(r.root, "tmp"), PATH: "/usr/bin:/bin", [PROBE_KEY_ENV]: "storybloq-probe-not-a-credential" },
     });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 25_000);
-    child.once("error", () => { clearTimeout(timer); done(); });
-    child.once("exit", () => { clearTimeout(timer); done(); });
+    child.stderr!.on("data", (c: Buffer) => { if (stderr.length < 8192) stderr += String(c); });
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 25_000);
+    child.once("error", (e) => { spawnError = e.message; clearTimeout(timer); done(); });
+    child.once("exit", (code, sig) => { status = sig ?? `status ${code}`; clearTimeout(timer); done(); });
     child.stdin!.on("error", () => {});
     child.stdin!.end("probe\n");
   });
+  await listener.close();
   spawnSync("/usr/bin/pkill", ["-f", `touch ${r.marker}`]);
+  const diag = `isolated=${isolated} bypass=${bypass} exit=${status} timedOut=${timedOut} spawnError=${spawnError}\nstderr: ${stderr}`;
+  if (spawnError !== null || !listener.reached()) throw new Error(`the launch never reached the model request, so it proves nothing\n${diag}`);
+  if (timedOut) throw new Error(`the launch timed out\n${diag}`);
   return existsSync(r.marker);
 }
 

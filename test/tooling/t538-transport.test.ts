@@ -400,13 +400,15 @@ describe("stop, final pack and removal", () => {
     expect(f.calls()[0]!.argv.slice(4)).toEqual(["stop", "-t", "10", ID]);
     expect(await fake({ status: 1, stderr: "no such container" }).t.stop(10, new AbortController().signal)).toEqual({ ok: false, reason: "docker stop failed (1): no such container" });
     const ac = new AbortController();
-    setTimeout(() => ac.abort(), 200);
     const h = fake({ hang: true });
+    // Cancel once the hanging docker has recorded its pid, so a slow start under load cannot race the abort.
+    const armed = setInterval(() => { if (existsSync(join(h.dir, "pids"))) { clearInterval(armed); ac.abort(); } }, 20);
     expect(await h.t.stop(10, ac.signal)).toEqual({ ok: false, reason: "the stop was cancelled" });
+    clearInterval(armed);
     expect(h.pids().filter(alive)).toEqual([]);
   }, 30_000);
-  const packer = (start: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
-    const f = fake({ verbs: { create: { stdout: `${HID}\n` }, start, rm: {}, kill: {}, ...extra } }, { attemptId: "att-1" });
+  const packer = (start: Record<string, unknown>, extra: Record<string, unknown> = {}, config: Partial<DockerConfig> = {}) => {
+    const f = fake({ verbs: { create: { stdout: `${HID}\n` }, start, rm: {}, kill: {}, ...extra } }, { attemptId: "att-1", ...config });
     const raw = join(f.dir, "raw");
     mkdirSync(raw);
     const created: string[] = [];

@@ -303,10 +303,12 @@ describe.skipIf(process.platform === "win32")("a signal during a setup review en
     expect(groupGone).toBe(true);
   }, 30_000);
 
-  it("a run that settles while another is live leaves the handler installed for the live one", async () => {
+  // ISS-1457 re-target: the live review is now guarded by its supervisor, not by a listener in this
+  // process, so a probe that settles meanwhile leaves the count at the baseline and SIGINT still ends the group.
+  it("a run that settles while a supervised review is live leaves the listeners as they were, and SIGINT still ends the review's group", async () => {
     const { ended, stdout, groupGone } = await run("overlap", "SIGINT");
     const baseline = Number(/^baseline:(\d+)$/m.exec(stdout)?.[1]);
-    expect(stdout).toMatch(new RegExp(`^listeners:${baseline + 1}$`, "m"));
+    expect(stdout).toMatch(new RegExp(`^listeners:${baseline}$`, "m"));
     expect(ended).toEqual({ code: null, signal: "SIGINT" });
     expect(groupGone).toBe(true);
   }, 30_000);

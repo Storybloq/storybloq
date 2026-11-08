@@ -1,7 +1,12 @@
 /**
  * ISS-1457 round 2 (finding 5): every negative-pid signal of a run in group goes through one function.
  * Before the leader's exit event it is sent as always; after it, only when a probe in the same step
- * answers "alive", so a group id that may have been reused is never signalled.
+ * answers "alive". A group seen gone, or answering EPERM, is never signalled.
+ *
+ * Round 3: "alive" cannot prove it is still the original group. The system keeps a group id from any new
+ * process while a member lives, so the probe misleads only when every original member has exited and an
+ * unrelated process has made that number its own group id before the post-exit probe. That case is the
+ * accepted residual: the guard signals it. The last row pins that behaviour and the run's record of it.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ChildProcess, type spawn } from "node:child_process";
@@ -109,6 +114,32 @@ describe("the run's one group signal (ISS-1457 round 2)", () => {
     const r = await pending;
     expect(signals).toEqual([]);
     expect(r).toMatchObject({ exitCode: null, cleanup: "confirmed" });
+  });
+
+  it("accepted residual, pgid reused before the post-exit probe: the reused group is signalled, and the run records each signal sent after the leader's exit with the group id", async () => {
+    // The original leader has exited and been reaped (the fake's exit and close) before the first post-exit
+    // probe; the fake then answers "alive" for that number, as a foreign group that adopted it would, until
+    // the SIGKILL ends that group.
+    let reusedGone = false;
+    processGroupSeams.probe = () => { if (reusedGone) esrch(); };
+    watchKill();
+    const f = fakeLeader();
+    deliver(f, (_self, sig) => { if (sig === "SIGKILL") reusedGone = true; });
+    f.die();
+    const r = await run({ timeoutMs: 10_000 });
+    expect(signals).toEqual([[-PID, "SIGTERM"], [-PID, "SIGKILL"]]);
+    expect(r).toMatchObject({ timedOut: false, cleanup: "confirmed" });
+    expect(r.signalledAfterLeaderExit).toEqual({ pgid: PID, signals: ["SIGTERM", "SIGKILL"] });
+  });
+
+  it("a run that never signals after the leader's exit has no such record", async () => {
+    processGroupSeams.probe = esrch;
+    watchKill();
+    const f = fakeLeader();
+    f.die();
+    const r = await run({ timeoutMs: 10_000 });
+    expect(signals).toEqual([]);
+    expect(r.signalledAfterLeaderExit).toBeUndefined();
   });
 
   it("a leftover that ignores SIGTERM after the leader's exit is still stopped: SIGTERM then SIGKILL, confirmed", async () => {

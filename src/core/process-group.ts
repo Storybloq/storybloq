@@ -156,8 +156,19 @@ export interface GroupRunOptions {
  * group id is the live leader's own pid and cannot name anyone else, so the signal goes as it always did.
  * From that event on the id is free for reuse once the last member is gone, so the signal is sent only
  * when a probe in the same synchronous step answers "alive". Answers "sent", or the probe's answer when
- * nothing was sent ("gone", or an error code such as EPERM). The residual is the gap between that probe
- * and the kill, inside one synchronous step; the supervisor's kill by pid (f6) has the same one.
+ * nothing was sent ("gone", or an error code such as EPERM).
+ *
+ * The residual, stated as the race it is: a process group id is a pid number, and the system does not hand
+ * that number to a new process while any member of the group is alive (POSIX fork/setsid/setpgid never
+ * create a process or group whose id is an existing process group's). So an "alive" answer can mislead in
+ * one case only: every original member has exited, and an unrelated process has since made that same
+ * number its own group id (setsid, or setpgid to it), in the window between the last member's exit and
+ * the post-exit probe. The guard cannot tell that group from the original one and signals it. The window
+ * is kept short, not closed: each post-exit probe and its signal run in the same synchronous step as the
+ * event that calls for them (the leader's exit event, the end of the grace period, the deadline, the CLI's
+ * exit or signal), never deferred by a timer the contract does not already require. Closing it needs an
+ * anchor process that holds the group alive until the signal; that is a separate follow-up.
+ * A run that signalled after the leader's exit says so in GroupRun.signalledAfterLeaderExit.
  */
 export type GroupSignal = (signal: NodeJS.Signals) => string;
 
@@ -192,6 +203,11 @@ export interface GroupRun {
   /** Whether the whole group was seen gone (ESRCH) before the run settled; anything else is unconfirmed. */
   readonly cleanup: "confirmed" | "unconfirmed";
   readonly cleanupDetail: string | null;
+  /**
+   * ISS-1457 round 3: present only when a signal went to the group after the leader's exit event, so the
+   * accepted residual (see GroupSignal) is on the record: the group id and each signal, in order.
+   */
+  readonly signalledAfterLeaderExit?: { readonly pgid: number; readonly signals: readonly NodeJS.Signals[] };
 }
 
 /**
@@ -227,7 +243,12 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     let exitCode: number | null = null;
     let signal: NodeJS.Signals | null = null;
     let exited = false;
-    const groupSignal: GroupSignal = (sig) => signalGroupGuarded(child, sig, exited, own);
+    const afterExit: NodeJS.Signals[] = [];
+    const groupSignal: GroupSignal = (sig) => {
+      const outcome = signalGroupGuarded(child, sig, exited, own);
+      if (outcome === "sent" && exited && own) afterExit.push(sig);
+      return outcome;
+    };
     const stopOnExit = (): void => {
       groupSignal("SIGKILL");
     };
@@ -245,7 +266,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       untrackGroup(child);
       child.stdin?.destroy();
       release(child);
-      resolve({ exitCode, signal, timedOut, ...r });
+      resolve({ exitCode, signal, timedOut, ...r, ...(afterExit.length > 0 && child.pid !== undefined ? { signalledAfterLeaderExit: { pgid: child.pid, signals: [...afterExit] } } : {}) });
     };
 
     // After the last signal: poll for the group gone, then for the leader reaped and its pipes drained, within the bound.

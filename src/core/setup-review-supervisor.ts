@@ -279,7 +279,8 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
     let supExited = false;
     let failing = false;
     // A supervisor whose exit was seen is never signalled again: its pid may already name another process.
-    // The residual is the gap between the exit and node reporting it, the same as f6's in the group code.
+    // The residual is the gap between the supervisor's own exit and node reporting it; the group's own
+    // residual (a group id reused before the post-exit probe) is stated at GroupSignal in process-group.ts.
     const killSup = (): void => {
       if (!supExited && sup.exitCode === null && sup.signalCode === null) killSupervisor(sup.pid);
     };

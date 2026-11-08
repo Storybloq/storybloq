@@ -268,6 +268,28 @@ describe("runSupervised", () => {
     expect(r.stdout.toString("utf-8")).toBe("the answer");
   });
 
+  it("a supervisor that exited before its completed line was read is never signalled afterwards", async () => {
+    // Real timers on purpose: the order is fixed by the processes, not by a clock. The supervisor exits
+    // as soon as start arrives; a helper holding its stdout writes completed 0.4 s later, so the exit is
+    // always seen first. The test then waits past the overstay bound (2 s) and looks for any SIGKILL.
+    const dir = makeScratchDir("sr-sup-");
+    const completed = JSON.stringify({ type: "completed", run: { exitCode: 0, signal: null, timedOut: false, spawnError: null, cleanup: "confirmed", cleanupDetail: null }, truncated: { stdout: false, stderr: false } });
+    const pidFile = join(dir, "pid");
+    const entry = join(dir, "early-exit.mjs");
+    writeFileSync(entry, `import { spawn } from "node:child_process";\nimport { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nprocess.stdout.write(JSON.stringify({ type: "ready" }) + "\\n");\nprocess.stdin.once("data", () => {\n  spawn("/bin/sh", ["-c", ${JSON.stringify(`sleep 0.4; printf '%s\\n' '${completed}'`)}], { stdio: ["ignore", "inherit", "ignore"], detached: true }).unref();\n  process.exit(0);\n});\n`);
+    supervisorSeams.entry = () => entry;
+    const kill = vi.spyOn(process, "kill");
+    try {
+      const r = await runSupervised("/bin/true", [], { cwd: dir, env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 10_000, killGraceMs: 200 });
+      expect(r).toMatchObject({ supervisorError: null, exitCode: 0 });
+      const supPid = Number(readFileSync(pidFile, "utf-8"));
+      await new Promise((res) => setTimeout(res, 2_500));
+      expect(kill.mock.calls.filter(([pid, sig]) => pid === supPid && sig === "SIGKILL")).toEqual([]);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
   it("a missing supervisor fails closed without starting the reviewer", async () => {
     const dir = makeScratchDir("sr-sup-");
     supervisorSeams.entry = () => join(dir, "nowhere.js");

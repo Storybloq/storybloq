@@ -286,6 +286,11 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
     };
     let supExited = false;
     let failing = false;
+    // A supervisor whose exit was seen is never signalled again: its pid may already name another process.
+    // The residual is the gap between the exit and node reporting it, the same as f6's in the group code.
+    const killSup = (): void => {
+      if (!supExited && sup.exitCode === null && sup.signalCode === null) killSupervisor(sup.pid);
+    };
     const failClosed = (why: string): void => {
       if (failing || settled) return;
       failing = true;
@@ -297,7 +302,7 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
       sup.stdin!.destroy();
       if (supExited) return finish(failed(text()));
       const margin = setTimeout(() => {
-        killSupervisor(sup.pid);
+        killSup();
         finish(failed(`${text()}; the supervisor did not exit within ${SUPERVISOR_EXIT_MARGIN_MS} ms and was killed, so the reviewer may be orphaned`, true));
       }, SUPERVISOR_EXIT_MARGIN_MS);
       sup.once("exit", () => {
@@ -347,10 +352,13 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
             exitCode: r.exitCode, timedOut: r.timedOut, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf-8"), spawnError: r.spawnError,
             cleanup: r.cleanup, cleanupDetail: r.cleanupDetail, supervisorError: null, supervisorUnresponsive: false, truncated: msg.truncated,
           });
-          // Disarmed and leaving; killed by its pid only if it overstays.
-          const overstay = setTimeout(() => killSupervisor(sup.pid), EXIT_BOUND_MS * 2);
-          overstay.unref();
-          sup.once("exit", () => clearTimeout(overstay));
+          // Disarmed and leaving; killed by its pid only if it overstays. One that already exited
+          // (completed read after the exit, from a helper holding its stdout) gets no timer at all.
+          if (!supExited) {
+            const overstay = setTimeout(killSup, EXIT_BOUND_MS * 2);
+            overstay.unref();
+            sup.once("exit", () => clearTimeout(overstay));
+          }
         }
       }
     });

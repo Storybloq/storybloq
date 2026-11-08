@@ -132,6 +132,24 @@ describe("the run's one group signal (ISS-1457 round 2)", () => {
     expect(r.signalledAfterLeaderExit).toEqual({ pgid: PID, signals: ["SIGTERM", "SIGKILL"] });
   });
 
+  it("the post-exit probe and its signal land in the same synchronous call as the leader's exit event", async () => {
+    let gone = false;
+    const calls: string[] = [];
+    processGroupSeams.probe = () => { calls.push("probe"); if (gone) esrch(); };
+    watchKill();
+    const f = fakeLeader();
+    deliver(f, (_self, sig) => { calls.push(sig); if (sig === "SIGTERM") gone = true; });
+    const pending = run({ timeoutMs: 10_000 });
+    expect(calls).toEqual([]);
+    // Delivered by hand: when emit returns, everything the exit event caused has already run.
+    f.child.emit("exit", 0, null);
+    expect(calls).toEqual(["probe", "probe", "SIGTERM"]);
+    expect(signals).toEqual([[-PID, "SIGTERM"]]);
+    f.child.emit("close", 0, null);
+    const r = await pending;
+    expect(r).toMatchObject({ cleanup: "confirmed", signalledAfterLeaderExit: { pgid: PID, signals: ["SIGTERM"] } });
+  });
+
   it("a run that never signals after the leader's exit has no such record", async () => {
     processGroupSeams.probe = esrch;
     watchKill();

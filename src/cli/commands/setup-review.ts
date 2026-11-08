@@ -21,6 +21,7 @@ import {
   claudeArgs, codexArgs, fatalStartLine, inferredReasons, parseReviewerOutput, probeReviewer, reviewerEnv, runReviewer, SETUP_REVIEW_BACKENDS, SETUP_REVIEW_SCHEMA,
   unavailableLine, type ProcessLimits, type SetupReviewAnswer, type SetupReviewBackend, type StartProbeLimits, type UnavailableReason,
 } from "../../core/setup-review-backends.js";
+import { checkCodexHome, checkExecLocation } from "../../core/setup-review-trust.js";
 
 export interface SetupReviewDeps {
   readonly timeoutMs?: number;
@@ -89,11 +90,19 @@ interface ProbeOutcome {
  * agree. The start runs in a fresh private directory under the store root,
  * removed afterwards.
  */
-async function probeAll(env: NodeJS.ProcessEnv, deps: SetupReviewDeps, only?: SetupReviewBackend): Promise<ProbeOutcome> {
+async function probeAll(env: NodeJS.ProcessEnv, cwd: string, deps: SetupReviewDeps, only?: SetupReviewBackend): Promise<ProbeOutcome> {
   const execDir = mkdtempSync(join(storeRoot(env), ".probe-"));
   const reasons: UnavailableReason[] = [];
   try {
+    // ISS-1457: no reviewer starts in a folder another user or a project could have planted configuration in.
+    const location = checkExecLocation(execDir, storeRoot(env), env);
+    if (!location.ok) return { probe: null, reasons: [{ backend: "store", code: "untrusted-location", detail: location.detail }, ...inferredReasons(env)] };
     for (const backend of only ? [only] : SETUP_REVIEW_BACKENDS) {
+      const codexHome = backend === "codex" ? checkCodexHome(env, cwd) : null;
+      if (codexHome) {
+        reasons.push(codexHome);
+        continue;
+      }
       const result = await probeReviewer(backend, env, execDir, deps.probeLimits ?? {});
       if (result.state === "startup-capable") return { probe: { backend, version: result.version }, reasons };
       reasons.push(result.reason);
@@ -176,7 +185,7 @@ export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: s
   let outcome: ProbeOutcome;
   let setup: SetupState | null;
   try {
-    outcome = await probeAll(io.env, io.deps);
+    outcome = await probeAll(io.env, io.cwd, io.deps);
     const { probe, reasons } = outcome;
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
     setup = await updateSetupLocked(paths, (current) => {
@@ -215,6 +224,7 @@ interface StagedRun {
   readonly deps: SetupReviewDeps;
   readonly lock: ProjectLockHandle;
   readonly env: NodeJS.ProcessEnv;
+  readonly cwd: string;
 }
 
 function removeStaleStaging(paths: SetupPaths, keep: string): void {
@@ -324,7 +334,15 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
   }
 
   if (!verifyProjectLockOwnership(run.lock)) return lockLost();
+  // ISS-1457: the probe checked its own folder; the review's folder is checked the same way before the reviewer starts.
+  const location = checkExecLocation(run.staging, storeRoot(run.env), run.env);
+  const codexHome = backend === "codex" ? checkCodexHome(run.env, run.cwd) : null;
+  const refusal = !location.ok ? `untrusted location: ${location.detail}` : codexHome ? `untrusted CODEX_HOME: ${codexHome.detail}` : null;
   const startedAt = now();
+  if (refusal) {
+    rmSync(work, { recursive: true, force: true });
+    return publishFailure(run, failedRecord(run, startedAt, "spawn", null, null, refusal, codexHome ? "untrusted-codex-home" : "untrusted-location"), writeRecord);
+  }
   const result = await runReviewer(backend, args, { cwd: run.staging, env: reviewerEnv(backend, run.env), input: prompt, timeoutMs, ...(run.deps.killGraceMs !== undefined ? { killGraceMs: run.deps.killGraceMs } : {}) });
 
   let raw: Buffer | null = null;
@@ -427,7 +445,7 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
   if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   let outcome: ProbeOutcome;
   try {
-    outcome = await probeAll(io.env, io.deps, opts.backend);
+    outcome = await probeAll(io.env, io.cwd, io.deps, opts.backend);
   } catch (e) {
     return storageFailure(`the start check could not run: ${(e as Error).message}`);
   }
@@ -487,7 +505,7 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
         exitCode: SETUP_REVIEW_EXIT.roundLimit,
       };
     }
-    const run: StagedRun = { paths, packet, setup, probe, recordId, staging, deps: io.deps, lock, env: io.env };
+    const run: StagedRun = { paths, packet, setup, probe, recordId, staging, deps: io.deps, lock, env: io.env, cwd: io.cwd };
     return await reviewStaged(run, newCycleReason, done + 1);
   } finally {
     releaseProjectLock(lock);

@@ -31,6 +31,8 @@ const STOP = STOP_LINES.join("\n");
 
 let project: string;
 let store: string;
+/** ISS-1457: the home is outside the project, as CODEX_HOME inside it is refused. */
+let home: string;
 let fake: FakeBin;
 let extraEnv: Record<string, string>;
 const cleanups: string[] = [];
@@ -43,7 +45,7 @@ function io(stdin?: string, deps: SetupReviewIo["deps"] = {}): SetupReviewIo {
       STORYBLOQ_SETUP_REVIEW_DIR: store,
       FAKE_LOG: fake.log,
       FAKE_STDIN_DIR: fake.stdinDir,
-      HOME: project,
+      HOME: home,
       ...extraEnv,
     },
     stdin: () => {
@@ -85,9 +87,10 @@ const reviews = (): number => fake.invocations().length;
 beforeEach(() => {
   project = mkdtempSync(join(tmpdir(), "sr-project-"));
   store = mkdtempSync(join(tmpdir(), "sr-store-"));
+  home = mkdtempSync(join(tmpdir(), "sr-home-"));
   fake = makeFakeBin(["codex", "claude"]);
   extraEnv = {};
-  cleanups.push(project, store);
+  cleanups.push(project, store, home);
 });
 
 afterEach(() => {
@@ -111,7 +114,7 @@ describe("gate (T-536)", () => {
     const r = await gate();
     const id = setupIdOf(r);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(`Setup id: ${id}\nReviewer probe: codex codex-cli 9.9.9\nNext: storybloq setup-review run --setup ${id} with the review packet on stdin\n`);
+    expect(r.stdout).toBe(`Setup id: ${id}\nReviewer probe: codex codex-cli 0.163.0\nNext: storybloq setup-review run --setup ${id} with the review packet on stdin\n`);
     expect(existsSync(join(setupDir(id), "setup.json"))).toBe(true);
     expect(readdirSync(project)).toEqual([]);
   });
@@ -160,10 +163,10 @@ describe("run and status: the completed path (T-536)", () => {
     const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
     expect(run.exitCode).toBe(0);
     const [rec] = recordsOf(id);
-    expect(rec).toMatchObject({ state: "completed", setupId: id, cycle: 1, round: 1, revisionSha256: sha(REVIEW_PACKET), backend: "codex", backendVersion: "codex-cli 9.9.9", verdict: "approve", findingsCount: 0 });
-    expect(run.stdout.startsWith(`Reviewer probe: codex codex-cli 9.9.9\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\n`)).toBe(true);
+    expect(rec).toMatchObject({ state: "completed", setupId: id, cycle: 1, round: 1, revisionSha256: sha(REVIEW_PACKET), backend: "codex", backendVersion: "codex-cli 0.163.0", verdict: "approve", findingsCount: 0 });
+    expect(run.stdout.startsWith(`Reviewer probe: codex codex-cli 0.163.0\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\n`)).toBe(true);
     const status = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
-    expect(status).toEqual({ exitCode: 0, stdout: `Reviewer probe: codex codex-cli 9.9.9\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\nRevision: ${sha(REVIEW_PACKET)}\n` });
+    expect(status).toEqual({ exitCode: 0, stdout: `Reviewer probe: codex codex-cli 0.163.0\nIndependent review: approve, invocation ${rec!.recordId}, revision ${d12(REVIEW_PACKET)}\nRevision: ${sha(REVIEW_PACKET)}\n` });
     expect(readdirSync(project)).toEqual([]);
   });
 
@@ -217,7 +220,7 @@ describe("cycles and rounds (T-536)", () => {
     const last = recordsOf(id).find((r) => r.round === 2)!;
     const status = await handleSetupReviewStatus(io(final), { setup: id });
     expect(status.exitCode).toBe(0);
-    expect(status.stdout).toBe(`Reviewer probe: codex codex-cli 9.9.9\nIndependent review: revision ${d12(final)} not reviewed, round limit reached; last review approve, invocation ${last.recordId}, revision ${d12(revised)}\nRevision: ${sha(final)}\n`);
+    expect(status.stdout).toBe(`Reviewer probe: codex codex-cli 0.163.0\nIndependent review: revision ${d12(final)} not reviewed, round limit reached; last review approve, invocation ${last.recordId}, revision ${d12(revised)}\nRevision: ${sha(final)}\n`);
     expect(readFileSync(join(setupDir(id), "revisions", `${sha(final)}.md`), "utf-8")).toBe(final);
   });
 
@@ -528,7 +531,7 @@ describe("probe identity and the skip path (T-536)", () => {
     const id = await openSetup();
     expect(await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id })).toEqual({
       exitCode: 4,
-      stdout: `Reviewer probe: codex codex-cli 9.9.9\nIndependent review: none for revision ${d12(REVIEW_PACKET)}\n`,
+      stdout: `Reviewer probe: codex codex-cli 0.163.0\nIndependent review: none for revision ${d12(REVIEW_PACKET)}\n`,
     });
   });
 
@@ -587,7 +590,7 @@ describe("the review's own bytes and the setup's identity (T-536)", () => {
     writeFileSync(join(setupDir(id), "records", rec, "record.json"), "{not json");
     expect(await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id })).toEqual({
       exitCode: 8,
-      stdout: `Reviewer probe: codex codex-cli 9.9.9\nIndependent review: record unreadable, invocation ${rec}\n${STOP}\n`,
+      stdout: `Reviewer probe: codex codex-cli 0.163.0\nIndependent review: record unreadable, invocation ${rec}\n${STOP}\n`,
     });
   });
 });
@@ -605,7 +608,7 @@ describe("gate and skip write the setup under its lock (T-536)", () => {
     const setup = JSON.parse(readFileSync(join(setupDir(id), "setup.json"), "utf-8"));
     expect(setup.cycle).toBe(2);
     expect(setup.cycleReasons).toEqual({ "2": "Owner adjustment" });
-    expect(setup.probe).toEqual({ backend: "codex", version: "codex-cli 9.9.9" });
+    expect(setup.probe).toEqual({ backend: "codex", version: "codex-cli 0.163.0" });
   });
 
   it("a gate re-probe while the setup's lock is held exits 7 and leaves setup.json alone", async () => {

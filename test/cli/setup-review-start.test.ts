@@ -5,12 +5,12 @@
  * 0.163.0 was seen to (test/helpers/setup-review-fakes.ts, FAKE_CODEX_PROBE).
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
 import { projectKeyFor, recordShape, SKIPPED_LINE, STOP_LINES, storeSeams } from "../../src/core/setup-review.js";
-import { inferredReasons, probeCodexStart, probeReviewer, startProbeSeams } from "../../src/core/setup-review-backends.js";
+import { CHARACTERISED_CODEX_VERSIONS, CODEX_ISOLATION_FLAGS, codexArgs, inferredReasons, probeCodexStart, probeReviewer, startProbeSeams } from "../../src/core/setup-review-backends.js";
 import { signalGroup } from "../../src/core/process-group.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, scratchDirsCreated, type FakeBin } from "../helpers/setup-review-fakes.js";
 
@@ -26,6 +26,8 @@ const realWriteProbe = storeSeams.writeProbe;
 
 let project: string;
 let store: string;
+/** ISS-1457: the home is outside the project, as CODEX_HOME inside it is refused. */
+let home: string;
 let fake: FakeBin;
 let spawnLog: string;
 let probeLog: string;
@@ -34,7 +36,7 @@ let extraEnv: Record<string, string>;
 function env(): NodeJS.ProcessEnv {
   return {
     PATH: fake.path, STORYBLOQ_SETUP_REVIEW_DIR: store, FAKE_LOG: fake.log, FAKE_STDIN_DIR: fake.stdinDir,
-    FAKE_SPAWN_LOG: spawnLog, FAKE_PROBE_LOG: probeLog, HOME: project, ...extraEnv,
+    FAKE_SPAWN_LOG: spawnLog, FAKE_PROBE_LOG: probeLog, HOME: home, ...extraEnv,
   };
 }
 
@@ -72,6 +74,7 @@ const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`
 
 beforeEach(() => {
   project = makeScratchDir("sr-start-project-");
+  home = makeScratchDir("sr-start-home-");
   store = makeScratchDir("sr-start-store-");
   fake = makeFakeBin(["codex"]);
   spawnLog = join(fake.dir, "..", "spawns.jsonl");
@@ -236,6 +239,107 @@ describe("the codex start probe (ISS-1456)", () => {
   });
 });
 
+describe("codex starts only with what it loads shut off (ISS-1457)", () => {
+  const probeSpawns = (): number => spawns().filter((x) => x.args.some((a) => a.startsWith("model_providers.storybloq_probe="))).length;
+
+  it("every codex launch carries the three isolation flags, the hook-trust bypass never, and no -c naming mcp_servers", () => {
+    const args = codexArgs("/s/schema.json", "/s/out.json", ["-c", 'model_provider="storybloq_probe"']);
+    expect(CODEX_ISOLATION_FLAGS).toEqual(["--ignore-user-config", "--ignore-rules", "--disable", "hooks", "--disable", "plugins"]);
+    for (const flag of ["--ignore-user-config", "--ignore-rules"]) expect(args).toContain(flag);
+    const disabled = args.flatMap((a, i) => (args[i - 1] === "--disable" ? [a] : []));
+    expect(disabled.sort()).toEqual(["hooks", "plugins"]);
+    expect(args.filter((a, i) => args[i - 1] === "-c" && /mcp_servers/.test(a))).toEqual([]);
+    expect(args.some((a) => /trust|bypass|dangerously/.test(a))).toBe(false);
+    expect(args).not.toContain("--strict-config");
+    expect(CHARACTERISED_CODEX_VERSIONS).toEqual(["0.163.0"]);
+  });
+
+  it("the start probe launches with the isolation flags too", async () => {
+    expect(await codexStart("reach")).toEqual({ ok: true });
+    const [launch] = spawns().filter((x) => x.args.some((a) => a.startsWith("model_providers.storybloq_probe=")));
+    for (const flag of CODEX_ISOLATION_FLAGS) expect(launch!.args).toContain(flag);
+  });
+
+  it("the characterised version with every flag and feature reaches the start probe", async () => {
+    extraEnv = { FAKE_CODEX_PROBE: "reach" };
+    expect(await probeReviewer("codex", env(), makeScratchDir("sr-start-exec-"), FAST)).toEqual({ state: "startup-capable", backend: "codex", version: "codex-cli 0.163.0" });
+    expect(spawns().map((x) => x.args.slice(0, 2).join(" ")).slice(0, 3)).toEqual(["--version", "exec --help", "features list"]);
+    expect(probeSpawns()).toBe(1);
+  });
+
+  it.each([
+    ["a newer version", { FAKE_CODEX_VERSION: "0.164.0" }, /isolation is proven only for codex 0\.163\.0, not 0\.164\.0/],
+    ["an older version", { FAKE_CODEX_VERSION: "0.162.9" }, /not 0\.162\.9/],
+    ["a version with no number", { FAKE_CODEX_VERSION: "dev" }, /not codex-cli dev/],
+    ["help without --ignore-user-config", { FAKE_CODEX_HELP_DROP: "--ignore-user-config" }, /codex exec --help does not list --ignore-user-config/],
+    ["help without --ignore-rules", { FAKE_CODEX_HELP_DROP: "--ignore-rules" }, /does not list --ignore-rules/],
+    ["help without --disable", { FAKE_CODEX_HELP_DROP: "--disable" }, /does not list --disable/],
+    ["a failed help call", { FAKE_CODEX_HELP_FAIL: "1" }, /codex exec --help did not answer/],
+    ["features without hooks", { FAKE_CODEX_FEATURES_DROP: "hooks" }, /codex features list does not name hooks/],
+    ["features without plugins", { FAKE_CODEX_FEATURES_DROP: "plugins" }, /does not name plugins/],
+    ["a failed features call", { FAKE_CODEX_FEATURES_FAIL: "1" }, /codex features list did not answer/],
+  ])("%s is isolation-unverified, and codex is never started", async (_name, vars, detail) => {
+    extraEnv = { FAKE_CODEX_PROBE: "reach", ...vars };
+    const r = await probeReviewer("codex", env(), makeScratchDir("sr-start-exec-"), FAST);
+    expect(r).toEqual({ state: "unavailable", reason: { backend: "codex", code: "isolation-unverified", detail: expect.stringMatching(detail) } });
+    expect(probeSpawns()).toBe(0);
+    expect(probes()).toEqual([]);
+  });
+
+  it("a feature named only inside a longer name does not count", async () => {
+    // plugin_hooks stays listed while plugins is dropped.
+    extraEnv = { FAKE_CODEX_PROBE: "reach", FAKE_CODEX_FEATURES_DROP: "plugins" };
+    expect(await probeReviewer("codex", env(), makeScratchDir("sr-start-exec-"), FAST)).toMatchObject({ state: "unavailable", reason: { code: "isolation-unverified" } });
+  });
+
+  it("the gate names the reason, offers no reviewer, and gives no sandbox hint", async () => {
+    extraEnv = { FAKE_CODEX_PROBE: "reach", FAKE_CODEX_VERSION: "0.164.0" };
+    const r = await handleSetupReviewGate(io(), {});
+    const out = r.stdout.split("\n");
+    expect(out[1]).toBe("Reviewer probe: none available");
+    expect(out[2]).toMatch(/^Reviewer unavailable: codex: isolation is proven only for codex 0\.163\.0, not 0\.164\.0; claude: /);
+    expect(r.stdout).not.toMatch(/from a terminal outside the agent/);
+    expect(reviews()).toBe(0);
+    expect(probeSpawns()).toBe(0);
+  });
+});
+
+describe("no reviewer starts from an untrusted place (ISS-1457)", () => {
+  it("a CODEX_HOME inside the project skips codex with its reason, before any codex call", async () => {
+    fake = makeFakeBin(["codex", "claude"]);
+    extraEnv = { FAKE_CODEX_PROBE: "reach", CODEX_HOME: join(project, ".codex") };
+    mkdirSync(join(project, ".codex"));
+    const r = await handleSetupReviewGate(io(), {});
+    expect(r.stdout).toMatch(/^Reviewer probe: claude 9\.9\.9 \(Claude Code\)$/m);
+    expect((setupJson(setupIdOf(r)).probe as { backend: string }).backend).toBe("claude");
+    expect(spawns().filter((x) => x.name === "codex")).toEqual([]);
+  });
+
+  it("a store reached through a link at or below it offers no reviewer and starts nothing", async () => {
+    const realStore = makeScratchDir("sr-start-linked-");
+    mkdirSync(join(realStore, "inner"));
+    symlinkSync(join(realStore, "inner"), join(realStore, "via"));
+    store = join(realStore, "via");
+    extraEnv = { FAKE_CODEX_PROBE: "reach" };
+    const r = await handleSetupReviewGate(io(), {});
+    expect(r.stdout).toMatch(/^Reviewer probe: none available\nReviewer unavailable: review store: .*goes through a link/m);
+    expect(spawns()).toEqual([]);
+  });
+
+  it("run refuses a staging folder that became untrusted after the probe, before the reviewer starts", async () => {
+    extraEnv = { FAKE_CODEX_PROBE: "reach" };
+    const id = setupIdOf(await handleSetupReviewGate(io(), {}));
+    chmodSync(join(store, projectKeyFor(project)), 0o777);
+    try {
+      const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
+      expect(reviews()).toBe(0);
+      expect(run.stdout).toMatch(/Reviewer unavailable|untrusted location/);
+    } finally {
+      chmodSync(join(store, projectKeyFor(project)), 0o700);
+    }
+  });
+});
+
 describe("claude's verdict (ISS-1456)", () => {
   beforeEach(() => {
     fake = makeFakeBin(["claude"]);
@@ -307,7 +411,7 @@ describe("gate, run and status agree (ISS-1456)", () => {
     const id = setupIdOf(await handleSetupReviewGate(io(), {}));
     extraEnv = {};
     const again = await handleSetupReviewGate(io(), { setup: id });
-    expect(again.stdout).toContain("Reviewer probe: codex codex-cli 9.9.9\n");
+    expect(again.stdout).toContain("Reviewer probe: codex codex-cli 0.163.0\n");
     expect(setupJson(id)).not.toHaveProperty("unavailable");
   });
 

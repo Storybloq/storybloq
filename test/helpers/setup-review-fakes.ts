@@ -92,7 +92,7 @@ if (args.includes("--version")) {
     setInterval(() => {}, 1000);
     return;
   }
-  const answer = () => { process.stdout.write(name === "codex" ? "codex-cli 9.9.9\n" : "9.9.9 (Claude Code)\n"); process.exit(0); };
+  const answer = () => { process.stdout.write(name === "codex" ? "codex-cli " + (process.env.FAKE_CODEX_VERSION || "0.163.0") + "\n" : "9.9.9 (Claude Code)\n"); process.exit(0); };
   if (process.env["FAKE_" + up + "_VERSION_ESCAPE"] === "1") {
     // A child outside this process group holds the probe's stdout open.
     const child = require("node:child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"], { stdio: ["ignore", "inherit", "inherit"], detached: true });
@@ -105,6 +105,21 @@ if (args.includes("--version")) {
   const slow = Number(process.env["FAKE_" + up + "_VERSION_SLOW_MS"] || 0);
   if (slow > 0) setTimeout(answer, slow); else answer();
   return;
+}
+if (name === "codex" && args[0] === "exec" && args.includes("--help")) {
+  // The flags codex 0.163.0 lists; FAKE_CODEX_HELP_DROP removes one, FAKE_CODEX_HELP_FAIL fails the call.
+  if (process.env.FAKE_CODEX_HELP_FAIL === "1") process.exit(1);
+  const flags = ["--disable <FEATURE>", "--strict-config", "--sandbox <SANDBOX_MODE>", "--ignore-user-config", "--ignore-rules", "--ephemeral"];
+  const drop = process.env.FAKE_CODEX_HELP_DROP;
+  process.stdout.write("Usage: codex exec [OPTIONS] [PROMPT]\n" + flags.filter((f) => f.split(" ")[0] !== drop).map((f) => "      " + f + "\n").join(""));
+  process.exit(0);
+}
+if (name === "codex" && args[0] === "features" && args[1] === "list") {
+  if (process.env.FAKE_CODEX_FEATURES_FAIL === "1") process.exit(1);
+  const drop = process.env.FAKE_CODEX_FEATURES_DROP;
+  const rows = ["apps", "hooks", "plugins", "plugin_hooks"].filter((f) => f !== drop);
+  process.stdout.write(rows.map((f) => f.padEnd(41) + "stable             true\n").join(""));
+  process.exit(0);
 }
 if (args.includes("--help")) {
   // FAKE_CLAUDE_OLD: a claude from before --permission-prompts existed.

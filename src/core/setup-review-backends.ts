@@ -57,8 +57,26 @@ export interface SetupReviewAnswer {
  * The probe passes `overrides`, its substituted model provider; everything
  * else is identical, so what the probe proves is what the review runs.
  */
+/**
+ * ISS-1457: what keeps a codex launch from starting anything its user or a
+ * project configured. Characterised on codex-cli 0.163.0 with a planted
+ * integration on every route: user config.toml (closed by
+ * --ignore-user-config; `-c mcp_servers={}` closes nothing, overrides merge),
+ * a trusted project's .codex/config.toml and hooks.json at the folder, a git
+ * ancestor or nested (trust lives only in user config, so
+ * --ignore-user-config closes them), $CODEX_HOME/hooks.json (survives
+ * --ignore-user-config; closed only by --disable hooks, even with the
+ * hook-trust bypass), and an installed plugin's MCP server (closed by
+ * --disable plugins). --ignore-rules drops the execpolicy .rules files. The
+ * hook-trust bypass is never passed. Auth still comes from CODEX_HOME.
+ */
+export const CODEX_ISOLATION_FLAGS: readonly string[] = ["--ignore-user-config", "--ignore-rules", "--disable", "hooks", "--disable", "plugins"];
+
+/** The codex versions whose loading the flags above were proven against; any other fails closed. */
+export const CHARACTERISED_CODEX_VERSIONS: readonly string[] = ["0.163.0"];
+
 export function codexArgs(schemaFile: string, outFile: string, overrides: readonly string[] = []): string[] {
-  return ["exec", ...overrides, "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", schemaFile, "-o", outFile, "-"];
+  return ["exec", ...overrides, ...CODEX_ISOLATION_FLAGS, "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", schemaFile, "-o", outFile, "-"];
 }
 
 export function claudeArgs(schemaJson: string): string[] {
@@ -219,7 +237,8 @@ export function runReviewer(command: string, args: string[], opts: { cwd: string
  */
 export type UnavailableCode =
   | "version-failed" | "flags-unsupported" | "sandbox-start-denied" | "network-denied"
-  | "probe-inconclusive" | "probe-listener-failed" | "network-disabled-inferred" | "store-unwritable";
+  | "probe-inconclusive" | "probe-listener-failed" | "network-disabled-inferred" | "store-unwritable"
+  | "isolation-unverified" | "untrusted-location" | "untrusted-codex-home";
 
 export interface UnavailableReason {
   readonly backend: SetupReviewBackend | "store";
@@ -233,7 +252,12 @@ export type StartProbe =
 
 /** codex prints this when its sandbox denies it what it needs at start (seen on 0.163.0). */
 const FATAL_START = /failed to initialize in-process app-server client/;
-/** codex prints this while it cannot reach its model provider (seen on 0.163.0 with networking denied). */
+/**
+ * codex prints this while its model provider is unreachable (seen on 0.163.0,
+ * also outside any sandbox when the provider's port is closed). In the probe
+ * the provider is the CLI's own open listener, so here it means networking is
+ * blocked.
+ */
 const NETWORK_WAIT = /waiting for network/;
 const UNKNOWN_FLAG = /unexpected argument/;
 
@@ -463,10 +487,36 @@ export async function probeReviewer(backend: SetupReviewBackend, env: NodeJS.Pro
   if (backend === "claude" && !(await claudeHasFlags(env, limits))) return unavailable("flags-unsupported", "this version lacks a flag the review needs");
   const version = stdout.trim().split("\n")[0]?.trim() || "unknown version";
   if (backend === "codex") {
+    const isolation = await codexIsolationCheck(version, env, limits);
+    if (isolation !== null) return unavailable("isolation-unverified", isolation);
     const start = await probeCodexStart(execDir, env, limits);
     if (!start.ok) return unavailable(start.code, start.detail);
   }
   return { state: "startup-capable", backend, version };
+}
+
+/**
+ * ISS-1457: the launch relies on the isolation flags, so before any codex
+ * start the version must be a characterised one, `codex exec --help` must
+ * list every flag, and `codex features list` must name every feature they
+ * disable. Both are help-only calls. Null when isolated; otherwise why not.
+ */
+export async function codexIsolationCheck(versionLine: string, env: NodeJS.ProcessEnv, limits: ProcessLimits = {}): Promise<string | null> {
+  const version = /(\d+\.\d+\.\d+)/.exec(versionLine)?.[1];
+  if (version === undefined || !CHARACTERISED_CODEX_VERSIONS.includes(version)) {
+    return `isolation is proven only for codex ${CHARACTERISED_CODEX_VERSIONS.join(", ")}, not ${version ?? versionLine}`;
+  }
+  const help = await runProbe("codex", ["exec", "--help"], env, limits);
+  if (help === null) return "codex exec --help did not answer, so the isolation flags are unverified";
+  const flags = CODEX_ISOLATION_FLAGS.filter((f) => f.startsWith("--"));
+  const missingFlag = flags.find((f) => !new RegExp(`(^|\\s)${f}(\\s|$)`, "m").test(help));
+  if (missingFlag) return `codex exec --help does not list ${missingFlag}`;
+  const features = await runProbe("codex", ["features", "list"], env, limits);
+  if (features === null) return "codex features list did not answer, so the disabled features are unverified";
+  const disabled = CODEX_ISOLATION_FLAGS.filter((_, i) => CODEX_ISOLATION_FLAGS[i - 1] === "--disable");
+  const missingFeature = disabled.find((name) => !new RegExp(`^${name}\\s`, "m").test(features));
+  if (missingFeature) return `codex features list does not name ${missingFeature}`;
+  return null;
 }
 
 /** One line naming every reason, for the gate, run and status output. */

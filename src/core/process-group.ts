@@ -17,13 +17,13 @@ export function signalGroup(child: ChildProcess, signal: NodeJS.Signals, own: bo
 
 /**
  * ISS-1470: signalGroup that says what the kill did: "sent", "gone" when the group was already gone
- * (ESRCH), or the errno it failed with. signalGroup itself still swallows the answer for callers that
+ * (ESRCH, or the child's own kill answering false without a group), or the errno it failed with. signalGroup itself still swallows the answer for callers that
  * only need the attempt (the ISS-1391 terminating-signal handler among them).
  */
 export function signalGroupReported(child: ChildProcess, signal: NodeJS.Signals, own: boolean = OWN_GROUP): string {
   try {
     if (own && child.pid !== undefined) process.kill(-child.pid, signal);
-    else child.kill(signal);
+    else if (!child.kill(signal)) return "gone";
     return "sent";
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
@@ -195,10 +195,7 @@ export function signalGroupGuarded(
   child: ChildProcess, sig: NodeJS.Signals, leaderExited: boolean, own: boolean = OWN_GROUP,
   send: (child: ChildProcess, sig: NodeJS.Signals) => string | void = (c, s) => signalGroupReported(c, s, own),
 ): string {
-  if (!own || child.pid === undefined) {
-    signalGroup(child, sig, false);
-    return "sent";
-  }
+  if (!own || child.pid === undefined) return signalGroupReported(child, sig, false);
   if (leaderExited) {
     const seen = probeGroup(child.pid);
     if (seen !== "alive") return seen;

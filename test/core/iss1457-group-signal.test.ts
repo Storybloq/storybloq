@@ -15,7 +15,7 @@ import { PassThrough } from "node:stream";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { processGroupSeams, runInGroup, signalGroupGuarded, type GroupRunOptions } from "../../src/core/process-group.js";
+import { processGroupSeams, runInGroup, signalGroupGuarded, signalGroupReported, type GroupRunOptions } from "../../src/core/process-group.js";
 
 const real = { ...processGroupSeams };
 const realKill = process.kill.bind(process);
@@ -163,6 +163,30 @@ describe("the run's one group signal (ISS-1457 round 2)", () => {
     f.die();
     const r = await run({ timeoutMs: 10_000 });
     expect(tried).toContainEqual([-PID, "SIGTERM"]);
+    expect(r.signalledAfterLeaderExit).toBeUndefined();
+  });
+
+  // ISS-1470 (Codex round 1): without a group the child's own kill answers; false, with no throw, means it was already gone.
+  it.each([[false, "gone"], [true, "sent"]])("without a group, a child whose kill answers %s: the signal answers %s, and the run records no signal", async (ok, answer) => {
+    const kills: string[] = [];
+    const f = fakeLeader();
+    (f.child as unknown as { kill: (s: NodeJS.Signals) => boolean }).kill = (s) => { kills.push(s); return ok; };
+    const noPid = Object.assign(Object.create(f.child), { pid: undefined }) as ChildProcess;
+    expect(signalGroupReported(f.child, "SIGTERM", false)).toBe(answer);
+    expect(signalGroupGuarded(f.child, "SIGTERM", true, false)).toBe(answer);
+    expect(signalGroupGuarded(noPid, "SIGTERM", true, true)).toBe(answer);
+    expect(kills).toEqual(["SIGTERM", "SIGTERM", "SIGTERM"]);
+    processGroupSeams.ownGroup = false;
+    f.die({ close: false });
+    const before = new Set(process.listeners("exit"));
+    const pending = run({ timeoutMs: 10_000 });
+    const added = process.listeners("exit").filter((l) => !before.has(l));
+    expect(added).toHaveLength(1);
+    await new Promise((res) => setTimeout(res, 50));
+    (added[0] as () => void)();
+    expect(kills).toEqual(["SIGTERM", "SIGTERM", "SIGTERM", "SIGKILL"]);
+    f.child.emit("close", null, "SIGKILL");
+    const r = await pending;
     expect(r.signalledAfterLeaderExit).toBeUndefined();
   });
 

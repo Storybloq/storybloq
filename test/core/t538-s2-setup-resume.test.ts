@@ -157,6 +157,9 @@ async function reviewStore(root: string, how: { skipped: true } | { packet: stri
   const output = JSON.stringify({ verdict: "approve", findings: [] });
   await writeFile(join(dir, "packet.md"), how.packet);
   await writeFile(join(dir, "reviewer-output.json"), output);
+  // A real store keeps every revision a record names; ISS-1457 round 2 refuses a store without it.
+  await mkdir(paths.revisions, { recursive: true });
+  await writeFile(join(paths.revisions, `${revision}.md`), how.packet);
   const sections = Object.fromEntries(["Source requirements", "Owner answers and decisions", "Existing-state evidence", "Plan"].map((s) => [s, sha(s)]));
   await writeFile(join(dir, "record.json"), JSON.stringify({
     state: "completed", recordId: "SR-0000000a", setupId: SID, cycle: 2, round: 1, revisionSha256: revision, sectionSha256s: sections,

@@ -75,6 +75,27 @@ export const CODEX_ISOLATION_FLAGS: readonly string[] = ["--ignore-user-config",
 /** The codex versions whose loading the flags above were proven against; any other fails closed. */
 export const CHARACTERISED_CODEX_VERSIONS: readonly string[] = ["0.163.0"];
 
+/** Each launch flag's other form as `codex exec --help` lists it; the help must list both forms. */
+export const CODEX_FLAG_FORMS: Readonly<Record<string, string>> = { "-o": "--output-last-message", "--sandbox": "-s" };
+
+/** Every flag the review launch passes, read from the launch itself so the check cannot fall behind it. */
+export function codexLaunchFlags(): string[] {
+  return [...new Set(codexArgs("/schema", "/out").filter((a) => /^--?[a-z]/.test(a)))];
+}
+
+function helpForms(flag: string): string[] {
+  const other = CODEX_FLAG_FORMS[flag];
+  return other ? [flag, other] : [flag];
+}
+
+/** Whether the help lists the flag as an option, not merely mentions it in prose. */
+function helpLists(help: string, flag: string): boolean {
+  const esc = flag.replace(/[-]/g, "\\-");
+  return flag.startsWith("--")
+    ? new RegExp(`^\\s*(-[a-zA-Z], )?${esc}(\\s|=|,|$)`, "m").test(help)
+    : new RegExp(`^\\s*${esc}, --`, "m").test(help);
+}
+
 export function codexArgs(schemaFile: string, outFile: string, overrides: readonly string[] = []): string[] {
   return ["exec", ...overrides, ...CODEX_ISOLATION_FLAGS, "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", schemaFile, "-o", outFile, "-"];
 }
@@ -487,7 +508,7 @@ export async function probeReviewer(backend: SetupReviewBackend, env: NodeJS.Pro
   if (backend === "claude" && !(await claudeHasFlags(env, limits))) return unavailable("flags-unsupported", "this version lacks a flag the review needs");
   const version = stdout.trim().split("\n")[0]?.trim() || "unknown version";
   if (backend === "codex") {
-    const isolation = await codexIsolationCheck(version, env, limits);
+    const isolation = await codexIsolationCheck(stdout, env, limits);
     if (isolation !== null) return unavailable("isolation-unverified", isolation);
     const start = await probeCodexStart(execDir, env, limits);
     if (!start.ok) return unavailable(start.code, start.detail);
@@ -501,15 +522,16 @@ export async function probeReviewer(backend: SetupReviewBackend, env: NodeJS.Pro
  * list every flag, and `codex features list` must name every feature they
  * disable. Both are help-only calls. Null when isolated; otherwise why not.
  */
-export async function codexIsolationCheck(versionLine: string, env: NodeJS.ProcessEnv, limits: ProcessLimits = {}): Promise<string | null> {
-  const version = /(\d+\.\d+\.\d+)/.exec(versionLine)?.[1];
+export async function codexIsolationCheck(versionOutput: string, env: NodeJS.ProcessEnv, limits: ProcessLimits = {}): Promise<string | null> {
+  // The whole output is one line, "codex-cli <version>", and the version token matches the allowlist exactly:
+  // a suffix such as -alpha.1 or -custom is a different build, never a characterised one.
+  const version = /^codex-cli (\S+)$/.exec(versionOutput.trim())?.[1];
   if (version === undefined || !CHARACTERISED_CODEX_VERSIONS.includes(version)) {
-    return `isolation is proven only for codex ${CHARACTERISED_CODEX_VERSIONS.join(", ")}, not ${version ?? versionLine}`;
+    return `isolation is proven only for codex ${CHARACTERISED_CODEX_VERSIONS.join(", ")}, not ${version ?? JSON.stringify(versionOutput.trim().slice(0, 80))}`;
   }
   const help = await runProbe("codex", ["exec", "--help"], env, limits);
   if (help === null) return "codex exec --help did not answer, so the isolation flags are unverified";
-  const flags = CODEX_ISOLATION_FLAGS.filter((f) => f.startsWith("--"));
-  const missingFlag = flags.find((f) => !new RegExp(`(^|\\s)${f}(\\s|$)`, "m").test(help));
+  const missingFlag = codexLaunchFlags().flatMap(helpForms).find((f) => !helpLists(help, f));
   if (missingFlag) return `codex exec --help does not list ${missingFlag}`;
   const features = await runProbe("codex", ["features", "list"], env, limits);
   if (features === null) return "codex features list did not answer, so the disabled features are unverified";

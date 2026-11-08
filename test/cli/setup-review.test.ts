@@ -514,6 +514,24 @@ describe("probe identity and the skip path (T-536)", () => {
     expect(s.stdout.split("\n")[0]).toBe("Reviewer probe: claude 9.9.9 (Claude Code)");
   });
 
+  it("a valid 2 MiB answer parses (ISS-1457)", async () => {
+    extraEnv = { FAKE_CLAUDE_MODE: "big" };
+    const id = await openSetup();
+    const r = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id, backend: "claude" });
+    expect(r.exitCode).toBe(0);
+    expect(recordsOf(id)[0]).toMatchObject({ state: "completed", verdict: "approve" });
+  });
+
+  it("a 17 MiB stdout is the explicit output-limit failure, never schema-invalid (ISS-1457)", async () => {
+    extraEnv = { FAKE_CLAUDE_MODE: "huge" };
+    const id = await openSetup();
+    const r = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id, backend: "claude" });
+    expect(r.exitCode).not.toBe(0);
+    const [rec] = recordsOf(id);
+    expect(rec).toMatchObject({ reasonCode: "reviewer-output-limit" });
+    expect(JSON.stringify(rec)).not.toMatch(/schema-invalid/);
+  }, 60_000);
+
   it("refuses --backend naming a backend that cannot start, without spawning", async () => {
     fake = makeFakeBin(["codex"]);
     const id = await openSetup();

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { RELAY_CAP_BYTES, runSupervised, supervisorEntry, supervisorSeams } from "../../src/core/setup-review-supervisor.js";
+import { RELAY_CAP_BYTES, runSupervised, STDOUT_LIMIT_BYTES, supervisorEntry, supervisorSeams } from "../../src/core/setup-review-supervisor.js";
 import { makeScratchDir, removeScratchDirs } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -50,8 +50,8 @@ async function until(pred: () => boolean, ms: number): Promise<boolean> {
 const readPid = (file: string): number | null => (existsSync(file) && readFileSync(file, "utf-8").trim() ? Number(readFileSync(file, "utf-8").trim()) : null);
 
 /** The stand-in CLI, its relayed lines, and the supervisor's pid. */
-function cli(phase: "ready" | "start" | "started" | "completed" | "saturated" | "stdin", script: string, signalLog: string) {
-  const child = spawn(process.execPath, [HARNESS, ENTRY, phase, "/bin/sh", JSON.stringify(["-c", script]), signalLog], { stdio: ["ignore", "pipe", "inherit"] });
+function cli(phase: "ready" | "start" | "started" | "completed" | "saturated" | "stdin", script: string, signalLog: string, holdFile?: string) {
+  const child = spawn(process.execPath, [HARNESS, ENTRY, phase, "/bin/sh", JSON.stringify(["-c", script]), signalLog, ...(holdFile ? [holdFile] : [])], { stdio: ["ignore", "pipe", "inherit"] });
   spawned.push(child);
   const lines: Array<Record<string, unknown>> = [];
   let buf = "";
@@ -115,7 +115,8 @@ describe("the supervisor stops the reviewer when the CLI dies", () => {
     c.child.kill("SIGKILL");
     expect(await until(() => !alive(sleeper), 3_000)).toBe(true);
     expect(await until(() => !alive(sup), 3_000)).toBe(true);
-    expect(readFileSync(log, "utf-8")).toBe(`SIGKILL -${pgid}\ngroup-gone\n`);
+    // The kill goes out before the leader's exit is awaited (a supervisor that waits first never sends it).
+    expect(readFileSync(log, "utf-8")).toBe(`SIGKILL -${pgid}\nleader-exit\ngroup-gone\n`);
   });
 
   /** Kills the stand-in CLI once the reviewer's leader wrote its pid, and checks the whole group and the supervisor are gone. */
@@ -131,7 +132,7 @@ describe("the supervisor stops the reviewer when the CLI dies", () => {
     c.child.kill("SIGKILL");
     expect(await until(() => !alive(leader), 4_000)).toBe(true);
     expect(await until(() => !alive(sup), 4_000)).toBe(true);
-    expect(readFileSync(log, "utf-8")).toBe(`SIGKILL -${leader}\ngroup-gone\n`);
+    expect(readFileSync(log, "utf-8")).toBe(`SIGKILL -${leader}\nleader-exit\ngroup-gone\n`);
   }
 
   it("killed while the relay is backed up (10 MiB on each stream, the CLI no longer reading): the group is gone and the supervisor exits", async () => {
@@ -154,7 +155,24 @@ describe("the supervisor stops the reviewer when the CLI dies", () => {
     c.child.kill("SIGKILL");
     const sup = c.supPid()!;
     expect(await until(() => !alive(sup), 3_000)).toBe(true);
-    expect(readFileSync(log, "utf-8")).toBe("completed\n");
+    expect(readFileSync(log, "utf-8")).toMatch(/^completed\n(cli-gone-disarmed\n)?$/);
+  });
+
+  it("killed while the supervisor is held alive after completed: the liveness callback runs, disarmed, and no group signal is sent", async () => {
+    const dir = makeScratchDir("sr-sup-");
+    const log = join(dir, "signals.log");
+    const hold = join(dir, "release");
+    const c = cli("completed", `echo $$ > ${dir}/leader; exit 0`, log, hold);
+    expect(await until(() => c.seen("completed") && existsSync(log) && readFileSync(log, "utf-8").includes("held"), 10_000)).toBe(true);
+    const sup = c.supPid()!;
+    pids.push(sup);
+    expect(alive(sup)).toBe(true);
+    c.child.kill("SIGKILL");
+    expect(await until(() => readFileSync(log, "utf-8").includes("cli-gone-disarmed"), 5_000)).toBe(true);
+    expect(alive(sup)).toBe(true);
+    writeFileSync(hold, "");
+    expect(await until(() => !alive(sup), 3_000)).toBe(true);
+    expect(readFileSync(log, "utf-8")).toBe("completed\nheld\ncli-gone-disarmed\n");
   });
 });
 
@@ -175,12 +193,20 @@ describe("runSupervised", () => {
     expect(r.stdout.toString("utf-8")).toBe(`the packet\n${"x".repeat(200000)}`);
   });
 
-  it("relays at most 1 MiB of a stream and says it dropped the rest", async () => {
-    const [cmd, args] = node(`process.stdout.write("y".repeat(2 * 1024 * 1024));`);
-    const r = await runSupervised(cmd, args, { cwd: makeScratchDir("sr-sup-"), env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 10_000, killGraceMs: 200 });
-    expect(r.stdout.length).toBe(RELAY_CAP_BYTES);
-    expect(r.truncated.stdout).toBe(true);
+  it("relays a 2 MiB stdout whole, and at most 1 MiB of stderr, saying it dropped the rest", async () => {
+    const [cmd, args] = node(`process.stderr.write("e".repeat(2 * 1024 * 1024), () => process.stdout.write(JSON.stringify({ a: "y".repeat(2 * 1024 * 1024) }), () => process.exit(0)));`);
+    const r = await runSupervised(cmd, args, { cwd: makeScratchDir("sr-sup-"), env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 20_000, killGraceMs: 200 });
+    expect(JSON.parse(r.stdout.toString("utf-8")).a).toHaveLength(2 * 1024 * 1024);
+    expect(r.truncated).toEqual({ stdout: false, stderr: true });
+    expect(r.stderr.length).toBe(RELAY_CAP_BYTES);
   });
+
+  it("past 16 MiB of stdout the run says so, and holds no more than the limit", async () => {
+    const [cmd, args] = node(`process.stdout.write("y".repeat(17 * 1024 * 1024), () => process.exit(0));`);
+    const r = await runSupervised(cmd, args, { cwd: makeScratchDir("sr-sup-"), env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 30_000, killGraceMs: 200 });
+    expect(r.truncated.stdout).toBe(true);
+    expect(r.stdout.length).toBe(STDOUT_LIMIT_BYTES);
+  }, 60_000);
 
   it("the reviewer holds no fd 3, so it never keeps the CLI's liveness pipe (the shell's own fd 3 is the control)", async () => {
     const script = "if [ -e /dev/fd/3 ]; then a=has3; else a=no3; fi; exec 3</dev/null; if [ -e /dev/fd/3 ]; then b=has3; else b=no3; fi; echo $a $b";
@@ -196,12 +222,50 @@ describe("runSupervised", () => {
     supervisorSeams.readyMs = 500;
     const r = await runSupervised("/bin/sh", ["-c", `echo started > ${dir}/reviewer`], { cwd: dir, env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 10_000, killGraceMs: 200 });
     expect(r.supervisorError).toMatch(/no ready within 500 ms/);
+    // It ignores the liveness pipe, so after the margin it is killed by its pid alone and the run says the reviewer may be orphaned.
+    expect(r.supervisorUnresponsive).toBe(true);
+    expect(r.supervisorError).toMatch(/reviewer may be orphaned/);
     expect(existsSync(join(dir, "reviewer"))).toBe(false);
     const pid = readPid(join(dir, "pid"));
     if (pid !== null) {
       pids.push(pid);
       expect(await until(() => !alive(pid), 2_000)).toBe(true);
     }
+  });
+
+  it("a failure after the reviewer started but before started reached the CLI: the CLI closes the pipe and the supervisor stops the group itself", async () => {
+    const dir = makeScratchDir("sr-sup-");
+    const log = join(dir, "signals.log");
+    // The real supervisor, with its started line replaced by one the CLI cannot read.
+    const wrapper = join(dir, "garble.mjs");
+    writeFileSync(wrapper, `process.env.STORYBLOQ_SUPERVISOR_SIGNAL_LOG = ${JSON.stringify(log)};\nconst write = process.stdout.write.bind(process.stdout);\nprocess.stdout.write = (chunk, ...rest) => write(String(chunk).startsWith('{"type":"started"') ? "not json\\n" : chunk, ...rest);\nawait import(${JSON.stringify(ENTRY)});\n`);
+    supervisorSeams.entry = () => wrapper;
+    const started = Date.now();
+    const r = await runSupervised("/bin/sh", ["-c", `echo $$ > ${dir}/leader; sleep 300`], { cwd: dir, env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 60_000, killGraceMs: 200 });
+    expect(r.supervisorError).toMatch(/unreadable line/);
+    expect(r.supervisorUnresponsive).toBe(false);
+    // The CLI never learned the group id; the supervisor's log names it, and the group is seen gone.
+    expect(await until(() => existsSync(log) && readFileSync(log, "utf-8").includes("group-gone"), 5_000)).toBe(true);
+    expect(readFileSync(log, "utf-8")).toMatch(/^SIGKILL -\d+\nleader-exit\ngroup-gone\n$/);
+    const leader = readPid(join(dir, "leader"));
+    if (leader !== null) {
+      pids.push(leader);
+      expect(alive(leader)).toBe(false);
+    }
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("a supervisor that exits at once with completed still buffered is read as completed, not as a failure", async () => {
+    const dir = makeScratchDir("sr-sup-");
+    const completed = JSON.stringify({ type: "completed", run: { exitCode: 0, signal: null, timedOut: false, spawnError: null, cleanup: "confirmed", cleanupDetail: null }, truncated: { stdout: false, stderr: false } });
+    const out = JSON.stringify({ type: "stdout", data: Buffer.from("the answer").toString("base64") });
+    // A helper that holds the supervisor's stdout writes the last lines after the supervisor has exited.
+    const entry = join(dir, "early-exit.mjs");
+    writeFileSync(entry, `import { spawn } from "node:child_process";\nprocess.stdout.write(JSON.stringify({ type: "ready" }) + "\\n");\nprocess.stdin.once("data", () => {\n  spawn("/bin/sh", ["-c", ${JSON.stringify(`sleep 0.4; printf '%s\\n%s\\n' '${out}' '${completed}'`)}], { stdio: ["ignore", "inherit", "ignore"], detached: true }).unref();\n  process.exit(0);\n});\n`);
+    supervisorSeams.entry = () => entry;
+    const r = await runSupervised("/bin/true", [], { cwd: dir, env: { PATH: process.env.PATH ?? "" }, input: "", timeoutMs: 10_000, killGraceMs: 200 });
+    expect(r).toMatchObject({ supervisorError: null, exitCode: 0, cleanup: "confirmed" });
+    expect(r.stdout.toString("utf-8")).toBe("the answer");
   });
 
   it("a missing supervisor fails closed without starting the reviewer", async () => {

@@ -143,6 +143,8 @@ export interface GroupRunOptions {
   readonly stdin?: Buffer;
   /** ISS-1457: called once with the group id right after spawn. */
   readonly onSpawn?: (pgid: number) => void;
+  /** ISS-1457: called once when the leader's exit event fires, before anything else reacts to it. */
+  readonly onLeaderExit?: () => void;
 }
 
 export interface GroupRun {
@@ -306,6 +308,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       if (!own && exited) finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
     });
     child.on("exit", (code, sig) => {
+      opts.onLeaderExit?.();
       exited = true;
       child.stdin?.destroy();
       exitCode = code;

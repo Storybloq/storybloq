@@ -23,7 +23,7 @@ import {
 } from "../../core/setup-review-backends.js";
 import { checkCodexHome, checkExecLocation } from "../../core/setup-review-trust.js";
 import { placeSetup, setupInPlace } from "../../core/setup-review-migrate.js";
-import { runSupervised } from "../../core/setup-review-supervisor.js";
+import { RELAY_CAP_BYTES, runSupervised, STDOUT_LIMIT_BYTES } from "../../core/setup-review-supervisor.js";
 
 export interface SetupReviewDeps {
   readonly timeoutMs?: number;
@@ -370,13 +370,17 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
   let raw: Buffer | null = null;
   let failure: { kind: FailureKind; error: string; reasonCode?: string } | null = null;
   const fatal = backend === "codex" && result.exitCode !== 0 ? fatalStartLine(result.stderr) : null;
-  if (result.supervisorError !== null) failure = { kind: "spawn", error: `the reviewer's supervisor failed: ${result.supervisorError}`, reasonCode: "supervisor-failed" };
+  const stderrNote = result.truncated.stderr ? ` (stderr past ${RELAY_CAP_BYTES} bytes was dropped)` : "";
+  if (result.supervisorUnresponsive) failure = { kind: "spawn", error: `the reviewer's supervisor failed: ${result.supervisorError}`, reasonCode: "supervisor-unresponsive" };
+  else if (result.supervisorError !== null) failure = { kind: "spawn", error: `the reviewer's supervisor failed: ${result.supervisorError}`, reasonCode: "supervisor-failed" };
   else if (result.spawnError !== null) failure = { kind: "spawn", error: result.spawnError };
   else if (result.cleanup === "unconfirmed") failure = { kind: "exit", error: `cleanup-unconfirmed: ${result.cleanupDetail ?? "the reviewer's group was not seen gone"}` };
+  // ISS-1457: the verdict channel has an explicit limit, checked before anything is parsed.
+  else if (result.truncated.stdout) failure = { kind: "exit", error: `the reviewer wrote more than ${STDOUT_LIMIT_BYTES} bytes on stdout, the limit for an answer`, reasonCode: "reviewer-output-limit" };
   // ISS-1456: a start the sandbox denied after the probe passed is a reviewer that could not start, never a review.
   else if (fatal) failure = { kind: "exit", error: `cannot start inside this sandbox (${fatal})`, reasonCode: "sandbox-start-denied" };
   else if (result.timedOut) failure = { kind: "timeout", error: `no answer within ${Math.round(timeoutMs / 1000)} seconds` };
-  else if (result.exitCode !== 0) failure = { kind: "exit", error: `exited with status ${result.exitCode}${result.stderr.trim() ? `: ${result.stderr.trim().split("\n")[0]}` : ""}` };
+  else if (result.exitCode !== 0) failure = { kind: "exit", error: `exited with status ${result.exitCode}${result.stderr.trim() ? `: ${result.stderr.trim().split("\n")[0]}` : ""}${stderrNote}` };
   else if (backend === "codex") {
     try {
       raw = readFileSync(outFile);

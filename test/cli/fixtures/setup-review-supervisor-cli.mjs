@@ -7,10 +7,10 @@
 //          saturated (stops reading the supervisor once started is relayed),
 //          stdin (sends a 5 MiB prompt the reviewer never reads)
 import { spawn } from "node:child_process";
-const [entry, phase, command, argsJson, signalLog] = process.argv.slice(2);
+const [entry, phase, command, argsJson, signalLog, holdFile] = process.argv.slice(2);
 const sup = spawn(process.execPath, [entry], {
   stdio: ["pipe", "pipe", "inherit", "pipe"], detached: true,
-  env: { PATH: process.env.PATH ?? "", ...(signalLog ? { STORYBLOQ_SUPERVISOR_SIGNAL_LOG: signalLog } : {}) },
+  env: { PATH: process.env.PATH ?? "", ...(signalLog ? { STORYBLOQ_SUPERVISOR_SIGNAL_LOG: signalLog } : {}), ...(holdFile ? { STORYBLOQ_SUPERVISOR_HOLD_AFTER_COMPLETED: holdFile } : {}) },
 });
 process.stdout.write(JSON.stringify({ type: "supervisor", pid: sup.pid }) + "\n");
 let buf = "";

@@ -7,10 +7,18 @@
  *
  * Protocol, JSON lines: supervisor -> `ready` once fd 3 is watched; CLI ->
  * `start`; supervisor -> `started {pgid}`, then `stdout` and `stderr` chunks
- * (base64, each stream relayed up to RELAY_CAP_BYTES), then `completed`.
- * After `completed` the supervisor never signals that group again and exits.
- * End of file on fd 3 before `start` exits without spawning; after it, the
- * group gets SIGKILL and is polled until gone, then the supervisor exits.
+ * (base64; stdout up to STDOUT_LIMIT_BYTES, stderr up to RELAY_CAP_BYTES),
+ * then `completed`. End of file on fd 3 before `start` exits without
+ * spawning; after it, the group gets SIGKILL and is polled until gone, then
+ * the supervisor exits.
+ *
+ * Every signal to the group comes from the supervisor, and only while it
+ * still holds the leader un-reaped: SIGKILL goes out before the leader's exit
+ * is awaited, never after that exit, and never after `completed`. The CLI
+ * never signals a group id; its levers are the liveness pipe and, when the
+ * supervisor does not exit by itself, SIGKILL to the supervisor's pid alone.
+ * Residual: a process a dying member forks between the SIGKILL and its own
+ * death is not covered by that one signal.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
@@ -19,8 +27,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, KILL_GRACE_MS, OWN_GROUP, runInGroup, type GroupRun } from "./process-group.js";
 
-/** Each stream is relayed up to this many bytes; the rest is dropped and the run says so. */
+/** stderr is relayed up to this many bytes; the rest is dropped and the run says so. */
 export const RELAY_CAP_BYTES = 1024 * 1024;
+/**
+ * stdout carries the verdict, so its limit is explicit: past 16 MiB the run is
+ * a reviewer-output-limit failure, checked before anything is parsed, never a
+ * truncated verdict read as schema-invalid.
+ */
+export const STDOUT_LIMIT_BYTES = 16 * 1024 * 1024;
+/** How long the CLI waits for a failed supervisor to stop its group and exit by itself. */
+export const SUPERVISOR_EXIT_MARGIN_MS = CONFIRM_BOUND_MS + KILL_GRACE_MS + 1_000;
+/** After the supervisor's exit, how long its last lines may take to drain. */
+const DRAIN_MS = 2_000;
 export const SUPERVISOR_READY_MS = 5_000;
 /** After `completed`, how long the supervisor may take to exit before it is stopped. */
 const EXIT_BOUND_MS = 1_000;
@@ -55,33 +73,56 @@ function send(message: SupervisorMessage): void {
  */
 export function supervisorMain(): void {
   const signalLog = process.env.STORYBLOQ_SUPERVISOR_SIGNAL_LOG;
+  // Test seam, like the signal log: after `completed` the supervisor waits for this file before it leaves.
+  const holdAfterCompleted = process.env.STORYBLOQ_SUPERVISOR_HOLD_AFTER_COMPLETED;
   const record = (line: string): void => {
     if (signalLog) appendFileSync(signalLog, `${line}\n`);
   };
   let state: "waiting" | "running" | "done" = "waiting";
   let pgid: number | null = null;
+  let leaderExited = false;
   let leaving = false;
 
   const exitSoon = (): void => {
+    if (holdAfterCompleted) {
+      record("held");
+      const wait = (): void => {
+        if (existsSync(holdAfterCompleted)) process.stdout.write("", () => process.exit(0));
+        else setTimeout(wait, 25);
+      };
+      wait();
+      return;
+    }
     setTimeout(() => process.exit(0), EXIT_BOUND_MS).unref();
     process.stdout.write("", () => process.exit(0));
   };
 
   // Idempotent: end, close, error on fd 3, and a terminating signal all land here.
   const cliGone = (): void => {
+    if (state === "done") {
+      // Disarmed: the run completed, so the group is never signalled again.
+      if (!leaving) record("cli-gone-disarmed");
+      leaving = true;
+      return;
+    }
     if (leaving) return;
-    if (state === "done") return;
     leaving = true;
     if (state === "waiting" || pgid === null) {
       record("exit-before-spawn");
       process.exit(0);
     }
     const group = pgid!;
-    record(`SIGKILL -${group}`);
-    try {
-      process.kill(-group, "SIGKILL");
-    } catch {
-      /* already gone */
+    // The kill goes out before the leader's exit is awaited; once the leader has exited and been reaped
+    // its id may be reused, so no signal is sent to it from then on.
+    if (!leaderExited) {
+      record(`SIGKILL -${group}`);
+      try {
+        process.kill(-group, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    } else {
+      record("leader-reaped-no-signal");
     }
     const started = Date.now();
     const poll = (): void => {
@@ -131,8 +172,9 @@ export function supervisorMain(): void {
     state = "running";
     const sent = { stdout: 0, stderr: 0 };
     const truncated = { stdout: false, stderr: false };
+    const cap = { stdout: STDOUT_LIMIT_BYTES, stderr: RELAY_CAP_BYTES };
     const relay = (stream: "stdout" | "stderr") => (chunk: Buffer): void => {
-      const room = RELAY_CAP_BYTES - sent[stream];
+      const room = cap[stream] - sent[stream];
       if (room <= 0) {
         truncated[stream] = true;
         return;
@@ -148,6 +190,10 @@ export function supervisorMain(): void {
       onSpawn: (id) => {
         pgid = id;
         send({ type: "started", pgid: id });
+      },
+      onLeaderExit: () => {
+        leaderExited = true;
+        if (leaving) record("leader-exit");
       },
     }).then((run) => {
       if (leaving) return;
@@ -176,6 +222,8 @@ export interface SupervisedRun {
   readonly cleanupDetail: string | null;
   /** Set when the supervisor itself failed: no ready in time, or it exited before `completed`. */
   readonly supervisorError: string | null;
+  /** The supervisor did not exit within the margin after a failure and was killed by pid: its reviewer may be orphaned. */
+  readonly supervisorUnresponsive: boolean;
   readonly truncated: { readonly stdout: boolean; readonly stderr: boolean };
 }
 
@@ -189,10 +237,11 @@ export function supervisorEntry(): string {
 /** Test seams, not reachable through any CLI or MCP input. */
 export const supervisorSeams: { entry: () => string; readyMs: number } = { entry: supervisorEntry, readyMs: SUPERVISOR_READY_MS };
 
-function stopProcessGroup(pid: number | undefined): void {
+/** The supervisor's own pid, never a group: the CLI signals no group id. */
+function killSupervisor(pid: number | undefined): void {
   if (pid === undefined) return;
   try {
-    process.kill(OWN_GROUP ? -pid : pid, "SIGKILL");
+    process.kill(pid, "SIGKILL");
   } catch {
     /* gone */
   }
@@ -210,7 +259,6 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let diag = "";
-    let pgid: number | null = null;
     let completed: Extract<SupervisorMessage, { type: "completed" }> | null = null;
     let settled = false;
     const timers: NodeJS.Timeout[] = [];
@@ -224,10 +272,10 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
       return;
     }
 
-    function failed(why: string): SupervisedRun {
+    function failed(why: string, unresponsive = false): SupervisedRun {
       return {
         exitCode: null, timedOut: false, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf-8"), spawnError: null,
-        cleanup: "unconfirmed", cleanupDetail: null, supervisorError: why, truncated: { stdout: false, stderr: false },
+        cleanup: "unconfirmed", cleanupDetail: null, supervisorError: why, supervisorUnresponsive: unresponsive, truncated: { stdout: false, stderr: false },
       };
     }
     const finish = (r: SupervisedRun): void => {
@@ -236,11 +284,26 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
       for (const t of timers) clearTimeout(t);
       resolve(r);
     };
+    let supExited = false;
+    let failing = false;
     const failClosed = (why: string): void => {
-      // The supervisor failed: stop it, and as a backstop the group it reported, which it can no longer stop.
-      stopProcessGroup(sup.pid);
-      if (pgid !== null && completed === null) stopProcessGroup(pgid);
-      finish(failed(diag.trim() ? `${why} (${diag.trim().split("\n")[0]})` : why));
+      if (failing || settled) return;
+      failing = true;
+      for (const t of timers) clearTimeout(t);
+      const text = (): string => (diag.trim() ? `${why} (${diag.trim().split("\n")[0]})` : why);
+      // Closing the liveness pipe tells the supervisor the CLI is gone: it stops the group it alone knows
+      // and exits. Only a supervisor that has not exited within the margin is killed, by its pid alone.
+      (sup.stdio[3] as Socket | null)?.destroy();
+      sup.stdin!.destroy();
+      if (supExited) return finish(failed(text()));
+      const margin = setTimeout(() => {
+        killSupervisor(sup.pid);
+        finish(failed(`${text()}; the supervisor did not exit within ${SUPERVISOR_EXIT_MARGIN_MS} ms and was killed, so the reviewer may be orphaned`, true));
+      }, SUPERVISOR_EXIT_MARGIN_MS);
+      sup.once("exit", () => {
+        clearTimeout(margin);
+        finish(failed(text()));
+      });
     };
 
     timers.push(setTimeout(() => failClosed(`no ready within ${supervisorSeams.readyMs} ms`), supervisorSeams.readyMs));
@@ -272,7 +335,7 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
           };
           sup.stdin!.end(`${JSON.stringify(start)}\n`);
         } else if (msg.type === "started") {
-          pgid = msg.pgid;
+          // The group id is the supervisor's to signal; the CLI only notes that a reviewer started.
         } else if (msg.type === "stdout") {
           out.push(Buffer.from(msg.data, "base64"));
         } else if (msg.type === "stderr") {
@@ -282,18 +345,36 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
           const r = msg.run;
           finish({
             exitCode: r.exitCode, timedOut: r.timedOut, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf-8"), spawnError: r.spawnError,
-            cleanup: r.cleanup, cleanupDetail: r.cleanupDetail, supervisorError: null, truncated: msg.truncated,
+            cleanup: r.cleanup, cleanupDetail: r.cleanupDetail, supervisorError: null, supervisorUnresponsive: false, truncated: msg.truncated,
           });
-          // Disarmed and leaving; stopped only if it overstays.
-          const overstay = setTimeout(() => stopProcessGroup(sup.pid), EXIT_BOUND_MS * 2);
+          // Disarmed and leaving; killed by its pid only if it overstays.
+          const overstay = setTimeout(() => killSupervisor(sup.pid), EXIT_BOUND_MS * 2);
           overstay.unref();
           sup.once("exit", () => clearTimeout(overstay));
         }
       }
     });
     sup.on("error", (e) => failClosed(`the supervisor could not start: ${e.message}`));
+    // The exit event can come before the last lines are read: the status is noted, and a missing
+    // completion is judged only once stdout has closed, or after a bounded drain.
+    let exitStatus = "";
+    const judge = (): void => {
+      if (completed === null) failClosed(`the supervisor exited before the review completed (${exitStatus})`);
+    };
     sup.on("exit", (code, signal) => {
-      if (completed === null) failClosed(`the supervisor exited before the review completed (${signal ?? `status ${code}`})`);
+      supExited = true;
+      exitStatus = signal ?? `status ${code}`;
+      if (failing || completed !== null) return;
+      const drain = setTimeout(judge, DRAIN_MS);
+      drain.unref();
+      sup.stdout!.once("close", () => {
+        clearTimeout(drain);
+        judge();
+      });
+      if (sup.stdout!.closed) {
+        clearTimeout(drain);
+        judge();
+      }
     });
   });
 }

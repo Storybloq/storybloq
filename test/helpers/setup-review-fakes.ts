@@ -166,7 +166,11 @@ process.stdin.on("end", () => {
       if (mode !== "no-output" && o >= 0 && args[o + 1]) fs.writeFileSync(args[o + 1], body);
     } else {
       const structured = JSON.parse(body);
-      process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "", structured_output: structured, session_id: "fake-session" }));
+      const answer = JSON.stringify({ type: "result", is_error: false, result: "", structured_output: structured, session_id: "fake-session" });
+      // "big" and "huge" pad a valid answer with whitespace, which JSON allows, to 2 MiB and 17 MiB.
+      const pad = mode === "big" ? 2 * 1024 * 1024 : mode === "huge" ? 17 * 1024 * 1024 : 0;
+      if (pad > 0) { process.stdout.write(answer + " ".repeat(pad), () => process.exit(0)); return; }
+      process.stdout.write(answer);
     }
     process.exit(0);
   };

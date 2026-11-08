@@ -32,44 +32,53 @@ export function classifyStop(i: { readonly decision: { readonly reason: Exclude<
 export type StepResult = { readonly ok: true } | { readonly ok: false; readonly reason: string } | { readonly skipped: string };
 
 /**
- * The operations section 11 orders. Each asynchronous one receives its absolute deadline, and runCleanup
- * also bounds its await by that deadline, so an operation that never settles cannot hold cleanup past the
- * budget. The synchronous ones are local writes.
+ * The operations section 11 orders. Each asynchronous one receives its absolute deadline and a cancellation
+ * signal. runCleanup bounds its await by that deadline; on expiry it signals the cancel and waits, within the
+ * remaining budget, for the operation to settle. Nothing that mutates runs after an operation that did not
+ * confirm it stopped. The synchronous ones are local writes.
  */
 export interface CleanupOps {
   readonly writeStopRecord: (cause: StopCause) => void;
-  readonly stop: (deadline: number) => Promise<StepResult>;
-  readonly confirm: (deadline: number) => Promise<{ readonly running: boolean; readonly status: string; readonly oomKilled: boolean | null }>;
-  readonly proxyPack: (deadline: number) => Promise<StepResult>;
-  readonly attemptPack: (deadline: number, attempt: number) => Promise<StepResult>;
+  readonly stop: (deadline: number, signal: AbortSignal) => Promise<StepResult>;
+  readonly confirm: (deadline: number, signal: AbortSignal) => Promise<{ readonly running: boolean; readonly status: string; readonly oomKilled: boolean | null }>;
+  readonly proxyPack: (deadline: number, signal: AbortSignal) => Promise<StepResult>;
+  readonly attemptPack: (deadline: number, attempt: number, signal: AbortSignal) => Promise<StepResult>;
   /** Removes the failed try's staging; false when the removal itself failed. */
   readonly clearStaging: () => boolean;
   readonly writeState: () => void;
-  readonly retain: (deadline: number) => Promise<StepResult>;
-  readonly removeObjects: (deadline: number) => Promise<{ readonly left: number }>;
+  readonly retain: (deadline: number, signal: AbortSignal) => Promise<StepResult>;
+  readonly removeObjects: (deadline: number, signal: AbortSignal) => Promise<{ readonly left: number }>;
   readonly writeQuarantine: (reason: string) => void;
   readonly now: () => number;
   /** Resolves after `ms` on the same clock as `now`, or settles early when `signal` aborts. */
   readonly wait: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
-export type Bounded<T> = { readonly value: T } | { readonly failed: string };
+/** `running` is true only when the operation was cancelled and had not settled by `settleBy`. */
+export type Bounded<T> = { readonly value: T } | { readonly failed: string; readonly running?: true };
 
-/** Awaits one operation, no later than its deadline; not started when there is no deadline. */
-export async function bounded<T>(run: (deadline: number) => Promise<T>, deadline: number | null, ops: Pick<CleanupOps, "now" | "wait">): Promise<Bounded<T>> {
-  if (deadline === null) return { failed: "under a minute left, not started" };
+async function settleWithin<T>(p: Promise<T>, ms: number, ops: Pick<CleanupOps, "wait">): Promise<T | null> {
   const ac = new AbortController();
-  const late = ops.wait(Math.max(0, deadline - ops.now()), ac.signal).then(
-    (): Bounded<T> => ({ failed: "did not finish by its deadline" }),
-    (): Bounded<T> => ({ failed: "did not finish by its deadline" }),
-  );
+  try { return await Promise.race([p, ops.wait(ms, ac.signal).then(() => null, () => null)]); } finally { ac.abort(); }
+}
+
+/**
+ * Awaits one operation, no later than its deadline; not started when there is no deadline. On expiry the
+ * operation is cancelled through its signal and given until `settleBy` to settle; a value it returns after
+ * the deadline is not used. One that does not settle by then is reported as still running.
+ */
+export async function bounded<T>(run: (deadline: number, signal: AbortSignal) => Promise<T>, deadline: number | null, settleBy: number, ops: Pick<CleanupOps, "now" | "wait">): Promise<Bounded<T>> {
+  if (deadline === null) return { failed: "under a minute left, not started" };
+  const cancel = new AbortController();
+  const fail = (e: unknown): Bounded<T> => ({ failed: `failed (${e instanceof Error ? e.message : String(e)})` });
   let work: Promise<Bounded<T>>;
-  try {
-    work = run(deadline).then((value): Bounded<T> => ({ value }), (e: unknown): Bounded<T> => ({ failed: `failed (${e instanceof Error ? e.message : String(e)})` }));
-  } catch (e) {
-    work = Promise.resolve({ failed: `failed (${e instanceof Error ? e.message : String(e)})` });
-  }
-  try { return await Promise.race([work, late]); } finally { ac.abort(); }
+  try { work = run(deadline, cancel.signal).then((value): Bounded<T> => ({ value }), fail); } catch (e) { work = Promise.resolve(fail(e)); }
+  const first = await settleWithin(work, Math.max(0, deadline - ops.now()), ops);
+  if (first !== null) return first;
+  cancel.abort();
+  const after = await settleWithin(work, Math.max(0, settleBy - ops.now()), ops);
+  if (after !== null) return { failed: "did not finish by its deadline and stopped when cancelled" };
+  return { failed: "did not finish by its deadline and is still running after the cancel", running: true };
 }
 
 /** The real `wait`: a timer the abort clears, so a finished operation leaves no timer behind. */
@@ -89,64 +98,78 @@ export interface CleanupOutcome {
 
 /**
  * Section 11 from step 1, in order, always. A proxy failure does not stop the attempt pack. The attempt pack
- * gets one retry, only after its staging is removed and only with five minutes left; otherwise, and whenever
- * completion is impossible, quarantine, written while only local writes are needed. Nothing is removed from a
- * quarantined attempt. A cleanup failure keeps the disposition and names the objects left.
+ * gets one retry, only after the failed try is confirmed stopped, its staging is removed and five minutes
+ * are left; otherwise, and whenever completion is impossible, quarantine, written while only local writes
+ * are needed. Nothing is removed from a quarantined attempt, and nothing mutates after an operation that is
+ * still running. A cleanup failure keeps the disposition and names the objects left.
  */
 export async function runCleanup(budget: Budget, cause: StopCause, ops: CleanupOps, l: Limits = LIMITS): Promise<CleanupOutcome> {
   const steps: string[] = [];
   const findings: string[] = [];
   const deadline = (cap: number): number | null => operationDeadline(budget, ops.now(), cap, l);
-  // An operation with no cap of its own (confirm, retention, removal) gets what remains of the budget.
+  // An operation with no cap of its own (confirm, retention, removal) gets what remains of the budget,
+  // and every cancelled operation gets until the same point to settle.
+  const settleBy = budget.budgetEnd - l.cleanupMarginMs;
   const rest = (): number | null => deadline(Number.POSITIVE_INFINITY);
   const skippedOrFailed = (r: StepResult): string | null => ("skipped" in r ? r.skipped : r.ok ? null : r.reason);
   const step = (b: Bounded<StepResult>): string | null => ("failed" in b ? b.failed : skippedOrFailed(b.value));
+  const running = (b: Bounded<unknown>): boolean => "failed" in b && b.running === true;
+  const quarantine = (reason: string, corroboration: CleanupOutcome["corroboration"]): CleanupOutcome => {
+    ops.writeQuarantine(reason);
+    steps.push("quarantine");
+    return { steps, findings, disposition: "quarantined", corroboration, retention: "pending", cleanup: "objects-left" };
+  };
 
   ops.writeStopRecord(cause);
   steps.push("stop-record");
   const stopAt = deadline(l.stopCapMs);
-  const stopped = stopAt === null ? "no time to stop" : step(await bounded(ops.stop, stopAt, ops));
+  const s = stopAt === null ? null : await bounded(ops.stop, stopAt, settleBy, ops);
   steps.push("stop");
-  const c = await bounded(ops.confirm, rest(), ops);
+  if (s !== null && running(s)) { findings.push(`the stop ${step(s)}`); return quarantine("stop still running", "evidence-lost"); }
+  const stopped = s === null ? "no time to stop" : step(s);
+  const c = await bounded(ops.confirm, rest(), settleBy, ops);
   steps.push("confirm");
   if ("failed" in c || c.value.running) {
     findings.push("failed" in c ? `the stop could not be confirmed: the inspect ${c.failed}` : `the attempt is still running after the stop (${stopped ?? c.value.status})`);
-    ops.writeQuarantine("failed" in c ? "the stop could not be confirmed" : "the attempt could not be stopped");
-    steps.push("quarantine");
-    return { steps, findings, disposition: "quarantined", corroboration: "evidence-lost", retention: "pending", cleanup: "objects-left" };
+    return quarantine(running(c) ? "confirm still running" : "failed" in c ? "the stop could not be confirmed" : "the attempt could not be stopped", "evidence-lost");
   }
 
   const proxyAt = deadline(l.proxyPackDeadlineCapMs);
-  const proxyProblem = proxyAt === null ? "under a minute left for the proxy pack" : step(await bounded(ops.proxyPack, proxyAt, ops));
+  const p = proxyAt === null ? null : await bounded(ops.proxyPack, proxyAt, settleBy, ops);
   steps.push("proxy-pack");
+  const proxyProblem = p === null ? "under a minute left for the proxy pack" : step(p);
   if (proxyProblem !== null) findings.push(`proxy pack: ${proxyProblem}; its volume is kept`);
   const corroboration = proxyProblem === null ? "available" : "evidence-lost";
+  if (p !== null && running(p)) return quarantine("proxy pack still running", corroboration);
 
   let packed = false;
   for (let attempt = 1; attempt <= 2 && !packed; attempt++) {
     const at = deadline(l.packDeadlineCapMs);
     if (at === null) { findings.push(`attempt pack try ${attempt}: under a minute left, not started`); break; }
-    const r = await bounded((d) => ops.attemptPack(d, attempt), at, ops);
+    const r = await bounded((d, sig) => ops.attemptPack(d, attempt, sig), at, settleBy, ops);
     steps.push(`attempt-pack-${attempt}`);
     const problem = step(r);
     if (problem === null) { packed = true; break; }
     findings.push(`attempt pack try ${attempt}: ${problem}`);
+    // A try that did not confirm it stopped may still write: no removal and no retry under it.
+    if (running(r)) return quarantine("pack still running", corroboration);
     if (!ops.clearStaging()) { findings.push("the failed try's staging could not be removed, so there is no retry"); break; }
     steps.push(`clear-staging-${attempt}`);
     if (attempt === 1 && !retryAllowed(budget, ops.now(), l)) { findings.push("under five minutes left, so there is no retry"); break; }
   }
-  if (!packed) {
-    ops.writeQuarantine(findings[findings.length - 1] ?? "the attempt pack failed");
-    steps.push("quarantine");
-    return { steps, findings, disposition: "quarantined", corroboration, retention: "pending", cleanup: "objects-left" };
-  }
+  if (!packed) return quarantine(findings[findings.length - 1] ?? "the attempt pack failed", corroboration);
 
   ops.writeState();
   steps.push("state");
-  const keptProblem = step(await bounded(ops.retain, rest(), ops));
+  const k = await bounded(ops.retain, rest(), settleBy, ops);
+  const keptProblem = step(k);
   steps.push("retain");
   if (keptProblem !== null) findings.push(`retention-pending: ${keptProblem}`);
-  const removed = await bounded(ops.removeObjects, rest(), ops);
+  if (running(k)) {
+    findings.push("cleanup: the retention is still running, so the removal is not started");
+    return { steps, findings, disposition: "packed", corroboration, retention: "pending", cleanup: "objects-left" };
+  }
+  const removed = await bounded(ops.removeObjects, rest(), settleBy, ops);
   steps.push("remove");
   const removalProblem = "failed" in removed ? `cleanup: the removal ${removed.failed}, so labelled objects may be left` : removed.value.left > 0 ? `cleanup: ${removed.value.left} labelled objects are left` : null;
   if (removalProblem !== null) findings.push(removalProblem);

@@ -15,16 +15,20 @@ const cause: StopCause = { reason: "flow-ended", decided: true, oomKilledNote: f
 
 /** A fake: every op records its call and deadline; `spend` advances the clock by what each op takes. */
 type Hung = "stop" | "confirm" | "proxy" | "pack1" | "pack2" | "retain" | "remove";
-function fake(start: number, over: Partial<Record<"stop" | "proxyPack" | "retain", StepResult>> & { packs?: StepResult[]; running?: boolean; clear?: boolean; left?: number; spend?: Partial<Record<string, number>>; hang?: Hung[]; throws?: Hung[] } = {}) {
+function fake(start: number, over: Partial<Record<"stop" | "proxyPack" | "retain", StepResult>> & { packs?: StepResult[]; running?: boolean; clear?: boolean; left?: number; spend?: Partial<Record<string, number>>; hang?: Hung[]; honour?: Hung[]; throws?: Hung[] } = {}) {
   let t = start;
   const calls: string[] = [];
   const deadlines: Record<string, number> = {};
   const quarantines: string[] = [];
   const spend = (k: string) => { t += over.spend?.[k] ?? 1000; };
   const packs = [...(over.packs ?? [OK])];
-  // A hung operation never settles; one that throws rejects. Both must still reach a bounded outcome.
-  const gate = async <T>(k: Hung, v: () => T): Promise<T> => {
+  // A hung operation never settles, even when cancelled; an honouring one runs until cancelled, then makes
+  // one late write and rejects; one that throws rejects at once. All must reach a bounded outcome.
+  const gate = async <T>(k: Hung, v: () => T, signal: AbortSignal): Promise<T> => {
     if (over.hang?.includes(k)) return new Promise<T>(() => {});
+    if (over.honour?.includes(k)) {
+      return new Promise<T>((_res, rej) => signal.addEventListener("abort", () => setImmediate(() => { calls.push(`${k}-late-write`); rej(new Error("cancelled")); }), { once: true }));
+    }
     if (over.throws?.includes(k)) throw new Error(`${k} broke`);
     return v();
   };
@@ -34,14 +38,14 @@ function fake(start: number, over: Partial<Record<"stop" | "proxyPack" | "retain
     // then moves the clock to the deadline, as a real timer would.
     wait: async (ms, signal) => { await new Promise((r) => setImmediate(r)); if (!signal.aborted) t += ms; },
     writeStopRecord: () => { calls.push("stop-record"); },
-    stop: (d) => { calls.push("stop"); deadlines.stop = d; return gate("stop", () => { spend("stop"); return over.stop ?? OK; }); },
-    confirm: (d) => { calls.push("confirm"); deadlines.confirm = d; return gate("confirm", () => ({ running: over.running ?? false, status: over.running ? "running" : "exited", oomKilled: false })); },
-    proxyPack: (d) => { calls.push("proxy-pack"); deadlines.proxy = d; return gate("proxy", () => { spend("proxy"); return over.proxyPack ?? OK; }); },
-    attemptPack: (d, n) => { calls.push(`attempt-pack-${n}`); deadlines[`pack${n}`] = d; return gate(n === 1 ? "pack1" : "pack2", () => { spend(`pack${n}`); return packs.shift() ?? OK; }); },
+    stop: (d, sig) => { calls.push("stop"); deadlines.stop = d; return gate("stop", () => { spend("stop"); return over.stop ?? OK; }, sig); },
+    confirm: (d, sig) => { calls.push("confirm"); deadlines.confirm = d; return gate("confirm", () => ({ running: over.running ?? false, status: over.running ? "running" : "exited", oomKilled: false }), sig); },
+    proxyPack: (d, sig) => { calls.push("proxy-pack"); deadlines.proxy = d; return gate("proxy", () => { spend("proxy"); return over.proxyPack ?? OK; }, sig); },
+    attemptPack: (d, n, sig) => { calls.push(`attempt-pack-${n}`); deadlines[`pack${n}`] = d; return gate(n === 1 ? "pack1" : "pack2", () => { spend(`pack${n}`); return packs.shift() ?? OK; }, sig); },
     clearStaging: () => { calls.push("clear-staging"); t += over.spend?.clear ?? 0; return over.clear ?? true; },
     writeState: () => { calls.push("state"); },
-    retain: (d) => { calls.push("retain"); deadlines.retain = d; return gate("retain", () => over.retain ?? OK); },
-    removeObjects: (d) => { calls.push("remove"); deadlines.remove = d; return gate("remove", () => ({ left: over.left ?? 0 })); },
+    retain: (d, sig) => { calls.push("retain"); deadlines.retain = d; return gate("retain", () => over.retain ?? OK, sig); },
+    removeObjects: (d, sig) => { calls.push("remove"); deadlines.remove = d; return gate("remove", () => ({ left: over.left ?? 0 }), sig); },
     writeQuarantine: (r) => { calls.push("quarantine"); quarantines.push(r); },
   };
   return { ops, calls, deadlines, quarantines, at: () => t };
@@ -167,51 +171,99 @@ describe("runCleanup: one retry, only after the staging is removed and with five
   });
 });
 
-describe("runCleanup: every awaited operation is bounded by its deadline", () => {
+describe("runCleanup: every awaited operation is bounded by its deadline and cancelled on expiry", () => {
   const start = T0 + 100 * MIN;
-  it("an inspect that never answers quarantines by the clock, at the budget's remaining time", async () => {
+  const end = b.budgetEnd - 2 * MIN;
+  const STILL = "did not finish by its deadline and is still running after the cancel";
+  const STOPPED = "did not finish by its deadline and stopped when cancelled";
+  it("an inspect that never answers quarantines by the clock as still running", async () => {
     const f = fake(start, { hang: ["confirm"] });
     const o = await runCleanup(b, cause, f.ops);
-    expect(f.deadlines.confirm).toBe(b.budgetEnd - 2 * MIN);
-    expect(f.at()).toBe(b.budgetEnd - 2 * MIN);
+    expect(f.deadlines.confirm).toBe(end);
+    expect(f.at()).toBe(end);
     expect(o).toMatchObject({ disposition: "quarantined", corroboration: "evidence-lost" });
-    expect(o.findings).toEqual(["the stop could not be confirmed: the inspect did not finish by its deadline"]);
+    expect(o.findings).toEqual([`the stop could not be confirmed: the inspect ${STILL}`]);
+    expect(f.quarantines).toEqual(["confirm still running"]);
     expect(f.calls).not.toContain("proxy-pack");
   });
-  it("a retention that never answers is pending by the clock; the budget is then spent, so removal is not started", async () => {
-    const f = fake(start, { hang: ["retain"] });
-    const o = await runCleanup(b, cause, f.ops);
-    expect(o).toMatchObject({ disposition: "packed", retention: "pending", cleanup: "objects-left" });
-    expect(o.findings).toEqual(["retention-pending: did not finish by its deadline", "cleanup: the removal under a minute left, not started, so labelled objects may be left"]);
-    expect(f.calls).not.toContain("remove");
-    expect(f.at()).toBe(b.budgetEnd - 2 * MIN);
-  });
-  it("a removal that never answers is objects-left, and the outcome is still returned", async () => {
-    const f = fake(start, { hang: ["remove"] });
-    const o = await runCleanup(b, cause, f.ops);
-    expect(o).toMatchObject({ disposition: "packed", retention: "done", cleanup: "objects-left" });
-    expect(o.findings).toEqual(["cleanup: the removal did not finish by its deadline, so labelled objects may be left"]);
-    expect(f.at()).toBe(b.budgetEnd - 2 * MIN);
-  });
-  it("a stop that never answers is bounded by its 25 s cap and the confirm decides", async () => {
-    const f = fake(start, { hang: ["stop"], running: true });
+  it("a stop that ignores the cancel quarantines before the confirm, nothing else runs", async () => {
+    const f = fake(start, { hang: ["stop"] });
     const o = await runCleanup(b, cause, f.ops);
     expect(f.deadlines.stop).toBe(start + 25_000);
-    expect(f.calls).toEqual(["stop-record", "stop", "confirm", "quarantine"]);
-    expect(o.findings).toEqual(["the attempt is still running after the stop (did not finish by its deadline)"]);
+    expect(f.calls).toEqual(["stop-record", "stop", "quarantine"]);
+    expect(f.quarantines).toEqual(["stop still running"]);
+    expect(o.findings).toEqual([`the stop ${STILL}`]);
+    expect(f.at()).toBe(end);
   });
-  it("a proxy pack that never answers is bounded by its 2 min cap; the attempt still packs", async () => {
+  it("a stop that honours the cancel settles first, then the confirm decides", async () => {
+    const f = fake(start, { honour: ["stop"], running: true });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.calls).toEqual(["stop-record", "stop", "stop-late-write", "confirm", "quarantine"]);
+    expect(o.findings).toEqual([`the attempt is still running after the stop (${STOPPED})`]);
+  });
+  it("a proxy pack that ignores the cancel quarantines; the attempt pack is not started", async () => {
     const f = fake(start, { hang: ["proxy"] });
     const o = await runCleanup(b, cause, f.ops);
+    expect(f.calls).not.toContain("attempt-pack-1");
+    expect(f.quarantines).toEqual(["proxy pack still running"]);
+    expect(o).toMatchObject({ disposition: "quarantined", corroboration: "evidence-lost" });
+  });
+  it("a proxy pack that honours the cancel is bounded by its 2 min cap; the attempt still packs", async () => {
+    const f = fake(start, { honour: ["proxy"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.calls.indexOf("proxy-late-write")).toBeLessThan(f.calls.indexOf("attempt-pack-1"));
     expect(f.deadlines.pack1).toBe(start + 1000 + 2 * MIN + 20 * MIN);
     expect(o).toMatchObject({ disposition: "packed", corroboration: "evidence-lost" });
   });
-  it("an attempt pack that never answers counts as a failed try, then the retry runs", async () => {
+  it("a first pack that times out writes late: its staging is removed and the retry starts only after it stopped", async () => {
+    const f = fake(start, { honour: ["pack1"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.calls).toEqual(["stop-record", "stop", "confirm", "proxy-pack", "attempt-pack-1", "pack1-late-write", "clear-staging", "attempt-pack-2", "state", "retain", "remove"]);
+    expect(o.findings).toEqual([`attempt pack try 1: ${STOPPED}`]);
+    expect(o.disposition).toBe("packed");
+  });
+  it("a first pack that ignores the cancel: quarantine as pack still running, nothing removed, no retry", async () => {
     const f = fake(start, { hang: ["pack1"] });
     const o = await runCleanup(b, cause, f.ops);
-    expect(f.calls).toContain("attempt-pack-2");
-    expect(o.findings).toEqual(["attempt pack try 1: did not finish by its deadline"]);
-    expect(o.disposition).toBe("packed");
+    expect(f.calls).toEqual(["stop-record", "stop", "confirm", "proxy-pack", "attempt-pack-1", "quarantine"]);
+    expect(f.quarantines).toEqual(["pack still running"]);
+    expect(o.findings).toEqual([`attempt pack try 1: ${STILL}`]);
+    expect(o).toMatchObject({ disposition: "quarantined", cleanup: "objects-left" });
+    expect(f.at()).toBe(end);
+  });
+  it("a second pack that ignores the cancel is quarantined the same way", async () => {
+    const f = fake(start, { packs: [{ ok: false, reason: "exit 74" }], hang: ["pack2"] });
+    await runCleanup(b, cause, f.ops);
+    expect(f.calls.slice(-3)).toEqual(["clear-staging", "attempt-pack-2", "quarantine"]);
+    expect(f.quarantines).toEqual(["pack still running"]);
+  });
+  it("a value an operation returns only after its deadline is not used", async () => {
+    const f = fake(start);
+    const firstLate = (d: number, n: number, sig: AbortSignal): Promise<StepResult> => (n === 1 ? new Promise((res) => sig.addEventListener("abort", () => res(OK), { once: true })) : f.ops.attemptPack(d, n, sig));
+    const o = await runCleanup(b, cause, { ...f.ops, attemptPack: firstLate });
+    expect(o.findings).toEqual([`attempt pack try 1: ${STOPPED}`]);
+    expect(f.calls).toContain("clear-staging");
+  });
+  it("a retention that ignores the cancel is pending; the removal is not started", async () => {
+    const f = fake(start, { hang: ["retain"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(o).toMatchObject({ disposition: "packed", retention: "pending", cleanup: "objects-left" });
+    expect(o.findings).toEqual([`retention-pending: ${STILL}`, "cleanup: the retention is still running, so the removal is not started"]);
+    expect(f.calls).not.toContain("remove");
+    expect(f.at()).toBe(end);
+  });
+  it("a retention that honours the cancel is pending; the budget is then spent, so the removal is not started", async () => {
+    const f = fake(start, { honour: ["retain"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(o.findings).toEqual([`retention-pending: ${STOPPED}`, "cleanup: the removal under a minute left, not started, so labelled objects may be left"]);
+    expect(f.calls.slice(-2)).toEqual(["retain", "retain-late-write"]);
+  });
+  it("a removal that ignores the cancel is objects-left, and the outcome is still returned", async () => {
+    const f = fake(start, { hang: ["remove"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(o).toMatchObject({ disposition: "packed", retention: "done", cleanup: "objects-left" });
+    expect(o.findings).toEqual([`cleanup: the removal ${STILL}, so labelled objects may be left`]);
+    expect(f.at()).toBe(end);
   });
   it("an operation that throws is a failure with its message, not an escaped rejection", async () => {
     const f = fake(start, { throws: ["retain", "remove"] });

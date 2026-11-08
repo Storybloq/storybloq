@@ -1,6 +1,6 @@
 // T-538 S5b-0 commit 5: section 11's cleanup order, retry, quarantine, retention and stop cause, on fakes.
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,24 +14,34 @@ const OK: StepResult = { ok: true };
 const cause: StopCause = { reason: "flow-ended", decided: true, oomKilledNote: false, detail: "the flow ended" };
 
 /** A fake: every op records its call and deadline; `spend` advances the clock by what each op takes. */
-function fake(start: number, over: Partial<Record<"stop" | "proxyPack" | "retain", StepResult>> & { packs?: StepResult[]; running?: boolean; clear?: boolean; left?: number; spend?: Partial<Record<string, number>> } = {}) {
+type Hung = "stop" | "confirm" | "proxy" | "pack1" | "pack2" | "retain" | "remove";
+function fake(start: number, over: Partial<Record<"stop" | "proxyPack" | "retain", StepResult>> & { packs?: StepResult[]; running?: boolean; clear?: boolean; left?: number; spend?: Partial<Record<string, number>>; hang?: Hung[]; throws?: Hung[] } = {}) {
   let t = start;
   const calls: string[] = [];
   const deadlines: Record<string, number> = {};
   const quarantines: string[] = [];
   const spend = (k: string) => { t += over.spend?.[k] ?? 1000; };
   const packs = [...(over.packs ?? [OK])];
+  // A hung operation never settles; one that throws rejects. Both must still reach a bounded outcome.
+  const gate = async <T>(k: Hung, v: () => T): Promise<T> => {
+    if (over.hang?.includes(k)) return new Promise<T>(() => {});
+    if (over.throws?.includes(k)) throw new Error(`${k} broke`);
+    return v();
+  };
   const ops: CleanupOps = {
     now: () => t,
+    // The fake timer fires after the event loop turns, so an operation that settles first always wins; it
+    // then moves the clock to the deadline, as a real timer would.
+    wait: async (ms, signal) => { await new Promise((r) => setImmediate(r)); if (!signal.aborted) t += ms; },
     writeStopRecord: () => { calls.push("stop-record"); },
-    stop: async (d) => { calls.push("stop"); deadlines.stop = d; spend("stop"); return over.stop ?? OK; },
-    confirm: async () => { calls.push("confirm"); return { running: over.running ?? false, status: over.running ? "running" : "exited", oomKilled: false }; },
-    proxyPack: async (d) => { calls.push("proxy-pack"); deadlines.proxy = d; spend("proxy"); return over.proxyPack ?? OK; },
-    attemptPack: async (d, n) => { calls.push(`attempt-pack-${n}`); deadlines[`pack${n}`] = d; spend(`pack${n}`); return packs.shift() ?? OK; },
+    stop: (d) => { calls.push("stop"); deadlines.stop = d; return gate("stop", () => { spend("stop"); return over.stop ?? OK; }); },
+    confirm: (d) => { calls.push("confirm"); deadlines.confirm = d; return gate("confirm", () => ({ running: over.running ?? false, status: over.running ? "running" : "exited", oomKilled: false })); },
+    proxyPack: (d) => { calls.push("proxy-pack"); deadlines.proxy = d; return gate("proxy", () => { spend("proxy"); return over.proxyPack ?? OK; }); },
+    attemptPack: (d, n) => { calls.push(`attempt-pack-${n}`); deadlines[`pack${n}`] = d; return gate(n === 1 ? "pack1" : "pack2", () => { spend(`pack${n}`); return packs.shift() ?? OK; }); },
     clearStaging: () => { calls.push("clear-staging"); t += over.spend?.clear ?? 0; return over.clear ?? true; },
     writeState: () => { calls.push("state"); },
-    retain: async () => { calls.push("retain"); return over.retain ?? OK; },
-    removeObjects: async () => { calls.push("remove"); return { left: over.left ?? 0 }; },
+    retain: (d) => { calls.push("retain"); deadlines.retain = d; return gate("retain", () => over.retain ?? OK); },
+    removeObjects: (d) => { calls.push("remove"); deadlines.remove = d; return gate("remove", () => ({ left: over.left ?? 0 })); },
     writeQuarantine: (r) => { calls.push("quarantine"); quarantines.push(r); },
   };
   return { ops, calls, deadlines, quarantines, at: () => t };
@@ -138,15 +148,75 @@ describe("runCleanup: one retry, only after the staging is removed and with five
     expect(f.calls).not.toContain("attempt-pack-2");
     expect(o.disposition).toBe("quarantined");
   });
-  it("an operation with under a minute available is not started", async () => {
+  it("an operation with under a minute available is not started, so the stop cannot be confirmed: quarantine", async () => {
     const f = fake(T0 + 234 * MIN + 1);
     const o = await runCleanup(b, cause, f.ops);
-    expect(f.calls).not.toContain("stop");
-    expect(f.calls).not.toContain("proxy-pack");
-    expect(f.calls).not.toContain("attempt-pack-1");
+    expect(f.calls).toEqual(["stop-record", "quarantine"]);
     expect(o.disposition).toBe("quarantined");
     expect(o.corroboration).toBe("evidence-lost");
+    expect(o.findings).toEqual(["the stop could not be confirmed: the inspect under a minute left, not started"]);
+    expect(f.quarantines).toEqual(["the stop could not be confirmed"]);
+  });
+  it("a pack with under a minute left is not started", async () => {
+    // The proxy pack takes the time down to 59 s available before the attempt pack.
+    const f = fake(T0 + 230 * MIN, { spend: { proxy: 4 * MIN + 1000 } });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.calls).not.toContain("attempt-pack-1");
     expect(o.findings).toContain("attempt pack try 1: under a minute left, not started");
+    expect(o.disposition).toBe("quarantined");
+  });
+});
+
+describe("runCleanup: every awaited operation is bounded by its deadline", () => {
+  const start = T0 + 100 * MIN;
+  it("an inspect that never answers quarantines by the clock, at the budget's remaining time", async () => {
+    const f = fake(start, { hang: ["confirm"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.deadlines.confirm).toBe(b.budgetEnd - 2 * MIN);
+    expect(f.at()).toBe(b.budgetEnd - 2 * MIN);
+    expect(o).toMatchObject({ disposition: "quarantined", corroboration: "evidence-lost" });
+    expect(o.findings).toEqual(["the stop could not be confirmed: the inspect did not finish by its deadline"]);
+    expect(f.calls).not.toContain("proxy-pack");
+  });
+  it("a retention that never answers is pending by the clock; the budget is then spent, so removal is not started", async () => {
+    const f = fake(start, { hang: ["retain"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(o).toMatchObject({ disposition: "packed", retention: "pending", cleanup: "objects-left" });
+    expect(o.findings).toEqual(["retention-pending: did not finish by its deadline", "cleanup: the removal under a minute left, not started, so labelled objects may be left"]);
+    expect(f.calls).not.toContain("remove");
+    expect(f.at()).toBe(b.budgetEnd - 2 * MIN);
+  });
+  it("a removal that never answers is objects-left, and the outcome is still returned", async () => {
+    const f = fake(start, { hang: ["remove"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(o).toMatchObject({ disposition: "packed", retention: "done", cleanup: "objects-left" });
+    expect(o.findings).toEqual(["cleanup: the removal did not finish by its deadline, so labelled objects may be left"]);
+    expect(f.at()).toBe(b.budgetEnd - 2 * MIN);
+  });
+  it("a stop that never answers is bounded by its 25 s cap and the confirm decides", async () => {
+    const f = fake(start, { hang: ["stop"], running: true });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.deadlines.stop).toBe(start + 25_000);
+    expect(f.calls).toEqual(["stop-record", "stop", "confirm", "quarantine"]);
+    expect(o.findings).toEqual(["the attempt is still running after the stop (did not finish by its deadline)"]);
+  });
+  it("a proxy pack that never answers is bounded by its 2 min cap; the attempt still packs", async () => {
+    const f = fake(start, { hang: ["proxy"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.deadlines.pack1).toBe(start + 1000 + 2 * MIN + 20 * MIN);
+    expect(o).toMatchObject({ disposition: "packed", corroboration: "evidence-lost" });
+  });
+  it("an attempt pack that never answers counts as a failed try, then the retry runs", async () => {
+    const f = fake(start, { hang: ["pack1"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(f.calls).toContain("attempt-pack-2");
+    expect(o.findings).toEqual(["attempt pack try 1: did not finish by its deadline"]);
+    expect(o.disposition).toBe("packed");
+  });
+  it("an operation that throws is a failure with its message, not an escaped rejection", async () => {
+    const f = fake(start, { throws: ["retain", "remove"] });
+    const o = await runCleanup(b, cause, f.ops);
+    expect(o.findings).toEqual(["retention-pending: failed (retain broke)", "cleanup: the removal failed (remove broke), so labelled objects may be left"]);
   });
 });
 
@@ -187,8 +257,47 @@ describe("retainTar: copy, re-hash, then remove the source", () => {
     const src = join(d, "a.tar");
     writeFileSync(src, "tar bytes");
     const r = retainTar(src, join(d, "keep"), sha("tar bytes"), (_f, to) => writeFileSync(to, "torn"));
-    expect(r).toMatchObject({ status: "retention-pending", path: src, leftAt: join(d, "keep", "a.tar") });
+    expect(r).toMatchObject({ status: "retention-pending", path: src });
+    const left = r.status === "retention-pending" ? r.leftAt : undefined;
+    expect(left).toMatch(/\/keep\/\.a\.tar\.part-[0-9a-f]{12}$/);
+    expect(readFileSync(left!, "utf-8")).toBe("torn");
+    expect(existsSync(join(d, "keep", "a.tar"))).toBe(false);
     expect(existsSync(src)).toBe(true);
+  });
+  it("an archive already retained under that name keeps its bytes; the source stays untouched", () => {
+    const d = scratch();
+    const src = join(d, "a.tar");
+    writeFileSync(src, "new bytes");
+    const keep = join(d, "keep");
+    mkdirSync(keep);
+    writeFileSync(join(keep, "a.tar"), "earlier evidence");
+    let copied = false;
+    const r = retainTar(src, keep, sha("new bytes"), (f, to) => { copied = true; copyFileSync(f, to); });
+    expect(r).toMatchObject({ status: "retention-pending", path: src, reason: "an archive of that name is already retained, so it is kept and this one stays" });
+    expect(copied).toBe(false);
+    expect(readFileSync(join(keep, "a.tar"), "utf-8")).toBe("earlier evidence");
+    expect(readFileSync(src, "utf-8")).toBe("new bytes");
+    expect(readdirSync(keep)).toEqual(["a.tar"]);
+  });
+  it("a name retained while the copy was checked is not overwritten: the publish fails and the source stays", () => {
+    const d = scratch();
+    const src = join(d, "a.tar");
+    writeFileSync(src, "new bytes");
+    const keep = join(d, "keep");
+    const r = retainTar(src, keep, sha("new bytes"), (f, to) => { copyFileSync(f, to); writeFileSync(join(keep, "a.tar"), "raced in"); });
+    expect(r).toMatchObject({ status: "retention-pending", path: src, reason: "an archive of that name was retained meanwhile, so it is kept and this one stays" });
+    expect(readFileSync(join(keep, "a.tar"), "utf-8")).toBe("raced in");
+    expect(readFileSync(src, "utf-8")).toBe("new bytes");
+    expect(readdirSync(keep)).toEqual(["a.tar"]);
+  });
+  it("the moved archive is 0600 and no part file is left", () => {
+    const d = scratch();
+    const src = join(d, "a.tar");
+    writeFileSync(src, "tar bytes");
+    const r = retainTar(src, join(d, "keep"), sha("tar bytes"));
+    expect(r.status).toBe("moved");
+    expect(statSync(join(d, "keep", "a.tar")).mode & 0o777).toBe(0o600);
+    expect(readdirSync(join(d, "keep"))).toEqual(["a.tar"]);
   });
   it("a failed copy is retention-pending with the error code; the source stays", () => {
     const d = scratch();
@@ -234,6 +343,22 @@ describe("quarantine records", () => {
     const q = quarantineCheck(d, T0);
     expect(q.refusal).toContain("bad");
     expect(q.stale).toEqual(["bad"]);
+  });
+  it("an attempt id that is not one safe path component is refused before anything is written or renamed", () => {
+    const d = scratch();
+    const driver = join(d, "driver");
+    mkdirSync(driver);
+    writeFileSync(join(d, "escaped.json"), "outside");
+    const bad = ["../escaped", "a/b", "a\\b", "", ".", "..", ".hidden", "x".repeat(129), "a\u0000b", "a b"];
+    for (const id of bad) {
+      expect(() => writeQuarantine(driver, { attemptId: id, volume: "v", reason: "r", at: T0 }), id).toThrow(/not a single safe path component/);
+      expect(() => closeQuarantine(driver, id, "cpm-75"), id).toThrow(/not a single safe path component/);
+    }
+    expect(existsSync(join(driver, "quarantine"))).toBe(false);
+    expect(readdirSync(d).sort()).toEqual(["driver", "escaped.json"]);
+    expect(readFileSync(join(d, "escaped.json"), "utf-8")).toBe("outside");
+    expect(() => writeQuarantine(driver, { attemptId: "x".repeat(128), volume: "v", reason: "r", at: T0 })).not.toThrow();
+    expect(() => writeQuarantine(driver, { attemptId: "a1.retry-2_b", volume: "v", reason: "r", at: T0 })).not.toThrow();
   });
   it("a closed record no longer blocks", () => {
     const d = scratch();

@@ -10,7 +10,7 @@ import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 // ISS-1391's process-group machinery, shared with setup-verify (T-538 S3a-2).
-import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroup, trackGroup, untrackGroup } from "./process-group.js";
+import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroup, signalGroupGuarded, trackGroup, untrackGroup } from "./process-group.js";
 
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
@@ -344,14 +344,22 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
     let timedOut = false;
     let settled = false;
     let stopped = false;
+    // ISS-1457 round 2: once codex's exit is seen its group id may be reused, so every group signal from
+    // then on goes only to a group a probe in the same step finds alive (process-group's guarded signal).
+    let leaderExited = false;
+    let held: string | null = null;
     const timers: NodeJS.Timeout[] = [];
     const later = (fn: () => void, ms: number): void => { timers.push(setTimeout(fn, Math.max(0, ms))); };
+    const groupSignal = (target: ChildProcess, sig: NodeJS.Signals): void => {
+      const outcome = signalGroupGuarded(target, sig, leaderExited, OWN_GROUP, startProbeSeams.signal);
+      if (outcome !== "sent" && outcome !== "gone") held = outcome;
+    };
     const stopGroup = (): void => {
       if (stopped || !child) return;
       stopped = true;
-      startProbeSeams.signal(child, "SIGKILL");
+      groupSignal(child, "SIGKILL");
     };
-    const stopOnExit = (): void => { if (child) signalGroup(child, "SIGKILL"); };
+    const stopOnExit = (): void => { if (child) groupSignal(child, "SIGKILL"); };
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       req.resume();
       if (req.method === "POST" && req.url === PROBE_ROUTE && req.headers[NONCE_HEADER] === nonce) {
@@ -372,6 +380,8 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         stopGroup();
         release(child);
         untrackGroup(child);
+        // A group the guarded signal held back from, on an answer other than gone, is named.
+        if (held !== null && a.kind === "inconclusive") a = { ...a, detail: `${a.detail}; process group ${child.pid} answered ${held} after codex exited, so it was not signalled` };
       }
       for (const t of timers) clearTimeout(t);
       process.removeListener("exit", stopOnExit);
@@ -404,7 +414,8 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         return;
       }
       const started = child;
-      trackGroup(started);
+      started.once("exit", () => { leaderExited = true; });
+      trackGroup(started, stopOnExit);
       process.once("exit", stopOnExit);
       // The attempt's bound and its stop, clamped so they end by the deadline.
       const left = deadline - Date.now();
@@ -412,7 +423,7 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
       const bound = Math.max(0, Math.min(attemptMs, left - 2 * grace));
       later(() => {
         timedOut = true;
-        startProbeSeams.signal(started, "SIGTERM");
+        groupSignal(started, "SIGTERM");
         later(() => {
           stopGroup();
           later(() => settle(null), grace);

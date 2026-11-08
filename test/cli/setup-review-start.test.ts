@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
 import { projectKeyFor, recordShape, SKIPPED_LINE, STOP_LINES, storeSeams } from "../../src/core/setup-review.js";
 import { CHARACTERISED_CODEX_VERSIONS, CODEX_ISOLATION_FLAGS, codexArgs, inferredReasons, probeCodexStart, probeReviewer, startProbeSeams } from "../../src/core/setup-review-backends.js";
-import { signalGroup } from "../../src/core/process-group.js";
+import { processGroupSeams, signalGroup } from "../../src/core/process-group.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, scratchDirsCreated, type FakeBin } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -22,6 +22,7 @@ const STOP = STOP_LINES.join("\n");
 const FAST = { attemptMs: 1_500, totalMs: 4_000, killGraceMs: 200 };
 const realListen = startProbeSeams.listen;
 const realSignal = startProbeSeams.signal;
+const realGroupProbe = processGroupSeams.probe;
 /** Scheduling slack on an absolute bound: timers, a reap, a listener close. */
 const SLACK_MS = 150;
 const realWriteProbe = storeSeams.writeProbe;
@@ -89,6 +90,7 @@ beforeEach(() => {
 afterEach(() => {
   startProbeSeams.listen = realListen;
   startProbeSeams.signal = realSignal;
+  processGroupSeams.probe = realGroupProbe;
   storeSeams.writeProbe = realWriteProbe;
   removeScratchDirs();
 });
@@ -229,6 +231,40 @@ describe("the codex start probe (ISS-1456)", () => {
     } finally {
       for (const pid of pids()) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
     }
+  });
+
+  describe("after codex exits, its group is signalled only when a probe in the same step finds it alive (ISS-1457 round 2)", () => {
+    // A codex that exits at once without a request: every attempt ends on its close, after its exit.
+    async function silentRun(answer: () => void): Promise<{ r: Awaited<ReturnType<typeof probeCodexStart>>; sent: Array<[number | undefined, NodeJS.Signals]> }> {
+      const sent: Array<[number | undefined, NodeJS.Signals]> = [];
+      // Recorded, never delivered: the leader is gone and the group id may already be someone else's.
+      startProbeSeams.signal = (child, sig) => { sent.push([child.pid, sig]); };
+      processGroupSeams.probe = answer;
+      const r = await codexStart("silent");
+      return { r, sent };
+    }
+    const fail = (code: string) => (): never => { throw Object.assign(new Error(code), { code }); };
+
+    it("a group seen gone gets no signal at all", async () => {
+      const { r, sent } = await silentRun(fail("ESRCH"));
+      expect(r).toMatchObject({ ok: false, code: "probe-inconclusive" });
+      expect(probes().length).toBeGreaterThanOrEqual(1);
+      expect(sent).toEqual([]);
+    });
+
+    it("a group still alive gets exactly one SIGKILL per attempt", async () => {
+      const { sent } = await silentRun(() => {});
+      const pids = probes().map((p) => p.pid);
+      expect(pids.length).toBeGreaterThanOrEqual(1);
+      expect(sent).toEqual(pids.map((pid) => [pid, "SIGKILL"]));
+    });
+
+    it("a group that answers EPERM gets no signal, and the attempt names it", async () => {
+      const { r, sent } = await silentRun(fail("EPERM"));
+      expect(sent).toEqual([]);
+      const last = probes().at(-1)!.pid;
+      expect((r as { detail: string }).detail).toContain(`process group ${last} answered EPERM after codex exited, so it was not signalled`);
+    });
   });
 
   it("no retry when it would pass the total bound", async () => {

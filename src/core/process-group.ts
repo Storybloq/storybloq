@@ -161,6 +161,29 @@ export interface GroupRunOptions {
  */
 export type GroupSignal = (signal: NodeJS.Signals) => string;
 
+/**
+ * The guarded group signal itself, for every caller that may still signal a group after its leader has
+ * exited (runInGroup, and the setup-review start probe). With `leaderExited` false it sends as always.
+ * With it true, it sends only when a probe in the same synchronous step answers "alive", and otherwise
+ * answers the probe's answer and sends nothing. Without process groups (Windows) the child itself is
+ * signalled, which is never a negative pid. `send` is the caller's own signal (a test seam for the probe).
+ */
+export function signalGroupGuarded(
+  child: ChildProcess, sig: NodeJS.Signals, leaderExited: boolean, own: boolean = OWN_GROUP,
+  send: (child: ChildProcess, sig: NodeJS.Signals) => void = (c, s) => signalGroup(c, s, own),
+): string {
+  if (!own || child.pid === undefined) {
+    signalGroup(child, sig, false);
+    return "sent";
+  }
+  if (leaderExited) {
+    const seen = probeGroup(child.pid);
+    if (seen !== "alive") return seen;
+  }
+  send(child, sig);
+  return "sent";
+}
+
 export interface GroupRun {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -204,18 +227,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     let exitCode: number | null = null;
     let signal: NodeJS.Signals | null = null;
     let exited = false;
-    const groupSignal: GroupSignal = (sig) => {
-      if (!own || child.pid === undefined) {
-        signalGroup(child, sig, false);
-        return "sent";
-      }
-      if (exited) {
-        const seen = probeGroup(child.pid);
-        if (seen !== "alive") return seen;
-      }
-      signalGroup(child, sig, own);
-      return "sent";
-    };
+    const groupSignal: GroupSignal = (sig) => signalGroupGuarded(child, sig, exited, own);
     const stopOnExit = (): void => {
       groupSignal("SIGKILL");
     };

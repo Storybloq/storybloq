@@ -8,7 +8,7 @@
  * nothing leaves the machine. The ordinary suite never depends on this file.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -118,9 +118,17 @@ async function launch(r: Rig, isolated: boolean, bypass: boolean, extra: string[
   writeFileSync(join(r.root, "work", "schema.json"), JSON.stringify({ type: "object" }));
   const withoutFlags = isolated ? built : stripIsolation(built);
   const argv = bypass ? [withoutFlags[0]!, BYPASS, ...withoutFlags.slice(1)] : withoutFlags;
-  spawnSync(BIN, argv, {
-    cwd: r.exec, input: "probe\n", timeout: 25_000, killSignal: "SIGKILL",
-    env: { HOME: r.home, CODEX_HOME: r.codexHome, TMPDIR: join(r.root, "tmp"), PATH: "/usr/bin:/bin", [PROBE_KEY_ENV]: "storybloq-probe-not-a-credential" },
+  // Asynchronous, so the test worker keeps answering its runner while codex runs.
+  await new Promise<void>((done) => {
+    const child = spawn(BIN, argv, {
+      cwd: r.exec, stdio: ["pipe", "ignore", "ignore"],
+      env: { HOME: r.home, CODEX_HOME: r.codexHome, TMPDIR: join(r.root, "tmp"), PATH: "/usr/bin:/bin", [PROBE_KEY_ENV]: "storybloq-probe-not-a-credential" },
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 25_000);
+    child.once("error", () => { clearTimeout(timer); done(); });
+    child.once("exit", () => { clearTimeout(timer); done(); });
+    child.stdin!.on("error", () => {});
+    child.stdin!.end("probe\n");
   });
   spawnSync("/usr/bin/pkill", ["-f", `touch ${r.marker}`]);
   return existsSync(r.marker);

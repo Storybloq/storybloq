@@ -4,7 +4,7 @@
  * 2xx from 127.0.0.1:<port><path> with every listener that could accept it
  * owned by the group, observed before the request and again after the
  * response, then the group stopped and the port free. Every other outcome
- * writes nothing and prints the run token; without process groups or lsof
+ * writes nothing and prints the run token; without process groups, lsof or ps
  * nothing runs (unsupported, exit 4).
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -338,6 +338,45 @@ describe("VERIFY where it cannot run", () => {
     const left = await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "no server here", run: TOKEN.exec(r.lines[0]!)![1]! });
     expect(left).toEqual({ exitCode: 0, lines: ["Left off: app verify; T-002 is complete and the stages are unchanged."] });
     expect((await configOf(root)).setupVerification.components[0]!.verify.status).toBe("left-off");
+  });
+
+  // ISS-1462: ps is checked with lsof, before anything starts, and every missing tool is named.
+  it("without ps is unsupported (exit 4) with nothing started, and leave-off answers it", async () => {
+    const port = await freePort();
+    const root = await ready(port, `touch started; ${serve(port)}`);
+    serveSeams.psPath = "/nonexistent/ps";
+    const before = await files(root);
+    const r = await setupVerify(root, { ticket: "T-002" });
+    expect(r.exitCode).toBe(4);
+    expect(r.lines[0]).toMatch(/^Setup-verify stopped: app's verify stage cannot run here; nothing was written \(run [0-9a-f]{16}\)\.$/);
+    expect(r.lines[1]).toBe("Ambiguity: verification unsupported · T-002 · observed ps is not available at /nonexistent/ps (ENOENT); expected a platform that can own the verify command's processes and see who listens on its port · resolutions: leave-off | stop");
+    expect(existsSync(join(root, "started"))).toBe(false);
+    expect(await files(root)).toEqual(before);
+    const left = await setupVerify(root, { ticket: "T-002", resolve: "leave-off", ownerWords: "no ps here", run: TOKEN.exec(r.lines[0]!)![1]! });
+    expect(left).toEqual({ exitCode: 0, lines: ["Left off: app verify; T-002 is complete and the stages are unchanged."] });
+    expect((await configOf(root)).setupVerification.components[0]!.verify.status).toBe("left-off");
+  });
+
+  it("without lsof and without ps names both, lsof first, with nothing started", async () => {
+    const port = await freePort();
+    const root = await ready(port, `touch started; ${serve(port)}`);
+    serveSeams.lsofPath = "/nonexistent/lsof";
+    serveSeams.psPath = "/nonexistent/ps";
+    const r = await setupVerify(root, { ticket: "T-002" });
+    expect(r.exitCode).toBe(4);
+    expect(r.lines[1]).toBe("Ambiguity: verification unsupported · T-002 · observed lsof is not available at /nonexistent/lsof (ENOENT); ps is not available at /nonexistent/ps (ENOENT); expected a platform that can own the verify command's processes and see who listens on its port · resolutions: leave-off | stop");
+    expect(existsSync(join(root, "started"))).toBe(false);
+  });
+
+  it("without process groups and without ps, the process-group refusal still comes first", async () => {
+    const port = await freePort();
+    const root = await ready(port);
+    processGroupSeams.ownGroup = false;
+    serveSeams.psPath = "/nonexistent/ps";
+    const r = await setupVerify(root, { ticket: "T-002" });
+    expect(r.exitCode).toBe(4);
+    expect(r.lines[1]).toMatch(/observed this platform has no process groups to own \(Windows\);/);
+    expect(r.lines[1]).not.toMatch(/ps is not available/);
   });
 
   it("without process groups is unsupported before lsof is asked", async () => {

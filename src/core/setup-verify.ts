@@ -43,7 +43,7 @@ import { readRecord, recordActivation, type RecordComponent, type SetupVerificat
 import { establishStage, SERVES, type StagesConfig } from "./verification-activation.js";
 import { allKeyed, ambiguityLine } from "./setup-apply.js";
 import { readinessEndpoint } from "./setup-payload.js";
-import { lsofUnavailable, runServe, type ServeOutcome } from "./setup-verify-serve.js";
+import { ownershipToolsUnavailable, runServe, type ServeOutcome } from "./setup-verify-serve.js";
 import { KILL_GRACE_MS, ownedGroupUnsupported, runInGroup, runOwnedGroup } from "./process-group.js";
 import { classifyEvidence, EvidenceScanner, tailDigest, type Evidence, type TestRunner } from "./setup-verify-parsers.js";
 import type { ProjectState } from "./project-state.js";
@@ -644,10 +644,10 @@ function stageFailed({ ticket, token, meta }: Checked, reason: string, tail: str
  * group, ready when 127.0.0.1:<port><path> answers 2xx from a listener the
  * group owns (setup-verify-serve.ts), then stopped with the port left free.
  * Every other outcome writes nothing and prints the run token. Without
- * process groups or lsof nothing runs: unsupported, exit 4.
+ * process groups, lsof or ps nothing runs: unsupported, exit 4.
  */
 async function runVerify(root: string, ref: string, checked: Checked, spec: VerifySpec, env: Record<string, string>, digestEnv: Readonly<Record<string, string>>, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
-  const why = ownedGroupUnsupported() ?? (await lsofUnavailable());
+  const why = ownedGroupUnsupported() ?? (await ownershipToolsUnavailable());
   if (why !== null) return unsupported(checked, why);
   const scanner = new EvidenceScanner();
   let tail: string | null = null;

@@ -42,18 +42,20 @@ export const READINESS_POLL_MS = 100;
 export const OWNERSHIP_QUERY_MS = 5000;
 
 const MACOS_LSOF = "/usr/sbin/lsof";
+const MACOS_PS = "/bin/ps";
 
 /**
- * Where lsof is. macOS has one fixed path and PATH has no say in it. Elsewhere
- * (Debian keeps it at /usr/bin) it is the first absolute PATH entry with a
- * runnable lsof; a relative entry could resolve into the project under check.
- * With none, the fixed path stands, and the availability check refuses on it.
+ * Where an ownership tool is. macOS has one fixed path and PATH has no say in
+ * it. Elsewhere (Debian keeps lsof at /usr/bin) it is the first absolute PATH
+ * entry with a runnable `name`; a relative entry could resolve into the
+ * project under check. With none, the fixed path stands, and the availability
+ * check refuses on it.
  */
-export function resolveLsofPath(platform: NodeJS.Platform, pathEnv: string | undefined): string {
-  if (platform === "darwin") return MACOS_LSOF;
+function resolveToolPath(name: string, fixed: string, platform: NodeJS.Platform, pathEnv: string | undefined): string {
+  if (platform === "darwin") return fixed;
   for (const dir of (pathEnv ?? "").split(":")) {
     if (!dir.startsWith("/")) continue;
-    const candidate = join(dir, "lsof");
+    const candidate = join(dir, name);
     try {
       accessSync(candidate, fsConstants.X_OK);
       if (statSync(candidate).isFile()) return candidate;
@@ -61,7 +63,17 @@ export function resolveLsofPath(platform: NodeJS.Platform, pathEnv: string | und
       // Not here: the next entry.
     }
   }
-  return MACOS_LSOF;
+  return fixed;
+}
+
+/** Where lsof is (ISS-1458). */
+export function resolveLsofPath(platform: NodeJS.Platform, pathEnv: string | undefined): string {
+  return resolveToolPath("lsof", MACOS_LSOF, platform, pathEnv);
+}
+
+/** Where ps is (ISS-1462), by the same rules: /bin/ps on macOS. */
+export function resolvePsPath(platform: NodeJS.Platform, pathEnv: string | undefined): string {
+  return resolveToolPath("ps", MACOS_PS, platform, pathEnv);
 }
 
 /**
@@ -80,7 +92,7 @@ export const serveSeams: {
   duringShutdown: () => void | Promise<void>;
 } = {
   lsofPath: resolveLsofPath(process.platform, process.env.PATH),
-  psPath: "/bin/ps",
+  psPath: resolvePsPath(process.platform, process.env.PATH),
   ownershipQueryMs: OWNERSHIP_QUERY_MS,
   afterPortCheck: () => {},
   beforeOwnership1: () => {},
@@ -206,14 +218,20 @@ async function observe(port: number, pgid: number): Promise<Ownership> {
   return { kind: "owned" };
 }
 
-/** Whether lsof can run here: VERIFY cannot prove ownership without it. */
-export async function lsofUnavailable(): Promise<string | null> {
-  try {
-    await access(serveSeams.lsofPath, constants.X_OK);
-    return null;
-  } catch (err) {
-    return `lsof is not available at ${serveSeams.lsofPath} (${(err as NodeJS.ErrnoException).code ?? String(err)})`;
+/**
+ * Whether lsof and ps can run here: VERIFY cannot prove ownership without
+ * either. Every missing tool is named, lsof first (ISS-1462).
+ */
+export async function ownershipToolsUnavailable(): Promise<string | null> {
+  const missing: string[] = [];
+  for (const [name, path] of [["lsof", serveSeams.lsofPath], ["ps", serveSeams.psPath]] as const) {
+    try {
+      await access(path, constants.X_OK);
+    } catch (err) {
+      missing.push(`${name} is not available at ${path} (${(err as NodeJS.ErrnoException).code ?? String(err)})`);
+    }
   }
+  return missing.length > 0 ? missing.join("; ") : null;
 }
 
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

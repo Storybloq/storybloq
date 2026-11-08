@@ -570,9 +570,10 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
   // A plain status on a store it cannot write reads a setup already in place and moves nothing:
   // one that would have to be moved is exit 3, before any placement write.
   const store = preflightStore(storeRoot(io.env));
+  // A store check that failed other than as unwritable is exit 6 for every status, before any placement or read.
+  if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   if (opts.skipped) {
     if (store.kind === "unwritable") return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
-    if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   } else if (store.kind === "unwritable" && !setupInPlace(paths, io.env)) {
     return { stdout: lines(probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env))) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
   }

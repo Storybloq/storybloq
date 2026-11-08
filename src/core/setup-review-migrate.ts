@@ -37,6 +37,8 @@ export type Placement =
   | { readonly kind: "created" }
   | { readonly kind: "migrated"; readonly from: string }
   | { readonly kind: "absent" }
+  /** setup.json's bytes are there but wrong: T-536's damaged-record answer (exit 2) is the caller's, from readSetup. */
+  | { readonly kind: "damaged" }
   | { readonly kind: "refused"; readonly detail: string };
 
 function fsyncFile(path: string): void {
@@ -73,8 +75,8 @@ function legacyOf(paths: SetupPaths, env: NodeJS.ProcessEnv): SetupPaths | null 
  * otherwise it is broken, and the reason is returned for the refusal. A run in
  * flight in the destination is not a fault.
  */
-function destinationState(paths: SetupPaths, legacy: SetupPaths | null): "present" | "absent" | { readonly broken: string } {
-  if (!complete(paths)) return "absent";
+function destinationState(paths: SetupPaths, legacy: SetupPaths | null): "present" | "absent" | "damaged" | { readonly broken: string } {
+  if (!complete(paths)) return legacy === null ? unreadState(paths) : "absent";
   // With an old copy, every file must be present and valid. Without one, a record that is present but does
   // not validate keeps its exit 8 answer (T-536); what that answer never covered is refused here.
   const problem = legacy === null ? missingProblem(paths) : dataProblem(paths, true);
@@ -120,14 +122,67 @@ function missingProblem(paths: SetupPaths): string | null {
     }
     if (sha256(body) !== m[1]) return `revision ${name} does not match its hash`;
   }
+  return referencedRevisionProblem(paths);
+}
+
+/**
+ * Every revision a published record of this setup names must exist, read and
+ * match its hash: a revision deleted, or the whole revisions folder, is a
+ * damaged setup. A record that does not parse, or names another setup, is
+ * left to the record checks.
+ */
+function referencedRevisionProblem(paths: SetupPaths): string | null {
+  let records: ReturnType<typeof loadRecords>;
+  try {
+    records = loadRecords(paths);
+  } catch (e) {
+    return `its records cannot be read (${(e as Error).message})`;
+  }
+  for (const rec of records) {
+    if (rec.kind !== "valid") continue;
+    const name = `${rec.record.revisionSha256}.md`;
+    let body: Buffer;
+    try {
+      body = readFileSync(join(paths.revisions, name));
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "error";
+      return code === "ENOENT" ? `revision ${name}, which record ${rec.recordId} names, is missing` : `revision ${name} cannot be read (${code})`;
+    }
+    if (sha256(body) !== rec.record.revisionSha256) return `revision ${name} does not match its hash`;
+  }
   return null;
 }
 
 function brokenRefusal(paths: SetupPaths, legacy: SetupPaths | null, problem: string): Placement {
   if (legacy === null) {
-    return { kind: "refused", detail: `the setup record at ${paths.dir} is damaged (${problem}). To recover, move ${paths.dir} aside and run a fresh gate with --setup from a terminal outside the agent` };
+    return { kind: "refused", detail: `the setup record at ${paths.dir} is damaged (${problem}). To recover, move ${paths.dir} aside, then run storybloq setup-review gate without --setup from a terminal outside the agent and keep the new setup id` };
   }
   return { kind: "refused", detail: `${paths.dir} is an incomplete copy of the setup (${problem}); it was left as it is. The setup is still at ${legacy.dir}: move ${paths.dir} aside, then try again` };
+}
+
+/**
+ * A folder with no setup.json that reads. Missing or empty, it is absent: a gate
+ * cut short between its mkdir and its first write is taken over by the create
+ * path. Holding anything else, with setup.json missing or unreadable, nothing
+ * is there to judge, so it is broken. setup.json bytes that are there but do not
+ * parse, fail the shape check or name another setup are T-536's damaged record.
+ */
+function unreadState(paths: SetupPaths): "absent" | "damaged" | { readonly broken: string } {
+  let names: string[];
+  try {
+    names = readdirSync(paths.dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    return { broken: `its folder cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"})` };
+  }
+  if (names.length === 0) return "absent";
+  try {
+    readFileSync(paths.setupFile);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "error";
+    return { broken: code === "ENOENT" ? "its setup.json is missing" : `its setup.json cannot be read (${code})` };
+  }
+  return "damaged";
 }
 
 function complete(paths: SetupPaths): boolean {
@@ -172,7 +227,7 @@ function dataProblem(legacy: SetupPaths, inFlight: boolean): string | null {
     const m = /^([0-9a-f]{64})\.md$/.exec(name);
     if (!m || !lstatSync(join(legacy.revisions, name)).isFile() || sha256(readFileSync(join(legacy.revisions, name))) !== m[1]) return `revision ${name} does not validate`;
   }
-  return null;
+  return referencedRevisionProblem(legacy);
 }
 
 /** Regular files only, never a link, never a lock or a staging folder. */
@@ -218,6 +273,7 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   const fromLegacy = legacy !== null;
   const first = destinationState(paths, legacy);
   if (first === "present") return { kind: "present" };
+  if (first === "damaged") return { kind: "damaged" };
   if (first !== "absent") return brokenRefusal(paths, legacy, first.broken);
   if (!fromLegacy && !create) return { kind: "absent" };
 
@@ -234,6 +290,7 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   try {
     const state = destinationState(paths, legacy);
     if (state === "present") return { kind: "present" };
+    if (state === "damaged") return { kind: "damaged" };
     if (state !== "absent") return brokenRefusal(paths, legacy, state.broken);
     if (fromLegacy) {
       try {

@@ -5,7 +5,7 @@
  * move and a creation of the same id never interleave.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
@@ -282,8 +282,86 @@ describe("moving a setup from the old store", () => {
     const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
     expect(r.exitCode).toBe(6);
     expect(r.stdout).toContain(`the setup record at ${newPaths(id).dir} is damaged (revision ${rev} does not match its hash)`);
-    expect(r.stdout).toContain(`move ${newPaths(id).dir} aside and run a fresh gate with --setup from a terminal outside the agent`);
+    expect(r.stdout).toContain(`move ${newPaths(id).dir} aside, then run storybloq setup-review gate without --setup from a terminal outside the agent and keep the new setup id`);
     expect(existsSync(join(newPaths(id).revisions, rev))).toBe(true);
+  });
+
+  it("a never-moved setup whose record names a revision that was deleted refuses as damaged", async () => {
+    const id = idOf(await handleSetupReviewGate(io(), {}));
+    await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+    const rev = readdirSync(newPaths(id).revisions)[0]!;
+    rmSync(join(newPaths(id).revisions, rev));
+    const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout).toMatch(new RegExp(`is damaged \\(revision ${rev}, which record SR-[0-9a-f]+ names, is missing\\)`));
+  });
+
+  it("a never-moved setup whose revisions folder was deleted refuses as damaged", async () => {
+    const id = idOf(await handleSetupReviewGate(io(), {}));
+    await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+    rmSync(newPaths(id).revisions, { recursive: true });
+    const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout).toMatch(/is damaged \(revision [0-9a-f]{64}\.md, which record SR-[0-9a-f]+ names, is missing\)/);
+  });
+
+  it("a moved copy whose revisions folder was deleted is refused as incomplete, and the old copy is unchanged", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    expect((await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id })).exitCode).toBe(0);
+    const before = tree(oldPaths(id).dir);
+    rmSync(newPaths(id).revisions, { recursive: true });
+    const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout).toMatch(/is an incomplete copy of the setup \(revision [0-9a-f]{64}\.md, which record SR-[0-9a-f]+ names, is missing\)/);
+    expect(tree(oldPaths(id).dir)).toEqual(before);
+  });
+
+  it("an old setup whose record names a deleted revision is not moved", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    rmSync(oldPaths(id).revisions, { recursive: true });
+    const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(r.stdout).toMatch(new RegExp(`the setup at ${oldPaths(id).dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot be moved: revision [0-9a-f]{64}\\.md, which record SR-[0-9a-f]+ names, is missing`));
+    expect(existsSync(newPaths(id).dir)).toBe(false);
+  });
+
+  it("a plain status whose store check fails with EIO is exit 6, over a setup in place and over a legacy-only setup, with no placement write", async () => {
+    const here = idOf(await handleSetupReviewGate(io(), {}));
+    await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: here });
+    const old = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    const hereBefore = tree(newPaths(here).dir);
+    const oldBefore = tree(oldPaths(old).dir);
+    storeSeams.writeProbe = () => {
+      throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+    };
+    for (const id of [here, old]) {
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toContain("the review store is not writable: EIO: i/o error");
+    }
+    expect(tree(newPaths(here).dir)).toEqual(hereBefore);
+    expect(existsSync(newPaths(old).dir)).toBe(false);
+    expect(existsSync(publicationLockPath(newPaths(old)))).toBe(false);
+    expect(tree(oldPaths(old).dir)).toEqual(oldBefore);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a legacy-only setup with a destination that denies every write: status exit 3, no lock, no revision, nothing moved", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    const before = tree(oldPaths(id).dir);
+    const root = storeRoot({ HOME: home });
+    mkdirSync(root, { recursive: true });
+    chmodSync(root, 0o500);
+    try {
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET.replace("one-hour", "three-hour") }), { setup: id });
+      expect(r.exitCode).toBe(3);
+      expect(r.stdout).toMatch(/review store: cannot be written from here \((EACCES|EPERM)\)/);
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      chmodSync(root, 0o700);
+    }
+    expect(tree(oldPaths(id).dir)).toEqual(before);
   });
 
   it("with the override set, the old store is never looked at", async () => {
@@ -291,4 +369,68 @@ describe("moving a setup from the old store", () => {
     const other = makeScratchDir("sr-mig-other-");
     expect(await placeSetup(setupPaths({ STORYBLOQ_SETUP_REVIEW_DIR: other }, project, id), { STORYBLOQ_SETUP_REVIEW_DIR: other }, false)).toEqual({ kind: "absent" });
   });
+  describe("a setup folder whose setup.json is not there to judge, or is there but wrong, with no old copy", () => {
+    async function damaged(change: (file: string) => void) {
+      const id = idOf(await handleSetupReviewGate(io(), {}));
+      await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+      change(newPaths(id).setupFile);
+      const before = tree(newPaths(id).dir);
+      const calls = fake.invocations().length;
+      const status = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET.replace("one-hour", "four-hour") }), { setup: id });
+      const run = await handleSetupReviewRun(io({ stdin: REVIEW_PACKET.replace("one-hour", "four-hour") }), { setup: id });
+      expect(fake.invocations().length).toBe(calls);
+      expect(tree(newPaths(id).dir)).toEqual(before);
+      return { id, status, run };
+    }
+    const RECOVERY = "then run storybloq setup-review gate without --setup from a terminal outside the agent and keep the new setup id";
+
+    it("missing: exit 6, damaged, with the recovery", async () => {
+      const { id, status, run } = await damaged((f) => rmSync(f));
+      for (const r of [status, run]) {
+        expect(r.exitCode).toBe(6);
+        expect(r.stdout).toContain(`the setup record at ${newPaths(id).dir} is damaged (its setup.json is missing)`);
+        expect(r.stdout).toContain(RECOVERY);
+      }
+    });
+
+    it.skipIf(process.getuid?.() === 0)("unreadable: exit 6, naming the errno, with the recovery", async () => {
+      let file = "";
+      try {
+        const { id, status, run } = await damaged((f) => {
+          file = f;
+          chmodSync(f, 0o000);
+        });
+        for (const r of [status, run]) {
+          expect(r.exitCode).toBe(6);
+          expect(r.stdout).toContain(`the setup record at ${newPaths(id).dir} is damaged (its setup.json cannot be read (EACCES))`);
+          expect(r.stdout).toContain(RECOVERY);
+        }
+      } finally {
+        if (file) chmodSync(file, 0o600);
+      }
+    });
+
+    for (const [name, write] of [
+      ["unparseable", (f: string) => writeFileSync(f, "{ not json")],
+      ["the wrong shape", (f: string) => writeFileSync(f, JSON.stringify({ cycle: "one" }))],
+      ["naming another setup", (f: string) => writeFileSync(f, readFileSync(f, "utf-8").replace(/"setupId": "SS-[0-9a-f]{8}"/, '"setupId": "SS-00000000"'))],
+    ] as const) {
+      it(`${name}: T-536's damaged record, exit 2`, async () => {
+        const { status, run } = await damaged(write);
+        for (const r of [status, run]) {
+          expect(r.exitCode).toBe(2);
+          expect(r.stdout).toContain("The setup record is damaged. Run storybloq setup-review gate to open a new setup.");
+        }
+      });
+    }
+
+    it("an empty folder is still an unknown setup, exit 2", async () => {
+      const id = "SS-0badf00d";
+      mkdirSync(newPaths(id).dir, { recursive: true });
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      expect(r.exitCode).toBe(2);
+      expect(readdirSync(newPaths(id).dir)).toEqual([]);
+    });
+  });
+
 });

@@ -1,13 +1,14 @@
 // T-538 S5b-0 commit 6a: the fake transport's own rows. It must behave as the seam does from runAttempt's
 // side (paths under /vol/att, every exec recorded, the helper's documents), and nothing under scripts/
 // may reach it.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { treeDigest } from "../../scripts/onboarding-eval-lib.js";
-import { asAttemptPath, type ExecSpec } from "../../scripts/onboarding-eval-transport.js";
+import { asAttemptPath, type ExecSpec, STDIN_LIMIT } from "../../scripts/onboarding-eval-transport.js";
 import { makeFakeTransport } from "./fake-transport.js";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -59,6 +60,79 @@ describe("the fake transport", () => {
     expect(await t.packFinal({ image: "i", volume: "v", target: "/vol/att", profile: "attempt", rawDir: root, onCreated: () => {}, timeoutMs: 1 }, sig)).toEqual({ ok: false, reason: "the fake has no pack" });
     expect(await t.remove(sig)).toEqual({ left: 2 });
     expect(t.calls.map((c) => c.kind)).toEqual(["stop", "pack", "remove"]);
+  });
+});
+
+// Each row runs a real command and a stubbed one: a stub stands for the client binary, so it must meet
+// the same limits, cancel and timeout as a command that runs.
+describe("the fake's exec contract, the same for a real and a stubbed command", () => {
+  const modes = [
+    { mode: "real", argv: (out: string, ms: number) => ["/bin/sh", "-c", `printf '%s' '${out}'; sleep ${ms / 1000}`], stub: undefined },
+    { mode: "stubbed", argv: () => ["client"], stub: (out: string, ms: number) => () => ({ status: 0, stdout: out, delayMs: ms }) },
+  ] as const;
+  const make = (m: (typeof modes)[number], out: string, ms: number, extra: Record<string, unknown> = {}) => {
+    const t = makeFakeTransport({ tree: mkdtempSync(join(root, "t-")), killGraceMs: 300, ...(m.stub ? { stub: m.stub(out, ms) } : {}), ...extra });
+    return { t, argv: m.argv(out, ms) };
+  };
+  for (const m of modes) {
+    it(`${m.mode}: stdout over its limit is cut, ambiguous with no child, and the crossing line never reaches the reader`, async () => {
+      const { t, argv } = make(m, `${"x".repeat(40)}\n`, 0);
+      const seen: string[] = [];
+      const r = await t.execStream(spec({ argv, stdoutLimit: 10 }), (l) => seen.push(l.toString()));
+      expect([r.overLimit, r.outcome, r.child, r.cliStatus, r.stdout.length, seen]).toEqual(["stdout", "ambiguous", null, null, 10, []]);
+    });
+    it(`${m.mode}: stdin over the limit throws before anything runs`, () => {
+      const { t, argv } = make(m, "", 0);
+      expect(() => t.exec(spec({ argv, stdin: Buffer.alloc(STDIN_LIMIT + 1) }))).toThrow(/stdin over the limit/);
+      expect(t.calls).toEqual([]);
+    });
+    it(`${m.mode}: a signal already aborted ends it at once, ambiguous with no child`, async () => {
+      const { t, argv } = make(m, "out", 5000);
+      const ac = new AbortController();
+      ac.abort();
+      const started = Date.now();
+      const r = await t.exec(spec({ argv }), ac.signal);
+      expect([r.outcome, r.child, r.timedOut, Date.now() - started < 2000]).toEqual(["ambiguous", null, null, true]);
+    });
+    it(`${m.mode}: a cancel while it runs ends it, ambiguous with no child`, async () => {
+      const { t, argv } = make(m, "out", 5000);
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 200);
+      const started = Date.now();
+      const r = await t.exec(spec({ argv }), ac.signal);
+      expect([r.outcome, r.child, Date.now() - started < 3000]).toEqual(["ambiguous", null, true]);
+    });
+    it(`${m.mode}: its own timeout is the envelope's: TERM, reported as the child's signal, the outcome ok`, async () => {
+      const { t, argv } = make(m, "out", 5000);
+      const r = await t.exec(spec({ argv, timeoutSeconds: 1 }));
+      expect([r.outcome, r.timedOut, r.child, r.cliStatus]).toEqual(["ok", "term", { status: null, signal: "SIGTERM" }, 143]);
+    });
+  }
+});
+
+describe("the fake's live capture: production's retry and predicate on its own tries", () => {
+  const ledger = (): string => {
+    const tree = mkdtempSync(join(root, "t-"));
+    mkdirSync(join(tree, "project", ".story", "tickets"), { recursive: true });
+    writeFileSync(join(tree, "project", ".story", "tickets", "T-001.json"), "{}");
+    return tree;
+  };
+  it("equal digests with a failed pack are inconclusive after three tries, 2 s apart", async () => {
+    const t = makeFakeTransport({ tree: ledger(), live: () => ({ pack: () => ({ status: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }) }) });
+    const c = await t.captureLive([]);
+    expect([c.status, c.tries, c.d1 === c.d2, c.packExit, t.waits]).toEqual(["inconclusive", 3, true, 1, [2000, 2000]]);
+  });
+  it("a ledger with an entry it cannot read is inconclusive, with the problem kept", async () => {
+    const tree = ledger();
+    expect(spawnSync("mkfifo", [join(tree, "project", ".story", "pipe")]).status).toBe(0);
+    const c = await makeFakeTransport({ tree }).captureLive([]);
+    expect([c.status, c.tries, c.problems.length > 0]).toEqual(["inconclusive", 3, true]);
+  });
+  it("an inconsistent first try, then a valid one, is consistent on the second", async () => {
+    const tree = ledger();
+    const t = makeFakeTransport({ tree, live: (n) => (n === 1 ? { cli: () => { writeFileSync(join(tree, "project", ".story", "tickets", "T-002.json"), "{}"); return { status: 0, stdout: "" }; } } : {}) });
+    const c = await t.captureLive([["ticket", "next"]]);
+    expect([c.status, c.tries, t.waits, existsSync(join(tree, "project", ".story", "tickets", "T-002.json"))]).toEqual(["consistent", 2, [2000], true]);
   });
 });
 

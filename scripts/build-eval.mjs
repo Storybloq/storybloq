@@ -18,7 +18,9 @@ import { fileURLToPath } from "node:url";
 
 export const EVAL_DIST = ".eval-dist";
 // T-538 S5b-0 commit 6a: the in-attempt helper and every script file its bundle pulls in (a test holds this list to the import closure).
-export const HELPER_INPUTS = ["scripts/eval-helper.ts", "scripts/continuity-lib.ts", "scripts/onboarding-eval-checkset6.ts", "scripts/onboarding-eval-checkset7-events.ts", "scripts/onboarding-eval-checkset7-writes.ts", "scripts/onboarding-eval-checkset7.ts", "scripts/onboarding-eval-lib.ts", "scripts/onboarding-eval-sessions.ts"];
+export const HELPER_INPUTS = ["scripts/eval-helper.ts", "scripts/continuity-lib.ts", "scripts/onboarding-eval-checkset6.ts", "scripts/onboarding-eval-checkset7-events.ts", "scripts/onboarding-eval-checkset7-writes.ts", "scripts/onboarding-eval-checkset7.ts", "scripts/onboarding-eval-lib.ts", "scripts/onboarding-eval-sessions.ts", "scripts/onboarding-eval-walk.ts"];
+/** The bundler's own record of what each output was built from, written beside the bundles. */
+export const EVAL_METAFILE = "metafile-esm.json";
 export const EVAL_INPUTS = ["src", "scripts/eval-fault-mcp.ts", "scripts/build-eval.mjs", "tsup.config.ts", "package.json", "package-lock.json", ...HELPER_INPUTS];
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
@@ -43,6 +45,21 @@ export function evalInputDigest(root) {
   return sha256(entries.map(([p, h]) => `${p}\u0000${h}\n`).join(""));
 }
 
+/**
+ * The source files one output was bundled from, as the bundler resolved them (every import form: side
+ * effect, either quote, a literal dynamic import), sorted, node_modules left out.
+ */
+export function bundleClosure(metafile, output) {
+  const out = metafile?.outputs?.[output];
+  if (out === undefined) throw new Error(`the metafile has no output ${output}`);
+  return Object.keys(out.inputs).filter((f) => !f.split("/").includes("node_modules")).sort();
+}
+
+/** The helper bundle's closure, from the last build's metafile. */
+export function helperClosure(root) {
+  return bundleClosure(JSON.parse(readFileSync(join(root, EVAL_DIST, EVAL_METAFILE), "utf-8")), `${EVAL_DIST}/eval-helper.js`);
+}
+
 /** The digest recorded by the last build, or null when there is none. */
 export function builtDigest(root) {
   try {
@@ -55,7 +72,7 @@ export function builtDigest(root) {
 /** Builds when the digest differs from the recorded one (or `force`); returns the digest and whether it built. */
 export async function buildEval(root, { force = false } = {}) {
   const digest = evalInputDigest(root);
-  if (!force && builtDigest(root) === digest && existsSync(join(root, EVAL_DIST, "eval-mcp.js")) && existsSync(join(root, EVAL_DIST, "eval-cli.js")) && existsSync(join(root, EVAL_DIST, "eval-helper.js"))) {
+  if (!force && builtDigest(root) === digest && existsSync(join(root, EVAL_DIST, "eval-mcp.js")) && existsSync(join(root, EVAL_DIST, "eval-cli.js")) && existsSync(join(root, EVAL_DIST, "eval-helper.js")) && existsSync(join(root, EVAL_DIST, EVAL_METAFILE))) {
     return { digest, built: false };
   }
   // tsup reads its config from the working directory: build in a child process run in `root`, never by chdir.
@@ -85,6 +102,7 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
       outDir: EVAL_DIST,
       dts: false,
       clean: true,
+      metafile: true,
       silent: true,
     });
   } else if (process.argv.includes("--digest")) {

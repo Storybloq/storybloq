@@ -16,7 +16,12 @@ export interface WalkVisitor {
   readonly file: (rel: string, fd: number, st: Stats) => string | null;
   /** Called before the walk enters a folder. */
   readonly folder?: (rel: string, st: Stats) => void;
+  /** Each problem as it is found, by its path and kind, besides the named finding the walk returns (commit 6a, ISS-1467). */
+  readonly problem?: (rel: string, kind: WalkProblem) => void;
 }
+
+/** unreadable: a call on it failed; changed: it was swapped while being read; other: not a file, a folder or a link. */
+export type WalkProblem = "unreadable" | "changed" | "other";
 
 class WalkStopped extends Error {}
 
@@ -82,8 +87,10 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
   const problems: string[] = [];
   const step: WalkHook = opts.hook ?? (() => {});
   const name = (rel: string): string => (rel === "." ? label : `${label}/${rel}`);
-  const failed = (rel: string, e: unknown): void => { problems.push(`${name(rel)} could not be read (${(e as NodeJS.ErrnoException).code ?? "unknown"})`); };
-  const stopped = (rel: string): never => { problems.push(`${name(rel)} changed while it was being read`); throw new WalkStopped(); };
+  const report = (rel: string, kind: WalkProblem, text: string): void => { problems.push(text); v.problem?.(rel, kind); };
+  const failed = (rel: string, e: unknown): void => report(rel, "unreadable", `${name(rel)} could not be read (${(e as NodeJS.ErrnoException).code ?? "unknown"})`);
+  const changed = (rel: string): void => report(rel, "changed", `${name(rel)} changed while it was being read`);
+  const stopped = (rel: string): never => { changed(rel); throw new WalkStopped(); };
   const identity = (rel: string): Stats => {
     try { return lstatSync("."); } catch (e) { failed(rel, e); throw new WalkStopped(); }
   };
@@ -127,21 +134,21 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
       try {
         let opened: Stats;
         try { opened = fstatSync(fd); } catch (e) { failed(rel, e); return; }
-        if (!opened.isFile() || !isSame(opened, st)) { problems.push(`${name(rel)} changed while it was being read`); return; }
+        if (!opened.isFile() || !isSame(opened, st)) { changed(rel); return; }
         // A read failure is the visitor's to name (readBounded, copyBounded above); a write failure is the harness's and throws.
         const code = v.file(rel, fd, opened);
-        if (code !== null) problems.push(`${name(rel)} could not be read (${code})`);
+        if (code !== null) report(rel, "unreadable", `${name(rel)} could not be read (${code})`);
       } finally {
         closeSync(fd);
       }
-    } else problems.push(`${name(rel)} is not a regular file, a folder or a link`);
+    } else report(rel, "other", `${name(rel)} is not a regular file, a folder or a link`);
   };
   const start = process.cwd();
   try {
     let st: Stats | null = null;
     try { st = lstatSync(root); } catch (e) { if (!(opts.missingIsEmpty && (e as NodeJS.ErrnoException).code === "ENOENT")) failed(".", e); }
     if (st !== null) {
-      if (!st.isDirectory()) problems.push(`${label} is not a folder`);
+      if (!st.isDirectory()) report(".", "other", `${label} is not a folder`);
       else enter(root, ".", st);
     }
   } catch (e) {

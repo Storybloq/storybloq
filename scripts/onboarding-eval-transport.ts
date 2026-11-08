@@ -131,6 +131,76 @@ export function decideOutcome(line: EnvelopeLine | null, cliStatus: number | nul
   return running() === false ? "container-gone" : "ambiguous";
 }
 
+/** The checks every exec passes before anything runs, the fake's as well as production's. */
+export function checkExecSpec(spec: ExecSpec): void {
+  for (const k of Object.keys(spec.env)) if (!(ALLOWED_ENV as readonly string[]).includes(k)) throw new Error(`env key ${k} is not allowed`);
+  if (spec.stdin !== null && spec.stdin.length > STDIN_LIMIT) throw new Error("stdin over the limit");
+  if (spec.argv.length === 0 || !Number.isInteger(spec.timeoutSeconds) || spec.timeoutSeconds <= 0) throw new Error("a bad exec");
+  asAttemptPath(spec.cwd);
+}
+
+/** The envelope's own line may follow stderr's limit by its length, so stderr is cut a line's length later. */
+export const ENVELOPE_LINE_ROOM = 4096;
+
+/**
+ * One exec's two streams, each read up to its own limit, shared by production and the fake. The first
+ * stream to cross its limit is named and `end` is called once; nothing after the crossing is kept, and a
+ * line that crosses the limit never reaches the line reader.
+ */
+export class ExecStreams {
+  private readonly outs: Buffer[] = [];
+  private readonly errs: Buffer[] = [];
+  private outSize = 0;
+  private errSize = 0;
+  private pending = Buffer.alloc(0);
+  cutOff: "stdout" | "stderr" | null = null;
+  constructor(private readonly spec: ExecSpec, private readonly onLine: ((line: Buffer) => void) | null, private readonly end: () => void) {}
+  private cut(which: "stdout" | "stderr"): void { this.cutOff ??= which; this.end(); }
+  stdout(d: Buffer): void {
+    if (this.cutOff !== null) return;
+    this.outs.push(d);
+    this.outSize += d.length;
+    if (this.outSize > this.spec.stdoutLimit) return this.cut("stdout");
+    if (this.onLine === null) return;
+    this.pending = Buffer.concat([this.pending, d]);
+    for (let nl = this.pending.indexOf(0x0a); nl >= 0; nl = this.pending.indexOf(0x0a)) { this.onLine(this.pending.subarray(0, nl)); this.pending = this.pending.subarray(nl + 1); }
+  }
+  stderr(d: Buffer): void {
+    if (this.cutOff !== null) return;
+    this.errs.push(d);
+    this.errSize += d.length;
+    if (this.errSize > this.spec.stderrLimit + ENVELOPE_LINE_ROOM) this.cut("stderr");
+  }
+  get out(): Buffer { return Buffer.concat(this.outs); }
+  get err(): Buffer { return Buffer.concat(this.errs); }
+  /** Which limit was crossed: the one cut while reading, else one the kept bytes are over. */
+  overLimit(shownErr: Buffer): "stdout" | "stderr" | null {
+    const out = this.out;
+    return this.cutOff ?? (out.length > this.spec.stdoutLimit ? "stdout" : shownErr.length > this.spec.stderrLimit ? "stderr" : null);
+  }
+}
+
+/** Section 9's consistency predicate for one live try, shared by production and the fake. */
+export function liveConsistent(t: LiveTry, records: LiveCapture["records"]): boolean {
+  return t.d1 === t.d2 && t.packExit === 0 && !("refused" in records) && records.errors.length === 0 && t.problems.length === 0;
+}
+
+/** Section 9's retry: up to three tries, 2 s apart, stopping at the first consistent one. Only the try itself differs between production and the fake. */
+export async function captureLiveTries(tryOnce: () => Promise<LiveTry>, wait: (ms: number) => Promise<void>): Promise<LiveCapture> {
+  let t: LiveTry | null = null;
+  let records: LiveCapture["records"] = { refused: "no try ran" };
+  let tries = 0;
+  for (; tries < 3;) {
+    if (tries > 0) await wait(2000);
+    tries += 1;
+    t = await tryOnce();
+    records = parsePackRecords(Buffer.from(t.recordsBase64, "base64"));
+    if (liveConsistent(t, records)) break;
+  }
+  const last = t!;
+  return { status: liveConsistent(last, records) ? "consistent" : "inconclusive", tries, d1: last.d1, d2: last.d2, problems: last.problems, packExit: last.packExit, tar: Buffer.from(last.tarBase64, "base64"), records, readiness: last.readiness, outsideGroup: last.outsideGroup };
+}
+
 export const DOCKER_EXE = "/Applications/Docker.app/Contents/Resources/bin/docker";
 export const DOCKER_ENDPOINT = "unix:///Users/amirshayegh/.docker/run/docker.sock";
 
@@ -147,25 +217,40 @@ export interface DockerConfig {
   readonly attemptId?: string;
   /** Resolves after `ms`, or early when the signal aborts; only a test replaces it. */
   readonly wait?: (ms: number) => Promise<void>;
+  /** The archive's write call; only a test replaces it, to fail or shorten a write. */
+  readonly write?: (fd: number, b: Buffer, offset: number, length: number) => number;
 }
 
 const launchFailure = (e: Error): Buffer => Buffer.from(`docker did not run to its end: ${(e as NodeJS.ErrnoException).code ?? e.message}\n`);
 
-/** A docker CLI call, asynchronous and cancellable: a cancel or the timeout kills it, and it settles only once it has exited. */
-function cliCall(exe: string, args: readonly string[], env: Record<string, string>, o: { readonly timeoutMs: number; readonly signal?: AbortSignal; readonly stdoutLimit?: number; readonly onStdout?: (d: Buffer) => boolean }): Promise<{ readonly status: number | null; readonly stdout: Buffer; readonly stderr: Buffer; readonly ended: "exit" | "timeout" | "cancel" | "limit" | "launch" }> {
+type CliEnd = "exit" | "timeout" | "cancel" | "limit" | "launch" | "callback";
+/**
+ * A docker CLI call, asynchronous and cancellable: a cancel or the timeout kills it, and it settles only once
+ * it has exited. A stdout consumer that throws kills it too, and its error comes back in the result
+ * (ended "callback"), never out of the stream's event.
+ */
+function cliCall(exe: string, args: readonly string[], env: Record<string, string>, o: { readonly timeoutMs: number; readonly signal?: AbortSignal; readonly stdoutLimit?: number; readonly onStdout?: (d: Buffer) => boolean }): Promise<{ readonly status: number | null; readonly stdout: Buffer; readonly stderr: Buffer; readonly ended: CliEnd; readonly error?: Error }> {
   return new Promise((res) => {
     let child;
     try { child = spawn(exe, args, { env, stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { res({ status: null, stdout: Buffer.alloc(0), stderr: launchFailure(e as Error), ended: "launch" }); return; }
     const outs: Buffer[] = [];
     const errs: Buffer[] = [];
     let size = 0;
-    let ended: "exit" | "timeout" | "cancel" | "limit" | "launch" = "exit";
-    const kill = (why: typeof ended): void => { if (ended === "exit") ended = why; child.kill("SIGKILL"); };
+    let ended: CliEnd = "exit";
+    let error: Error | undefined;
+    let stopped = false;
+    const kill = (why: CliEnd): void => { if (ended === "exit") ended = why; stopped = true; child.kill("SIGKILL"); };
     const timer = setTimeout(() => kill("timeout"), o.timeoutMs);
     const onAbort = (): void => kill("cancel");
     if (o.signal?.aborted) kill("cancel"); else o.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (d: Buffer) => {
-      if (o.onStdout !== undefined) { if (!o.onStdout(d)) kill("limit"); return; }
+      if (stopped) return;
+      if (o.onStdout !== undefined) {
+        let more: boolean;
+        try { more = o.onStdout(d); } catch (e) { error = e instanceof Error ? e : new Error(String(e)); kill("callback"); return; }
+        if (!more) kill("limit");
+        return;
+      }
       size += d.length;
       if (size > (o.stdoutLimit ?? 64 * 1048576)) { kill("limit"); return; }
       outs.push(d);
@@ -179,7 +264,7 @@ function cliCall(exe: string, args: readonly string[], env: Record<string, strin
       settled = true;
       clearTimeout(timer);
       o.signal?.removeEventListener("abort", onAbort);
-      res({ status, stdout: Buffer.concat(outs), stderr: Buffer.concat(extra === null ? errs : [...errs, extra]), ended: extra === null ? ended : "launch" });
+      res({ status, stdout: Buffer.concat(outs), stderr: Buffer.concat(extra === null ? errs : [...errs, extra]), ended: extra === null ? ended : "launch", ...(error !== undefined ? { error } : {}) });
     };
     child.on("error", (e) => settle(null, launchFailure(e)));
     child.on("close", (status) => settle(status, null));
@@ -192,6 +277,7 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
   const margin = c.watchdogMarginSeconds ?? WATCHDOG_MARGIN_SECONDS;
   const base = ["--config", c.configDir, "--host", c.endpoint];
   const wait = c.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const write = c.write ?? writeSync;
   const cli = (args: readonly string[]) => spawnSync(c.exe, [...base, ...args], { env, encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1048576 });
   const cliAsync = (args: readonly string[], o: Parameters<typeof cliCall>[3]) => cliCall(c.exe, [...base, ...args], env, o);
   const inspectNow = (): { readonly running: boolean | null; readonly doc: unknown } => {
@@ -201,15 +287,15 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
     return { running: doc.State.Running, doc };
   };
   const argsFor = (spec: ExecSpec, execId: string): string[] => {
-    for (const k of Object.keys(spec.env)) if (!(ALLOWED_ENV as readonly string[]).includes(k)) throw new Error(`env key ${k} is not allowed`);
-    if (spec.stdin !== null && spec.stdin.length > STDIN_LIMIT) throw new Error("stdin over the limit");
-    if (spec.argv.length === 0 || !Number.isInteger(spec.timeoutSeconds) || spec.timeoutSeconds <= 0) throw new Error("a bad exec");
+    checkExecSpec(spec);
     return [...base, "exec", ...(spec.stdin !== null ? ["-i"] : []), "-w", asAttemptPath(spec.cwd), ...Object.entries(spec.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]), c.containerId, "node", "/opt/eval/envelope.mjs", execId, String(spec.timeoutSeconds), "--", ...spec.argv];
   };
-  const result = (spec: ExecSpec, execId: string, cliStatus: number | null, out: Buffer, err: Buffer, cutOff: "stdout" | "stderr" | null): ExecResult => {
+  const result = (spec: ExecSpec, execId: string, cliStatus: number | null, streams: ExecStreams | null, extra: Buffer | null): ExecResult => {
+    const out = streams?.out ?? Buffer.alloc(0);
+    const err = Buffer.concat([streams?.err ?? Buffer.alloc(0), ...(extra !== null ? [extra] : [])]);
     const parsed = parseEnvelopeLine(err, execId);
     const shown = parsed?.rest ?? err;
-    const overLimit = cutOff ?? (out.length > spec.stdoutLimit ? "stdout" : shown.length > spec.stderrLimit ? "stderr" : null);
+    const overLimit = streams?.overLimit(shown) ?? null;
     return {
       child: parsed === null ? null : { status: parsed.line.status, signal: parsed.line.signal },
       timedOut: parsed?.line.timedOut ?? null,
@@ -229,36 +315,15 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
   const run = (spec: ExecSpec, onLine: ((line: Buffer) => void) | null, signal?: AbortSignal): Promise<ExecResult> => {
     const execId = randomUUID();
     const args = argsFor(spec, execId);
-    const failed = (e: Error): ExecResult => result(spec, execId, null, Buffer.alloc(0), launchFailure(e), null);
     let child;
-    try { child = spawn(c.exe, args, { env, stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"] }); } catch (e) { return Promise.resolve(failed(e as Error)); }
-    const outs: Buffer[] = [];
-    const errs: Buffer[] = [];
-    let outSize = 0;
-    let errSize = 0;
-    let cutOff: "stdout" | "stderr" | null = null;
-    let pending = Buffer.alloc(0);
+    try { child = spawn(c.exe, args, { env, stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"] }); } catch (e) { return Promise.resolve(result(spec, execId, null, null, launchFailure(e as Error))); }
     const end = (): void => { child.stdout?.destroy(); child.stderr?.destroy(); child.kill("SIGKILL"); };
-    const stopReading = (which: "stdout" | "stderr"): void => { cutOff ??= which; end(); };
+    const streams = new ExecStreams(spec, onLine, end);
     const watchdog = setTimeout(() => child.kill("SIGKILL"), (spec.timeoutSeconds + margin) * 1000);
     const onAbort = (): void => end();
     if (signal?.aborted) end(); else signal?.addEventListener("abort", onAbort, { once: true });
-    child.stdout?.on("data", (d: Buffer) => {
-      if (cutOff !== null) return;
-      outs.push(d);
-      outSize += d.length;
-      if (outSize > spec.stdoutLimit) return stopReading("stdout");
-      if (onLine === null) return;
-      pending = Buffer.concat([pending, d]);
-      for (let nl = pending.indexOf(0x0a); nl >= 0; nl = pending.indexOf(0x0a)) { onLine(pending.subarray(0, nl)); pending = pending.subarray(nl + 1); }
-    });
-    child.stderr?.on("data", (d: Buffer) => {
-      if (cutOff !== null) return;
-      errs.push(d);
-      errSize += d.length;
-      // The envelope's own line may follow the limit by its length, so stderr is cut a line's length later.
-      if (errSize > spec.stderrLimit + 4096) stopReading("stderr");
-    });
+    child.stdout?.on("data", (d: Buffer) => streams.stdout(d));
+    child.stderr?.on("data", (d: Buffer) => streams.stderr(d));
     child.stdin?.on("error", () => {});
     child.stdin?.end(spec.stdin);
     return new Promise((res) => {
@@ -268,7 +333,7 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
         settled = true;
         clearTimeout(watchdog);
         signal?.removeEventListener("abort", onAbort);
-        res(result(spec, execId, status, Buffer.concat(outs), Buffer.concat(extra === null ? errs : [...errs, extra]), cutOff));
+        res(result(spec, execId, status, streams, extra));
       };
       // A docker that could not start: no status, its reason kept as evidence.
       child.on("error", (e) => settle(null, launchFailure(e)));
@@ -306,22 +371,7 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
       if ("refused" in a) throw new HelperDefect(`read ${path}: ${a.refused}`);
       return Buffer.from(a.base64, "base64");
     },
-    async captureLive(readiness) {
-      let last: LiveTry | null = null;
-      let records: LiveCapture["records"] = { refused: "no try ran" };
-      let tries = 0;
-      for (; tries < 3;) {
-        if (tries > 0) await wait(2000);
-        tries += 1;
-        last = (await helper("capture-live", ["/vol/att/project/.story", ...readiness.map((r) => JSON.stringify(r))])) as LiveTry;
-        records = parsePackRecords(Buffer.from(last.recordsBase64, "base64"));
-        const readFailure = "refused" in records || records.errors.length > 0;
-        if (last.d1 === last.d2 && last.packExit === 0 && !readFailure && last.problems.length === 0) break;
-      }
-      const t = last!;
-      const consistent = t.d1 === t.d2 && t.packExit === 0 && !("refused" in records) && records.errors.length === 0 && t.problems.length === 0;
-      return { status: consistent ? "consistent" : "inconclusive", tries, d1: t.d1, d2: t.d2, problems: t.problems, packExit: t.packExit, tar: Buffer.from(t.tarBase64, "base64"), records, readiness: t.readiness, outsideGroup: t.outsideGroup };
-    },
+    captureLive: (readiness) => captureLiveTries(async () => (await helper("capture-live", ["/vol/att/project/.story", ...readiness.map((r) => JSON.stringify(r))])) as LiveTry, wait),
     async stop(seconds, signal) {
       const r = await cliAsync(["stop", "-t", String(seconds), c.containerId], { timeoutMs: (seconds + 30) * 1000, signal });
       if (r.ended === "cancel") return { ok: false, reason: "the stop was cancelled" };
@@ -333,36 +383,50 @@ export function makeDockerTransport(c: DockerConfig): ExecTransport {
       const created = await cliAsync(packCreateArgs(id, req.image, req.volume, req.target, req.profile), { timeoutMs: 60_000, signal, stdoutLimit: 4096 });
       const helperId = created.stdout.toString("utf8").trim();
       if (created.status !== 0 || !/^[0-9a-f]{64}$/.test(helperId)) return { ok: false, reason: `the pack helper was not created (${created.ended}, ${created.status}): ${created.stderr.toString("utf8").trim().slice(0, 300)}` };
-      req.onCreated(helperId);
       const part = join(req.rawDir, `${req.profile}.tar.part`);
       const final = join(req.rawDir, `${req.profile}.tar`);
       let fd: number | null = null;
+      let wrote = false;
+      // From here the helper exists, so every way out, a throwing onCreated included, removes it.
       try {
+        try { req.onCreated(helperId); } catch (e) { return { ok: false, reason: `the pack helper could not be recorded: ${(e as Error).message}` }; }
         fd = openSync(part, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+        wrote = true;
         const hash = createHash("sha256");
         let bytes = 0;
         const out = fd;
+        // Each chunk is written whole, so the hash describes exactly the bytes stored; a write that makes no progress fails the pack.
+        const writeAll = (d: Buffer): void => {
+          for (let off = 0; off < d.length;) {
+            const n = write(out, d, off, d.length - off);
+            if (!(n > 0)) throw new Error("a write of the archive made no progress");
+            off += n;
+          }
+        };
         const ran = await cliAsync(["start", "-a", helperId], {
           timeoutMs: req.timeoutMs, signal,
-          onStdout: (d) => { bytes += d.length; if (bytes > PACK_LIMITS.archiveBytes) return false; hash.update(d); writeSync(out, d); return true; },
+          onStdout: (d) => { bytes += d.length; if (bytes > PACK_LIMITS.archiveBytes) return false; hash.update(d); writeAll(d); return true; },
         });
         closeSync(fd);
         fd = null;
         if (ran.ended !== "exit") {
           await cliAsync(["kill", helperId], { timeoutMs: 30_000 });
-          return { ok: false, reason: ran.ended === "limit" ? "the archive is over its byte limit" : ran.ended === "cancel" ? "the pack was cancelled" : ran.ended === "timeout" ? "the pack ran past its deadline" : "docker did not start the pack" };
+          return { ok: false, reason: ran.ended === "callback" ? `the pack could not be written: ${ran.error?.message ?? "unknown"}` : ran.ended === "limit" ? "the archive is over its byte limit" : ran.ended === "cancel" ? "the pack was cancelled" : ran.ended === "timeout" ? "the pack ran past its deadline" : "docker did not start the pack" };
         }
+        // An attachment that failed or was lost is no proof the stream is whole, whatever the helper's own exit.
+        if (ran.status !== 0) return { ok: false, reason: `docker start -a exited ${ran.status}: ${ran.stderr.toString("utf8").trim().slice(0, 300)}` };
         const exit = cli(["inspect", "--type", "container", "--format", "{{.State.ExitCode}}", helperId]);
         if (exit.status !== 0 || exit.stdout.trim() !== "0") return { ok: false, reason: `the pack helper exited ${exit.stdout.trim() || "unknown"}` };
         const records = parsePackRecords(ran.stderr);
         if ("refused" in records) return { ok: false, reason: records.refused };
         try { linkSync(part, final); } catch (e) { return { ok: false, reason: (e as NodeJS.ErrnoException).code === "EEXIST" ? "an archive of that name is already published" : `the archive could not be published: ${(e as Error).message}` }; }
-        unlinkSync(part);
         return { ok: true, tarPath: final, sha256: hash.digest("hex"), bytes, records };
       } catch (e) {
         return { ok: false, reason: `the pack could not be written: ${(e as Error).message}` };
       } finally {
         if (fd !== null) closeSync(fd);
+        // The part file is this call's own (O_EXCL): published or not, it goes, so it never stands for an archive.
+        if (wrote) { try { unlinkSync(part); } catch { /* already gone */ } }
         // The helper holds no evidence: it goes by id after every pack, whatever happened.
         await cliAsync(["rm", "-fv", helperId], { timeoutMs: 30_000 });
       }

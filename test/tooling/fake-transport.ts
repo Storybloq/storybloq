@@ -6,10 +6,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { liveTry, runOp } from "../../scripts/eval-helper.js";
+import { type LiveIo, liveTry, runOp } from "../../scripts/eval-helper.js";
 import type { StepResult } from "../../scripts/onboarding-eval-lifecycle.js";
-import { parsePackRecords } from "../../scripts/onboarding-eval-reader.js";
-import { ALLOWED_ENV, type AttemptPath, asAttemptPath, type ExecResult, type ExecSpec, type ExecTransport, HelperDefect, type LiveCapture, type PackRequest, type PackResult } from "../../scripts/onboarding-eval-transport.js";
+import { type AttemptPath, asAttemptPath, captureLiveTries, checkExecSpec, type ExecResult, type ExecSpec, ExecStreams, type ExecTransport, HelperDefect, LINUX_SIGNALS, type LiveCapture, type PackRequest, type PackResult } from "../../scripts/onboarding-eval-transport.js";
 
 export interface FakeCall {
   readonly kind: "exec" | "stream" | "helper" | "stop" | "pack" | "remove";
@@ -25,12 +24,26 @@ export interface FakeOptions {
   readonly stop?: () => StepResult;
   readonly pack?: (r: PackRequest) => PackResult;
   readonly left?: () => number;
-  /** Exit status a command gets instead of running: a test's stand-in for the client binary. */
-  readonly stub?: (argv: readonly string[], env: Readonly<Record<string, string>>) => { readonly status: number; readonly stdout?: string; readonly stderr?: string } | null;
+  /**
+   * What a command gives instead of running: a test's stand-in for the client binary. Its output goes
+   * through the same stream limits as a real command's, and it exits `delayMs` later, so a timeout or a
+   * cancel reaches it the same way.
+   */
+  readonly stub?: (argv: readonly string[], env: Readonly<Record<string, string>>) => FakeStub | null;
+  /** How long a command the timeout has sent TERM to has before KILL; the envelope's is 30 s. */
+  readonly killGraceMs?: number;
+  /** Section 9's per-try operations, by try number from 1; the default packs the tree's ledger and answers the CLI with nothing. */
+  readonly live?: (tryNo: number) => Partial<LiveIo>;
+  /** The live capture's wait between tries; the default records it and resolves at once. */
+  readonly wait?: (ms: number) => Promise<void>;
 }
+
+export interface FakeStub { readonly status: number; readonly stdout?: string | Buffer; readonly stderr?: string | Buffer; readonly delayMs?: number }
 
 export interface FakeTransport extends ExecTransport {
   readonly calls: FakeCall[];
+  /** Every wait the live capture asked for, in order. */
+  readonly waits: number[];
   /** /vol/att/<rel> as a host path inside the fake's tree. */
   readonly hostOf: (p: AttemptPath | string) => string;
 }
@@ -45,53 +58,76 @@ export function makeFakeTransport(o: FakeOptions): FakeTransport {
   const mapIn = (v: string): string => v.split(VOL).join(o.tree);
   const real = realpathSync(o.tree);
   const mapOut = (b: Buffer): Buffer => Buffer.from(b.toString("utf8").split(real).join(VOL).split(o.tree).join(VOL));
-  const check = (spec: ExecSpec): void => {
-    for (const k of Object.keys(spec.env)) if (!(ALLOWED_ENV as readonly string[]).includes(k)) throw new Error(`env key ${k} is not allowed`);
-    if (spec.argv.length === 0 || !Number.isInteger(spec.timeoutSeconds) || spec.timeoutSeconds <= 0) throw new Error("a bad exec");
-    asAttemptPath(spec.cwd);
-  };
-  const result = (spec: ExecSpec, status: number | null, signal: string | null, out: Buffer, err: Buffer): ExecResult => ({
-    child: { status, signal }, timedOut: "no", cliStatus: status, outcome: "ok", stdinAccepted: spec.stdin?.length ?? 0,
-    overLimit: out.length > spec.stdoutLimit ? "stdout" : err.length > spec.stderrLimit ? "stderr" : null,
-    stdout: mapOut(out).subarray(0, spec.stdoutLimit), stderr: mapOut(err).subarray(0, spec.stderrLimit),
-  });
   const env = (spec: ExecSpec): Record<string, string> => Object.fromEntries(Object.entries(spec.env).map(([k, v]) => [k, mapIn(v)]));
+  const grace = o.killGraceMs ?? 30_000;
+  const waits: number[] = [];
+  const wait = o.wait ?? (async (ms: number) => { waits.push(ms); });
+  const tarLedger = (): ReturnType<LiveIo["pack"]> => {
+    const r = spawnSync("tar", ["--format", "pax", "-cf", "-", ".story"], { cwd: join(o.tree, "project") });
+    return { status: r.status, stdout: r.stdout ?? Buffer.alloc(0), stderr: Buffer.alloc(0) };
+  };
+  /**
+   * One exec, modelled on production's from runAttempt's side: the same checks and the same per-stream
+   * limits. A cut stream or a cancel kills the "CLI", so the result has no child and is ambiguous, as
+   * production's is while the container runs. The timeout is the envelope's: TERM, then KILL after the
+   * grace, with the child's signal and timedOut reported and the outcome ok.
+   */
   const run = (kind: "exec" | "stream", spec: ExecSpec, onLine: ((l: Buffer) => void) | null, signal?: AbortSignal): Promise<ExecResult> => {
-    check(spec);
+    checkExecSpec(spec);
     calls.push({ kind, argv: [...spec.argv], cwd: spec.cwd, env: { ...spec.env } });
     const stubbed = o.stub?.(spec.argv, spec.env) ?? null;
-    if (stubbed !== null) {
-      const out = Buffer.from(stubbed.stdout ?? "");
-      if (onLine !== null) for (const l of out.toString("utf8").split("\n").slice(0, -1)) onLine(Buffer.from(l));
-      return Promise.resolve(result(spec, stubbed.status, null, out, Buffer.from(stubbed.stderr ?? "")));
-    }
     return new Promise((res) => {
-      const child = spawn(spec.argv[0]!, spec.argv.slice(1).map(mapIn), { cwd: hostOf(spec.cwd), env: env(spec), stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"] });
-      const outs: Buffer[] = [];
-      const errs: Buffer[] = [];
-      let pending = Buffer.alloc(0);
-      const timer = setTimeout(() => child.kill("SIGKILL"), spec.timeoutSeconds * 1000);
-      signal?.addEventListener("abort", () => child.kill("SIGKILL"), { once: true });
-      child.stdout!.on("data", (d: Buffer) => {
-        outs.push(d);
-        if (onLine === null) return;
-        pending = Buffer.concat([pending, d]);
-        for (let nl = pending.indexOf(0x0a); nl >= 0; nl = pending.indexOf(0x0a)) { onLine(mapOut(pending.subarray(0, nl))); pending = pending.subarray(nl + 1); }
-      });
-      child.stderr!.on("data", (d: Buffer) => errs.push(d));
+      let done = false;
+      let cliKilled = false;
+      let timedOut: "no" | "term" | "kill" = "no";
+      const timers: NodeJS.Timeout[] = [];
+      let stopChild: (sig: "SIGTERM" | "SIGKILL") => void = () => {};
+      const settle = (status: number | null, sig: string | null): void => {
+        if (done) return;
+        done = true;
+        for (const t of timers) clearTimeout(t);
+        signal?.removeEventListener("abort", onAbort);
+        const shown = streams.err;
+        const base = { overLimit: streams.overLimit(shown), stdout: mapOut(streams.out).subarray(0, spec.stdoutLimit), stderr: mapOut(shown).subarray(0, spec.stderrLimit) };
+        if (cliKilled) res({ child: null, timedOut: null, cliStatus: null, outcome: "ambiguous", stdinAccepted: null, ...base });
+        else res({ child: { status, signal: sig }, timedOut, cliStatus: sig !== null ? 128 + (LINUX_SIGNALS[sig] ?? 0) : status, outcome: "ok", stdinAccepted: spec.stdin?.length ?? 0, ...base });
+      };
+      let running = false;
+      // As production's: a real command's result comes only once it has exited; a stub has nothing to wait for.
+      const killCli = (): void => { if (done) return; cliKilled = true; stopChild("SIGKILL"); if (!running) settle(null, null); };
+      const streams = new ExecStreams(spec, onLine === null ? null : (l) => onLine(mapOut(l)), killCli);
+      const onAbort = (): void => killCli();
+      if (signal?.aborted) { killCli(); return; }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      timers.push(setTimeout(() => {
+        timedOut = "term";
+        stopChild("SIGTERM");
+        timers.push(setTimeout(() => { timedOut = "kill"; stopChild("SIGKILL"); }, grace));
+      }, spec.timeoutSeconds * 1000));
+      if (stubbed !== null) {
+        // A stub ends on TERM, as a well-behaved client does.
+        stopChild = (sig) => { if (!cliKilled) settle(null, sig); };
+        streams.stdout(Buffer.from(stubbed.stdout ?? ""));
+        streams.stderr(Buffer.from(stubbed.stderr ?? ""));
+        if (!done) timers.push(setTimeout(() => settle(stubbed.status, null), stubbed.delayMs ?? 0));
+        return;
+      }
+      running = true;
+      const child = spawn(spec.argv[0]!, spec.argv.slice(1).map(mapIn), { cwd: hostOf(spec.cwd), env: env(spec), detached: true, stdio: [spec.stdin !== null ? "pipe" : "ignore", "pipe", "pipe"] });
+      // The envelope signals the child's whole group; so does the fake.
+      stopChild = (sig) => { try { if (child.pid !== undefined) process.kill(-child.pid, sig); } catch { /* already gone */ } };
+      child.stdout!.on("data", (d: Buffer) => streams.stdout(d));
+      child.stderr!.on("data", (d: Buffer) => streams.stderr(d));
       child.stdin?.on("error", () => {});
       child.stdin?.end(spec.stdin);
-      child.on("error", (e) => { clearTimeout(timer); res({ ...result(spec, null, null, Buffer.alloc(0), Buffer.from(String(e))), child: null, cliStatus: null, outcome: "ambiguous" }); });
-      child.on("close", (status, sig) => { clearTimeout(timer); res(result(spec, status, sig, Buffer.concat(outs), Buffer.concat(errs))); });
+      child.on("error", (e) => { streams.stderr(Buffer.from(String(e))); cliKilled = true; settle(null, null); });
+      child.on("close", (status, sig) => settle(status, sig));
     });
   };
   const helper = async (op: Parameters<ExecTransport["helper"]>[0], args: readonly string[]): Promise<unknown> => {
     calls.push({ kind: "helper", argv: [op, ...args], cwd: VOL, env: {} });
     const live = {
-      pack: () => {
-        const r = spawnSync("tar", ["--format", "pax", "-cf", "-", ".story"], { cwd: join(o.tree, "project") });
-        return { status: r.status, stdout: r.stdout ?? Buffer.alloc(0), stderr: Buffer.alloc(0) };
-      },
+      pack: tarLedger,
       cli: (argv: readonly string[]) => ({ status: 0, stdout: mapOut(Buffer.from(JSON.stringify(argv))).toString("utf8") }),
       outside: () => 0,
     };
@@ -103,6 +139,7 @@ export function makeFakeTransport(o: FakeOptions): FakeTransport {
   };
   return {
     calls,
+    waits,
     hostOf,
     exec: (spec, signal) => run("exec", spec, null, signal),
     execStream: (spec, onLine, signal) => run("stream", spec, onLine, signal),
@@ -115,10 +152,15 @@ export function makeFakeTransport(o: FakeOptions): FakeTransport {
       if (a.refused !== undefined) throw new HelperDefect(`read ${path}: ${a.refused}`);
       return Buffer.from(a.base64 ?? "", "base64");
     },
-    async captureLive(readiness): Promise<LiveCapture> {
+    captureLive(readiness): Promise<LiveCapture> {
       calls.push({ kind: "helper", argv: ["capture-live", ...readiness.map((r) => JSON.stringify(r))], cwd: VOL, env: {} });
-      const t = liveTry(join(o.tree, "project", ".story"), readiness, { pack: () => { const r = spawnSync("tar", ["--format", "pax", "-cf", "-", ".story"], { cwd: join(o.tree, "project") }); return { status: r.status, stdout: r.stdout ?? Buffer.alloc(0), stderr: Buffer.alloc(0) }; }, cli: () => ({ status: 0, stdout: "" }), outside: () => 0 });
-      return { status: t.d1 === t.d2 ? "consistent" : "inconclusive", tries: 1, d1: t.d1, d2: t.d2, problems: t.problems, packExit: t.packExit, tar: Buffer.from(t.tarBase64, "base64"), records: parsePackRecords(Buffer.alloc(0)), readiness: t.readiness, outsideGroup: 0 };
+      let tryNo = 0;
+      // Production's retry and predicate; only the try is the fake's, on its own tree.
+      return captureLiveTries(async () => {
+        tryNo += 1;
+        const io = o.live?.(tryNo) ?? {};
+        return liveTry(join(o.tree, "project", ".story"), readiness, { pack: io.pack ?? tarLedger, cli: io.cli ?? (() => ({ status: 0, stdout: "" })), outside: io.outside ?? (() => 0) });
+      }, wait);
     },
     async stop() { calls.push({ kind: "stop", argv: [], cwd: VOL, env: {} }); return o.stop?.() ?? { ok: true }; },
     async packFinal(r) { calls.push({ kind: "pack", argv: [r.profile], cwd: VOL, env: {} }); return o.pack?.(r) ?? { ok: false, reason: "the fake has no pack" }; },

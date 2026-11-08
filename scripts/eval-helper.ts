@@ -3,10 +3,11 @@
 // operation prints exactly one JSON document on stdout; a failure prints {"error": ...} and exits 1.
 // It runs as eval inside the running attempt, so it reads only what that uid can read.
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { runtimeExclusion, treeDigest } from "./onboarding-eval-lib.js";
 import { ledgerState, observeEvidence } from "./onboarding-eval-sessions.js";
+import { readBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 
 export const HELPER_OPS = ["tree-digest", "runtime-exclusion", "ledger-digest", "observe-evidence", "rollout-lines", "process-count", "read-bytes", "capture-live"] as const;
 export type HelperOp = (typeof HELPER_OPS)[number];
@@ -34,24 +35,33 @@ export function readBytesAt(path: string, limit: number): ReadAnswer {
   }
 }
 
-/** Every parsed line of a thread's rollout files under a CODEX_HOME's sessions folder, links not followed. */
-export function rolloutLinesUnder(codexHome: string, threadId: string): Record<string, unknown>[] {
-  const found: string[] = [];
-  const walk = (dir: string): void => {
-    if (!existsSync(dir)) return;
-    for (const name of readdirSync(dir).sort()) {
-      const p = join(dir, name);
-      const st = lstatSync(p, { throwIfNoEntry: false });
-      if (st?.isDirectory()) walk(p);
-      else if (st?.isFile() && name.endsWith(".jsonl") && name.includes(threadId)) found.push(p);
-    }
-  };
-  walk(join(codexHome, "sessions"));
+/** One rollout file's limit; a file past it is a problem, never read on. */
+export const ROLLOUT_FILE_LIMIT = 64 * 1048576;
+
+/**
+ * Every parsed line of a thread's rollout files under a CODEX_HOME's sessions folder. It walks from the
+ * CODEX_HOME one component at a time with commit 4's no-follow walk: a linked sessions folder or rollout
+ * is never followed, and each file is read through the descriptor the walk opened and proved regular, up
+ * to its limit, so a file swapped for a link or a fifo after it was found is a problem, not foreign bytes
+ * or a hang. Partial lines are skipped; a link where the sessions folder or a rollout belongs is a problem.
+ */
+export function rolloutLinesUnder(codexHome: string, threadId: string, hook?: WalkHook): { readonly lines: Record<string, unknown>[]; readonly problems: readonly string[] } {
   const lines: Record<string, unknown>[] = [];
-  for (const f of found) {
-    for (const l of readFileSync(f, "utf-8").split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* partial line */ } }
-  }
-  return lines;
+  const over: string[] = [];
+  const rollout = (rel: string): boolean => rel.endsWith(".jsonl") && (rel.split("/").pop() ?? "").includes(threadId);
+  const { problems } = walkNoFollow(codexHome, "CODEX_HOME", {
+    // The sessions folder and this thread's rollouts, as links too, so a link where one belongs is named.
+    include: (rel, st) => (rel === "sessions" ? st.isDirectory() || st.isSymbolicLink() : rel.startsWith("sessions/") && (st.isDirectory() || ((st.isFile() || st.isSymbolicLink()) && rollout(rel)))),
+    link: (rel) => { over.push(`CODEX_HOME/${rel} is a link, not followed`); },
+    file: (rel, fd) => {
+      const r = readBounded(fd, ROLLOUT_FILE_LIMIT);
+      if ("code" in r) return r.code;
+      if ("over" in r) { over.push(`CODEX_HOME/${rel} is over the limit of ${ROLLOUT_FILE_LIMIT} bytes`); return null; }
+      for (const l of r.bytes.toString("utf-8").split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* partial line */ } }
+      return null;
+    },
+  }, { hook, missingIsEmpty: true });
+  return { lines, problems: [...problems, ...over] };
 }
 
 /** Processes whose command line contains `needle`, from /proc; `outsideGroup` counts those not in this group. */

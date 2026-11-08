@@ -1,7 +1,8 @@
 // T-538 S5b-0 commit 3: the transport's rules that need no engine, against a fake executable named
 // explicitly. Production's own route is proven against the real engine in the docker file.
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -447,6 +448,37 @@ describe("stop, final pack and removal", () => {
     expect(await noCreate.t.packFinal(none.req, new AbortController().signal)).toMatchObject({ ok: false, reason: expect.stringMatching(/not created/) });
     expect(noCreate.calls().map((c) => c.argv[4])).toEqual(["create"]);
   }, 30_000);
+  it("pack: a write that fails (ENOSPC) or makes no progress fails the pack in its own result: the helper is killed and removed, nothing is published", async () => {
+    const enospc = (): number => { throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" }); };
+    for (const [write, why] of [[enospc, /could not be written: no space left on device/], [() => 0, /could not be written: a write of the archive made no progress/]] as const) {
+      const p = packer({ stdout: "TARBYTES" }, {}, { write });
+      expect(await p.f.t.packFinal(p.req, new AbortController().signal)).toMatchObject({ ok: false, reason: expect.stringMatching(why) });
+      expect(p.f.calls().map((c) => c.argv.slice(4, 6).join(" "))).toEqual(["create --init", "start -a", `kill ${HID}`, `rm -fv`]);
+      expect(p.f.calls().at(-1)!.argv.slice(4)).toEqual(["rm", "-fv", HID]);
+      expect([existsSync(join(p.raw, "attempt.tar")), existsSync(join(p.raw, "attempt.tar.part"))]).toEqual([false, false]);
+    }
+  });
+  it("pack: short writes are completed, so the stored bytes are exactly the hashed ones", async () => {
+    const lengths: number[] = [];
+    const p = packer({ stdout: "TARBYTES" }, {}, { write: (fd, b, off, len) => { lengths.push(len); return writeSync(fd, b, off, Math.min(3, len)); } });
+    const r = await p.f.t.packFinal(p.req, new AbortController().signal);
+    expect(r).toMatchObject({ ok: true, bytes: 8, sha256: createHash("sha256").update("TARBYTES").digest("hex") });
+    expect(readFileSync(join(p.raw, "attempt.tar"), "utf8")).toBe("TARBYTES");
+    expect(lengths).toEqual([8, 5, 2]);
+  });
+  it("pack: an onCreated that throws still removes the helper by id, and nothing starts", async () => {
+    const p = packer({ stdout: "TARBYTES" });
+    const r = await p.f.t.packFinal({ ...p.req, onCreated: () => { throw new Error("the state could not be written"); } }, new AbortController().signal);
+    expect(r).toEqual({ ok: false, reason: "the pack helper could not be recorded: the state could not be written" });
+    expect(p.f.calls().map((c) => c.argv.slice(4))).toEqual([expect.arrayContaining(["create"]), ["rm", "-fv", HID]]);
+    expect(existsSync(join(p.raw, "attempt.tar.part"))).toBe(false);
+  });
+  it("pack: an attachment that exits non-zero is no archive, even when the helper's own exit is 0", async () => {
+    const p = packer({ stdout: "TA", status: 1, stderr: "error: lost the attachment" }, { inspect: { exitCode: 0 } });
+    expect(await p.f.t.packFinal(p.req, new AbortController().signal)).toEqual({ ok: false, reason: "docker start -a exited 1: error: lost the attachment" });
+    expect([existsSync(join(p.raw, "attempt.tar")), existsSync(join(p.raw, "attempt.tar.part"))]).toEqual([false, false]);
+    expect(p.f.calls().at(-1)!.argv.slice(4)).toEqual(["rm", "-fv", HID]);
+  });
   it("pack and removal refuse a transport with no attempt id", async () => {
     const f = fake({});
     await expect(f.t.packFinal(packer({}).req, new AbortController().signal)).rejects.toThrow(/no attempt id/);

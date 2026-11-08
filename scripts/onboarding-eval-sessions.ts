@@ -9,8 +9,8 @@
  * Every check here is a pure function of the run's turns, its events log,
  * its invocation mapping, its final ledger and those harness facts.
  */
-import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, type Stats } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, type Stats } from "node:fs";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 import { readTurnStop, stopRoute, type StopKind } from "./onboarding-eval-lib.js";
@@ -18,6 +18,7 @@ import { flagValue, type EventsLog, type InvocationMapping } from "./onboarding-
 import { cs7TurnsFrom, findCheckpoint, type CheckpointSpec, type EvidenceObservation } from "./onboarding-eval-checkset7.js";
 import type { DriveState, Variant } from "./onboarding-eval-drive.js";
 import { parseSetupMeta } from "../src/core/setup-meta.js";
+import { readBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 
 export const SESSION_VARIANTS = ["interrupted", "interrupted-edited", "milestone-demo", "empty-idea-verify", "restart"] as const;
 export type SessionVariant = (typeof SESSION_VARIANTS)[number];
@@ -641,38 +642,36 @@ export function storeRevisionCount(storeRoot: string, setupId: string): number {
 }
 
 /**
- * What an evidence observation records in place of a digest when the entry is not a regular file it can
- * read. None is a hex digest, so rule 8 reports each as a change ("observed as symlink"), never a match.
+ * What an evidence observation records in place of a digest when the entry is not a regular file it read
+ * whole. None is a hex digest, so rule 8 reports each as a change ("observed as symlink"), never a match.
  */
-export const EVIDENCE_NOT_READ = { link: "symlink", other: "not-a-file", failed: "unreadable" } as const;
+export const EVIDENCE_NOT_READ = { link: "symlink", other: "not-a-file", failed: "unreadable", changed: "changed", over: "over-limit" } as const;
+/** An evidence file is a short document; one past this is recorded as over the limit, never read on. */
+export const EVIDENCE_LIMIT = 16 * 1048576;
 
 /**
  * Every evidence file under the project's docs/checkpoints/, by its project-relative path, digested now.
- * Links are never followed, the checkpoints folder's own included (ISS-1467): a link, a fifo or an entry
- * that cannot be read is a failed observation under its own path, so the walk neither leaves the project
- * nor stops.
+ * It walks from the project root one component at a time with commit 4's no-follow walk (ISS-1467): a
+ * linked docs or checkpoints folder is recorded, never entered, and every file is read through the
+ * descriptor the walk opened and proved regular. A link, a fifo, an entry swapped while being read, one
+ * that cannot be read or one over the limit is a failed observation under its own path, so the walk
+ * neither leaves the project nor blocks.
  */
-export function observeEvidence(projectRoot: string, at: EvidenceObservation["at"]): EvidenceObservation[] {
+export function observeEvidence(projectRoot: string, at: EvidenceObservation["at"], hook?: WalkHook): EvidenceObservation[] {
   const out: EvidenceObservation[] = [];
-  const refOf = (p: string): string => relative(projectRoot, p).split(sep).join("/");
-  const visit = (p: string): void => {
-    let st: Stats;
-    try { st = lstatSync(p); } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") out.push({ ref: refOf(p), sha256: EVIDENCE_NOT_READ.failed, at });
-      return;
-    }
-    if (st.isDirectory()) {
-      let names: string[];
-      try { names = readdirSync(p).sort(); } catch { out.push({ ref: refOf(p), sha256: EVIDENCE_NOT_READ.failed, at }); return; }
-      for (const name of names) visit(join(p, name));
-    } else if (!st.isFile()) {
-      out.push({ ref: refOf(p), sha256: st.isSymbolicLink() ? EVIDENCE_NOT_READ.link : EVIDENCE_NOT_READ.other, at });
-    } else {
-      let sha256: string;
-      try { sha256 = createHash("sha256").update(readFileSync(p)).digest("hex"); } catch { sha256 = EVIDENCE_NOT_READ.failed; }
-      out.push({ ref: refOf(p), sha256, at });
-    }
-  };
-  visit(join(projectRoot, "docs", "checkpoints"));
+  const inScope = (rel: string): boolean => rel === "docs" || rel === "docs/checkpoints" || rel.startsWith("docs/checkpoints/");
+  const fail = (rel: string, sha256: string): void => { if (rel !== "." && inScope(rel)) out.push({ ref: rel, sha256, at }); };
+  walkNoFollow(projectRoot, "project", {
+    // Above the checkpoints folder only the folders on the way are walked; any other entry there is not evidence.
+    include: (rel, st) => (rel === "docs" ? st.isDirectory() || st.isSymbolicLink() : inScope(rel)),
+    link: (rel) => fail(rel, EVIDENCE_NOT_READ.link),
+    file: (rel, fd) => {
+      const r = readBounded(fd, EVIDENCE_LIMIT);
+      if ("code" in r) return r.code;
+      out.push({ ref: rel, sha256: "over" in r ? EVIDENCE_NOT_READ.over : createHash("sha256").update(r.bytes).digest("hex"), at });
+      return null;
+    },
+    problem: (rel, kind) => fail(rel, kind === "changed" ? EVIDENCE_NOT_READ.changed : kind === "other" ? EVIDENCE_NOT_READ.other : EVIDENCE_NOT_READ.failed),
+  }, { hook, missingIsEmpty: true });
   return out;
 }

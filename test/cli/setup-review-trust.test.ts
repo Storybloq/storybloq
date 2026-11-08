@@ -274,6 +274,13 @@ describe("ISS-1457 round 1: containment, listing, the repository and CODEX_HOME 
     });
   });
 
+  it("a CODEX_HOME that is a dangling link of this user's is refused: it cannot be resolved", () => {
+    const link = join(dir("home"), "ch-dangling");
+    symlinkSync(join(dir("home"), "nowhere"), link);
+    const env = { HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: link };
+    expect(checkCodexHome(env, dir("project"))).toMatchObject({ ok: false, reason: { detail: `CODEX_HOME ${link}: ${link} cannot be resolved (ENOENT)` } });
+  });
+
   it("a CODEX_HOME not made yet passes, but a missing folder above it is refused", () => {
     const env = { HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: join(dir("home"), "not-yet") };
     expect(checkCodexHome(env, dir("project"))).toEqual({ ok: true, codexHome: join(dir("home"), "not-yet") });

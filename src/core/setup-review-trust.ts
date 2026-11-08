@@ -223,23 +223,32 @@ export function checkCodexHome(env: NodeJS.ProcessEnv, projectDir: string): Code
 
 function codexHomeLinks(named: string, boundary: string, uid: number): string | null {
   let cur: string = sep;
-  for (const part of resolve(named).split(sep).filter(Boolean)) {
+  const parts = resolve(named).split(sep).filter(Boolean);
+  for (const [i, part] of parts.entries()) {
     const next = join(cur, part);
     let st: Stats;
     try {
       st = trustSeams.lstat(next);
-    } catch {
-      return null;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "error";
+      // Only CODEX_HOME itself may not exist yet; every folder above it was inspected by now.
+      if (code === "ENOENT" && i === parts.length - 1) return null;
+      return `${next} cannot be inspected (${code})`;
     }
     if (st.isSymbolicLink()) {
       if (isWithin(next, boundary)) return `${next} is a link inside the repository ${boundary}, so the project could re-point it`;
       if (st.uid !== 0 && st.uid !== uid) return `${next} is a link another user owns`;
-      const parent = trustSeams.stat(cur);
+      let parent: Stats;
+      try {
+        parent = trustSeams.stat(cur);
+      } catch (e) {
+        return `${cur} cannot be inspected (${(e as NodeJS.ErrnoException).code ?? "error"})`;
+      }
       if ((parent.mode & OTHERS_WRITE) !== 0) return `${next} is a link in ${cur}, which other users may write`;
       try {
         cur = realpathSync(next);
-      } catch {
-        return null;
+      } catch (e) {
+        return `${next} cannot be resolved (${(e as NodeJS.ErrnoException).code ?? "error"})`;
       }
     } else {
       cur = next;

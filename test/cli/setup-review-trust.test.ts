@@ -260,4 +260,24 @@ describe("ISS-1457 round 1: containment, listing, the repository and CODEX_HOME 
     const env = { HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: join(dir("home"), "ch-link") };
     expect(checkCodexHome(env, dir("project"))).toEqual({ ok: true, codexHome: trusted });
   });
+  it("a CODEX_HOME component that cannot be inspected (EIO) is refused, even when the path resolves", () => {
+    const trusted = dir("home", "codex-real");
+    const env = { HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: trusted };
+    expect(checkCodexHome(env, dir("project"))).toEqual({ ok: true, codexHome: trusted });
+    trustSeams.lstat = (p) => {
+      if (p === dir("home")) throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+      return real.lstat(p);
+    };
+    expect(checkCodexHome(env, dir("project"))).toEqual({
+      ok: false,
+      reason: { backend: "codex", code: "untrusted-codex-home", detail: `CODEX_HOME ${trusted}: ${dir("home")} cannot be inspected (EIO)` },
+    });
+  });
+
+  it("a CODEX_HOME not made yet passes, but a missing folder above it is refused", () => {
+    const env = { HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: join(dir("home"), "not-yet") };
+    expect(checkCodexHome(env, dir("project"))).toEqual({ ok: true, codexHome: join(dir("home"), "not-yet") });
+    const deeper = { ...env, CODEX_HOME: join(dir("home"), "gone", "codex") };
+    expect(checkCodexHome(deeper, dir("project"))).toMatchObject({ ok: false, reason: { detail: `CODEX_HOME ${deeper.CODEX_HOME}: ${join(dir("home"), "gone")} cannot be inspected (ENOENT)` } });
+  });
 });

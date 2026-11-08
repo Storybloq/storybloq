@@ -42,6 +42,11 @@ export type Placement =
 /** Test seam, not reachable through any CLI or MCP input: runs between the validated copy and its rename. */
 export const migrateSeams: { beforePublish: () => Promise<void> | void } = { beforePublish: () => {} };
 
+/** Whether the setup is already whole in the store, so using it needs no move. */
+export function setupInPlace(paths: SetupPaths): boolean {
+  return complete(paths);
+}
+
 function complete(paths: SetupPaths): boolean {
   try {
     readSetup(paths);

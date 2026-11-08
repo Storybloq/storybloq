@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
-import { setupPaths, storeRoot, storeRootSeams } from "../../src/core/setup-review.js";
+import { setupPaths, storeRoot, storeRootSeams, storeSeams } from "../../src/core/setup-review.js";
 import { legacyStoreRoot, migrateSeams, placeSetup, publicationLockPath } from "../../src/core/setup-review-migrate.js";
 import { acquireProjectLockAsync, releaseProjectLock } from "../../src/core/project-lock.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, type FakeBin } from "../helpers/setup-review-fakes.js";
@@ -18,6 +18,7 @@ vi.setConfig({ testTimeout: 30_000 });
 const FAST = { attemptMs: 1_500, totalMs: 4_000, killGraceMs: 200 };
 const realPlatform = storeRootSeams.platform;
 const realBefore = migrateSeams.beforePublish;
+const realWriteProbe = storeSeams.writeProbe;
 
 let project: string;
 let home: string;
@@ -37,6 +38,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   storeRootSeams.platform = realPlatform;
   migrateSeams.beforePublish = realBefore;
+  storeSeams.writeProbe = realWriteProbe;
   removeScratchDirs();
 });
 
@@ -55,6 +57,19 @@ function io(opts: { legacy?: boolean; stdin?: string } = {}): SetupReviewIo {
 const idOf = (r: SetupReviewResult): string => /^Setup id: (SS-[0-9a-f]{8})$/m.exec(r.stdout)![1]!;
 const newPaths = (id: string) => setupPaths({ HOME: home }, project, id);
 const oldPaths = (id: string) => setupPaths({ STORYBLOQ_SETUP_REVIEW_DIR: legacyStoreRoot() }, project, id);
+/** Every file under a folder with its bytes, so "unchanged" is compared byte for byte. */
+function tree(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of readdirSync(dir, { recursive: true }) as string[]) {
+    const p = join(dir, name);
+    try {
+      out[name] = readFileSync(p, "base64");
+    } catch {
+      out[name] = "<dir>";
+    }
+  }
+  return out;
+}
 
 describe("the store's default place", () => {
   it("is the state folder on each platform, and the override still wins", () => {
@@ -164,6 +179,33 @@ describe("moving a setup from the old store", () => {
       releaseProjectLock(held);
     }
     expect(await placeSetup(paths, { HOME: home }, true)).toEqual({ kind: "created" });
+  });
+
+  it("a legacy-only setup with a destination that cannot be written: run and status exit 3, nothing is moved, the old copy is unchanged", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    const before = tree(oldPaths(id).dir);
+    storeSeams.writeProbe = () => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    };
+    const run = await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(run.exitCode).toBe(3);
+    expect(run.stdout).toMatch(/review store: cannot be written from here \(EPERM\)/);
+    const status = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(status.exitCode).toBe(3);
+    expect(status.stdout).toMatch(/review store: cannot be written from here \(EPERM\)/);
+    expect(existsSync(newPaths(id).dir)).toBe(false);
+    expect(existsSync(publicationLockPath(newPaths(id)))).toBe(false);
+    expect(tree(oldPaths(id).dir)).toEqual(before);
+  });
+
+  it("with a destination that cannot be written, a plain status of a setup already moved still reads it", async () => {
+    const id = idOf(await handleSetupReviewGate(io(), {}));
+    const want = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    storeSeams.writeProbe = () => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    };
+    expect(await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id })).toEqual(want);
   });
 
   it("with the override set, the old store is never looked at", async () => {

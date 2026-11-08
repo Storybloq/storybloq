@@ -22,7 +22,7 @@ import {
   unavailableLine, type ProcessLimits, type SetupReviewAnswer, type SetupReviewBackend, type StartProbeLimits, type UnavailableReason,
 } from "../../core/setup-review-backends.js";
 import { checkCodexHome, checkExecLocation } from "../../core/setup-review-trust.js";
-import { placeSetup } from "../../core/setup-review-migrate.js";
+import { placeSetup, setupInPlace } from "../../core/setup-review-migrate.js";
 import { runSupervised } from "../../core/setup-review-supervisor.js";
 
 export interface SetupReviewDeps {
@@ -457,6 +457,13 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
     if (u) return u;
     throw e;
   }
+  // The store check comes before the setup is placed, so a store that cannot be written is exit 3
+  // with no placement writes, never a storage failure from the move.
+  const store = preflightStore(storeRoot(io.env));
+  if (store.kind === "unwritable") {
+    return { stdout: lines(probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env))) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
+  }
+  if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   const placedForRun = await placeOrRefuse(paths, io.env, false);
   if (placedForRun) return placedForRun;
   try {
@@ -470,11 +477,6 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
     throw e;
   }
 
-  const store = preflightStore(storeRoot(io.env));
-  if (store.kind === "unwritable") {
-    return { stdout: lines(probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env))) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
-  }
-  if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   let outcome: ProbeOutcome;
   try {
     outcome = await probeAll(io.env, io.cwd, io.deps, opts.backend);
@@ -558,12 +560,16 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
   }
   // ISS-1456: a skip the store cannot hold is still the owner's answer; it is printed, written nowhere.
   // Any other storage failure is exit 6, before the setup is read.
+  // A plain status on a store it cannot write reads a setup already in place and moves nothing:
+  // one that would have to be moved is exit 3, before any placement write.
+  const store = preflightStore(storeRoot(io.env));
   if (opts.skipped) {
-    const store = preflightStore(storeRoot(io.env));
     if (store.kind === "unwritable") return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
     if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
+  } else if (store.kind === "unwritable" && !setupInPlace(paths)) {
+    return { stdout: lines(probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env))) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
   }
-  const placedForStatus = await placeOrRefuse(paths, io.env, false);
+  const placedForStatus = store.kind === "unwritable" ? null : await placeOrRefuse(paths, io.env, false);
   if (placedForStatus) return placedForStatus;
   try {
     setup = readSetup(paths);

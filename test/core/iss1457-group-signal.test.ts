@@ -15,7 +15,7 @@ import { PassThrough } from "node:stream";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { processGroupSeams, runInGroup, type GroupRunOptions } from "../../src/core/process-group.js";
+import { processGroupSeams, runInGroup, signalGroupGuarded, type GroupRunOptions } from "../../src/core/process-group.js";
 
 const real = { ...processGroupSeams };
 const realKill = process.kill.bind(process);
@@ -148,6 +148,22 @@ describe("the run's one group signal (ISS-1457 round 2)", () => {
     f.child.emit("close", 0, null);
     const r = await pending;
     expect(r).toMatchObject({ cleanup: "confirmed", signalledAfterLeaderExit: { pgid: PID, signals: ["SIGTERM"] } });
+  });
+
+  // ISS-1470: only a kill that succeeded counts as sent.
+  it.each([["EPERM", "EPERM"], ["ESRCH", "gone"]])("the probe answers alive but the kill fails with %s: the guarded signal answers %s, and the run records no signal", async (code, answer) => {
+    processGroupSeams.probe = () => {};
+    const f = fakeLeader();
+    const tried: Array<[number, string | number | undefined]> = [];
+    vi.spyOn(process, "kill").mockImplementation(((pid: number, sig?: string | number) => {
+      if (pid === -PID && sig !== 0) { tried.push([pid, sig]); throw Object.assign(new Error(code), { code }); }
+      return true;
+    }) as typeof process.kill);
+    expect(signalGroupGuarded(f.child, "SIGTERM", true, true)).toBe(answer);
+    f.die();
+    const r = await run({ timeoutMs: 10_000 });
+    expect(tried).toContainEqual([-PID, "SIGTERM"]);
+    expect(r.signalledAfterLeaderExit).toBeUndefined();
   });
 
   it("a run that never signals after the leader's exit has no such record", async () => {

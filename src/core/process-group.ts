@@ -12,11 +12,23 @@ export const KILL_GRACE_MS = 5000;
 export const OWN_GROUP = process.platform !== "win32";
 
 export function signalGroup(child: ChildProcess, signal: NodeJS.Signals, own: boolean = OWN_GROUP): void {
+  signalGroupReported(child, signal, own);
+}
+
+/**
+ * ISS-1470: signalGroup that says what the kill did: "sent", "gone" when the group was already gone
+ * (ESRCH), or the errno it failed with. signalGroup itself still swallows the answer for callers that
+ * only need the attempt (the ISS-1391 terminating-signal handler among them).
+ */
+export function signalGroupReported(child: ChildProcess, signal: NodeJS.Signals, own: boolean = OWN_GROUP): string {
   try {
     if (own && child.pid !== undefined) process.kill(-child.pid, signal);
     else child.kill(signal);
-  } catch {
-    /* already gone */
+    return "sent";
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return "gone";
+    return code ?? (e as Error).message;
   }
 }
 
@@ -181,7 +193,7 @@ export type GroupSignal = (signal: NodeJS.Signals) => string;
  */
 export function signalGroupGuarded(
   child: ChildProcess, sig: NodeJS.Signals, leaderExited: boolean, own: boolean = OWN_GROUP,
-  send: (child: ChildProcess, sig: NodeJS.Signals) => void = (c, s) => signalGroup(c, s, own),
+  send: (child: ChildProcess, sig: NodeJS.Signals) => string | void = (c, s) => signalGroupReported(c, s, own),
 ): string {
   if (!own || child.pid === undefined) {
     signalGroup(child, sig, false);
@@ -191,8 +203,10 @@ export function signalGroupGuarded(
     const seen = probeGroup(child.pid);
     if (seen !== "alive") return seen;
   }
-  send(child, sig);
-  return "sent";
+  // ISS-1470: the kill's own answer: only "sent" means the signal was delivered. A test seam that returns
+  // nothing is taken as sent; every production send returns signalGroupReported's answer.
+  const sent = send(child, sig);
+  return typeof sent === "string" ? sent : "sent";
 }
 
 export interface GroupRun {

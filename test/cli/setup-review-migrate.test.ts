@@ -378,6 +378,45 @@ describe("moving a setup from the old store", () => {
     expect(existsSync(publicationLockPath(newPaths(id)))).toBe(false);
   });
 
+  describe("a lock the move cannot take for a reason other than contention is a storage error naming it (ISS-1470)", () => {
+    const eioLock = (path: string): never => {
+      throw new ProjectLoaderError("io_error", `Failed to acquire project lock at ${path}`, Object.assign(new Error("EIO: i/o error, link"), { code: "EIO" }));
+    };
+    async function legacyOnly(): Promise<{ id: string; oldBefore: Record<string, string> }> {
+      const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+      await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+      return { id, oldBefore: tree(oldPaths(id).dir) };
+    }
+    const realAcquire = migrateSeams.acquireLock;
+    afterEach(() => { migrateSeams.acquireLock = realAcquire; });
+
+    it("the publication lock fails with EIO: exit 6 naming EIO and the lock, never another process, nothing moved", async () => {
+      const { id, oldBefore } = await legacyOnly();
+      migrateSeams.acquireLock = (async (path: string) => eioLock(path)) as typeof migrateSeams.acquireLock;
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toContain(`the publication lock at ${publicationLockPath(newPaths(id))} could not be taken (EIO)`);
+      expect(r.stdout).not.toContain("another process");
+      expect(existsSync(newPaths(id).dir)).toBe(false);
+      expect(tree(oldPaths(id).dir)).toEqual(oldBefore);
+    });
+
+    it("the old store's lock fails with EIO: exit 6 naming EIO and that lock, never in use, nothing moved", async () => {
+      const { id, oldBefore } = await legacyOnly();
+      let calls = 0;
+      migrateSeams.acquireLock = (async (path: string, opts?: Parameters<typeof realAcquire>[1]) => (calls++ === 0 ? realAcquire(path, opts) : eioLock(path))) as typeof migrateSeams.acquireLock;
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      expect(calls).toBe(2);
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toContain(`the old store's lock at ${oldPaths(id).lock} could not be taken (EIO)`);
+      expect(r.stdout).not.toContain("in use");
+      expect(r.stdout).not.toContain("another process");
+      expect(existsSync(newPaths(id).dir)).toBe(false);
+      expect(existsSync(publicationLockPath(newPaths(id)))).toBe(false);
+      expect(tree(oldPaths(id).dir)).toEqual(oldBefore);
+    });
+  });
+
   describe("a plain status's run lock is busy only when it is held (ISS-1457 round 3)", () => {
     it("held by another run: exit 7, busy, as before", async () => {
       const id = idOf(await handleSetupReviewGate(io(), {}));

@@ -217,6 +217,8 @@ export interface SupervisedRun {
   /** The supervisor did not exit within the margin after a failure and was killed by pid: its reviewer may be orphaned. */
   readonly supervisorUnresponsive: boolean;
   readonly truncated: { readonly stdout: boolean; readonly stderr: boolean };
+  /** ISS-1470: the reviewer's group was signalled after its leader exited (GroupRun's record, forwarded). */
+  readonly signalledAfterLeaderExit?: { readonly pgid: number; readonly signals: readonly NodeJS.Signals[] };
 }
 
 /** Where the built supervisor is: beside the bundle, or, from the sources, in dist. */
@@ -344,6 +346,7 @@ export function runSupervised(command: string, args: string[], opts: { cwd: stri
           finish({
             exitCode: r.exitCode, timedOut: r.timedOut, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf-8"), spawnError: r.spawnError,
             cleanup: r.cleanup, cleanupDetail: r.cleanupDetail, supervisorError: null, supervisorUnresponsive: false, truncated: msg.truncated,
+            ...(r.signalledAfterLeaderExit ? { signalledAfterLeaderExit: r.signalledAfterLeaderExit } : {}),
           });
           // Disarmed and leaving; killed by its pid only if it overstays. One that already exited
           // (completed read after the exit, from a helper holding its stdout) gets no timer at all.

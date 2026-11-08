@@ -10,7 +10,7 @@ import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 // ISS-1391's process-group machinery, shared with setup-verify (T-538 S3a-2).
-import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroup, signalGroupGuarded, trackGroup, untrackGroup } from "./process-group.js";
+import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroupGuarded, signalGroupReported, trackGroup, untrackGroup } from "./process-group.js";
 
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
@@ -304,11 +304,21 @@ export function probeOverrides(port: number, nonce: string): string[] {
   return ["-c", 'model_provider="storybloq_probe"', "-c", `model_providers.storybloq_probe=${provider}`];
 }
 
-/** Test seams, not reachable through any CLI or MCP input: how the probe's listener binds, and how it signals codex's group. */
-export const startProbeSeams: { listen: (server: Server, ready: () => void) => void; signal: (child: ChildProcess, signal: NodeJS.Signals) => void } = {
+/**
+ * Test seams, not reachable through any CLI or MCP input: how the probe's listener binds, and how it signals
+ * codex's group. The production signal answers what the kill did (ISS-1470); a test override may return nothing.
+ */
+export const startProbeSeams: { listen: (server: Server, ready: () => void) => void; signal: (child: ChildProcess, signal: NodeJS.Signals) => string | void } = {
   listen: (server, ready) => { server.listen(0, "127.0.0.1", ready); },
-  signal: (child, signal) => signalGroup(child, signal),
+  signal: (child, signal) => signalGroupReported(child, signal),
 };
+
+/** The detail for a post-exit signal that was not delivered (ISS-1457 round 2, ISS-1470). */
+function heldText(pid: number | undefined, held: { by: "probe" | "kill"; answer: string }): string {
+  if (held.by === "probe") return `process group ${pid} answered ${held.answer} after codex exited, so it was not signalled`;
+  if (held.answer === "gone") return `process group ${pid} was already gone when it was signalled after codex exited`;
+  return `process group ${pid} could not be signalled after codex exited (${held.answer})`;
+}
 
 type Attempt =
   | { readonly kind: "reached" }
@@ -347,12 +357,21 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
     // ISS-1457 round 2: once codex's exit is seen its group id may be reused, so every group signal from
     // then on goes only to a group a probe in the same step finds alive (process-group's guarded signal).
     let leaderExited = false;
-    let held: string | null = null;
+    // What stopped a post-exit signal: the same-step probe's answer, or the kill's own (ISS-1470).
+    let held: { by: "probe" | "kill"; answer: string } | null = null;
     const timers: NodeJS.Timeout[] = [];
     const later = (fn: () => void, ms: number): void => { timers.push(setTimeout(fn, Math.max(0, ms))); };
     const groupSignal = (target: ChildProcess, sig: NodeJS.Signals): void => {
-      const outcome = signalGroupGuarded(target, sig, leaderExited, OWN_GROUP, startProbeSeams.signal);
-      if (outcome !== "sent" && outcome !== "gone") held = outcome;
+      let killed = null as string | null;
+      const send = (c: ChildProcess, s: NodeJS.Signals): string => {
+        const r = startProbeSeams.signal(c, s);
+        killed = typeof r === "string" ? r : "sent";
+        return killed;
+      };
+      const outcome = signalGroupGuarded(target, sig, leaderExited, OWN_GROUP, send);
+      if (!leaderExited || outcome === "sent") return;
+      if (killed !== null) held = { by: "kill", answer: killed };
+      else if (outcome !== "gone") held = { by: "probe", answer: outcome };
     };
     const stopGroup = (): void => {
       if (stopped || !child) return;
@@ -381,7 +400,7 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         release(child);
         untrackGroup(child);
         // A group the guarded signal held back from, on an answer other than gone, is named.
-        if (held !== null && a.kind === "inconclusive") a = { ...a, detail: `${a.detail}; process group ${child.pid} answered ${held} after codex exited, so it was not signalled` };
+        if (held !== null && a.kind === "inconclusive") a = { ...a, detail: `${a.detail}; ${heldText(child.pid, held)}` };
       }
       for (const t of timers) clearTimeout(t);
       process.removeListener("exit", stopOnExit);

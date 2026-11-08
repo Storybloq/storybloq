@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "../../core/project-lock.js";
 import {
   absentLine, classify, completedInCycle, completedLine, failedLine, fsyncDir, loadRecords, parsePacket, persistRevision,
-  preflightStore, probeLine, UNWRITABLE, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
+  lockFailureCause, preflightStore, probeLine, UNWRITABLE, probeOf, readSetup, revisionLine, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
   SKIPPED_LINE, STOP_LINES, storeRoot, unreadableLine, writeFileDurable, writeFileSynced,
   type CompletedRecord, type FailedRecord, type FailureKind, type ProbeResult, type ReviewPacket, type SetupPaths, type SetupState,
 } from "../../core/setup-review.js";
@@ -396,16 +396,20 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
     raw = result.stdout;
   }
   rmSync(work, { recursive: true, force: true });
+  // ISS-1470: a group signalled after the reviewer's exit is on every record this run writes.
+  const afterExit = result.signalledAfterLeaderExit
+    ? { signalledAfterLeaderExit: { pgid: result.signalledAfterLeaderExit.pgid, signals: [...result.signalledAfterLeaderExit.signals] } }
+    : {};
 
   try {
-    if (failure) return publishFailure(run, failedRecord(run, startedAt, failure.kind, result.exitCode, null, failure.error, failure.reasonCode), writeRecord);
+    if (failure) return publishFailure(run, { ...failedRecord(run, startedAt, failure.kind, result.exitCode, null, failure.error, failure.reasonCode), ...afterExit }, writeRecord);
 
     const outputSha256 = sha256(raw!);
     try {
       writeOutput(join(run.staging, "reviewer-output.json"), raw!);
     } catch (e) {
       try {
-        publishFailure(run, failedRecord(run, startedAt, "persist", 0, null, `the answer could not be stored: ${(e as Error).message}`), writeRecord);
+        publishFailure(run, { ...failedRecord(run, startedAt, "persist", 0, null, `the answer could not be stored: ${(e as Error).message}`), ...afterExit }, writeRecord);
       } catch {
         /* the failed record could not be kept either; the stop below stands */
       }
@@ -416,20 +420,20 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
     try {
       answer = parseReviewerOutput(backend, raw!);
     } catch (e) {
-      return publishFailure(run, failedRecord(run, startedAt, "schema-invalid", 0, outputSha256, `the answer is outside the schema: ${(e as Error).message}`), writeRecord);
+      return publishFailure(run, { ...failedRecord(run, startedAt, "schema-invalid", 0, outputSha256, `the answer is outside the schema: ${(e as Error).message}`), ...afterExit }, writeRecord);
     }
 
     const record: CompletedRecord = {
       state: "completed", recordId: run.recordId, setupId: run.setup.setupId, cycle: run.setup.cycle, round,
       revisionSha256: run.packet.revisionSha256, sectionSha256s: run.packet.sectionSha256s, backend, backendVersion: run.probe.version,
       startedAt, endedAt: now(), exitCode: 0, outputSha256, verdict: answer.verdict, findingsCount: answer.findings.length,
-      reviewerSessionId: answer.sessionId ?? null, newCycleReason,
+      reviewerSessionId: answer.sessionId ?? null, newCycleReason, ...afterExit,
     };
     try {
       writeRecord(join(run.staging, "record.json"), `${JSON.stringify(record, null, 2)}\n`);
     } catch (e) {
       try {
-        publishFailure(run, failedRecord(run, startedAt, "persist", 0, outputSha256, `the record could not be stored: ${(e as Error).message}`), writeRecord);
+        publishFailure(run, { ...failedRecord(run, startedAt, "persist", 0, outputSha256, `the record could not be stored: ${(e as Error).message}`), ...afterExit }, writeRecord);
       } catch {
         /* as above */
       }
@@ -444,9 +448,9 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
     }
     if (stagedPacket !== run.packet.revisionSha256) {
       writeFileSynced(join(run.staging, "packet.md"), run.packet.bytes);
-      return publishFailure(run, failedRecord(run, startedAt, "persist", 0, outputSha256, "the stored packet changed during the review"), writeRecord);
+      return publishFailure(run, { ...failedRecord(run, startedAt, "persist", 0, outputSha256, "the stored packet changed during the review"), ...afterExit }, writeRecord);
     }
-    const unsynced = failedRecord(run, startedAt, "persist", 0, outputSha256, "the published record could not be made durable");
+    const unsynced: FailedRecord = { ...failedRecord(run, startedAt, "persist", 0, outputSha256, "the published record could not be made durable"), ...afterExit };
     if (publishStaged(run, unsynced) === "lock-lost") return lockLost();
     const findings = answer.findings.map((f) => `- ${f.severity}, ${f.requirement}: ${f.description}`);
     return { stdout: lines(probeLine(run.probe), completedLine(record), ...findings), exitCode: SETUP_REVIEW_EXIT.ok };
@@ -622,10 +626,9 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
     try {
       lock = await (io.deps.acquireStatusLock ?? acquireProjectLockAsync)(paths.lock, LOCK_WAIT);
     } catch (e) {
-      const cause = (e as { cause?: unknown }).cause;
-      if (cause === undefined) return lockBusy();
-      const code = (cause as NodeJS.ErrnoException).code;
-      if (!(code && UNWRITABLE.has(code))) return storageFailure(`the run lock could not be taken (${code ?? (cause as Error).message ?? String(cause)})`);
+      const cause = lockFailureCause(e);
+      if (cause === null) return lockBusy();
+      if (!UNWRITABLE.has(cause)) return storageFailure(`the run lock could not be taken (${cause})`);
     }
   }
   try {

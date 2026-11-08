@@ -265,6 +265,30 @@ describe("the codex start probe (ISS-1456)", () => {
       const last = probes().at(-1)!.pid;
       expect((r as { detail: string }).detail).toContain(`process group ${last} answered EPERM after codex exited, so it was not signalled`);
     });
+
+    // ISS-1470: through the production signal, with only the kill itself failing: the probe answers alive,
+    // and the kill's own answer decides what the attempt says.
+    it.each([
+      ["EPERM", (pid: number) => `process group ${pid} could not be signalled after codex exited (EPERM)`],
+      ["ESRCH", (pid: number) => `process group ${pid} was already gone when it was signalled after codex exited`],
+    ])("the production signal reports a kill that fails with %s after an alive probe, never as sent", async (code, text) => {
+      processGroupSeams.probe = () => {};
+      const realKill = process.kill.bind(process);
+      const tried: Array<[number, string | number | undefined]> = [];
+      vi.spyOn(process, "kill").mockImplementation(((pid: number, sig?: string | number) => {
+        if (pid < 0 && sig !== 0) { tried.push([pid, sig]); throw Object.assign(new Error(code), { code }); }
+        return realKill(pid, sig as NodeJS.Signals);
+      }) as typeof process.kill);
+      try {
+        const r = await codexStart("silent");
+        const last = probes().at(-1)!.pid;
+        expect(tried).toContainEqual([-last, "SIGKILL"]);
+        expect((r as { detail: string }).detail).toContain(text(last));
+        expect((r as { detail: string }).detail).not.toContain("answered");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
   });
 
   it("no retry when it would pass the total bound", async () => {
@@ -558,6 +582,26 @@ describe("gate, run and status agree (ISS-1456)", () => {
     const base = { state: "failed", recordId: "SR-00000001", setupId: "SS-00000001", cycle: 1, revisionSha256: "a".repeat(64), backend: "codex", backendVersion: "v", startedAt: "t", endedAt: "t", failure: "exit", exitCode: 1, outputSha256: null, error: "e" };
     expect(recordShape({ ...base, reasonCode: "sandbox-start-denied" }, "SR-00000001")).not.toBeNull();
     expect(recordShape({ ...base, reasonCode: 7 }, "SR-00000001")).toBeNull();
+  });
+
+  it("a reviewer that answers and exits leaving a child in its group: the record names the group and each signal sent after its exit (ISS-1470)", async () => {
+    const id = setupIdOf(await handleSetupReviewGate(io(), {}));
+    extraEnv = { FAKE_CODEX_MODE: "leave-child" };
+    const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
+    expect(run.exitCode).toBe(0);
+    const [rec] = recordsOf(id);
+    expect(rec).toMatchObject({ state: "completed", signalledAfterLeaderExit: { pgid: expect.any(Number), signals: ["SIGTERM", "SIGKILL"] } });
+    expect(recordShape(rec, rec!.recordId as string)).not.toBeNull();
+    const st = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
+    expect(st.exitCode).toBe(0);
+  });
+
+  it("a record's post-exit signals are read only when well formed (ISS-1470)", () => {
+    const base = { state: "failed", recordId: "SR-00000001", setupId: "SS-00000001", cycle: 1, revisionSha256: "a".repeat(64), backend: "codex", backendVersion: "v", startedAt: "t", endedAt: "t", failure: "exit", exitCode: 1, outputSha256: null, error: "e" };
+    expect(recordShape({ ...base, signalledAfterLeaderExit: { pgid: 4242, signals: ["SIGTERM", "SIGKILL"] } }, "SR-00000001")).not.toBeNull();
+    for (const bad of [null, [], { pgid: 0, signals: ["SIGTERM"] }, { pgid: 4242, signals: [] }, { pgid: 4242, signals: ["SIGHUP"] }, { pgid: "4242", signals: ["SIGTERM"] }]) {
+      expect(recordShape({ ...base, signalledAfterLeaderExit: bad }, "SR-00000001")).toBeNull();
+    }
   });
 });
 

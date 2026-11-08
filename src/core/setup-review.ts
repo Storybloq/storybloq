@@ -139,6 +139,17 @@ export function storeRoot(env: NodeJS.ProcessEnv): string {
 /** The errors that mean this process may not write the store, as inside a sandbox (ISS-1456). */
 export const UNWRITABLE: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EROFS"]);
 
+/**
+ * ISS-1470: why a lock could not be taken. Null when the lock itself refused (its wait ran out, or a
+ * legacy or stuck lock is in the way): those carry no cause and mean contention. Otherwise the errno,
+ * or the cause's message when it has none.
+ */
+export function lockFailureCause(e: unknown): string | null {
+  const cause = (e as { cause?: unknown }).cause;
+  if (cause === undefined) return null;
+  return (cause as NodeJS.ErrnoException).code ?? (cause as Error).message ?? String(cause);
+}
+
 /** Test seam, not reachable through any CLI or MCP input: the preflight's one write. */
 export const storeSeams: { writeProbe: (path: string) => void } = {
   writeProbe: (path) => writeFileSync(path, "", { mode: 0o600 }),
@@ -303,6 +314,7 @@ export interface CompletedRecord {
   findingsCount: number;
   reviewerSessionId: string | null;
   newCycleReason: string | null;
+  signalledAfterLeaderExit?: SignalledAfterLeaderExit;
 }
 
 export interface FailedRecord {
@@ -321,7 +333,25 @@ export interface FailedRecord {
   error: string;
   /** ISS-1456: set when the reviewer could not start here, e.g. "sandbox-start-denied". Additive. */
   reasonCode?: string;
+  signalledAfterLeaderExit?: SignalledAfterLeaderExit;
 }
+
+/**
+ * ISS-1470: the reviewer's process group was signalled after its leader had exited (process-group's
+ * GroupRun record): the group id and each signal, in order. Additive, written only when it happened.
+ */
+export interface SignalledAfterLeaderExit {
+  pgid: number;
+  signals: NodeJS.Signals[];
+}
+
+const AFTER_EXIT_SIGNALS: readonly string[] = ["SIGTERM", "SIGKILL"];
+const afterExitValid = (r: Record<string, unknown>): boolean => {
+  if (!("signalledAfterLeaderExit" in r)) return true;
+  const v = r.signalledAfterLeaderExit as Record<string, unknown> | null;
+  return !!v && typeof v === "object" && !Array.isArray(v) && isPosInt(v.pgid) && Array.isArray(v.signals) && v.signals.length > 0
+    && v.signals.every((x) => AFTER_EXIT_SIGNALS.includes(x as string));
+};
 
 export type SetupReviewRecord = CompletedRecord | FailedRecord;
 
@@ -348,14 +378,15 @@ export function recordShape(raw: unknown, recordId: string): SetupReviewRecord |
       && (r.reviewerSessionId === null || isStr(r.reviewerSessionId))
       && (r.newCycleReason === null || isStr(r.newCycleReason))
       && !!r.sectionSha256s && typeof r.sectionSha256s === "object"
-      && PACKET_SECTIONS.every((s) => isHex64((r.sectionSha256s as Record<string, unknown>)[s]));
+      && PACKET_SECTIONS.every((s) => isHex64((r.sectionSha256s as Record<string, unknown>)[s]))
+      && afterExitValid(r);
     return ok ? (r as unknown as CompletedRecord) : null;
   }
   if (r.state === "failed") {
     const ok = FAILURES.includes(r.failure as string) && !("round" in r) && !("verdict" in r) && !("findingsCount" in r)
       && (r.exitCode === null || (typeof r.exitCode === "number" && Number.isInteger(r.exitCode)))
       && (r.outputSha256 === null || isHex64(r.outputSha256)) && isStr(r.error)
-      && (!("reasonCode" in r) || isStr(r.reasonCode));
+      && (!("reasonCode" in r) || isStr(r.reasonCode)) && afterExitValid(r);
     return ok ? (r as unknown as FailedRecord) : null;
   }
   return null;

@@ -12,7 +12,7 @@ import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, o
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, type ProjectLockHandle } from "./project-lock.js";
-import { fsyncDir, loadRecords, readSetup, sha256, type SetupPaths } from "./setup-review.js";
+import { fsyncDir, loadRecords, lockFailureCause, readSetup, sha256, type SetupPaths } from "./setup-review.js";
 
 const LOCK_WAIT = { deadlineMs: 2_000, pollMs: 25 };
 const LEGACY_LOCK_WAIT = { deadlineMs: 250, pollMs: 25 };
@@ -55,7 +55,9 @@ function fsyncFile(path: string): void {
  * between the validated copy and its rename; `fsyncFile` makes one copied file
  * durable, so a row can see each one synced before the rename.
  */
-export const migrateSeams: { beforePublish: () => Promise<void> | void; fsyncFile: (path: string) => void } = { beforePublish: () => {}, fsyncFile };
+export const migrateSeams: { beforePublish: () => Promise<void> | void; fsyncFile: (path: string) => void; acquireLock: typeof acquireProjectLockAsync } = {
+  beforePublish: () => {}, fsyncFile, acquireLock: acquireProjectLockAsync,
+};
 
 /** Whether the setup is already whole in the store, so using it needs no move and no refusal. */
 export function setupInPlace(paths: SetupPaths, env: NodeJS.ProcessEnv): boolean {
@@ -282,8 +284,11 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   mkdirSync(dirname(paths.dir), { recursive: true, mode: 0o700 });
   let lock: ProjectLockHandle;
   try {
-    lock = await acquireProjectLockAsync(publicationLockPath(paths), LOCK_WAIT);
-  } catch {
+    lock = await migrateSeams.acquireLock(publicationLockPath(paths), LOCK_WAIT);
+  } catch (e) {
+    // ISS-1470: contention only when the lock itself refused; a failure with an errno is a storage error (exit 6).
+    const cause = lockFailureCause(e);
+    if (cause !== null) throw new Error(`the publication lock at ${publicationLockPath(paths)} could not be taken (${cause})`);
     return { kind: "refused", detail: `setup ${paths.setupId} is being created or moved by another process; try again` };
   }
   let legacyLock: ProjectLockHandle | null = null;
@@ -294,8 +299,10 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
     if (state !== "absent") return brokenRefusal(paths, legacy, state.broken);
     if (fromLegacy) {
       try {
-        legacyLock = await acquireProjectLockAsync(legacy.lock, LEGACY_LOCK_WAIT);
-      } catch {
+        legacyLock = await migrateSeams.acquireLock(legacy.lock, LEGACY_LOCK_WAIT);
+      } catch (e) {
+        const cause = lockFailureCause(e);
+        if (cause !== null) throw new Error(`the old store's lock at ${legacy.lock} could not be taken (${cause})`);
         return { kind: "refused", detail: `the setup in the old store at ${legacy.dir} is in use; finish or stop that run, then try again` };
       }
     }

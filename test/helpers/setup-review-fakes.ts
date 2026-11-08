@@ -186,6 +186,14 @@ process.stdin.on("end", () => {
     setInterval(() => {}, 1000);
     return;
   }
+  if (mode === "leave-child") {
+    // ISS-1470: answers and exits, leaving a child in its group that ignores SIGTERM and holds stdout and
+    // stderr open, so the group is signalled after the leader's exit (SIGTERM, then SIGKILL). The leader
+    // answers only once the child says its SIGTERM handler is in place.
+    const child = require("node:child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); process.send('ready', () => process.disconnect()); setInterval(() => {}, 1000);"], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+    child.once("message", () => finish());
+    return;
+  }
   if (mode === "timeout") setTimeout(finish, 60000);
   else if (mode === "slow") setTimeout(finish, Number(process.env.FAKE_SLOW_MS || 1500));
   else finish();

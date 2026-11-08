@@ -29,13 +29,17 @@ interface Box {
   readonly root: string;
   readonly project: string;
   readonly store: string;
+  /** The sandbox's workspace root: the project, or for `inWorkspace` the folder above it. */
+  readonly workspace: string;
   readonly env: Record<string, string>;
 }
 
 /**
- * `inWorkspace`: the store under the sandbox's workspace root, which
- * `:workspace` lets the CLI write, so the row reaches the start probe. The
- * default store under the OS temp directory is outside it.
+ * `inWorkspace`: the sandbox's workspace root is the folder above the project,
+ * so `:workspace` lets the CLI write the store beside the project and the row
+ * reaches the start probe. The store stays outside the repository, which a
+ * store override may never be inside [ISS-1457]. By default the workspace is
+ * the project, and the store under the OS temp directory is outside it.
  */
 function box(inWorkspace = false): Box {
   const root = mkdtempSync(join(tmpdir(), "sr-real-codex-"));
@@ -45,9 +49,9 @@ function box(inWorkspace = false): Box {
   // codex and node only: no claude on PATH, so the verdict is codex's alone.
   symlinkSync(BIN, join(bin, "codex"));
   symlinkSync(process.execPath, join(bin, "node"));
-  const store = inWorkspace ? join(root, "project", ".review-store") : join(root, "store");
+  const store = join(root, "store");
   return {
-    root, project: join(root, "project"), store,
+    root, project: join(root, "project"), store, workspace: inWorkspace ? root : join(root, "project"),
     env: { PATH: `${bin}:/usr/bin:/bin`, HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home"), TMPDIR: join(root, "tmp"), STORYBLOQ_SETUP_REVIEW_DIR: store },
   };
 }
@@ -57,7 +61,9 @@ const TURN = { CODEX_SANDBOX: "seatbelt", CODEX_SANDBOX_NETWORK_DISABLED: "1" };
 
 function cli(b: Box, args: string[], opts: { sandbox?: ":workspace" | ":read-only"; input?: string } = {}): { code: number | null; out: string; err: string } {
   const command = [process.execPath, CLI, "setup-review", ...args];
-  const [cmd, argv] = opts.sandbox ? [BIN, ["sandbox", "-P", opts.sandbox, "-C", b.project, "--", ...command]] : [command[0]!, command.slice(1)];
+  // The sandbox starts in its workspace root; the CLI always runs in the project.
+  const inner = b.workspace === b.project ? command : ["/bin/sh", "-c", 'cd "$0" && exec "$@"', b.project, ...command];
+  const [cmd, argv] = opts.sandbox ? [BIN, ["sandbox", "-P", opts.sandbox, "-C", b.workspace, "--", ...inner]] : [command[0]!, command.slice(1)];
   const r = spawnSync(cmd, argv, { cwd: b.project, env: { ...b.env, ...(opts.sandbox ? TURN : {}) }, input: opts.input ?? "", encoding: "utf-8", timeout: 90_000 });
   return { code: r.status, out: r.stdout, err: r.stderr };
 }

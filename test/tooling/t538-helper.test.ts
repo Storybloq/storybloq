@@ -239,12 +239,23 @@ describe("observe-evidence (ISS-1467)", () => {
     const elsewhere = project();
     const r = observeEvidence(swapped, at, (step, rel) => { if (step === "enter" && rel === ".") { renameSync(swapped, `${swapped}-gone`); renameSync(elsewhere, swapped); } });
     expect(r).toEqual([{ ref: EVIDENCE_ROOT, sha256: EVIDENCE_NOT_READ.changed, at }]);
+  });
+  // Root reads past a mode 000 folder, so the permission case only means something for another user.
+  it.skipIf(process.getuid?.() === 0)("a project root that cannot be entered is a failed observation of the evidence folder", () => {
     const shut = project();
     chmodSync(shut, 0o000);
     try {
       expect(observeEvidence(shut, at)).toEqual([{ ref: EVIDENCE_ROOT, sha256: EVIDENCE_NOT_READ.failed, at }]);
     } finally {
       chmodSync(shut, 0o755);
+    }
+  });
+  it("rule 8 reports a folder above that failed at a later turn, though the file matched at an earlier one", () => {
+    const log = { events: [{ point: "evidence-created:docs/checkpoints/m1/evidence.md", sha256: hex("seen\n") }] } as unknown as EventsLog;
+    const t2 = { kind: "turn", index: 2 } as const;
+    for (const folder of [EVIDENCE_ROOT, "docs"]) {
+      const obs = [{ ref: "docs/checkpoints/m1/evidence.md", sha256: hex("seen\n"), at: { kind: "turn", index: 1 } as const }, { ref: folder, sha256: EVIDENCE_NOT_READ.link, at: t2 }];
+      expect(rule8([], [], log, obs)).toEqual([`rule 8: evidence docs/checkpoints/m1/evidence.md changed: created as ${hex("seen\n").slice(0, 12)}, observed as symlink at turn 2 (${folder})`]);
     }
   });
   it("rule 8 reports created evidence under a folder that failed its observation as changed, naming what it saw", () => {

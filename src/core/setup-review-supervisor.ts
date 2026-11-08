@@ -25,7 +25,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, KILL_GRACE_MS, OWN_GROUP, runInGroup, type GroupRun } from "./process-group.js";
+import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, KILL_GRACE_MS, OWN_GROUP, runInGroup, type GroupRun, type GroupSignal } from "./process-group.js";
 
 /** stderr is relayed up to this many bytes; the rest is dropped and the run says so. */
 export const RELAY_CAP_BYTES = 1024 * 1024;
@@ -80,7 +80,7 @@ export function supervisorMain(): void {
   };
   let state: "waiting" | "running" | "done" = "waiting";
   let pgid: number | null = null;
-  let leaderExited = false;
+  let groupSignal: GroupSignal | null = null;
   let leaving = false;
 
   const exitSoon = (): void => {
@@ -112,18 +112,10 @@ export function supervisorMain(): void {
       process.exit(0);
     }
     const group = pgid!;
-    // The kill goes out before the leader's exit is awaited; once the leader has exited and been reaped
-    // its id may be reused, so no signal is sent to it from then on.
-    if (!leaderExited) {
-      record(`SIGKILL -${group}`);
-      try {
-        process.kill(-group, "SIGKILL");
-      } catch {
-        /* already gone */
-      }
-    } else {
-      record("leader-reaped-no-signal");
-    }
+    // The run's own group signal: sent as is before the leader's exit, and after it only to a group a probe
+    // in the same step finds alive, so a reused id is never signalled.
+    const outcome = groupSignal!("SIGKILL");
+    record(outcome === "sent" ? `SIGKILL -${group}` : `no-signal ${outcome}`);
     const started = Date.now();
     const poll = (): void => {
       let gone = false;
@@ -187,12 +179,12 @@ export function supervisorMain(): void {
     void runInGroup({
       command: start.command, args: start.args, cwd: start.cwd, env: start.env, timeoutMs: start.timeoutMs, killGraceMs: start.killGraceMs,
       stdin: Buffer.from(start.stdin, "base64"), onStdout: relay("stdout"), onStderr: relay("stderr"),
-      onSpawn: (id) => {
+      onSpawn: (id, signal) => {
         pgid = id;
+        groupSignal = signal;
         send({ type: "started", pgid: id });
       },
       onLeaderExit: () => {
-        leaderExited = true;
         if (leaving) record("leader-exit");
       },
     }).then((run) => {

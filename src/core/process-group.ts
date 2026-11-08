@@ -27,14 +27,15 @@ export function signalGroup(child: ChildProcess, signal: NodeJS.Signals, own: bo
  * caller's own listeners run: a caller that listens for the signal owns the
  * exit; otherwise the signal is raised again and ends the CLI as it would have.
  */
-const liveGroups = new Set<ChildProcess>();
+// Each live child with the kill that stops it: by default a plain group SIGKILL, for a run in group its guarded one.
+const liveGroups = new Map<ChildProcess, () => void>();
 const STOP_SIGNALS: NodeJS.Signals[] = OWN_GROUP ? ["SIGINT", "SIGTERM", "SIGHUP"] : ["SIGINT", "SIGTERM"];
 const stopHandlers = new Map<NodeJS.Signals, () => void>();
 
 function stopGroupsOnSignal(sig: NodeJS.Signals): void {
   const ours = stopHandlers.get(sig);
   const others = process.listeners(sig).some((l) => l !== ours);
-  for (const child of liveGroups) signalGroup(child, "SIGKILL");
+  for (const stopIt of liveGroups.values()) stopIt();
   liveGroups.clear();
   removeStopHandlers();
   if (!others) process.kill(process.pid, sig);
@@ -45,7 +46,7 @@ function removeStopHandlers(): void {
   stopHandlers.clear();
 }
 
-export function trackGroup(child: ChildProcess): void {
+export function trackGroup(child: ChildProcess, stopIt: () => void = () => signalGroup(child, "SIGKILL")): void {
   if (liveGroups.size === 0) {
     for (const sig of STOP_SIGNALS) {
       const handler = (): void => stopGroupsOnSignal(sig);
@@ -53,7 +54,7 @@ export function trackGroup(child: ChildProcess): void {
       process.prependListener(sig, handler);
     }
   }
-  liveGroups.add(child);
+  liveGroups.set(child, stopIt);
 }
 
 export function untrackGroup(child: ChildProcess): void {
@@ -141,11 +142,24 @@ export interface GroupRunOptions {
   readonly onStderr?: (chunk: Buffer) => void;
   /** ISS-1457: written to the leader's stdin, which is otherwise closed. Abandoned, not awaited, once the leader exits or is stopped. */
   readonly stdin?: Buffer;
-  /** ISS-1457: called once with the group id right after spawn. */
-  readonly onSpawn?: (pgid: number) => void;
+  /**
+   * ISS-1457: called once with the group id right after spawn, and the run's own group signal, the only
+   * way a caller may signal the group (see GroupSignal).
+   */
+  readonly onSpawn?: (pgid: number, signal: GroupSignal) => void;
   /** ISS-1457: called once when the leader's exit event fires, before anything else reacts to it. */
   readonly onLeaderExit?: () => void;
 }
+
+/**
+ * ISS-1457 round 2: every negative-pid signal a run in group sends. Until the leader's exit event the
+ * group id is the live leader's own pid and cannot name anyone else, so the signal goes as it always did.
+ * From that event on the id is free for reuse once the last member is gone, so the signal is sent only
+ * when a probe in the same synchronous step answers "alive". Answers "sent", or the probe's answer when
+ * nothing was sent ("gone", or an error code such as EPERM). The residual is the gap between that probe
+ * and the kill, inside one synchronous step; the supervisor's kill by pid (f6) has the same one.
+ */
+export type GroupSignal = (signal: NodeJS.Signals) => string;
 
 export interface GroupRun {
   readonly exitCode: number | null;
@@ -186,13 +200,27 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     }
     const timers: NodeJS.Timeout[] = [];
     const later = (fn: () => void, ms: number): void => { timers.push(setTimeout(fn, ms)); };
-    const stopOnExit = (): void => signalGroup(child, "SIGKILL", own);
-    process.once("exit", stopOnExit);
-    trackGroup(child);
     let timedOut = false;
     let exitCode: number | null = null;
     let signal: NodeJS.Signals | null = null;
     let exited = false;
+    const groupSignal: GroupSignal = (sig) => {
+      if (!own || child.pid === undefined) {
+        signalGroup(child, sig, false);
+        return "sent";
+      }
+      if (exited) {
+        const seen = probeGroup(child.pid);
+        if (seen !== "alive") return seen;
+      }
+      signalGroup(child, sig, own);
+      return "sent";
+    };
+    const stopOnExit = (): void => {
+      groupSignal("SIGKILL");
+    };
+    process.once("exit", stopOnExit);
+    trackGroup(child, stopOnExit);
     let closed = false;
     let phase: "running" | "terming" | "confirming" = "running";
     let settled = false;
@@ -238,7 +266,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
 
     const kill = (): void => {
       if (phase === "confirming") return;
-      signalGroup(child, "SIGKILL", own);
+      groupSignal("SIGKILL");
       confirm();
     };
 
@@ -271,7 +299,8 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       if (phase !== "running") return;
       if (probeGroup(child.pid!) === "gone") return confirm();
       phase = "terming";
-      signalGroup(child, "SIGTERM", own);
+      // A group that does not answer alive after the leader's exit gets no signal at all: it is only confirmed.
+      if (groupSignal("SIGTERM") !== "sent") return confirm();
       const started = Date.now();
       const wait = (): void => {
         if (phase !== "terming" || settled) return;
@@ -293,7 +322,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     const onErr = opts.onStderr ?? opts.onData ?? ((): void => {});
     child.stdout!.on("data", (c: Buffer) => onOut(c));
     child.stderr!.on("data", (c: Buffer) => onErr(c));
-    if (child.pid !== undefined) opts.onSpawn?.(child.pid);
+    if (child.pid !== undefined) opts.onSpawn?.(child.pid, groupSignal);
     if (opts.stdin && child.stdin) {
       // A leader that exits before reading its input fails on its own; the write is never waited for.
       child.stdin.on("error", () => {});
@@ -308,8 +337,9 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       if (!own && exited) finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
     });
     child.on("exit", (code, sig) => {
-      opts.onLeaderExit?.();
+      // First, so no signal from here on, including one the caller sends from onLeaderExit, skips the probe.
       exited = true;
+      opts.onLeaderExit?.();
       child.stdin?.destroy();
       exitCode = code;
       signal = sig;

@@ -8,7 +8,7 @@
  * half done.
  */
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, type ProjectLockHandle } from "./project-lock.js";
@@ -39,12 +39,49 @@ export type Placement =
   | { readonly kind: "absent" }
   | { readonly kind: "refused"; readonly detail: string };
 
-/** Test seam, not reachable through any CLI or MCP input: runs between the validated copy and its rename. */
-export const migrateSeams: { beforePublish: () => Promise<void> | void } = { beforePublish: () => {} };
+function fsyncFile(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
 
-/** Whether the setup is already whole in the store, so using it needs no move. */
-export function setupInPlace(paths: SetupPaths): boolean {
-  return complete(paths);
+/**
+ * Test seams, not reachable through any CLI or MCP input: `beforePublish` runs
+ * between the validated copy and its rename; `fsyncFile` makes one copied file
+ * durable, so a row can see each one synced before the rename.
+ */
+export const migrateSeams: { beforePublish: () => Promise<void> | void; fsyncFile: (path: string) => void } = { beforePublish: () => {}, fsyncFile };
+
+/** Whether the setup is already whole in the store, so using it needs no move and no refusal. */
+export function setupInPlace(paths: SetupPaths, env: NodeJS.ProcessEnv): boolean {
+  return destinationState(paths, legacyOf(paths, env)) === "present";
+}
+
+function legacyOf(paths: SetupPaths, env: NodeJS.ProcessEnv): SetupPaths | null {
+  if (env.STORYBLOQ_SETUP_REVIEW_DIR) return null;
+  const legacy = pathsAt(join(legacyStoreRoot(), paths.projectKey, paths.setupId), paths);
+  return existsSync(legacy.setupFile) ? legacy : null;
+}
+
+/**
+ * The destination as placement sees it. With no copy in the old store, a
+ * setup.json that reads is enough, as before. With one, the destination may be
+ * a move a crash cut short, so every file in it must be present and valid;
+ * otherwise it is broken, and the reason is returned for the refusal. A run in
+ * flight in the destination is not a fault.
+ */
+function destinationState(paths: SetupPaths, legacy: SetupPaths | null): "present" | "absent" | { readonly broken: string } {
+  if (!complete(paths)) return "absent";
+  if (legacy === null) return "present";
+  const problem = dataProblem(paths, true);
+  return problem === null ? "present" : { broken: problem };
+}
+
+function brokenRefusal(paths: SetupPaths, legacy: SetupPaths, problem: string): Placement {
+  return { kind: "refused", detail: `${paths.dir} is an incomplete copy of the setup (${problem}); it was left as it is. The setup is still at ${legacy.dir}: move ${paths.dir} aside, then try again` };
 }
 
 function complete(paths: SetupPaths): boolean {
@@ -58,6 +95,11 @@ function complete(paths: SetupPaths): boolean {
 
 /** Why a setup in the old store cannot be copied, or null when every file in it validates. */
 function legacyProblem(legacy: SetupPaths): string | null {
+  return dataProblem(legacy, false);
+}
+
+/** Why a setup's files are not all present and valid, or null; `inFlight` allows a run's staging folder. */
+function dataProblem(legacy: SetupPaths, inFlight: boolean): string | null {
   try {
     readSetup(legacy);
   } catch (e) {
@@ -70,7 +112,7 @@ function legacyProblem(legacy: SetupPaths): string | null {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") return `its records cannot be read (${(e as Error).message})`;
   }
   const staging = names.find((n) => n.startsWith(".staging-"));
-  if (staging) return `a review is in flight there (${join(legacy.records, staging)})`;
+  if (staging && !inFlight) return `a review is in flight there (${join(legacy.records, staging)})`;
   for (const rec of loadRecords(legacy)) {
     if (rec.kind !== "valid") return `record ${rec.recordId} does not validate`;
   }
@@ -91,6 +133,7 @@ function legacyProblem(legacy: SetupPaths): string | null {
 function copyData(from: SetupPaths, to: SetupPaths): void {
   mkdirSync(to.dir, { mode: 0o700 });
   copyFileSync(from.setupFile, to.setupFile);
+  migrateSeams.fsyncFile(to.setupFile);
   for (const [src, dst, keep] of [[from.records, to.records, /^SR-/], [from.revisions, to.revisions, /^[0-9a-f]{64}\.md$/]] as const) {
     if (!existsSync(src)) continue;
     mkdirSync(dst, { mode: 0o700 });
@@ -100,9 +143,14 @@ function copyData(from: SetupPaths, to: SetupPaths): void {
       const st = lstatSync(s);
       if (st.isFile()) {
         copyFileSync(s, join(dst, name));
+        migrateSeams.fsyncFile(join(dst, name));
       } else if (st.isDirectory() && src === from.records) {
         mkdirSync(join(dst, name), { mode: 0o700 });
-        for (const f of readdirSync(s)) if (lstatSync(join(s, f)).isFile()) copyFileSync(join(s, f), join(dst, name, f));
+        for (const f of readdirSync(s)) {
+          if (!lstatSync(join(s, f)).isFile()) continue;
+          copyFileSync(join(s, f), join(dst, name, f));
+          migrateSeams.fsyncFile(join(dst, name, f));
+        }
         fsyncDir(join(dst, name));
       }
     }
@@ -120,9 +168,11 @@ function copyData(from: SetupPaths, to: SetupPaths): void {
  * validation, and a half-made folder in the new store.
  */
 export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, create: boolean): Promise<Placement> {
-  if (complete(paths)) return { kind: "present" };
-  const legacy = env.STORYBLOQ_SETUP_REVIEW_DIR ? null : pathsAt(join(legacyStoreRoot(), paths.projectKey, paths.setupId), paths);
-  const fromLegacy = legacy !== null && existsSync(legacy.setupFile);
+  const legacy = legacyOf(paths, env);
+  const fromLegacy = legacy !== null;
+  const first = destinationState(paths, legacy);
+  if (first === "present") return { kind: "present" };
+  if (first !== "absent") return brokenRefusal(paths, legacy!, first.broken);
   if (!fromLegacy && !create) return { kind: "absent" };
 
   // The publication lock first: a second caller waits for a move in progress and then finds the setup whole,
@@ -136,7 +186,9 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   }
   let legacyLock: ProjectLockHandle | null = null;
   try {
-    if (complete(paths)) return { kind: "present" };
+    const state = destinationState(paths, legacy);
+    if (state === "present") return { kind: "present" };
+    if (state !== "absent") return brokenRefusal(paths, legacy!, state.broken);
     if (fromLegacy) {
       try {
         legacyLock = await acquireProjectLockAsync(legacy.lock, LEGACY_LOCK_WAIT);
@@ -155,6 +207,10 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
     }
     const problem = legacyProblem(legacy!);
     if (problem) return { kind: "refused", detail: `the setup at ${legacy!.dir} cannot be moved: ${problem}` };
+    // A mover killed before its rename leaves its staging folder; the publication lock is held, so no live mover owns one.
+    for (const name of readdirSync(dirname(paths.dir))) {
+      if (name.startsWith(`.migrate-${paths.setupId}-`)) rmSync(join(dirname(paths.dir), name), { recursive: true, force: true });
+    }
     const staging = pathsAt(join(dirname(paths.dir), `.migrate-${paths.setupId}-${randomBytes(4).toString("hex")}`), paths);
     try {
       copyData(legacy!, staging);

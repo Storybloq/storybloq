@@ -5,8 +5,9 @@
  * move and a creation of the same id never interleave.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
 import { setupPaths, storeRoot, storeRootSeams, storeSeams } from "../../src/core/setup-review.js";
 import { legacyStoreRoot, migrateSeams, placeSetup, publicationLockPath } from "../../src/core/setup-review-migrate.js";
@@ -18,6 +19,7 @@ vi.setConfig({ testTimeout: 30_000 });
 const FAST = { attemptMs: 1_500, totalMs: 4_000, killGraceMs: 200 };
 const realPlatform = storeRootSeams.platform;
 const realBefore = migrateSeams.beforePublish;
+const realFsyncFile = migrateSeams.fsyncFile;
 const realWriteProbe = storeSeams.writeProbe;
 
 let project: string;
@@ -38,6 +40,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   storeRootSeams.platform = realPlatform;
   migrateSeams.beforePublish = realBefore;
+  migrateSeams.fsyncFile = realFsyncFile;
   storeSeams.writeProbe = realWriteProbe;
   removeScratchDirs();
 });
@@ -206,6 +209,69 @@ describe("moving a setup from the old store", () => {
       throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
     };
     expect(await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id })).toEqual(want);
+  });
+
+  it("each copied file is synced before the copy is published (mechanism row: a crash cannot be reproduced here)", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    const log: string[] = [];
+    migrateSeams.fsyncFile = (p) => {
+      log.push(p);
+      realFsyncFile(p);
+    };
+    migrateSeams.beforePublish = () => {
+      log.push("publish");
+    };
+    expect((await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id })).exitCode).toBe(0);
+    const published = log.indexOf("publish");
+    expect(published).toBeGreaterThan(0);
+    expect(log.slice(published + 1)).toEqual([]);
+    const synced = log.slice(0, published).map((p) => p.replace(/^.*\/\.migrate-[^/]+\//, "")).sort();
+    const files = (readdirSync(newPaths(id).dir, { recursive: true }) as string[]).filter((f) => statSync(join(newPaths(id).dir, f)).isFile()).sort();
+    expect(files.some((f) => f.endsWith("record.json"))).toBe(true);
+    expect(files.some((f) => f.startsWith("revisions/"))).toBe(true);
+    expect(synced).toEqual(files);
+  });
+
+  it("a moved copy missing a record's file is refused and reported, never deleted, and the old copy is unchanged", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    expect((await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id })).exitCode).toBe(0);
+    const before = tree(oldPaths(id).dir);
+    const recordDir = readdirSync(newPaths(id).records).find((n) => n.startsWith("SR-"))!;
+    rmSync(join(newPaths(id).records, recordDir, "record.json"));
+    const left = tree(newPaths(id).dir);
+    for (const call of [
+      () => handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id }),
+      () => handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id }),
+    ]) {
+      const r = await call();
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toContain(`${newPaths(id).dir} is an incomplete copy of the setup (record ${recordDir} does not validate)`);
+      expect(r.stdout).toContain(`The setup is still at ${oldPaths(id).dir}`);
+    }
+    expect(tree(newPaths(id).dir)).toEqual(left);
+    expect(tree(oldPaths(id).dir)).toEqual(before);
+  });
+
+  it("a mover killed before its rename leaves its staging folder; the next mover removes it and succeeds", async () => {
+    const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
+    const want = await handleSetupReviewStatus(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
+    const worker = join(import.meta.dirname, "fixtures", "setup-review-migrate-worker.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", worker, project, home, id], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, TMPDIR: tmp } });
+    let out = "";
+    child.stdout!.on("data", (d: Buffer) => (out += d.toString()));
+    const signal = await new Promise<NodeJS.Signals | null>((res) => child.once("close", (_code, sig) => res(sig)));
+    expect(signal).toBe("SIGKILL");
+    expect(out).toBe("");
+    const parent = dirname(newPaths(id).dir);
+    const abandoned = readdirSync(parent).filter((n) => n.startsWith(`.migrate-${id}-`));
+    expect(abandoned).toHaveLength(1);
+    expect(existsSync(newPaths(id).dir)).toBe(false);
+    const status = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    expect(status).toEqual(want);
+    expect(readdirSync(parent).filter((n) => n.startsWith(`.migrate-`))).toEqual([]);
+    expect(existsSync(newPaths(id).setupFile)).toBe(true);
   });
 
   it("with the override set, the old store is never looked at", async () => {

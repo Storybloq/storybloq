@@ -566,7 +566,7 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
   if (opts.skipped) {
     if (store.kind === "unwritable") return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
     if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
-  } else if (store.kind === "unwritable" && !setupInPlace(paths)) {
+  } else if (store.kind === "unwritable" && !setupInPlace(paths, io.env)) {
     return { stdout: lines(probeLine(null), ...reasonLines(storeUnwritable(store.reason, io.env))) + STOP, exitCode: SETUP_REVIEW_EXIT.failed };
   }
   const placedForStatus = store.kind === "unwritable" ? null : await placeOrRefuse(paths, io.env, false);

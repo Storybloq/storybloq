@@ -79,7 +79,9 @@ if (providerArg) {
     case "slow-reach": setTimeout(() => post("/v1/responses", { "X-Storybloq-Probe": nonce }, hang), Number(process.env.FAKE_LATE_MS)); break;
     case "late-then-stubborn": {
       const count = fs.readFileSync(process.env.FAKE_PROBE_LOG, "utf-8").split("\n").filter(Boolean).length;
-      if (count === 1) { setTimeout(() => process.exit(1), Number(process.env.FAKE_LATE_MS)); break; }
+      // FAKE_LATE_UNTIL is a wall-clock deadline the row sets, so a slow start under load does not move it.
+      const until = Number(process.env.FAKE_LATE_UNTIL || 0);
+      if (count === 1) { setTimeout(() => process.exit(1), until ? Math.max(0, until - Date.now()) : Number(process.env.FAKE_LATE_MS)); break; }
       process.on("SIGTERM", () => {});
       hang();
       break;

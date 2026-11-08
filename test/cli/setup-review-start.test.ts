@@ -12,6 +12,7 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
 import { projectKeyFor, recordShape, SKIPPED_LINE, STOP_LINES, storeSeams } from "../../src/core/setup-review.js";
+import type { ChildProcess } from "node:child_process";
 import { CHARACTERISED_CODEX_VERSIONS, CODEX_ISOLATION_FLAGS, codexArgs, inferredReasons, probeCodexStart, probeReviewer, startProbeSeams } from "../../src/core/setup-review-backends.js";
 import { signalGroup } from "../../src/core/process-group.js";
 import { makeFakeBin, makeScratchDir, removeScratchDirs, REVIEW_PACKET, scratchDirsCreated, type FakeBin } from "../helpers/setup-review-fakes.js";
@@ -172,12 +173,21 @@ describe("the codex start probe (ISS-1456)", () => {
 
   it("a late inconclusive first attempt, then a codex that ignores SIGTERM: the retry and its stop are clamped to the total bound", async () => {
     // Today's grace periods would carry the second attempt past the total: 1.4 s + 1.5 s + 0.4 s.
+    // The first attempt ends at a deadline this row sets from its own start, not from the fake's (load-dependent)
+    // start, and the retry is counted where the probe stops it, so the row needs no spare wall-clock room.
     const limits = { attemptMs: 1_500, totalMs: 3_000, killGraceMs: 400 };
-    extraEnv = { FAKE_CODEX_PROBE: "late-then-stubborn", FAKE_LATE_MS: "1400" };
     const started = Date.now();
+    extraEnv = { FAKE_CODEX_PROBE: "late-then-stubborn", FAKE_LATE_UNTIL: String(started + 1_400) };
+    const stopped = new Set<ChildProcess>();
+    const realSignal = startProbeSeams.signal;
+    startProbeSeams.signal = (child, sig) => {
+      stopped.add(child);
+      realSignal(child, sig);
+    };
     const r = await probeCodexStart(makeScratchDir("sr-start-exec-"), env(), limits);
     expect(r).toMatchObject({ ok: false, code: "probe-inconclusive" });
-    expect(probes()).toHaveLength(2);
+    // A retry was started and the probe had to stop it: the late first attempt ended by itself.
+    expect(stopped.size).toBeGreaterThanOrEqual(1);
     expect(Date.now() - started).toBeLessThan(limits.totalMs + SLACK_MS);
     for (const p of probes()) expect(alive(p.pid)).toBe(false);
   });

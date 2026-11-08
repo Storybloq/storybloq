@@ -66,6 +66,16 @@ describe("the home directory as the trust anchor", () => {
     expect(checkHome({ HOME: home })).toEqual({ ok: false, detail: expect.stringMatching(/theirs inside the shared .*shared is not this user's|theirs is owned by another user/) });
   });
 
+  it("a sticky ancestor whose entry is root's, not this user's, is refused: the entry under a shared folder must be this user's", () => {
+    const shared = dir("shared");
+    const entry = dir("shared", "roots");
+    const home = dir("shared", "roots", "home");
+    chmodSync(shared, 0o1777);
+    trustSeams.lstat = (p) => (p === entry ? ({ ...real.lstat(p), uid: 0, isSymbolicLink: () => false } as Stats) : real.lstat(p));
+    trustSeams.stat = (p) => (p === entry ? ({ ...real.stat(p), uid: 0 } as Stats) : real.stat(p));
+    expect(checkHome({ HOME: home })).toEqual({ ok: false, detail: expect.stringMatching(/roots inside the shared .*shared is not this user's/) });
+  });
+
   it("a sticky ancestor whose entry is this user's is accepted", () => {
     const shared = dir("shared");
     const home = dir("shared", "home");

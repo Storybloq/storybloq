@@ -33,6 +33,7 @@ let project: string;
 let store: string;
 /** ISS-1457: the home is outside the project, as CODEX_HOME inside it is refused. */
 let home: string;
+let tmpRoot: string;
 let fake: FakeBin;
 let extraEnv: Record<string, string>;
 const cleanups: string[] = [];
@@ -46,6 +47,7 @@ function io(stdin?: string, deps: SetupReviewIo["deps"] = {}): SetupReviewIo {
       FAKE_LOG: fake.log,
       FAKE_STDIN_DIR: fake.stdinDir,
       HOME: home,
+      TMPDIR: tmpRoot,
       ...extraEnv,
     },
     stdin: () => {
@@ -88,9 +90,10 @@ beforeEach(() => {
   project = mkdtempSync(join(tmpdir(), "sr-project-"));
   store = mkdtempSync(join(tmpdir(), "sr-store-"));
   home = mkdtempSync(join(tmpdir(), "sr-home-"));
+  tmpRoot = mkdtempSync(join(tmpdir(), "sr-tmp-"));
   fake = makeFakeBin(["codex", "claude"]);
   extraEnv = {};
-  cleanups.push(project, store, home);
+  cleanups.push(project, store, home, tmpRoot);
 });
 
 afterEach(() => {

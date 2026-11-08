@@ -22,6 +22,7 @@ import {
   unavailableLine, type ProcessLimits, type SetupReviewAnswer, type SetupReviewBackend, type StartProbeLimits, type UnavailableReason,
 } from "../../core/setup-review-backends.js";
 import { checkCodexHome, checkExecLocation } from "../../core/setup-review-trust.js";
+import { placeSetup } from "../../core/setup-review-migrate.js";
 
 export interface SetupReviewDeps {
   readonly timeoutMs?: number;
@@ -153,6 +154,22 @@ async function updateSetupLocked(paths: SetupPaths, update: (current: SetupState
   }
 }
 
+/**
+ * ISS-1457: puts the setup in the store before it is read, moving it from the
+ * old temporary store when that is the only place it is. Null when the caller
+ * may go on; otherwise the refusal to print.
+ */
+async function placeOrRefuse(paths: SetupPaths, env: NodeJS.ProcessEnv, create: boolean): Promise<SetupReviewResult | null> {
+  let placement: Awaited<ReturnType<typeof placeSetup>>;
+  try {
+    placement = await placeSetup(paths, env, create);
+  } catch (e) {
+    return storageFailure(`the setup could not be placed in the review store: ${(e as Error).message}`);
+  }
+  if (placement.kind !== "refused") return null;
+  return { stdout: lines(`Setup review: ${placement.detail}.`) + STOP, exitCode: SETUP_REVIEW_EXIT.storage };
+}
+
 // --- gate ---------------------------------------------------------------------
 
 export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: string }): Promise<SetupReviewResult> {
@@ -175,6 +192,8 @@ export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: s
   if (store.kind === "error") {
     return { stdout: lines(`Setup review: the review store cannot be written (${store.error.message}).`) + STOP, exitCode: SETUP_REVIEW_EXIT.storage };
   }
+  const placedForGate = opts.setup !== undefined ? await placeOrRefuse(paths, io.env, false) : null;
+  if (placedForGate) return placedForGate;
   try {
     if (opts.setup !== undefined) readSetup(paths);
   } catch (e) {
@@ -187,7 +206,8 @@ export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: s
   try {
     outcome = await probeAll(io.env, io.cwd, io.deps);
     const { probe, reasons } = outcome;
-    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    const created = await placeSetup(paths, io.env, true);
+    if (created.kind === "refused") return { stdout: lines(`Setup review: ${created.detail}.`) + STOP, exitCode: SETUP_REVIEW_EXIT.storage };
     setup = await updateSetupLocked(paths, (current) => {
       if (opts.setup !== undefined && current === null) readSetup(paths);
       const base = current ?? { setupId: paths.setupId, projectKey: paths.projectKey, createdAt: now(), cycle: 1, cycleReasons: {}, probe: null, probedAt: now() };
@@ -428,6 +448,14 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
   let packet: ReviewPacket;
   try {
     paths = setupPaths(io.env, io.cwd, opts.setup);
+  } catch (e) {
+    const u = asUsage(e);
+    if (u) return u;
+    throw e;
+  }
+  const placedForRun = await placeOrRefuse(paths, io.env, false);
+  if (placedForRun) return placedForRun;
+  try {
     setup = readSetup(paths);
     if (opts.newCycle && !(opts.reason ?? "").trim()) throw new SetupReviewUsageError("--new-cycle needs --reason with the owner's adjustment.");
     if (opts.backend !== undefined && !SETUP_REVIEW_BACKENDS.includes(opts.backend)) throw new SetupReviewUsageError(`unknown backend "${opts.backend}"; use codex or claude.`);
@@ -531,6 +559,8 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
     if (store.kind === "unwritable") return { stdout: lines(probeLine(null), SKIPPED_LINE, NOT_RECORDED), exitCode: SETUP_REVIEW_EXIT.ok };
     if (store.kind === "error") return storageFailure(`the review store is not writable: ${store.error.message}`);
   }
+  const placedForStatus = await placeOrRefuse(paths, io.env, false);
+  if (placedForStatus) return placedForStatus;
   try {
     setup = readSetup(paths);
   } catch (e) {

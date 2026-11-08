@@ -155,33 +155,39 @@ describe("where a reviewer may run", () => {
 describe("which CODEX_HOME codex may start with", () => {
   it("one inside the project is refused", () => {
     const project = dir("project");
-    expect(checkCodexHome({ HOME: dir("home"), CODEX_HOME: dir("project", ".codex") }, project)).toMatchObject({ code: "untrusted-codex-home", detail: expect.stringMatching(/inside the project/) });
+    expect(checkCodexHome({ HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: dir("project", ".codex") }, project)).toMatchObject({ code: "untrusted-codex-home", detail: expect.stringMatching(/inside the project/) });
   });
 
   it("home inside the project puts the default CODEX_HOME there too, and it is refused", () => {
     const project = dir("project");
-    expect(checkCodexHome({ HOME: project }, project)).toMatchObject({ code: "untrusted-codex-home" });
+    expect(checkCodexHome({ HOME: project, TMPDIR: dir("tmp") }, project)).toMatchObject({ code: "untrusted-codex-home", detail: expect.stringMatching(/inside the project/) });
   });
 
   it("one inside TMPDIR is refused", () => {
     const tmp = dir("tmp");
-    expect(checkCodexHome({ HOME: dir("home"), TMPDIR: tmp, CODEX_HOME: dir("tmp", "codex") }, dir("project"))).toMatchObject({ detail: expect.stringMatching(/inside TMPDIR/) });
+    expect(checkCodexHome({ HOME: dir("home"), TMPDIR: tmp, CODEX_HOME: dir("tmp", "codex") }, dir("project"))).toMatchObject({ detail: expect.stringMatching(/inside the temporary folder/) });
+  });
+
+  it("with no TMPDIR the system temporary folder is the temp root, never none", () => {
+    // The scratch root is under the system temporary folder, so a home there is refused without TMPDIR.
+    expect(checkCodexHome({ HOME: dir("home") }, dir("project"))).toMatchObject({ code: "untrusted-codex-home", detail: expect.stringMatching(/inside the temporary folder/) });
   });
 
   it("one another user owns, or under an ancestor writable by others, is refused", () => {
     const codexHome = dir("ch");
     foreign(codexHome);
-    expect(checkCodexHome({ HOME: dir("home"), CODEX_HOME: codexHome }, dir("project"))).toMatchObject({ code: "untrusted-codex-home" });
+    expect(checkCodexHome({ HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: codexHome }, dir("project"))).toMatchObject({ code: "untrusted-codex-home", detail: expect.stringMatching(/not owned by this user/) });
     Object.assign(trustSeams, real);
     const open = dir("open");
     chmodSync(open, 0o777);
-    expect(checkCodexHome({ HOME: dir("home"), CODEX_HOME: dir("open", "ch") }, dir("project"))).toMatchObject({ detail: expect.stringMatching(/open is writable by other users/) });
+    expect(checkCodexHome({ HOME: dir("home"), TMPDIR: dir("tmp"), CODEX_HOME: dir("open", "ch") }, dir("project"))).toMatchObject({ detail: expect.stringMatching(/open is writable by other users/) });
   });
 
   it("the default under a private home, existing or not yet made, is trusted", () => {
     const home = dir("home");
-    expect(checkCodexHome({ HOME: home }, dir("project"))).toBeNull();
+    const env = { HOME: home, TMPDIR: dir("tmp") };
+    expect(checkCodexHome(env, dir("project"))).toBeNull();
     dir("home", ".codex");
-    expect(checkCodexHome({ HOME: home }, dir("project"))).toBeNull();
+    expect(checkCodexHome(env, dir("project"))).toBeNull();
   });
 });

@@ -6,7 +6,7 @@
  * is the filesystem half, and it runs before any process starts.
  */
 import { lstatSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { UnavailableReason } from "./setup-review-backends.js";
 
@@ -172,7 +172,8 @@ function linksOnlyAboveAnchor(path: string, anchor: string): boolean {
 /**
  * ISS-1457 (plan v3 section 4): codex still reads its credential and its
  * hooks.json from CODEX_HOME under --ignore-user-config. A CODEX_HOME inside
- * the project, inside TMPDIR, or under a directory another user controls
+ * the project, inside the temporary folder (TMPDIR when set, otherwise the
+ * system's), or under a directory another user controls
  * could be a planted one, so codex is not started.
  */
 export function checkCodexHome(env: NodeJS.ProcessEnv, projectDir: string): UnavailableReason | null {
@@ -198,15 +199,14 @@ export function checkCodexHome(env: NodeJS.ProcessEnv, projectDir: string): Unav
     project = resolve(projectDir);
   }
   if (isWithin(canonical, project)) return fail(`CODEX_HOME ${named} is inside the project, so the project could have planted it`);
-  if (env.TMPDIR) {
-    let tmp: string | null = null;
-    try {
-      tmp = realpathSync(env.TMPDIR);
-    } catch {
-      tmp = null;
-    }
-    if (tmp && isWithin(canonical, tmp)) return fail(`CODEX_HOME ${named} is inside TMPDIR, so another process could have planted it`);
+  const tmpRoot = env.TMPDIR && isAbsolute(env.TMPDIR) ? env.TMPDIR : tmpdir();
+  let tmp: string;
+  try {
+    tmp = realpathSync(tmpRoot);
+  } catch {
+    tmp = resolve(tmpRoot);
   }
+  if (isWithin(canonical, tmp)) return fail(`CODEX_HOME ${named} is inside the temporary folder ${tmpRoot}, so another process could have planted it`);
   const uid = trustSeams.uid();
   const up = checkAncestors(canonical, uid, "CODEX_HOME");
   if (!up.ok) return fail(up.detail);

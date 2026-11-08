@@ -28,6 +28,7 @@ let project: string;
 let store: string;
 /** ISS-1457: the home is outside the project, as CODEX_HOME inside it is refused. */
 let home: string;
+let tmpRoot: string;
 let fake: FakeBin;
 let spawnLog: string;
 let probeLog: string;
@@ -36,7 +37,7 @@ let extraEnv: Record<string, string>;
 function env(): NodeJS.ProcessEnv {
   return {
     PATH: fake.path, STORYBLOQ_SETUP_REVIEW_DIR: store, FAKE_LOG: fake.log, FAKE_STDIN_DIR: fake.stdinDir,
-    FAKE_SPAWN_LOG: spawnLog, FAKE_PROBE_LOG: probeLog, HOME: home, ...extraEnv,
+    FAKE_SPAWN_LOG: spawnLog, FAKE_PROBE_LOG: probeLog, HOME: home, TMPDIR: tmpRoot, ...extraEnv,
   };
 }
 
@@ -75,6 +76,7 @@ const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`
 beforeEach(() => {
   project = makeScratchDir("sr-start-project-");
   home = makeScratchDir("sr-start-home-");
+  tmpRoot = makeScratchDir("sr-start-tmp-");
   store = makeScratchDir("sr-start-store-");
   fake = makeFakeBin(["codex"]);
   spawnLog = join(fake.dir, "..", "spawns.jsonl");

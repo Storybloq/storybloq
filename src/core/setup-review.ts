@@ -17,7 +17,8 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { homeOf } from "./setup-review-trust.js";
 import { isUtf8 } from "node:buffer";
 import { parseReviewerOutput, type SetupReviewBackend, type UnavailableReason } from "./setup-review-backends.js";
 import { isDirSyncUnsupported } from "./durable-dir.js";
@@ -116,11 +117,23 @@ export function normalizeBlock(text: string): string[] {
 
 // --- Store layout -----------------------------------------------------------
 
+/** Test seam, not reachable through any CLI or MCP input: the platform the store's default follows. */
+export const storeRootSeams: { platform: () => NodeJS.Platform } = { platform: () => process.platform };
+
+/**
+ * ISS-1457: the user's state folder, not the temporary one the system may
+ * empty: on macOS ~/Library/Application Support/storybloq/setup-review,
+ * elsewhere $XDG_STATE_HOME/storybloq/setup-review or
+ * ~/.local/state/storybloq/setup-review. STORYBLOQ_SETUP_REVIEW_DIR still
+ * overrides. Either way a reviewer runs there only after the location check.
+ */
 export function storeRoot(env: NodeJS.ProcessEnv): string {
   const override = env.STORYBLOQ_SETUP_REVIEW_DIR;
   if (override) return override;
-  const uid = typeof process.getuid === "function" ? process.getuid() : "user";
-  return join(tmpdir(), `storybloq-setup-review-${uid}`);
+  const home = homeOf(env);
+  if (storeRootSeams.platform() === "darwin") return join(home, "Library", "Application Support", "storybloq", "setup-review");
+  const state = env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME : join(home, ".local", "state");
+  return join(state, "storybloq", "setup-review");
 }
 
 /** The errors that mean this process may not write the store, as inside a sandbox (ISS-1456). */

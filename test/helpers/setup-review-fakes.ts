@@ -169,9 +169,10 @@ process.stdin.on("end", () => {
     } else {
       const structured = JSON.parse(body);
       const answer = JSON.stringify({ type: "result", is_error: false, result: "", structured_output: structured, session_id: "fake-session" });
-      // "big" and "huge" pad a valid answer with whitespace, which JSON allows, to 2 MiB and 17 MiB.
+      // "big" and "huge" put 2 MiB and 17 MiB of whitespace, which JSON allows, BEFORE a valid answer,
+      // so an answer cut at any earlier limit loses the answer itself, not padding.
       const pad = mode === "big" ? 2 * 1024 * 1024 : mode === "huge" ? 17 * 1024 * 1024 : 0;
-      if (pad > 0) { process.stdout.write(answer + " ".repeat(pad), () => process.exit(0)); return; }
+      if (pad > 0) { process.stdout.write(" ".repeat(pad) + answer, () => process.exit(0)); return; }
       process.stdout.write(answer);
     }
     process.exit(0);

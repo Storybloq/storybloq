@@ -346,6 +346,29 @@ describe("moving a setup from the old store", () => {
     expect(tree(oldPaths(old).dir)).toEqual(oldBefore);
   });
 
+  it.skipIf(process.getuid?.() === 0)("an existing setup whose whole store tree denies writes: a plain status reads and reports it, and writes nothing (no lock, no revision)", async () => {
+    const id = idOf(await handleSetupReviewGate(io(), {}));
+    await handleSetupReviewRun(io({ stdin: REVIEW_PACKET }), { setup: id });
+    const want = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+    const root = storeRoot({ HOME: home });
+    const before = tree(root);
+    // Every folder read-only and every file read-only, from the store root down, not only a failing probe.
+    const all = [root, ...(readdirSync(root, { recursive: true }) as string[]).map((n) => join(root, n))];
+    const dirs = all.filter((p) => statSync(p).isDirectory());
+    const files = all.filter((p) => !dirs.includes(p));
+    for (const f of files) chmodSync(f, 0o400);
+    for (const d of dirs) chmodSync(d, 0o500);
+    try {
+      const r = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
+      expect(r).toEqual(want);
+    } finally {
+      for (const d of dirs) chmodSync(d, 0o700);
+      for (const f of files) chmodSync(f, 0o600);
+    }
+    expect(tree(root)).toEqual(before);
+    expect(existsSync(publicationLockPath(newPaths(id)))).toBe(false);
+  });
+
   it.skipIf(process.getuid?.() === 0)("a legacy-only setup with a destination that denies every write: status exit 3, no lock, no revision, nothing moved", async () => {
     const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
     await handleSetupReviewRun(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });

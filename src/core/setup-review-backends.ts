@@ -238,7 +238,7 @@ export function runReviewer(command: string, args: string[], opts: { cwd: string
 export type UnavailableCode =
   | "version-failed" | "flags-unsupported" | "sandbox-start-denied" | "network-denied"
   | "probe-inconclusive" | "probe-listener-failed" | "network-disabled-inferred" | "store-unwritable"
-  | "isolation-unverified" | "untrusted-location" | "untrusted-codex-home";
+  | "isolation-unverified" | "untrusted-location" | "untrusted-codex-home" | "supervisor-failed";
 
 export interface UnavailableReason {
   readonly backend: SetupReviewBackend | "store";

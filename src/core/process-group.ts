@@ -134,7 +134,15 @@ export interface GroupRunOptions {
   /** From spawn until the group is confirmed gone. */
   readonly timeoutMs: number;
   readonly killGraceMs?: number;
-  readonly onData: (chunk: Buffer) => void;
+  /** Both streams merged, for callers that do not tell them apart. */
+  readonly onData?: (chunk: Buffer) => void;
+  /** ISS-1457: stdout and stderr apart; each overrides onData for its stream. */
+  readonly onStdout?: (chunk: Buffer) => void;
+  readonly onStderr?: (chunk: Buffer) => void;
+  /** ISS-1457: written to the leader's stdin, which is otherwise closed. Abandoned, not awaited, once the leader exits or is stopped. */
+  readonly stdin?: Buffer;
+  /** ISS-1457: called once with the group id right after spawn. */
+  readonly onSpawn?: (pgid: number) => void;
 }
 
 export interface GroupRun {
@@ -169,7 +177,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = processGroupSeams.spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"], detached: own });
+      child = processGroupSeams.spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"], detached: own });
     } catch (e) {
       resolve({ exitCode: null, signal: null, timedOut: false, spawnError: (e as Error).message, cleanup: "confirmed", cleanupDetail: null });
       return;
@@ -193,6 +201,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       for (const t of timers) clearTimeout(t);
       process.removeListener("exit", stopOnExit);
       untrackGroup(child);
+      child.stdin?.destroy();
       release(child);
       resolve({ exitCode, signal, timedOut, ...r });
     };
@@ -278,8 +287,16 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       else if (phase === "terming" && own) kill();
     }, opts.timeoutMs);
 
-    child.stdout!.on("data", (c: Buffer) => opts.onData(c));
-    child.stderr!.on("data", (c: Buffer) => opts.onData(c));
+    const onOut = opts.onStdout ?? opts.onData ?? ((): void => {});
+    const onErr = opts.onStderr ?? opts.onData ?? ((): void => {});
+    child.stdout!.on("data", (c: Buffer) => onOut(c));
+    child.stderr!.on("data", (c: Buffer) => onErr(c));
+    if (child.pid !== undefined) opts.onSpawn?.(child.pid);
+    if (opts.stdin && child.stdin) {
+      // A leader that exits before reading its input fails on its own; the write is never waited for.
+      child.stdin.on("error", () => {});
+      child.stdin.end(opts.stdin);
+    }
     child.on("error", (e) => {
       // No process was started (a missing cwd or executable): nothing to stop.
       if (child.pid === undefined || !own) finish({ spawnError: e.message, cleanup: "confirmed", cleanupDetail: null });
@@ -290,6 +307,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     });
     child.on("exit", (code, sig) => {
       exited = true;
+      child.stdin?.destroy();
       exitCode = code;
       signal = sig;
       // Whatever the leader left behind in its group is stopped.

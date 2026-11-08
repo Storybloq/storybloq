@@ -74,7 +74,8 @@ it("allocates every scratch directory through the helper's registry (ISS-1392)",
 describe("setup reviewer backends (T-536)", () => {
   it("runs codex read-only, ephemeral, with a schema file and an output file, the prompt on stdin", () => {
     const args = codexArgs("/s/schema.json", "/s/out.json");
-    expect(args).toEqual(["exec", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", "/s/schema.json", "-o", "/s/out.json", "-"]);
+    // ISS-1457: user config, rules, hooks and plugins are off for every codex start.
+    expect(args).toEqual(["exec", "--ignore-user-config", "--ignore-rules", "--disable", "hooks", "--disable", "plugins", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check", "--output-schema", "/s/schema.json", "-o", "/s/out.json", "-"]);
     for (const flag of args.filter((a) => a.startsWith("-") && a !== "-")) expect(codexHelp).toContain(flag);
   });
 
@@ -262,6 +263,12 @@ describe.skipIf(process.platform === "win32")("a signal during a setup review en
   ] as const)("a %s that gets %s kills the reviewer's group and the CLI ends by that signal", async (mode, sig) => {
     const { ended, groupGone } = await run(mode, sig);
     expect(ended).toEqual({ code: null, signal: sig });
+    expect(groupGone).toBe(true);
+  }, 30_000);
+
+  it("a review whose CLI is SIGKILLed, so no handler of its own runs: the supervisor ends the reviewer's group (ISS-1457)", async () => {
+    const { ended, groupGone } = await run("review", "SIGKILL");
+    expect(ended).toEqual({ code: null, signal: "SIGKILL" });
     expect(groupGone).toBe(true);
   }, 30_000);
 

@@ -9,13 +9,16 @@
  * caller's own signal listener first. Progress goes to stdout, one word per line.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun } from "../../../src/cli/commands/setup-review.js";
 import { probeBackend } from "../../../src/core/setup-review-backends.js";
 import { REVIEW_PACKET } from "../../helpers/setup-review-fakes.js";
 
 const [mode, project, store, path, pidFile, listener] = process.argv.slice(2) as [string, string, string, string, string, string | undefined];
-const env = { PATH: path, STORYBLOQ_SETUP_REVIEW_DIR: store, HOME: project, FAKE_PID_FILE: pidFile };
+mkdirSync(join(store, "home"), { recursive: true, mode: 0o700 });
+mkdirSync(join(store, "tmp"), { recursive: true, mode: 0o700 });
+const env = { PATH: path, STORYBLOQ_SETUP_REVIEW_DIR: store, HOME: join(store, "home"), TMPDIR: join(store, "tmp"), FAKE_PID_FILE: pidFile };
 // Synchronous, so a word written just before process.exit is not lost on a pipe.
 const say = (word: string): void => { writeSync(1, `${word}\n`); };
 

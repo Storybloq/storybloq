@@ -28,6 +28,21 @@ const fs = require("node:fs");
 const name = __FAKE_NAME__;
 const args = process.argv.slice(2);
 if (process.env.FAKE_SPAWN_LOG) fs.appendFileSync(process.env.FAKE_SPAWN_LOG, JSON.stringify({ name, args }) + "\n");
+// ISS-1457: what codex 0.163.0 loads, modelled: config.toml unless --ignore-user-config, hooks.json unless
+// --disable hooks. Whatever they name after "touch" is created, as a planted MCP server or hook would.
+if (name === "codex" && !args.includes("--version") && !args.includes("--help") && args[0] !== "features") {
+  const path = require("node:path");
+  const home = process.env.CODEX_HOME || path.join(process.env.HOME || "", ".codex");
+  const disabled = args.filter((_, i) => args[i - 1] === "--disable");
+  const load = (file, off) => {
+    if (off) return;
+    let text = "";
+    try { text = fs.readFileSync(path.join(home, file), "utf-8"); } catch { return; }
+    for (const m of text.matchAll(/touch ([^;"\s]+)/g)) fs.writeFileSync(m[1], "");
+  };
+  load("config.toml", args.includes("--ignore-user-config"));
+  load("hooks.json", disabled.includes("hooks"));
+}
 const providerArg = args.find((a) => a.startsWith("model_providers.storybloq_probe="));
 if (providerArg) {
   const base = /base_url = "([^"]+)"/.exec(providerArg)[1];

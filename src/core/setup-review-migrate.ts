@@ -120,52 +120,51 @@ export async function placeSetup(paths: SetupPaths, env: NodeJS.ProcessEnv, crea
   const fromLegacy = legacy !== null && existsSync(legacy.setupFile);
   if (!fromLegacy && !create) return { kind: "absent" };
 
-  let legacyLock: ProjectLockHandle | null = null;
-  if (fromLegacy) {
-    try {
-      legacyLock = await acquireProjectLockAsync(legacy.lock, LEGACY_LOCK_WAIT);
-    } catch {
-      return { kind: "refused", detail: `the setup in the old store at ${legacy.dir} is in use; finish or stop that run, then try again` };
-    }
-  }
+  // The publication lock first: a second caller waits for a move in progress and then finds the setup whole,
+  // instead of timing out on the old store's run lock the mover holds.
+  mkdirSync(dirname(paths.dir), { recursive: true, mode: 0o700 });
+  let lock: ProjectLockHandle;
   try {
-    mkdirSync(dirname(paths.dir), { recursive: true, mode: 0o700 });
-    let lock: ProjectLockHandle;
-    try {
-      lock = await acquireProjectLockAsync(publicationLockPath(paths), LOCK_WAIT);
-    } catch {
-      return { kind: "refused", detail: `setup ${paths.setupId} is being created or moved by another process; try again` };
-    }
-    try {
-      if (complete(paths)) return { kind: "present" };
-      if (existsSync(paths.dir)) {
-        if (!fromLegacy && create && readdirSync(paths.dir).length === 0) return { kind: "created" };
-        return { kind: "refused", detail: `${paths.dir} holds a half-made setup; move it aside${fromLegacy ? ` (the setup is still at ${legacy!.dir})` : ""}, then try again` };
-      }
-      if (!fromLegacy) {
-        mkdirSync(paths.dir, { mode: 0o700 });
-        fsyncDir(dirname(paths.dir));
-        return { kind: "created" };
-      }
-      const problem = legacyProblem(legacy!);
-      if (problem) return { kind: "refused", detail: `the setup at ${legacy!.dir} cannot be moved: ${problem}` };
-      const staging = pathsAt(join(dirname(paths.dir), `.migrate-${paths.setupId}-${randomBytes(4).toString("hex")}`), paths);
+    lock = await acquireProjectLockAsync(publicationLockPath(paths), LOCK_WAIT);
+  } catch {
+    return { kind: "refused", detail: `setup ${paths.setupId} is being created or moved by another process; try again` };
+  }
+  let legacyLock: ProjectLockHandle | null = null;
+  try {
+    if (complete(paths)) return { kind: "present" };
+    if (fromLegacy) {
       try {
-        copyData(legacy!, staging);
-        const copied = legacyProblem(staging);
-        if (copied) return { kind: "refused", detail: `the copy of ${legacy!.dir} does not validate: ${copied}` };
-        await migrateSeams.beforePublish();
-        if (existsSync(paths.dir)) return { kind: "refused", detail: `${paths.dir} appeared while the setup was being moved; try again` };
-        renameSync(staging.dir, paths.dir);
-        fsyncDir(dirname(paths.dir));
-      } finally {
-        rmSync(staging.dir, { recursive: true, force: true });
+        legacyLock = await acquireProjectLockAsync(legacy.lock, LEGACY_LOCK_WAIT);
+      } catch {
+        return { kind: "refused", detail: `the setup in the old store at ${legacy.dir} is in use; finish or stop that run, then try again` };
       }
-      return { kind: "migrated", from: legacy!.dir };
-    } finally {
-      releaseProjectLock(lock);
     }
+    if (existsSync(paths.dir)) {
+      if (!fromLegacy && create && readdirSync(paths.dir).length === 0) return { kind: "created" };
+      return { kind: "refused", detail: `${paths.dir} holds a half-made setup; move it aside${fromLegacy ? ` (the setup is still at ${legacy!.dir})` : ""}, then try again` };
+    }
+    if (!fromLegacy) {
+      mkdirSync(paths.dir, { mode: 0o700 });
+      fsyncDir(dirname(paths.dir));
+      return { kind: "created" };
+    }
+    const problem = legacyProblem(legacy!);
+    if (problem) return { kind: "refused", detail: `the setup at ${legacy!.dir} cannot be moved: ${problem}` };
+    const staging = pathsAt(join(dirname(paths.dir), `.migrate-${paths.setupId}-${randomBytes(4).toString("hex")}`), paths);
+    try {
+      copyData(legacy!, staging);
+      const copied = legacyProblem(staging);
+      if (copied) return { kind: "refused", detail: `the copy of ${legacy!.dir} does not validate: ${copied}` };
+      await migrateSeams.beforePublish();
+      if (existsSync(paths.dir)) return { kind: "refused", detail: `${paths.dir} appeared while the setup was being moved; try again` };
+      renameSync(staging.dir, paths.dir);
+      fsyncDir(dirname(paths.dir));
+    } finally {
+      rmSync(staging.dir, { recursive: true, force: true });
+    }
+    return { kind: "migrated", from: legacy!.dir };
   } finally {
     if (legacyLock) releaseProjectLock(legacyLock);
+    releaseProjectLock(lock);
   }
 }

@@ -88,9 +88,12 @@ describe("moving a setup from the old store", () => {
   it("a skipped setup stays skipped", async () => {
     const id = idOf(await handleSetupReviewGate(io({ legacy: true }), {}));
     await handleSetupReviewStatus(io({ legacy: true }), { setup: id, skipped: true });
+    const skip = JSON.parse(readFileSync(oldPaths(id).setupFile, "utf-8")).skipped;
+    expect(skip).toBeDefined();
+    const before = await handleSetupReviewStatus(io({ legacy: true, stdin: REVIEW_PACKET }), { setup: id });
     const after = await handleSetupReviewStatus(io({ stdin: REVIEW_PACKET }), { setup: id });
-    expect(after.stdout).toMatch(/skipped/i);
-    expect(JSON.parse(readFileSync(newPaths(id).setupFile, "utf-8")).skipped).toBeDefined();
+    expect(after).toEqual(before);
+    expect(JSON.parse(readFileSync(newPaths(id).setupFile, "utf-8")).skipped).toEqual(skip);
   });
 
   it("a setup with a review in flight is refused, naming the old path, and nothing is copied", async () => {

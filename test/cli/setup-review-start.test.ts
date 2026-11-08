@@ -5,7 +5,9 @@
  * 0.163.0 was seen to (test/helpers/setup-review-fakes.ts, FAKE_CODEX_PROBE).
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { supervisorEntry, supervisorSeams } from "../../src/core/setup-review-supervisor.js";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus, type SetupReviewIo, type SetupReviewResult } from "../../src/cli/commands/setup-review.js";
@@ -306,6 +308,35 @@ describe("codex starts only with what it loads shut off (ISS-1457)", () => {
   });
 });
 
+describe("nothing planted under HOME starts through the real launch builder (ISS-1457)", () => {
+  const plant = (marker: string): void => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.sentinel]\ncommand = "/bin/sh"\nargs = ["-c", "touch ${marker}; sleep 20"]\n`);
+    writeFileSync(join(home, ".codex", "hooks.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch ${marker}.hook` }] }] } }));
+  };
+
+  it("the fake models the route: started without the flags, it runs what was planted", () => {
+    const marker = join(home, "MARKER");
+    plant(marker);
+    spawnSync(join(fake.dir, "codex"), ["exec", "-"], { env: { PATH: fake.path, HOME: home }, input: "" });
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(`${marker}.hook`)).toBe(true);
+  });
+
+  it("gate and run start the probe and the review, and neither starts the planted server or hook", async () => {
+    const marker = join(home, "MARKER");
+    plant(marker);
+    extraEnv = { FAKE_CODEX_PROBE: "reach" };
+    const id = setupIdOf(await handleSetupReviewGate(io(), {}));
+    const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
+    expect(run.exitCode).toBe(0);
+    expect(reviews()).toBe(1);
+    expect(probes().length).toBeGreaterThan(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(`${marker}.hook`)).toBe(false);
+  });
+});
+
 describe("no reviewer starts from an untrusted place (ISS-1457)", () => {
   it("a CODEX_HOME inside the project skips codex with its reason, before any codex call", async () => {
     fake = makeFakeBin(["codex", "claude"]);
@@ -406,6 +437,19 @@ describe("gate, run and status agree (ISS-1456)", () => {
     expect(forced.exitCode).toBe(2);
     expect(forced.stdout).toMatch(/Reviewer unavailable: codex: cannot start inside this sandbox/);
     expect(reviews()).toBe(0);
+  });
+
+  it("a supervisor that cannot start is a failed record with its reason, and no reviewer runs (ISS-1457)", async () => {
+    const id = setupIdOf(await handleSetupReviewGate(io(), {}));
+    supervisorSeams.entry = () => join(home, "no-supervisor.js");
+    try {
+      const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
+      expect(run.exitCode).not.toBe(0);
+      expect(reviews()).toBe(0);
+      expect(recordsOf(id)[0]).toMatchObject({ state: "failed", failure: "spawn", reasonCode: "supervisor-failed" });
+    } finally {
+      supervisorSeams.entry = supervisorEntry;
+    }
   });
 
   it("a later passing gate clears the stored reasons", async () => {

@@ -5,12 +5,16 @@
  * probes a fake whose --version leaves an escaped child. The result goes to
  * stdout; nothing here calls process.exit.
  */
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun } from "../../../src/cli/commands/setup-review.js";
 import { probeBackend } from "../../../src/core/setup-review-backends.js";
 import { REVIEW_PACKET } from "../../helpers/setup-review-fakes.js";
 
 const [mode, project, store, path, pidFile] = process.argv.slice(2) as [string, string, string, string, string];
-const env = { PATH: path, STORYBLOQ_SETUP_REVIEW_DIR: store, HOME: project, FAKE_PID_FILE: pidFile };
+mkdirSync(join(store, "home"), { recursive: true, mode: 0o700 });
+mkdirSync(join(store, "tmp"), { recursive: true, mode: 0o700 });
+const env = { PATH: path, STORYBLOQ_SETUP_REVIEW_DIR: store, HOME: join(store, "home"), TMPDIR: join(store, "tmp"), FAKE_PID_FILE: pidFile };
 
 if (mode === "probe") {
   const version = await probeBackend("codex", { ...env, FAKE_CODEX_VERSION_ESCAPE: "1" }, { timeoutMs: 300, killGraceMs: 200 });

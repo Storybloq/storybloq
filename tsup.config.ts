@@ -14,6 +14,8 @@ export default defineConfig({
     mcp: "src/mcp/index.ts",
     presence: "src/hooks/presence-entry.ts",
     "codex-plugin": "src/codex-plugin.ts",
+    // ISS-1457: started by the CLI to own a setup reviewer's process group; it imports no CLI code it does not use.
+    "setup-review-supervisor": "src/setup-review-supervisor-entry.ts",
   },
   dts: true,
   format: ["esm"],

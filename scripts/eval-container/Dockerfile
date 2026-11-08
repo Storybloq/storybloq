@@ -11,5 +11,8 @@ RUN cd /opt/storybloq && npm ci --omit=dev --ignore-scripts --silent
 RUN useradd -m -u 1001 -U eval && mkdir -p /vol/att/project && chown -R eval:eval /vol/att
 COPY relay.mjs sup.mjs envelope.mjs pack.sh /opt/eval/
 COPY storybloq-launcher /opt/eval/bin/storybloq
+# Commit 6a: the helper the host reads an attempt through, bundled from the host's own functions. A link, so its
+# imports resolve from the package as the evaluation bundle's do.
+RUN ln -s /opt/storybloq/.eval-dist/eval-helper.js /opt/eval/helper.js
 RUN chmod -R a+rX /opt/eval && chmod 555 /opt/eval/bin/storybloq /opt/eval/pack.sh
 USER eval

@@ -17,7 +17,9 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const EVAL_DIST = ".eval-dist";
-export const EVAL_INPUTS = ["src", "scripts/eval-fault-mcp.ts", "scripts/build-eval.mjs", "tsup.config.ts", "package.json", "package-lock.json"];
+// T-538 S5b-0 commit 6a: the in-attempt helper and every script file its bundle pulls in (a test holds this list to the import closure).
+export const HELPER_INPUTS = ["scripts/eval-helper.ts", "scripts/continuity-lib.ts", "scripts/onboarding-eval-checkset6.ts", "scripts/onboarding-eval-checkset7-events.ts", "scripts/onboarding-eval-checkset7-writes.ts", "scripts/onboarding-eval-checkset7.ts", "scripts/onboarding-eval-lib.ts", "scripts/onboarding-eval-sessions.ts"];
+export const EVAL_INPUTS = ["src", "scripts/eval-fault-mcp.ts", "scripts/build-eval.mjs", "tsup.config.ts", "package.json", "package-lock.json", ...HELPER_INPUTS];
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 
@@ -53,7 +55,7 @@ export function builtDigest(root) {
 /** Builds when the digest differs from the recorded one (or `force`); returns the digest and whether it built. */
 export async function buildEval(root, { force = false } = {}) {
   const digest = evalInputDigest(root);
-  if (!force && builtDigest(root) === digest && existsSync(join(root, EVAL_DIST, "eval-mcp.js")) && existsSync(join(root, EVAL_DIST, "eval-cli.js"))) {
+  if (!force && builtDigest(root) === digest && existsSync(join(root, EVAL_DIST, "eval-mcp.js")) && existsSync(join(root, EVAL_DIST, "eval-cli.js")) && existsSync(join(root, EVAL_DIST, "eval-helper.js"))) {
     return { digest, built: false };
   }
   // tsup reads its config from the working directory: build in a child process run in `root`, never by chdir.
@@ -79,7 +81,7 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
     const { build } = await import("tsup");
     await build({
       config: "tsup.config.ts",
-      entry: { "eval-mcp": "scripts/eval-fault-mcp.ts", "eval-cli": "scripts/eval-fault-mcp.ts" },
+      entry: { "eval-mcp": "scripts/eval-fault-mcp.ts", "eval-cli": "scripts/eval-fault-mcp.ts", "eval-helper": "scripts/eval-helper.ts" },
       outDir: EVAL_DIST,
       dts: false,
       clean: true,

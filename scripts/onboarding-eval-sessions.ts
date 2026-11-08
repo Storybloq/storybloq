@@ -640,17 +640,39 @@ export function storeRevisionCount(storeRoot: string, setupId: string): number {
   return n;
 }
 
-/** Every evidence file under the project's docs/checkpoints/, by its project-relative path, digested now. */
+/**
+ * What an evidence observation records in place of a digest when the entry is not a regular file it can
+ * read. None is a hex digest, so rule 8 reports each as a change ("observed as symlink"), never a match.
+ */
+export const EVIDENCE_NOT_READ = { link: "symlink", other: "not-a-file", failed: "unreadable" } as const;
+
+/**
+ * Every evidence file under the project's docs/checkpoints/, by its project-relative path, digested now.
+ * Links are never followed, the checkpoints folder's own included (ISS-1467): a link, a fifo or an entry
+ * that cannot be read is a failed observation under its own path, so the walk neither leaves the project
+ * nor stops.
+ */
 export function observeEvidence(projectRoot: string, at: EvidenceObservation["at"]): EvidenceObservation[] {
   const out: EvidenceObservation[] = [];
-  const walk = (dir: string): void => {
-    if (!existsSync(dir)) return;
-    for (const name of readdirSync(dir).sort()) {
-      const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
-      else out.push({ ref: relative(projectRoot, p).split(sep).join("/"), sha256: createHash("sha256").update(readFileSync(p)).digest("hex"), at });
+  const refOf = (p: string): string => relative(projectRoot, p).split(sep).join("/");
+  const visit = (p: string): void => {
+    let st: Stats;
+    try { st = lstatSync(p); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") out.push({ ref: refOf(p), sha256: EVIDENCE_NOT_READ.failed, at });
+      return;
+    }
+    if (st.isDirectory()) {
+      let names: string[];
+      try { names = readdirSync(p).sort(); } catch { out.push({ ref: refOf(p), sha256: EVIDENCE_NOT_READ.failed, at }); return; }
+      for (const name of names) visit(join(p, name));
+    } else if (!st.isFile()) {
+      out.push({ ref: refOf(p), sha256: st.isSymbolicLink() ? EVIDENCE_NOT_READ.link : EVIDENCE_NOT_READ.other, at });
+    } else {
+      let sha256: string;
+      try { sha256 = createHash("sha256").update(readFileSync(p)).digest("hex"); } catch { sha256 = EVIDENCE_NOT_READ.failed; }
+      out.push({ ref: refOf(p), sha256, at });
     }
   };
-  walk(join(projectRoot, "docs", "checkpoints"));
+  visit(join(projectRoot, "docs", "checkpoints"));
   return out;
 }

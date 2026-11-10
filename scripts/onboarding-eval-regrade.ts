@@ -29,6 +29,7 @@ import {
   type HarnessFacts, type SessionScript, type SessionsFile,
 } from "./onboarding-eval-sessions.js";
 import { EventsLogError, parseEventsLog } from "./onboarding-eval-checkset7-events.js";
+import { initEventConsulted, initEventProblems, readbackProblems, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 import {
   inventoryFor,
   driveFlow, finishDrive, inspectAfter, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
@@ -40,6 +41,7 @@ export const G1 = "consistency validation against the stored raw, not historical
 export const G2 = "every byte of every file the pending revision read is unchanged";
 export const OPAQUE_LIMIT = "failures present in the supplied record are preserved; for the infrastructure and tree failures, deletion of an opaque failure together with its retained source field before the first regrade is not detectable without a run-time record hash";
 const OPAQUE_INFRA = /^(?:timed out after \d+ ms|spawn failed: .+|killed by \S+|exit -?\d+)$/;
+const HOST_V2_OPAQUE = /^(?:input|cleanup): .+$/;
 
 /** A question the judge must rule on. */
 export type Candidate =
@@ -189,6 +191,22 @@ interface Set7Inputs {
   readonly projectRoot: string;
   readonly mapping: unknown;
   readonly entries: readonly ManifestEntry[];
+  /** T-538 commit 1: a host-v2 Claude record's readback per turn file stem, and what its launch expected. */
+  readonly readbacks: ReadonlyMap<string, { readonly steps: readonly ReadbackStep[]; readonly permissionDenials: unknown; readonly expected: ReadbackExpected }>;
+}
+
+/** A host-v2 record's claudeLaunch, refused unless every field has its shape. */
+function claudeLaunchOf(record: Record<string, unknown>): { project: string; roots: string[]; policy: Record<string, unknown>; mcpLaunch: { command: string; args: string[] }; toolSets: Record<string, string[]> } {
+  const l = record.claudeLaunch as Record<string, unknown> | undefined;
+  const strings = (v: unknown): boolean => Array.isArray(v) && v.every((x) => typeof x === "string");
+  const launch = l?.mcpLaunch as Record<string, unknown> | undefined;
+  const sets = l?.toolSets as Record<string, unknown> | undefined;
+  if (l === undefined || l === null || typeof l !== "object" || typeof l.project !== "string" || !strings(l.roots) || l.policy === null || typeof l.policy !== "object"
+    || launch === undefined || launch === null || typeof launch.command !== "string" || !strings(launch.args)
+    || sets === undefined || sets === null || typeof sets !== "object" || !Object.values(sets).every(strings)) {
+    return refuse("the host-v2 Claude record has no valid claudeLaunch");
+  }
+  return l as unknown as ReturnType<typeof claudeLaunchOf>;
 }
 
 /**
@@ -248,10 +266,31 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
     entries.push({ path: OBSERVATIONS_RAW, sha256: sha256(observationsBytes) });
   }
   if (sessionsBytes !== null) entries.push({ path: SESSIONS_RAW, sha256: sha256(sessionsBytes) });
+  // T-538 commit 1 (plan 6.4): a host-v2 Claude turn's readback is a replay input, one per turn, required.
+  const readbacks = new Map<string, { steps: ReadbackStep[]; permissionDenials: unknown; expected: ReadbackExpected }>();
+  if (record.route === "host-v2" && record.client === "claude") {
+    const launch = claudeLaunchOf(record);
+    const turns = Array.isArray(record.turns) ? record.turns as { label?: unknown }[] : [];
+    turns.forEach((t, i) => {
+      const stem = turnFile(i, String(t.label));
+      const name = `${stem}.readback.json`;
+      const bytes = read(name, true)!;
+      let v: { steps?: unknown; permissionDenials?: unknown };
+      try { v = JSON.parse(bytes.toString("utf-8")) as typeof v; } catch { return refuse(`replay input ${name} is malformed`); }
+      if (v === null || typeof v !== "object" || !Array.isArray(v.steps)) refuse(`replay input ${name} is malformed`);
+      const tools = Object.hasOwn(launch.toolSets, name) ? launch.toolSets[name] : undefined;
+      if (tools === undefined) refuse(`the record's claudeLaunch names no tool set for ${name}`);
+      readbacks.set(stem, {
+        steps: v.steps as ReadbackStep[], permissionDenials: v.permissionDenials ?? null,
+        expected: { project: launch.project, roots: launch.roots, policy: launch.policy, mcpTools: tools!, mcpLaunch: launch.mcpLaunch },
+      });
+      entries.push({ path: name, sha256: sha256(bytes) });
+    });
+  }
   for (const name of hashOf.keys()) if (!entries.some((e) => e.path === name)) refuse(`the record names replay input ${name}, which check set 7 does not read`);
   return {
     events, snapshot: snapshotBytes === null ? null : snapshotBytes.toString("utf-8"), projectRoot: invocations.projectRoot as string, mapping: invocations.mapping, entries,
-    sessions: sessionsBytes === null ? null : sessionsBytes.toString("utf-8"), observations,
+    sessions: sessionsBytes === null ? null : sessionsBytes.toString("utf-8"), observations, readbacks,
   };
 }
 
@@ -261,7 +300,11 @@ interface RecordTurn {
 }
 
 /** An infrastructure failure the record states for a turn, checked against the turn's terminal in the runner's precedence. */
-function checkInfrastructure(index: number, infra: string | null, turn: EvalTurn): void {
+function checkInfrastructure(index: number, infra: string | null, turn: EvalTurn, hostV2 = false): void {
+  // T-538 commit 1: a launch failure is checked against the replayed readback (checkLaunch), and only a host-v2 record has one.
+  if (hostV2 && infra !== null && infra.startsWith("launch: ")) return;
+  // An input or cleanup failure is the group's own report; the raw cannot establish it, and only the host-v2 runner records one.
+  if (hostV2 && infra !== null && HOST_V2_OPAQUE.test(infra)) return;
   if (infra === null) {
     if (turn.terminal.status !== "completed") refuse(`turn ${index}: the raw terminal is ${turn.terminal.status}, but the record states no infrastructure failure`);
     return;
@@ -285,6 +328,30 @@ function stderrPathOf(failures: readonly string[], runId: string, label: string,
     }
   }
   return `<absent>${suffix}`;
+}
+
+/**
+ * T-538 commit 1: re-runs 4.4's comparison on the stored readback against the record's expected values. A
+ * recorded launch failure must be the first problem the replay finds (the readback's, else the init event's
+ * once the turn ended on its own); a turn recorded with no failure, or a later one, must find none. The
+ * recorded permission denials must be the raw result's.
+ */
+function checkLaunch(index: number, rec: { infraFailure: string | null; exitCode: number | null }, rb: NonNullable<ReturnType<Set7Inputs["readbacks"]["get"]>>, raw: string): void {
+  const infra = rec.infraFailure;
+  const events = parseStream(raw).events as unknown as Record<string, unknown>[];
+  const result = events.find((e) => e.type === "result");
+  if (!same(rb.permissionDenials, result?.permission_denials ?? null)) refuse(`turn ${index}: the readback's permission denials are not the raw result's`);
+  if (infra !== null && infra.startsWith("spawn failed: ")) return;
+  const readback = readbackProblems(rb.steps, rb.expected);
+  // The runner's own predicate (initEventConsulted): exit 0 with no failure, launch, terminal or cleanup, each of
+  // which implies no timeout and no signal by the failure order. Never for input: the prompt was not delivered.
+  const first = readback[0] ?? (initEventConsulted(infra, rec.exitCode) ? initEventProblems(events, rb.expected.mcpTools)[0] : undefined) ?? null;
+  const replayed = first === null ? null : `launch: ${first}`;
+  if (infra !== null && infra.startsWith("launch: ")) {
+    if (infra !== replayed) refuse(`turn ${index}: the recorded launch failure "${infra}" is not the replayed readback's ${replayed === null ? "clean result" : `"${replayed}"`}`);
+    return;
+  }
+  if (replayed !== null) refuse(`turn ${index}: the replayed readback finds "${replayed}", but the record states ${infra === null ? "no infrastructure failure" : `"${infra}"`}`);
 }
 
 function parseTurn(client: string, raw: string, checkSet: number): EvalTurn {
@@ -340,6 +407,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   // Check set 6: rule 2 reads the store the run's turns wrote, so the run's copy of it is an input.
   if (cs >= 6 && (input.setupReviewStore ?? null) === null) refuse(STORE_COPY_MISSING);
   // Check set 7: the events log, the invocation mapping and (once the archive committed) its snapshot, checked before any replay.
+  if (record.route !== undefined && (record.route !== "host-v2" || cs < 7)) refuse(`the record's route ${String(record.route)} is not one this regrade supports`);
   const set7 = cs >= 7 ? set7Inputs(input, record) : null;
 
   // Turn identity: position is identity, the file name is fixed by it, and nothing else may sit beside them.
@@ -386,7 +454,15 @@ function regradeOrThrow(input: RegradeInput): Regraded {
     manifest.push({ path: `${file}.jsonl`, sha256: sha256(rawBytes) }, { path: `${file}.stderr.txt`, sha256: sha256(input.readRaw(`${file}.stderr.txt`)) });
     const raw = rawBytes.toString("utf-8");
     const turn = { ...parseTurn(client, raw, cs), models: Array.isArray(rec!.models) ? rec!.models : [] };
-    checkInfrastructure(consumed, rec!.infraFailure, turn);
+    const hostV2 = record.route === "host-v2";
+    checkInfrastructure(consumed, rec!.infraFailure, turn, hostV2);
+    const rb = set7?.readbacks.get(file);
+    if (hostV2 && client === "claude") {
+      if (rb === undefined) refuse(`turn ${consumed}: the host-v2 record has no readback for ${file}`);
+      checkLaunch(consumed, rec!, rb!, raw);
+    } else if (rec!.infraFailure !== null && rec!.infraFailure.startsWith("launch: ")) {
+      refuse(`turn ${consumed}: unrecognised infrastructure failure "${rec!.infraFailure}"`);
+    }
     const response: TurnResponse = {
       turn, exitCode: rec!.exitCode, infraFailure: rec!.infraFailure,
       stderrPath: stderrPathOf(recFailures, runId, rec!.label, rec!.infraFailure, file),

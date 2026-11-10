@@ -10,7 +10,7 @@ import { PassThrough } from "node:stream";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { processGroupSeams, runInGroup, type GroupRunOptions } from "../../src/core/process-group.js";
+import { processGroupSeams, runInGroup, type GroupControl, type GroupRunOptions } from "../../src/core/process-group.js";
 
 const real = { ...processGroupSeams };
 afterEach(() => { Object.assign(processGroupSeams, real); });
@@ -200,5 +200,136 @@ describe("runInGroup without process groups", () => {
     const r = await run("ignored", { timeoutMs: 5_000 });
     expect(f.signals).toEqual([]);
     expect(r).toMatchObject({ exitCode: 0, timedOut: false, cleanup: "confirmed" });
+  });
+});
+
+// T-538 commit 1 (plan 5.1): a stop the caller can ask for, and the leader's stdin as a pipe it feeds.
+describe("runInGroup control (T-538 5.1)", () => {
+  /** Runs `script` with a control handle; `use` gets the handle once, right after spawn. */
+  async function controlled(script: string, use: (c: GroupControl) => void, over: Partial<GroupRunOptions> = {}) {
+    let handle: GroupControl | null = null;
+    let calls = 0;
+    const r = await run(script, { control: (c) => { calls += 1; handle = c; use(c); }, ...over });
+    return { ...r, handle: handle as GroupControl | null, calls };
+  }
+
+  it("stop from a data callback ends the group with SIGTERM, not at the deadline", async () => {
+    let c: GroupControl | null = null;
+    const r = await run("echo ready; sleep 30", {
+      timeoutMs: 20_000, killGraceMs: 300,
+      control: (h) => { c = h; },
+      onData: (chunk) => { if (chunk.toString("utf-8").includes("ready")) c!.stop(); },
+    });
+    expect(r).toMatchObject({ timedOut: false, spawnError: null, cleanup: "confirmed", signal: "SIGTERM" });
+    expect(r.ms).toBeLessThan(5_000);
+  });
+
+  it("the callback is called once, and stop twice sends one SIGTERM to a leader that ignores it, then SIGKILL after the grace", async () => {
+    const m = markers();
+    try {
+      const terms = join(m.dir, "terms");
+      const ready = join(m.dir, "ready");
+      let c: GroupControl | null = null;
+      let calls = 0;
+      const r = await run(`trap 'echo t >> "${terms}"' TERM; : > '${ready}'; echo ready; while :; do sleep 0.05; done`, {
+        timeoutMs: 20_000, killGraceMs: 600,
+        control: (h) => { calls += 1; c = h; },
+        onData: (chunk) => { if (chunk.toString("utf-8").includes("ready")) { c!.stop(); c!.stop(); } },
+      });
+      expect(calls).toBe(1);
+      expect(r).toMatchObject({ timedOut: false, cleanup: "confirmed", signal: "SIGKILL" });
+      expect(readFileSync(terms, "utf-8").trim().split("\n")).toEqual(["t"]);
+      expect(r.ms).toBeLessThan(8_000);
+    } finally {
+      m.done();
+    }
+  });
+
+  it("stop after the leader's exit does nothing more and never throws", async () => {
+    let c: GroupControl | null = null;
+    const r = await run("echo hi; exit 4", { control: (h) => { c = h; }, onLeaderExit: () => { c!.stop(); c!.stop(); } });
+    expect(r).toMatchObject({ exitCode: 4, timedOut: false, spawnError: null, cleanup: "confirmed" });
+    expect(r.inputError).toBeUndefined();
+    expect(() => c!.stop()).not.toThrow();
+  });
+
+  it("feeds the leader's stdin: written lines arrive, endInput closes it, and nothing is reported", async () => {
+    const r = await controlled("cat; echo end", (c) => {
+      expect(c.write(Buffer.from("one\n"))).toBe(true);
+      expect(c.write(Buffer.from("two\n"))).toBe(true);
+      c.endInput();
+    });
+    expect(r.calls).toBe(1);
+    expect(r).toMatchObject({ exitCode: 0, timedOut: false, cleanup: "confirmed" });
+    expect(r.out).toBe("one\ntwo\nend\n");
+    expect(r.inputError).toBeUndefined();
+  });
+
+  it("a write after endInput is swallowed, never delivered, and reported once", async () => {
+    const r = await controlled("cat; echo end", (c) => {
+      c.write(Buffer.from("kept\n"));
+      c.endInput();
+      expect(() => c.write(Buffer.from("late\n"))).not.toThrow();
+      expect(c.write(Buffer.from("later\n"))).toBe(false);
+    });
+    expect(r.out).toBe("kept\nend\n");
+    expect(r.inputError).toBe("write after endInput");
+  });
+
+  it("a write after exit is swallowed and reported once", async () => {
+    let c: GroupControl | null = null;
+    let threw = false;
+    const r = await run("exit 0", {
+      control: (h) => { c = h; },
+      onLeaderExit: () => { try { c!.write(Buffer.from("x")); c!.write(Buffer.from("y")); } catch { threw = true; } },
+    });
+    expect(threw).toBe(false);
+    expect(r).toMatchObject({ exitCode: 0, cleanup: "confirmed" });
+    expect(r.inputError).toBe("write after exit");
+  });
+
+  it("a leader that never reads: past 1 MiB queued write answers false, past 8 MiB the group is stopped as stdin overflow", async () => {
+    const answers: boolean[] = [];
+    const r = await controlled("echo ready; sleep 30", (c) => {
+      answers.push(c.write(Buffer.alloc(1536 * 1024, 97)));
+      answers.push(c.write(Buffer.alloc(8 * 1024 * 1024, 98)));
+    }, { timeoutMs: 20_000, killGraceMs: 300 });
+    expect(answers).toEqual([false, false]);
+    expect(r.inputError).toBe("stdin overflow");
+    expect(r).toMatchObject({ timedOut: false, cleanup: "confirmed", signal: "SIGTERM" });
+    expect(r.ms).toBeLessThan(8_000);
+  });
+
+  it("a leader that closed its stdin: the broken pipe is swallowed and reported", async () => {
+    let c: GroupControl | null = null;
+    const r = await run("exec 0<&-; echo closed; sleep 1", {
+      control: (h) => { c = h; },
+      onData: (chunk) => { if (chunk.toString("utf-8").includes("closed")) { c!.write(Buffer.alloc(256 * 1024, 99)); } },
+    });
+    expect(r).toMatchObject({ exitCode: 0, cleanup: "confirmed" });
+    expect(r.inputError).toBe("EPIPE");
+  });
+
+  it("a control callback that throws stops the group and settles as a spawn error", async () => {
+    const r = await controlled("sleep 30", () => { throw new Error("boom"); }, { timeoutMs: 20_000, killGraceMs: 300 });
+    expect(r.spawnError).toBe("control: boom");
+    expect(r).toMatchObject({ timedOut: false, cleanup: "confirmed" });
+    expect(r.ms).toBeLessThan(5_000);
+  });
+
+  it.each([["null", null, "control: null"], ["undefined", undefined, "control: undefined"], ["a string", "plain", "control: plain"]] as const)("a control callback that throws %s still stops the group and settles as a spawn error (F6)", async (_n, thrown, text) => {
+    const r = await controlled("sleep 30", () => { throw thrown; }, { timeoutMs: 20_000, killGraceMs: 300 });
+    expect(r.spawnError).toBe(text);
+    expect(r).toMatchObject({ timedOut: false, cleanup: "confirmed" });
+    expect(r.ms).toBeLessThan(5_000);
+  });
+
+  it("stdin and control together are a spawn error, and nothing is started", async () => {
+    let spawned = 0;
+    processGroupSeams.spawn = ((...a: Parameters<typeof spawn>) => { spawned += 1; return spawn(...a); }) as typeof spawn;
+    const r = await run("sleep 30", { stdin: Buffer.from("x"), control: () => {} });
+    expect(spawned).toBe(0);
+    expect(r.spawnError).toMatch(/stdin and control are mutually exclusive/);
+    expect(r.cleanup).toBe("confirmed");
   });
 });

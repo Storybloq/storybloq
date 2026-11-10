@@ -161,6 +161,28 @@ export interface GroupRunOptions {
   readonly onSpawn?: (pgid: number, signal: GroupSignal) => void;
   /** ISS-1457: called once when the leader's exit event fires, before anything else reacts to it. */
   readonly onLeaderExit?: () => void;
+  /**
+   * T-538 5.1: called once right after spawn with a stop the caller may ask for and the leader's stdin,
+   * which is then a pipe. Mutually exclusive with `stdin`: both given is a spawn error.
+   */
+  readonly control?: (c: GroupControl) => void;
+}
+
+/** Queued stdin past which `write` answers false (the caller should wait), and past which the group is stopped. */
+export const CONTROL_QUEUE_SOFT = 1 << 20;
+export const CONTROL_QUEUE_HARD = 8 << 20;
+
+/**
+ * T-538 5.1: what a caller may do to a running group. `stop()` runs the deadline's own sequence (SIGTERM,
+ * the grace, SIGKILL, confirmation) and is idempotent. `write` takes the chunk exactly once and never throws;
+ * it answers false when more than 1 MiB is queued, and more than 8 MiB queued stops the group as
+ * `stdin overflow`. A broken pipe, a write after exit and a write after `endInput()` are swallowed and
+ * reported once on the result as `inputError`.
+ */
+export interface GroupControl {
+  stop(): void;
+  write(chunk: Buffer): boolean;
+  endInput(): void;
 }
 
 /**
@@ -219,6 +241,8 @@ export interface GroupRun {
    * accepted residual (see GroupSignal) is on the record: the group id and each signal, in order.
    */
   readonly signalledAfterLeaderExit?: { readonly pgid: number; readonly signals: readonly NodeJS.Signals[] };
+  /** T-538 5.1: the first input problem of a run with `control` (`stdin overflow`, `write after exit`, `write after endInput`, or the pipe's error code); absent when there was none. */
+  readonly inputError?: string;
 }
 
 /**
@@ -241,9 +265,13 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
   const grace = opts.killGraceMs ?? KILL_GRACE_MS;
   const own = processGroupSeams.ownGroup;
   return new Promise((resolve) => {
+    if (opts.stdin && opts.control) {
+      resolve({ exitCode: null, signal: null, timedOut: false, spawnError: "stdin and control are mutually exclusive", cleanup: "confirmed", cleanupDetail: null });
+      return;
+    }
     let child: ChildProcess;
     try {
-      child = processGroupSeams.spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"], detached: own });
+      child = processGroupSeams.spawn(opts.command, [...opts.args], { cwd: opts.cwd, env: opts.env, stdio: [opts.stdin || opts.control ? "pipe" : "ignore", "pipe", "pipe"], detached: own });
     } catch (e) {
       resolve({ exitCode: null, signal: null, timedOut: false, spawnError: (e as Error).message, cleanup: "confirmed", cleanupDetail: null });
       return;
@@ -268,6 +296,8 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     let closed = false;
     let phase: "running" | "terming" | "confirming" = "running";
     let settled = false;
+    let inputError: string | null = null;
+    let controlError: string | null = null;
 
     const finish = (r: Omit<GroupRun, "exitCode" | "signal" | "timedOut">): void => {
       if (settled) return;
@@ -277,7 +307,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       untrackGroup(child);
       child.stdin?.destroy();
       release(child);
-      resolve({ exitCode, signal, timedOut, ...r, ...(afterExit.length > 0 && child.pid !== undefined ? { signalledAfterLeaderExit: { pgid: child.pid, signals: [...afterExit] } } : {}) });
+      resolve({ exitCode, signal, timedOut, ...r, ...(controlError !== null ? { spawnError: controlError } : {}), ...(inputError !== null ? { inputError } : {}), ...(afterExit.length > 0 && child.pid !== undefined ? { signalledAfterLeaderExit: { pgid: child.pid, signals: [...afterExit] } } : {}) });
     };
 
     // After the last signal: poll for the group gone, then for the leader reaped and its pipes drained, within the bound.
@@ -367,6 +397,48 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     child.stdout!.on("data", (c: Buffer) => onOut(c));
     child.stderr!.on("data", (c: Buffer) => onErr(c));
     if (child.pid !== undefined) opts.onSpawn?.(child.pid, groupSignal);
+    // The control callback runs last, once every lifecycle listener is installed, so a throw cannot leave the group unwatched.
+    let startControl: (() => void) | null = null;
+    if (opts.control && child.pid !== undefined) {
+      const input = child.stdin!;
+      let ended = false;
+      const report = (what: string): void => { if (inputError === null) inputError = what; };
+      input.on("error", (e: NodeJS.ErrnoException) => report(e.code ?? e.message));
+      const control: GroupControl = {
+        stop: () => { if (!settled) stop(); },
+        write: (chunk) => {
+          try {
+            if (exited || settled) { report("write after exit"); return false; }
+            if (ended) { report("write after endInput"); return false; }
+            if (input.destroyed) { report("write after exit"); return false; }
+            input.write(chunk);
+            if (input.writableLength > CONTROL_QUEUE_HARD) {
+              report("stdin overflow");
+              stop();
+              return false;
+            }
+            return input.writableLength <= CONTROL_QUEUE_SOFT;
+          } catch (e) {
+            report(thrownText(e, true));
+            return false;
+          }
+        },
+        endInput: () => {
+          if (ended) return;
+          ended = true;
+          try { input.end(); } catch { /* the pipe is already gone */ }
+        },
+      };
+      const callback = opts.control;
+      startControl = () => {
+        try {
+          callback(control);
+        } catch (e) {
+          controlError = `control: ${thrownText(e, false)}`;
+          if (!settled) stop();
+        }
+      };
+    }
     if (opts.stdin && child.stdin) {
       // A leader that exits before reading its input fails on its own; the write is never waited for.
       child.stdin.on("error", () => {});
@@ -391,7 +463,21 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       if (own && phase === "running") stop();
       else if (!own && closed) finish({ spawnError: null, cleanup: "confirmed", cleanupDetail: null });
     });
+    startControl?.();
   });
+}
+
+/** A thrown value as text, never dereferencing what may be null, undefined, a string or an object whose own accessors throw. */
+function thrownText(e: unknown, preferCode: boolean): string {
+  try {
+    if (e instanceof Error) {
+      const code = preferCode ? (e as NodeJS.ErrnoException).code : undefined;
+      return typeof code === "string" ? code : String(e.message);
+    }
+    return String(e);
+  } catch {
+    return "an unprintable value";
+  }
 }
 
 // --- An owned group around a body (T-538 S3b) ----------------------------------

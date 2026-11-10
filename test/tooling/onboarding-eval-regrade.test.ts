@@ -9,8 +9,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkRecipe, codexTurn as codexTurnOf, recipeContract, shellSequence, STOP_RULE_VERSION, type ExpectedRecipe, type JudgeLine, type RuntimeExclusion } from "../../scripts/onboarding-eval-lib.js";
-import { sha256 } from "../../scripts/continuity-lib.js";
+import { claudeTurn, checkRecipe, codexTurn as codexTurnOf, recipeContract, shellSequence, STOP_RULE_VERSION, type ExpectedRecipe, type JudgeLine, type RuntimeExclusion } from "../../scripts/onboarding-eval-lib.js";
+import { parseStream, sha256 } from "../../scripts/continuity-lib.js";
+import { CLAUDE_INIT_TOOLS, claudePolicyObject, READBACK_REQUESTS, type ReadbackExpected, type ReadbackStep } from "../../scripts/headless-policy.js";
+import { createRequire } from "node:module";
 import {
   driveFlow, finishDrive, inspectAfter, inventoryFor, MAX_DISCOVERY_ROUNDS, newDriveState, packetText, setupRecordFrom, writesAfterApprovalOf,
   type DriveState, type Rubric, type StoryReader, type TurnResponse, type Variant,
@@ -168,11 +170,38 @@ interface Synth {
   readonly packet: Record<string, any>;
 }
 
+/** T-538 commit 1: a Claude host-v2 run. Each turn's raw is a Claude stream and carries a readback, which `steps` may change. */
+interface HostV2 {
+  readonly steps?: (turn: number, steps: ReadbackStep[]) => ReadbackStep[];
+  /** Changes a turn's init event as the stream reports it. */
+  readonly init?: (turn: number, init: Record<string, unknown>) => Record<string, unknown> | null;
+}
+const HOST_TOOLS = ["storybloq_status", "storybloq_init", "storybloq_session_guard"];
+const CLAUDE_SID = "0f6c2a8e-1b2c-4d3e-8f90-123456789abc";
+const goodResponses = (createRequire(import.meta.url)("../fixtures/t538-claude-sentinel.cjs") as { goodResponses: (x: ReadbackExpected) => Record<string, unknown> }).goodResponses;
+
+/** The Claude stream a turn like `t` writes: the init event, each command as a Bash call and its result, the text, the result event. */
+function claudeRaw(t: SynthTurn, init: (e: Record<string, unknown>) => Record<string, unknown> | null = (e) => e): string {
+  const ev: unknown[] = [init({
+    type: "system", subtype: "init", session_id: CLAUDE_SID, permissionMode: "dontAsk", apiKeySource: "none", mcp_servers: [{ name: "storybloq", status: "connected" }],
+    tools: [...CLAUDE_INIT_TOOLS, ...HOST_TOOLS.map((x) => `mcp__storybloq__${x}`)],
+  })];
+  (t.commands ?? []).forEach((c, i) => {
+    const { command, output } = typeof c === "string" ? { command: c, output: "" } : c;
+    ev.push({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: `tu${i}`, name: "Bash", input: { command } }] } });
+    ev.push({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: `tu${i}`, content: output, is_error: false }] } });
+  });
+  ev.push({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: t.text }] } });
+  if ((t.terminal ?? "completed") === "completed") ev.push({ type: "result", subtype: "success", is_error: false, result: t.text, session_id: CLAUDE_SID, permission_denials: [] });
+  if (t.terminal === "failed") ev.push({ type: "result", subtype: "error_during_execution", is_error: true, session_id: CLAUDE_SID, permission_denials: [] });
+  return ev.filter((e) => e !== null).map((e) => JSON.stringify(e)).join("\n");
+}
+
 /** Check set 7's raw inputs for a synthetic run (T-538 S5a): the events log, the snapshot, and where the project was. */
 interface Cs7Raw { readonly events: string; readonly snapshot: string | null; readonly projectRoot: string }
 
 /** A run the runner would have recorded, without spawning a client: the same flow, record fields and packet. */
-function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string | null = null, cs6: { readonly store: string } | null = null, cs7: Cs7Raw | null = null): Synth {
+function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string | null = null, cs6: { readonly store: string } | null = null, cs7: Cs7Raw | null = null, host: HostV2 | null = null): Synth {
   const cs = cs7 !== null ? 7 : cs6 === null ? 1 : 6;
   const rubric = RUBRIC;
   const story: StoryReader | null = storyDir === null ? null : diskReader(storyDir);
@@ -181,15 +210,31 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
   const afterPackage = packageTurns(variant, SCRIPT);
   const raw = new Map<string, string>();
   const state = newDriveState(cs);
+  const replayInputs: { path: string; sha256: string }[] = [];
+  const projectRoot = cs7?.projectRoot ?? "/w/project";
+  const roots = [projectRoot, join(projectRoot, ".git"), "/w/tmp", "/w/storybloq-global", "/w/eval-events"];
+  const launch = { project: projectRoot, roots, policy: claudePolicyObject(roots, HOST_TOOLS), mcpLaunch: { command: "/usr/bin/node", args: ["/pkg/eval-mcp.js"] }, toolSets: {} as Record<string, string[]> };
   const flow = driveFlow({ variant, firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, exclusion }, state);
   let n = 0;
   for (let step = flow.next(); !step.done;) {
     const t = script[n];
     if (!t) throw new Error(`the script has no turn ${n} (${step.value.label})`);
     const file = turnFile(n, step.value.label);
-    const text = codexRaw(t);
+    const launchFailed = host !== null && (t.infra ?? "").startsWith("launch: ");
+    const turnNo = n;
+    const text = host === null ? codexRaw(t) : launchFailed ? "" : claudeRaw(t, (e) => (host.init ? host.init(turnNo, e) : e));
     raw.set(`${file}.jsonl`, text).set(`${file}.stderr.txt`, "");
-    const parsed = regradeTurn(text, cs);
+    const parsed = host === null ? regradeTurn(text, cs) : { ...claudeTurn(parseStream(text).events, cs), models: [] as string[] };
+    if (host !== null) {
+      const answers = goodResponses({ ...launch, mcpTools: HOST_TOOLS });
+      const good: ReadbackStep[] = READBACK_REQUESTS.map((subtype, i) => ({ requestId: `r${i + 1}`, subtype, outcome: "success", response: answers[subtype] }));
+      // The runner records the raw result's permission denials, and none when the stream has no result event.
+      const result = parseStream(text).events.find((e) => e.type === "result") as { permission_denials?: unknown } | undefined;
+      const rb = `${JSON.stringify({ steps: host.steps ? host.steps(n, good) : good, permissionDenials: result?.permission_denials ?? null }, null, 2)}\n`;
+      raw.set(`${file}.readback.json`, rb);
+      replayInputs.push({ path: `${file}.readback.json`, sha256: sha256(rb) });
+      launch.toolSets[`${file}.readback.json`] = HOST_TOOLS;
+    }
     const infra = t.infra !== undefined ? t.infra : parsed.terminal.status !== "completed" ? `terminal ${parsed.terminal.status}: ${parsed.terminal.detail}` : null;
     const response: TurnResponse = { turn: parsed, exitCode: infra?.startsWith("exit ") ? Number(infra.slice(5)) : 0, infraFailure: infra, stderrPath: `/raw/${runId}/${file}.stderr.txt`, treeChanges: () => [...(t.tree ?? [])] };
     n++;
@@ -198,7 +243,6 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
   if (n !== script.length) throw new Error(`the flow ended after ${n} of ${script.length} scripted turns`);
   if (cs6 !== null) applySetupReviewChecks(state, cs6.store, variant);
   const approval = afterPackage.find((x) => x.label === "approve")?.prompt ?? "";
-  const replayInputs: { path: string; sha256: string }[] = [];
   if (cs7 !== null) {
     const r = applySetupRunChecks(state, {
       eventsText: cs7.events, snapshotText: cs7.snapshot, final: cs7FinalLedger(story ?? NO_STORY), baselineIds: [], baselinePhases: [], approval,
@@ -221,14 +265,14 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
     setupRecord: story ? setupRecordFrom(story) : "", final: state.final, ...(cs6 !== null ? { checkSet: cs } : {}),
   });
   const record = JSON.parse(JSON.stringify({
-    runId, client: "codex", fixture: "mixed-stack", variant, turns: state.turns, discoveryRounds: state.rounds, reviewSkipped: state.reviewSkipped,
+    runId, client: host === null ? "codex" : "claude", ...(host !== null ? { route: "host-v2", claudeLaunch: launch } : {}), fixture: "mixed-stack", variant, turns: state.turns, discoveryRounds: state.rounds, reviewSkipped: state.reviewSkipped,
     reviewEvidence: evidence.reviewEvidence, writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures: state.failures,
     infraFailed: state.infraFailed, treeExclusion: exclusion, semanticLines, bound: evidence.bound, packetSha256: sha256(text), verdict: "FAIL",
     ...(cs6 !== null ? {
       checkSetVersion: cs, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
       reviewerInventory: inventoryFor(variant), skillCitations: evidence.skillCitations ?? [], instructionContext: { status: "unknown" },
     } : {}),
-    ...(cs7 !== null ? { replayInputs } : {}),
+    ...(cs7 !== null || host !== null ? { replayInputs } : {}),
   })) as Record<string, any>;
   const input: RegradeInput = {
     recordBytes: Buffer.from(JSON.stringify(record, null, 2)), packetBytes: Buffer.from(text), rawNames: [...raw.keys(), "project.after", ...(cs6 !== null ? [STORE_COPY] : [])],
@@ -365,7 +409,7 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
   }
 
   /** A setup killed at `point`; `resumed` says the approve turn resumes it in the approve turn, else the run ends with the setup unfinished. */
-  async function killed(point: string, resumes: boolean): Promise<{ readonly s: Synth; readonly events: string; readonly snapshot: string | null }> {
+  async function killed(point: string, resumes: boolean, host: HostV2 | null = null, only: readonly SynthTurn[] | null = null): Promise<{ readonly s: Synth; readonly events: string; readonly snapshot: string | null; readonly root: string; readonly store: string }> {
     const root = join(scratch, `p${n++}`);
     mkdirSync(root);
     const store = join(scratch, `store${n}`);
@@ -385,8 +429,8 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     const events = readFileSync(eventsPath, "utf-8");
     const snapshotPath = `${eventsPath}.setup-snapshot.json`;
     const snapshot = existsSync(snapshotPath) ? readFileSync(snapshotPath, "utf-8") : null;
-    const script: SynthTurn[] = [{ text: PACKAGE7 }, { text: PACKAGE7 }, { text: PACKAGE7 }, last];
-    return { s: synth("none", script, join(root, ".story"), { store }, { events, snapshot, projectRoot: root }), events, snapshot };
+    const script: readonly SynthTurn[] = only ?? [{ text: PACKAGE7 }, { text: PACKAGE7 }, { text: PACKAGE7 }, last];
+    return { s: synth("none", script, join(root, ".story"), { store }, { events, snapshot, projectRoot: root }, host), events, snapshot, root, store };
   }
 
   /** The input with raw `name` replaced by `text`; `pin` also records the new bytes' sha256, so only the content is wrong. */
@@ -467,6 +511,99 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     const { s } = await g11();
     const { baseline: _b, approval: _a, ...fixture } = s.input.fixture as typeof s.input.fixture & { baseline?: unknown; approval?: unknown };
     expect(refused({ ...s.input, fixture })).toBe("check set 7 needs the fixture's baseline ledger and approval");
+  });
+
+  // --- T-538 commit 1 (plan 6.4): a host-v2 Claude record replays its readbacks -------------------------
+  const unlocked = (steps: ReadbackStep[]): ReadbackStep[] => steps.map((x) => (x.subtype === "get_sandbox_dialog" ? { ...x, response: { ...(x.response as object), locked: false } } : x));
+  const readbackName = (s: Synth): string => s.input.rawNames.find((x) => x.endsWith(".readback.json"))!;
+
+  it("host-v2: a clean Claude run regrades accepted, every turn's readback a replay input", async () => {
+    const { s } = await killed("archive-committed", true, {});
+    expect(s.record.client).toBe("claude");
+    const g = accepted(s.input);
+    const names = s.input.rawNames.filter((x) => x.endsWith(".readback.json"));
+    expect(names.length).toBe(s.record.turns.length);
+    expect(g.manifest.map((m) => m.path)).toEqual(expect.arrayContaining(names));
+  });
+
+  it("host-v2: a missing readback is refused by name", async () => {
+    const { s } = await killed("archive-committed", true, {});
+    expect(refused(without(s.input, readbackName(s)))).toBe(`replay input ${readbackName(s)} is missing`);
+  });
+
+  it("host-v2: an edited readback is refused, on its bytes and, re-pinned, on the replayed comparison", async () => {
+    const { s } = await killed("archive-committed", true, {});
+    const name = readbackName(s);
+    const edited = s.input.readRaw(name).toString("utf-8").replace('"locked": true', '"locked": false');
+    expect(edited).not.toBe(s.input.readRaw(name).toString("utf-8"));
+    expect(refused(withRaw(s.input, name, edited))).toBe(`replay input ${name} does not match its recorded sha256`);
+    expect(refused(withRaw(s.input, name, edited, true))).toMatch(/the replayed readback finds "launch: get_sandbox_dialog\.locked", but the record states no infrastructure failure/);
+  });
+
+  it("host-v2: a recorded launch failure replays as the same field, and another field is refused", async () => {
+    const { s } = await killed("archive-committed", false, { steps: (_n, steps) => unlocked(steps) }, [{ text: "", terminal: "missing", infra: "launch: get_sandbox_dialog.locked" }]);
+    expect(accepted(s.input).checkSet).toBe(7);
+    const other = withRecord(s.input, (r) => { r.turns[0].infraFailure = "launch: get_sandbox_dialog.enabled"; });
+    expect(refused(other)).toMatch(/the recorded launch failure "launch: get_sandbox_dialog\.enabled" is not the replayed readback's "launch: get_sandbox_dialog\.locked"/);
+  });
+
+  it("host-v2: a malformed stored step or an empty recorded policy is refused by name, never thrown (F3)", async () => {
+    const { s } = await killed("archive-committed", true, { steps: (n, steps) => (n === 0 ? [null as unknown as ReadbackStep] : steps) });
+    let r: ReturnType<typeof regrade> | null = null;
+    expect(() => { r = regrade(s.input); }).not.toThrow();
+    expect(r!.ok).toBe(false);
+    expect((r as unknown as { reason: string }).reason).toMatch(/the replayed readback finds "launch: readback\.steps\[0\] is malformed", but the record states no infrastructure failure/);
+    const { s: clean } = await killed("archive-committed", true, {});
+    const empty = withRecord(clean.input, (rec) => { rec.claudeLaunch.policy = {}; });
+    let e: ReturnType<typeof regrade> | null = null;
+    expect(() => { e = regrade(empty); }).not.toThrow();
+    expect(e!.ok).toBe(false);
+    expect((e as unknown as { reason: string }).reason).toMatch(/launch: readback\.expected\.policy\.permissions is malformed/);
+  });
+
+  it("host-v2: a turn with no result event replays to its terminal check, and its init event is still checked (F7, F2)", async () => {
+    const missing = [{ text: "", terminal: "missing" as const }];
+    const { s } = await killed("archive-committed", false, {}, missing);
+    const infra = s.record.turns[0].infraFailure as string;
+    expect(infra).toMatch(/^terminal missing: /);
+    expect(accepted(s.input).checkSet).toBe(7);
+    const { s: bad } = await killed("archive-committed", false, { init: (_n, e) => ({ ...e, permissionMode: "bypassPermissions" }) }, missing);
+    expect(bad.record.turns[0].infraFailure).toBe(infra);
+    expect(refused(bad.input)).toMatch(/the replayed readback finds "launch: init\.permissionMode", but the record states "terminal missing: /);
+  });
+
+  const badInit = { init: (_n: number, e: Record<string, unknown>) => ({ ...e, permissionMode: "bypassPermissions" }) };
+  it("host-v2: an input failure with exit 0 and no init event in the raw is accepted (G1)", async () => {
+    const { s } = await killed("archive-committed", false, { init: () => null }, [{ text: "", infra: "input: EPIPE" }]);
+    expect(s.record.turns[0].exitCode).toBe(0);
+    expect(s.input.readRaw(s.input.rawNames.find((x) => x.endsWith(".jsonl") && x.startsWith("turn-"))!).toString("utf-8")).not.toContain('"subtype":"init"');
+    expect(accepted(s.input).checkSet).toBe(7);
+  });
+
+  it("host-v2: an input failure is accepted with a wrong init event too, since init is not consulted for it (G1)", async () => {
+    const { s } = await killed("archive-committed", false, badInit, [{ text: "", infra: "input: EPIPE" }]);
+    expect(accepted(s.input).checkSet).toBe(7);
+  });
+
+  it("host-v2: the same wrong init event recorded under a cleanup failure is refused (G1)", async () => {
+    const { s } = await killed("archive-committed", false, badInit, [{ text: "", infra: "cleanup: unconfirmed" }]);
+    expect(refused(s.input)).toMatch(/the replayed readback finds "launch: init\.permissionMode", but the record states "cleanup: unconfirmed"/);
+  });
+
+  it.each(["input: write after endInput", "cleanup: unconfirmed: process group 4242 still present 2000 ms after the last signal"])("host-v2: the group's own failure %s replays on host-v2 and is refused off it (F5)", async (infra) => {
+    const { s } = await killed("archive-committed", false, {}, [{ text: "", infra }]);
+    expect(s.record.turns[0].infraFailure).toBe(infra);
+    expect(accepted(s.input).checkSet).toBe(7);
+    const { s: codex } = await killed("archive-committed", false, null, [{ text: "", infra }]);
+    expect(refused(codex.input)).toContain(`unrecognised infrastructure failure "${infra}"`);
+  });
+
+  it("host-v2: an unknown route, a missing claudeLaunch, and a launch failure off the host-v2 route are refused", async () => {
+    const { s } = await killed("archive-committed", true, {});
+    expect(refused(withRecord(s.input, (r) => { r.route = "container-v1"; }))).toBe("the record's route container-v1 is not one this regrade supports");
+    expect(refused(withRecord(s.input, (r) => { delete r.claudeLaunch; }))).toBe("the host-v2 Claude record has no valid claudeLaunch");
+    const { s: codex } = await killed("archive-committed", false, null, [{ text: "", terminal: "missing", infra: "launch: get_sandbox_dialog.locked" }]);
+    expect(refused(codex.input)).toMatch(/unrecognised infrastructure failure "launch: get_sandbox_dialog\.locked"/);
   });
 });
 

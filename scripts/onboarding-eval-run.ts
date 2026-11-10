@@ -52,7 +52,13 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
+import { runInGroup, type GroupControl } from "../src/core/process-group.js";
+import {
+  claudeArgvProblems, claudePolicyObject, claudePolicySettings, claudeReadback, claudeTurnArgs, initEventConsulted, initEventProblems, policyFileProblems, READBACK_TIMEOUT_MS, readbackExpected, userMessage,
+  type ClaudeExpected, type ReadbackIo, type ReadbackStep,
+} from "./headless-policy.js";
 
 import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from "./headless-common.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
@@ -96,6 +102,28 @@ interface Options {
   readonly rawOut: string;
   readonly timeoutMs: number;
   readonly maxBudgetUsd: number;
+  /** T-538 commit 1: the pinned storybloq tool inventory for a Claude run (`--tool-sets`, else TOOL_SETS_FILE); read by the runner only. */
+  readonly toolSets: string | null;
+  /** How long each readback control request may take (4.4: 30 s); lower only in tests. */
+  readonly readbackTimeoutMs: number;
+}
+
+/** Plan 5.4's pinned inventory, once commit 2 adds it. */
+export const TOOL_SETS_FILE = join(PKG_ROOT, "scripts", "onboarding-eval-tools.json");
+
+/** The two storybloq tool inventories: before a project exists and after. */
+export interface ClaudeToolSets { readonly degraded: readonly string[]; readonly full: readonly string[] }
+
+/** The tool sets a Claude run uses: the given file, else the pinned one; neither refuses the run before any spawn. */
+export function claudeToolSets(given: string | null, pinned = TOOL_SETS_FILE): ClaudeToolSets {
+  const path = given ?? (existsSync(pinned) ? pinned : null);
+  if (path === null) throw new Error("onboarding-eval: no pinned tool inventory (plan 5.4)");
+  const v = JSON.parse(readFileSync(path, "utf-8")) as { degraded?: unknown; full?: unknown };
+  const names = (x: unknown): string[] => {
+    if (!Array.isArray(x) || x.length === 0 || x.some((n) => typeof n !== "string" || !/^storybloq_[a-z0-9_]+$/.test(n))) throw new Error(`onboarding-eval: the tool inventory ${path} is not two lists of storybloq tool names`);
+    return x as string[];
+  };
+  return { degraded: names(v.degraded), full: names(v.full) };
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -122,6 +150,8 @@ function parseArgs(argv: readonly string[]): Options {
     out: resolve(out), rawOut: resolve(rawOut),
     timeoutMs: Number(get("timeout-ms", String(40 * 60_000))),
     maxBudgetUsd: Number(get("max-budget-usd", "15")),
+    toolSets: get("tool-sets") === undefined ? null : resolve(get("tool-sets")!),
+    readbackTimeoutMs: Number(get("readback-timeout-ms", String(READBACK_TIMEOUT_MS))),
   };
 }
 
@@ -426,8 +456,36 @@ interface TurnResult {
   readonly raw: string;
   readonly stderr: string;
   readonly exitCode: number | null;
-  /** Spawn failure, timeout, signal, nonzero exit or a missing/failed terminal event; null when the turn ran cleanly. */
+  /** Spawn failure, launch check, timeout, signal, nonzero exit or a missing/failed terminal event; null when the turn ran cleanly. */
   readonly infraFailure: string | null;
+  /** A Claude turn's readback exchange (4.4), saved as turn-NN-<label>.readback.json; null for Codex. */
+  readonly readback: { readonly steps: readonly ReadbackStep[]; readonly mcpTools: readonly string[]; readonly permissionDenials: unknown } | null;
+}
+
+/** A Claude run's launch files and the expectations each turn is checked against. */
+export interface ClaudeLaunch {
+  readonly model: string;
+  readonly policyFile: string;
+  readonly policySha256: string;
+  readonly mcpFile: string;
+  readonly mcpSha256: string;
+  readonly mcpLaunch: { readonly command: string; readonly args: readonly string[] };
+  readonly project: string;
+  readonly roots: readonly string[];
+  readonly toolSets: ClaudeToolSets;
+  readonly maxBudgetUsd: number;
+}
+
+/** The names the policy allows: the full inventory, then any degraded-only name. */
+export const allowedToolsOf = (t: ClaudeToolSets): string[] => [...t.full, ...t.degraded.filter((n) => !t.full.includes(n))];
+
+/** What this launch must have in force: the tool set by whether the project exists yet (5.4). */
+export function launchExpected(l: ClaudeLaunch): ClaudeExpected {
+  const present = existsSync(join(l.project, ".story", "config.json"));
+  return {
+    model: l.model, policyFile: l.policyFile, policySha256: l.policySha256, mcpFile: l.mcpFile, mcpSha256: l.mcpSha256, project: l.project, roots: l.roots,
+    allowedTools: allowedToolsOf(l.toolSets), mcpTools: present ? l.toolSets.full : l.toolSets.degraded, mcpLaunch: l.mcpLaunch, maxBudgetUsd: l.maxBudgetUsd,
+  };
 }
 
 /** The observed models from this thread's rollout file under the scratch CODEX_HOME. */
@@ -454,37 +512,185 @@ function rolloutLines(codexHome: string, threadId: string): Record<string, unkno
   return lines;
 }
 
-function runTurn(o: Options, ctx: { readonly project: string; readonly env: NodeJS.ProcessEnv; readonly clientBin: string; readonly claudeArgs: readonly string[]; readonly writableRoots: readonly string[]; sessionId: string | null; first: boolean }, prompt: string): TurnResult {
+interface TurnCtx {
+  readonly project: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly clientBin: string;
+  readonly writableRoots: readonly string[];
+  readonly claude: ClaudeLaunch | null;
+  sessionId: string | null;
+  first: boolean;
+}
+
+/**
+ * One owner turn, in its own process group under one deadline (T-538 commit 1; the limits come in commit 2).
+ * A Claude turn is refused before spawn unless its argv and both launch files hold (4.3); its effective
+ * settings are read back over stdin before the prompt is written (4.4), and only when they hold is the prompt
+ * sent, with stdin closed at the result event. A Codex turn has its stdin closed.
+ */
+async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<TurnResult> {
   const bin = ctx.clientBin;
-  const args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: ctx.claudeArgs, sessionId: ctx.sessionId, first: ctx.first, writableRoots: ctx.writableRoots }, prompt);
-  if (o.client === "codex") {
+  let args: string[];
+  let expected: ClaudeExpected | null = null;
+  if (o.client === "claude") {
+    if (ctx.claude === null) throw new Error("onboarding-eval: a Claude turn needs its launch");
+    expected = launchExpected(ctx.claude);
+    const session = { kind: ctx.first ? "first" as const : "resume" as const, id: ctx.sessionId ?? "" };
+    args = claudeTurnArgs(expected, session);
+    const weak = [
+      ...claudeArgvProblems(args, expected, session),
+      ...policyFileProblems(expected.policyFile, expected.policySha256, 0o400),
+      ...policyFileProblems(expected.mcpFile, expected.mcpSha256, 0o600),
+    ];
+    if (weak.length > 0) throw new Error(`onboarding-eval: the turn's sandbox does not hold: ${weak.join("; ")}`);
+  } else {
+    args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: [], sessionId: ctx.sessionId, first: ctx.first, writableRoots: ctx.writableRoots }, prompt);
     const weak = codexSandboxProblems(args, ctx.writableRoots);
     if (weak.length > 0) throw new Error(`onboarding-eval: the turn's sandbox does not hold: ${weak.join("; ")}`);
   }
-  const r = spawnSync(bin, args, { cwd: ctx.project, env: ctx.env, encoding: "utf-8", timeout: o.timeoutMs, maxBuffer: 512 * 1024 * 1024 });
-  const raw = r.stdout ?? "";
-  const stderr = r.stderr ?? "";
+
+  const lines: string[] = [];
+  let pending = "";
+  let stderr = "";
+  // One decoder per stream: a character split across two chunks is joined, never replaced.
+  const outText = new StringDecoder("utf-8");
+  const errText = new StringDecoder("utf-8");
+  let control: GroupControl | null = null;
+  let settled = false;
+  let resultSeen = false;
+  let promptWritten = false;
+  const answers = new Map<string, { subtype: string; response?: unknown; error?: unknown }>();
+  const waiters = new Map<string, (r: { subtype: string; response?: unknown; error?: unknown } | null) => void>();
+  const line = (text: string): void => {
+    let v: unknown;
+    try { v = JSON.parse(text); } catch { lines.push(text); return; }
+    const ev = v as { type?: unknown; response?: { request_id?: unknown; subtype?: unknown; response?: unknown; error?: unknown } };
+    if (ev !== null && typeof ev === "object" && ev.type === "control_response") {
+      const r = ev.response;
+      const id = typeof r?.request_id === "string" ? r.request_id : null;
+      if (id === null || answers.has(id)) return;
+      const answer = { subtype: String(r?.subtype), response: r?.response, error: r?.error };
+      answers.set(id, answer);
+      waiters.get(id)?.(answer);
+      return;
+    }
+    lines.push(text);
+    if (ev !== null && typeof ev === "object" && ev.type === "result" && !resultSeen) {
+      resultSeen = true;
+      control?.endInput();
+    }
+  };
+  const run = runInGroup({
+    command: bin, args, cwd: ctx.project, env: ctx.env, timeoutMs: o.timeoutMs,
+    onStdout: (c) => {
+      pending += outText.write(c);
+      let nl = pending.indexOf("\n");
+      while (nl !== -1) { line(pending.slice(0, nl)); pending = pending.slice(nl + 1); nl = pending.indexOf("\n"); }
+    },
+    onStderr: (c) => { stderr += errText.write(c); },
+    ...(expected !== null ? { control: (c: GroupControl) => { control = c; } } : {}),
+  }).finally(() => {
+    settled = true;
+    for (const w of waiters.values()) w(null);
+  });
+
+  let launch: string | null = null;
+  let readback: TurnResult["readback"] = null;
+  if (expected !== null) {
+    const io: ReadbackIo = {
+      write: (l) => { (control as GroupControl | null)?.write(Buffer.from(l)); },
+      response: (id, ms) => new Promise((done) => {
+        const got = answers.get(id);
+        if (got !== undefined) { done(got); return; }
+        if (settled) { done(null); return; }
+        const t = setTimeout(() => { waiters.delete(id); done(null); }, ms);
+        waiters.set(id, (r) => { clearTimeout(t); waiters.delete(id); done(r); });
+      }),
+    };
+    const rb = await claudeReadback(io, readbackExpected(expected), o.readbackTimeoutMs);
+    // Any difference: no prompt, the group is stopped, and the turn is the launch failure naming the field.
+    if (rb.problems.length > 0) {
+      launch = rb.problems[0]!;
+      (control as GroupControl | null)?.stop();
+    } else {
+      // The prompt counts as sent only when the input was still open for it.
+      if (!resultSeen && !settled) promptWritten = true;
+      (control as GroupControl | null)?.write(Buffer.from(userMessage(prompt)));
+    }
+    readback = { steps: rb.steps, mcpTools: [...expected.mcpTools], permissionDenials: null };
+  }
+  const r = await run;
+  pending += outText.end();
+  stderr += errText.end();
+  if (pending !== "") line(pending);
+  const raw = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+  // A write refused only because the result already ended the input owes nothing once the prompt went out; a refused prompt write is a failure.
+  const inputError = r.inputError === undefined || (r.inputError === "write after endInput" && promptWritten) ? null : r.inputError;
+  const facts = (t: EvalTurn, l: string | null): TurnFailureFacts => ({
+    spawnError: r.spawnError, launch: l, inputError, timedOut: r.timedOut, timeoutMs: o.timeoutMs, signal: r.signal, exitCode: r.exitCode,
+    terminal: t.terminal, cleanup: r.cleanup, cleanupDetail: r.cleanupDetail,
+  });
   let turn: EvalTurn;
   if (o.client === "claude") {
-    turn = claudeTurn(parseStream(raw).events, CHECK_SET_VERSION);
+    const events = parseStream(raw).events;
+    turn = claudeTurn(events, CHECK_SET_VERSION);
     // A resumed print-mode session can come back under a new id; the next turn resumes whichever id this one reported.
     if (turn.sessionId) ctx.sessionId = turn.sessionId;
+    const result = events.find((e) => e.type === "result") as { permission_denials?: unknown } | undefined;
+    readback = { ...readback!, permissionDenials: result?.permission_denials ?? null };
+    // The stream's own init event: permission mode, key source, server and tools. It is consulted by the same
+    // predicate the regrade replays (initEventConsulted) on the failure this turn would record without it, so
+    // only when nothing failed, or the failure is terminal or cleanup: spawn, input, timeout, signal and a
+    // non-zero exit all rank above those, so each of them skips it. An undelivered prompt (input) says nothing.
+    if (launch === null && initEventConsulted(turnInfraFailure(facts(turn, null)), r.exitCode)) {
+      launch = initEventProblems(events as unknown as Record<string, unknown>[], expected!.mcpTools)[0] ?? null;
+    }
   } else {
-    const lines: Record<string, unknown>[] = [];
-    for (const l of raw.split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* non-JSON line */ } }
-    turn = codexTurn(lines, CHECK_SET_VERSION);
+    const parsed: Record<string, unknown>[] = [];
+    for (const l of raw.split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") parsed.push(v); } catch { /* non-JSON line */ } }
+    turn = codexTurn(parsed, CHECK_SET_VERSION);
     if (ctx.first && turn.sessionId) ctx.sessionId = turn.sessionId;
     if (ctx.sessionId && ctx.env.CODEX_HOME) turn = { ...turn, models: rolloutModels(ctx.env.CODEX_HOME, ctx.sessionId) };
   }
   ctx.first = false;
-  const err = r.error as (Error & { code?: string }) | undefined;
-  const infraFailure = err
-    ? (err.code === "ETIMEDOUT" ? `timed out after ${o.timeoutMs} ms` : `spawn failed: ${err.code ?? err.message}`)
-    : r.signal ? `killed by ${r.signal}`
-    : r.status !== 0 ? `exit ${r.status}`
-    : turn.terminal.status !== "completed" ? `terminal ${turn.terminal.status}: ${turn.terminal.detail}`
-    : null;
-  return { turn, raw, stderr, exitCode: r.status, infraFailure };
+  const infraFailure = turnInfraFailure(facts(turn, launch));
+  return { turn, raw, stderr, exitCode: r.exitCode, infraFailure, readback };
+}
+
+/** What decides a turn's infrastructure failure: the group's result, the launch check, and the parsed terminal. */
+export interface TurnFailureFacts {
+  readonly spawnError: string | null;
+  readonly launch: string | null;
+  readonly inputError: string | null;
+  readonly timedOut: boolean;
+  readonly timeoutMs: number;
+  readonly signal: string | null;
+  readonly exitCode: number | null;
+  readonly terminal: { readonly status: string; readonly detail: string };
+  readonly cleanup: "confirmed" | "unconfirmed";
+  readonly cleanupDetail: string | null;
+}
+
+/**
+ * A turn's infrastructure failure, the first that holds: spawn failed, `launch: `, `input: `, timed out, killed
+ * by, exit, terminal, and last `cleanup: ` when the group's end was not confirmed. Null for a clean turn.
+ */
+export function turnInfraFailure(f: TurnFailureFacts): string | null {
+  if (f.spawnError !== null) return `spawn failed: ${f.spawnError}`;
+  if (f.launch !== null) return `launch: ${f.launch}`;
+  if (f.inputError !== null) return `input: ${f.inputError}`;
+  if (f.timedOut) return `timed out after ${f.timeoutMs} ms`;
+  if (f.signal) return `killed by ${f.signal}`;
+  if (f.exitCode !== 0) return `exit ${f.exitCode}`;
+  if (f.terminal.status !== "completed") return `terminal ${f.terminal.status}: ${f.terminal.detail}`;
+  if (f.cleanup !== "confirmed") return `cleanup: ${f.cleanup}${f.cleanupDetail !== null ? `: ${f.cleanupDetail}` : ""}`;
+  return null;
+}
+
+/** True when `p` is any of `roots` or lies under one. */
+export function underAnyRoot(p: string, roots: readonly string[]): boolean {
+  const at = resolve(p);
+  return roots.some((r) => at === resolve(r) || at.startsWith(`${resolve(r)}${sep}`));
 }
 
 /** The opening turn: the fixture's opening prompt, invoking the skill the client's way. */
@@ -514,6 +720,8 @@ export function diskReader(story: string): StoryReader {
 
 async function main(): Promise<void> {
   const o = parseArgs(process.argv.slice(2));
+  // T-538 commit 1: a Claude run needs the pinned tool inventory before anything is built or spawned.
+  const toolSets = o.client === "claude" ? claudeToolSets(o.toolSets) : null;
   assertSubscriptionAuthOnly(process.env, "onboarding-eval");
   if (!existsSync(join(PKG_ROOT, "dist", "mcp.js"))) throw new Error("onboarding-eval: dist/mcp.js is missing; build this checkout first");
   // Check set 7: the evaluation bundle, rebuilt whenever its inputs changed.
@@ -564,14 +772,24 @@ async function main(): Promise<void> {
   const writableRoots = [home, attemptTmp, env.STORYBLOQ_GLOBAL_DIR, setupReviewStore, dirname(eventsFile), join(project, ".git")];
   const launcher = installCliLauncher(join(work, "cli-bin"));
   env.PATH = `${dirname(launcher)}${delimiter}${env.PATH ?? ""}`;
-  let claudeArgs: string[] = [];
+  let claudeLaunch: ClaudeLaunch | null = null;
   if (o.client === "claude") {
     env.CLAUDE_CONFIG_DIR = provisionClaude(work);
-    const mcpConfig = join(work, "mcp.json");
+    // ISS-1463: no bypass. The policy file (4.1) and the MCP file are written once, outside every root, and
+    // checked byte for byte before every turn; Agent and Task are denied by the policy in every variant.
+    const roots = [project, join(project, ".git"), attemptTmp, env.STORYBLOQ_GLOBAL_DIR, dirname(eventsFile)];
+    const policyFile = join(work, "claude-policy.json");
+    const mcpFile = join(work, "mcp.json");
+    for (const f of [policyFile, mcpFile]) if (underAnyRoot(f, roots)) throw new Error(`onboarding-eval: ${f} is under a writable root`);
+    const policyText = claudePolicySettings(roots, allowedToolsOf(toolSets!));
+    writeFileSync(policyFile, policyText, { mode: 0o400, flag: "wx" });
     const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
-    writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { storybloq: { command: process.execPath, args: [mcp.path, ...mcp.args] } } }, null, 2));
-    claudeArgs = ["--model", o.model, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--strict-mcp-config", "--mcp-config", mcpConfig, "--max-budget-usd", String(o.maxBudgetUsd)];
-    if (variant === "reviewer-unavailable") claudeArgs.push("--disallowedTools", "Agent", "Task");
+    const mcpLaunch = { command: process.execPath, args: [mcp.path, ...mcp.args] };
+    const mcpText = JSON.stringify({ mcpServers: { storybloq: mcpLaunch } }, null, 2);
+    writeFileSync(mcpFile, mcpText, { mode: 0o600, flag: "wx" });
+    claudeLaunch = {
+      model: o.model, policyFile, policySha256: sha256(policyText), mcpFile, mcpSha256: sha256(mcpText), mcpLaunch, project, roots, toolSets: toolSets!, maxBudgetUsd: o.maxBudgetUsd,
+    };
     if (variant === "degraded") env.ENABLE_TOOL_SEARCH = "true";
     // A Codex reviewer the model launches from its shell gets auth and nothing else.
     env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "reviewer", variant);
@@ -602,7 +820,9 @@ async function main(): Promise<void> {
 
   const before = treeDigest(project);
   const exclusion = runtimeExclusion(project);
-  const ctx = { project, env, clientBin, claudeArgs, writableRoots, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
+  const ctx: TurnCtx = { project, env, clientBin, writableRoots, claude: claudeLaunch, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
+  // T-538 commit 1: each Claude turn's readback, a replay input with the tool set its launch expected.
+  const readbacks: { readonly path: string; readonly sha256: string; readonly mcpTools: readonly string[] }[] = [];
   const state = newDriveState(CHECK_SET_VERSION);
   let turnNo = 0;
   // The owner's side of the conversation; each step spawns one turn and records its raw output.
@@ -666,10 +886,15 @@ async function main(): Promise<void> {
   for (let step = flow.next(); !step.done;) {
     const request = step.value;
     beforeTurn(request.session ?? 1, request.label);
-    const r = runTurn(o, ctx, request.prompt);
+    const r = await runClientTurn(o, ctx, request.prompt);
     const stem = join(rawDir, `turn-${String(++turnNo).padStart(2, "0")}-${request.label}`);
     writeFileSync(`${stem}.jsonl`, r.raw);
     writeFileSync(`${stem}.stderr.txt`, r.stderr);
+    if (r.readback !== null) {
+      const text = `${JSON.stringify({ steps: r.readback.steps, permissionDenials: r.readback.permissionDenials }, null, 2)}\n`;
+      writeFileSync(`${stem}.readback.json`, text);
+      readbacks.push({ path: basename(`${stem}.readback.json`), sha256: sha256(text), mcpTools: r.readback.mcpTools });
+    }
     const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, treeDigest(project), exclusion) };
     step = flow.next(response);
   }
@@ -713,6 +938,7 @@ async function main(): Promise<void> {
       ...(events !== null ? [{ path: EVENTS_RAW, sha256: sha256(events) }] : []),
       { path: INVOCATIONS_RAW, sha256: sha256(invocations) },
       ...(snapshot !== null ? [{ path: SNAPSHOT_RAW, sha256: sha256(snapshot) }] : []),
+      ...readbacks.map((x) => ({ path: x.path, sha256: x.sha256 })),
     ];
     if (session !== null) {
       const log = readEventsLog(events === null ? null : events.toString("utf-8")).log;
@@ -756,6 +982,14 @@ async function main(): Promise<void> {
   mkdirSync(recordDir, { recursive: true });
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify({
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model, checkSetVersion: CHECK_SET_VERSION,
+    // T-538 commit 1 (plan 6.4): this route's record; the regrade re-runs each readback against claudeLaunch.
+    route: "host-v2",
+    ...(claudeLaunch !== null ? {
+      claudeLaunch: {
+        project: claudeLaunch.project, roots: claudeLaunch.roots, policy: claudePolicyObject(claudeLaunch.roots, allowedToolsOf(claudeLaunch.toolSets)), mcpLaunch: claudeLaunch.mcpLaunch,
+        toolSets: Object.fromEntries(readbacks.map((x) => [x.path, x.mcpTools])),
+      },
+    } : {}),
     modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: state.rounds, reviewSkipped, reviewEvidence,
     writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures, infraFailed: state.infraFailed,
     semanticLines, bound, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),

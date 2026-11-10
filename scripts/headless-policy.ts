@@ -28,29 +28,86 @@ export interface ClaudeExpected {
   readonly allowedTools: readonly string[];
   /** The storybloq tool names (bare) the server is expected to advertise at this launch, by the project's state. */
   readonly mcpTools: readonly string[];
-  /** The MCP file's one server launch, which mcp_status must report. */
-  readonly mcpLaunch: { readonly command: string; readonly args: readonly string[] };
+  /** The MCP file's one server launch, which mcp_status must report. `env`, when given, is compared too (ISS-1486 D3). */
+  readonly mcpLaunch: McpLaunch;
   readonly maxBudgetUsd: number;
 }
+
+/** The MCP file's one server launch. The onboarding runner gives no `env`; the continuity runner pins its project root. */
+export interface McpLaunch { readonly command: string; readonly args: readonly string[]; readonly env?: Readonly<Record<string, string>> }
 
 export type ClaudeSession = { readonly kind: "first" | "resume"; readonly id: string };
 
 /** Built-in tools a turn may use, in the order the argv names them. */
 export const CLAUDE_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "Skill"] as const;
-/** The built-in tools the init event must report, sorted (measured names). */
+/** The onboarding built-in tools the init event must report, sorted (measured names); the init check sorts the options' own list. */
 export const CLAUDE_INIT_TOOLS = ["Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write"] as const;
 /** Every spelling of a bypass that must never reach a client. */
 export const CLAUDE_BYPASS = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--restricted", "bypassPermissions"] as const;
 /** The user settings file provisionClaude writes, the one `userSettings` source the readback expects. */
 export const CLAUDE_USER_SETTINGS = { env: {}, hooks: {} } as const;
 
+/**
+ * ISS-1486 D1: what differs between the runners that share this policy. The allow list is written out per runner,
+ * never derived from the tool list; `Edit(/<root>/**)` rules still come only from the roots. `extraArgs` are
+ * valued options and `extraFlags` bare ones, each placed after `--max-budget-usd` and checked exactly once.
+ */
+export interface ClaudePolicyOptions {
+  /** The built-in tools the argv names, in order. */
+  readonly builtInTools: readonly string[];
+  /** The built-in tools the policy allows, in order, before the Edit rules. */
+  readonly allowBuiltIns: readonly string[];
+  readonly deny: readonly string[];
+  readonly extraArgs: readonly (readonly [string, string])[];
+  readonly extraFlags: readonly string[];
+}
+
+/** The onboarding runner's options: exactly the constants of T-538 commit 1, so its policy, argv and readback are unchanged. */
+export const ONBOARDING_OPTIONS: ClaudePolicyOptions = Object.freeze({
+  builtInTools: CLAUDE_TOOLS,
+  allowBuiltIns: Object.freeze(["Read", "Glob", "Grep", "Bash", "Skill"]),
+  deny: Object.freeze(["WebFetch", "WebSearch", "Agent", "Task"]),
+  extraArgs: Object.freeze([]),
+  extraFlags: Object.freeze([]),
+});
+
+/** The options the base argv check owns; an extra may never reuse one. */
+const BASE_OPTIONS = ["-p", "--verbose", "--strict-mcp-config", "--input-format", "--output-format", "--model", "--tools", "--permission-mode", "--permission-prompts",
+  "--setting-sources", "--settings", "--mcp-config", "--max-budget-usd", "--session-id", "--resume"] as const;
+const EXTRA_NAME = /^--[a-z][a-z0-9-]*$/;
+
+/** Why an options value cannot build a launch: an extra that is not a plain long option, reuses a base option or repeats, or a bypass anywhere. */
+export function policyOptionsProblems(o: ClaudePolicyOptions): string[] {
+  const problems: string[] = [];
+  const names = [...o.extraArgs.map(([k]) => k), ...o.extraFlags];
+  const seen = new Set<string>();
+  for (const k of names) {
+    if (!EXTRA_NAME.test(k)) problems.push(`options: ${k} is not a plain long option`);
+    if ((BASE_OPTIONS as readonly string[]).includes(k)) problems.push(`options: ${k} is a base option`);
+    if (seen.has(k)) problems.push(`options: ${k} is given twice`);
+    seen.add(k);
+  }
+  for (const v of [...names, ...o.extraArgs.map(([, v]) => v), ...o.builtInTools, ...o.allowBuiltIns]) {
+    if ((CLAUDE_BYPASS as readonly string[]).includes(v)) problems.push(`options: ${v} is a bypass spelling`);
+  }
+  for (const t of o.allowBuiltIns) if (o.deny.includes(t)) problems.push(`options: ${t} is both allowed and denied`);
+  return problems;
+}
+
+function checkedOptions(o: ClaudePolicyOptions): ClaudePolicyOptions {
+  const problems = policyOptionsProblems(o);
+  if (problems.length > 0) throw new Error(`headless-policy: ${problems.join("; ")}`);
+  return o;
+}
+
 /** The policy object of 4.1, keys in the plan's order. */
-export function claudePolicyObject(roots: readonly string[], mcpTools: readonly string[]): Record<string, unknown> {
+export function claudePolicyObject(roots: readonly string[], mcpTools: readonly string[], o: ClaudePolicyOptions = ONBOARDING_OPTIONS): Record<string, unknown> {
+  checkedOptions(o);
   return {
     permissions: {
       defaultMode: "dontAsk",
-      allow: ["Read", "Glob", "Grep", "Bash", "Skill", ...roots.map((r) => `Edit(/${r}/**)`), ...mcpTools.map((t) => `mcp__storybloq__${t}`)],
-      deny: ["WebFetch", "WebSearch", "Agent", "Task"],
+      allow: [...o.allowBuiltIns, ...roots.map((r) => `Edit(/${r}/**)`), ...mcpTools.map((t) => `mcp__storybloq__${t}`)],
+      deny: [...o.deny],
       disableBypassPermissionsMode: "disable",
     },
     sandbox: {
@@ -68,18 +125,20 @@ export function claudePolicyObject(roots: readonly string[], mcpTools: readonly 
 }
 
 /** 4.1: the policy file's exact text. Roots are absolute, so `Edit(/<root>/**)` is the `//abs/**` form. */
-export function claudePolicySettings(roots: readonly string[], mcpTools: readonly string[]): string {
+export function claudePolicySettings(roots: readonly string[], mcpTools: readonly string[], o: ClaudePolicyOptions = ONBOARDING_OPTIONS): string {
   for (const r of roots) if (!r.startsWith("/")) throw new Error(`headless-policy: root ${r} is not absolute`);
-  return `${JSON.stringify(claudePolicyObject(roots, mcpTools), null, 2)}\n`;
+  return `${JSON.stringify(claudePolicyObject(roots, mcpTools, o), null, 2)}\n`;
 }
 
 /** 4.2: the exact argv of one turn, in order. No prompt argument and no `--`. */
-export function claudeTurnArgs(e: ClaudeExpected, session: ClaudeSession): string[] {
+export function claudeTurnArgs(e: ClaudeExpected, session: ClaudeSession, o: ClaudePolicyOptions = ONBOARDING_OPTIONS): string[] {
+  checkedOptions(o);
   return [
     "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-    "--model", e.model, "--tools", CLAUDE_TOOLS.join(","), "--permission-mode", "dontAsk", "--permission-prompts", "none",
+    "--model", e.model, "--tools", o.builtInTools.join(","), "--permission-mode", "dontAsk", "--permission-prompts", "none",
     "--setting-sources", "user", "--settings", e.policyFile, "--strict-mcp-config", "--mcp-config", e.mcpFile,
     "--max-budget-usd", String(e.maxBudgetUsd),
+    ...o.extraArgs.flatMap(([k, v]) => [k, v]), ...o.extraFlags,
     ...(session.kind === "first" ? ["--session-id", session.id] : ["--resume", session.id]),
   ];
 }
@@ -92,13 +151,17 @@ const DECIMAL = /^[0-9]+(?:\.[0-9]+)?$/;
  * 4.3: everything in `args` that is not exactly 4.2's sequence; empty means it holds. Each option exactly
  * once in any order with its expected value, no `=` form, no `--`, nothing else.
  */
-export function claudeArgvProblems(args: readonly string[], e: ClaudeExpected, session: ClaudeSession): string[] {
-  const flags = new Set(["-p", "--verbose", "--strict-mcp-config"]);
-  const valued: Record<string, string> = {
-    "--input-format": "stream-json", "--output-format": "stream-json", "--model": e.model, "--tools": CLAUDE_TOOLS.join(","),
-    "--permission-mode": "dontAsk", "--permission-prompts": "none", "--setting-sources": "user", "--settings": e.policyFile,
-    "--mcp-config": e.mcpFile, "--max-budget-usd": String(e.maxBudgetUsd), "--session-id": session.id, "--resume": session.id,
-  };
+export function claudeArgvProblems(args: readonly string[], e: ClaudeExpected, session: ClaudeSession, o: ClaudePolicyOptions = ONBOARDING_OPTIONS): string[] {
+  const optionProblems = policyOptionsProblems(o);
+  if (optionProblems.length > 0) return optionProblems;
+  const flags = new Set(["-p", "--verbose", "--strict-mcp-config", ...o.extraFlags]);
+  // Built from entries, so every key is an own property (a `__proto__` name could never reach the prototype).
+  const valued: Record<string, string> = Object.fromEntries([
+    ["--input-format", "stream-json"], ["--output-format", "stream-json"], ["--model", e.model], ["--tools", o.builtInTools.join(",")],
+    ["--permission-mode", "dontAsk"], ["--permission-prompts", "none"], ["--setting-sources", "user"], ["--settings", e.policyFile],
+    ["--mcp-config", e.mcpFile], ["--max-budget-usd", String(e.maxBudgetUsd)], ["--session-id", session.id], ["--resume", session.id],
+    ...o.extraArgs.map(([k, v]) => [k, v] as const),
+  ]);
   const problems: string[] = [];
   const seen = new Map<string, number>();
   const values = new Map<string, string>();
@@ -191,11 +254,12 @@ export interface ReadbackExpected {
   readonly roots: readonly string[];
   readonly policy: Record<string, unknown>;
   readonly mcpTools: readonly string[];
-  readonly mcpLaunch: { readonly command: string; readonly args: readonly string[] };
+  readonly mcpLaunch: McpLaunch;
 }
 
-export const readbackExpected = (e: ClaudeExpected): ReadbackExpected => ({
-  project: e.project, roots: [...e.roots], policy: claudePolicyObject(e.roots, e.allowedTools), mcpTools: [...e.mcpTools], mcpLaunch: { command: e.mcpLaunch.command, args: [...e.mcpLaunch.args] },
+export const readbackExpected = (e: ClaudeExpected, o: ClaudePolicyOptions = ONBOARDING_OPTIONS): ReadbackExpected => ({
+  project: e.project, roots: [...e.roots], policy: claudePolicyObject(e.roots, e.allowedTools, o), mcpTools: [...e.mcpTools],
+  mcpLaunch: { command: e.mcpLaunch.command, args: [...e.mcpLaunch.args], ...(e.mcpLaunch.env === undefined ? {} : { env: { ...e.mcpLaunch.env } }) },
 });
 
 /** JSON with object keys sorted, so equal values have equal text. */
@@ -246,7 +310,8 @@ function readbackShapeProblems(steps: unknown, x: unknown): string[] {
   else if (permissions === null || !isStrings(permissions.allow) || !isStrings(permissions.deny)) problems.push("readback.expected.policy.permissions is malformed");
   else {
     const launch = obj(e.mcpLaunch);
-    if (launch === null || typeof launch.command !== "string" || !isStrings(launch.args)) problems.push("readback.expected.mcpLaunch is malformed");
+    const env = launch?.env === undefined ? {} : obj(launch.env);
+    if (launch === null || typeof launch.command !== "string" || !isStrings(launch.args) || env === null || !Object.values(env).every((v) => typeof v === "string")) problems.push("readback.expected.mcpLaunch is malformed");
   }
   return problems;
 }
@@ -326,7 +391,8 @@ export function readbackProblems(steps: readonly ReadbackStep[], x: ReadbackExpe
     if (one?.name !== "storybloq" || one?.status !== "connected") problems.push("mcp_status.mcpServers");
     else {
       const config = obj(one.config);
-      if (config?.command !== x.mcpLaunch.command || !same(config?.args, x.mcpLaunch.args)) problems.push("mcp_status.mcpServers.config");
+      if (config?.command !== x.mcpLaunch.command || !same(config?.args, x.mcpLaunch.args)
+        || (x.mcpLaunch.env !== undefined && !same(config?.env, x.mcpLaunch.env))) problems.push("mcp_status.mcpServers.config");
       const tools = Array.isArray(one.tools) ? one.tools.map((t) => obj(t)?.name) : null;
       if (tools === null || tools.some((t) => typeof t !== "string") || !sameSet(tools as string[], x.mcpTools)) problems.push("mcp_status.mcpServers.tools");
     }
@@ -389,7 +455,7 @@ export function initEventConsulted(failure: string | null, exitCode: number | nu
  * 4.4: the stream's first system init event: permission mode, API key source, the one MCP server, and the
  * built-in tools exactly; every `mcp__` tool belongs to storybloq and is expected. Empty means it holds.
  */
-export function initEventProblems(events: readonly Record<string, unknown>[], mcpTools: readonly string[]): string[] {
+export function initEventProblems(events: readonly Record<string, unknown>[], mcpTools: readonly string[], o: ClaudePolicyOptions = ONBOARDING_OPTIONS): string[] {
   const init = events.find((e) => e.type === "system" && e.subtype === "init");
   if (init === undefined) return ["init: no system init event"];
   const problems: string[] = [];
@@ -399,7 +465,7 @@ export function initEventProblems(events: readonly Record<string, unknown>[], mc
   if (!same(servers, [{ name: "storybloq", status: "connected" }])) problems.push("init.mcp_servers");
   const tools = Array.isArray(init.tools) ? init.tools.map(String) : [];
   const builtIn = tools.filter((t) => !t.startsWith("mcp__"));
-  if (!same([...builtIn].sort(), [...CLAUDE_INIT_TOOLS])) problems.push("init.tools");
+  if (!same([...builtIn].sort(), [...o.builtInTools].sort())) problems.push("init.tools");
   const prefix = "mcp__storybloq__";
   if (tools.some((t) => t.startsWith("mcp__") && (!t.startsWith(prefix) || !mcpTools.includes(t.slice(prefix.length))))) problems.push("init.tools.mcp");
   return problems;

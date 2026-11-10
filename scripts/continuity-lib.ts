@@ -8,8 +8,9 @@
  * rule frozen in `test/fixtures/continuity/rubric.md` and plan rev 4.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, readlinkSync, statSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
-import { basename, join, relative, sep, posix } from "node:path";
+import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, statSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
+import { basename, join, relative, sep, posix, resolve as resolvePath } from "node:path";
+import { readbackProblems, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 
 // --- hashing --------------------------------------------------------------
 
@@ -150,7 +151,12 @@ export interface ExperimentInputs {
   readonly isolation: "fresh" | "shared";
   /** The effective client configuration (shared: the live config dir; fresh: the provisioned template). */
   readonly configHash: string;
+  /** ISS-1486 D8: the launch policy version; a record captured under another one never satisfies a cell. */
+  readonly launchPolicy: typeof LAUNCH_POLICY;
 }
+
+/** ISS-1486 D8: the launch policy this runner's records carry, in the experiment hash and on every record. */
+export const LAUNCH_POLICY = 2 as const;
 
 /** Stable inputs only: never attempt paths, timestamps, session ids, HEAD or post-run evidence. */
 export function experimentHash(i: ExperimentInputs): string {
@@ -166,6 +172,7 @@ export function experimentHash(i: ExperimentInputs): string {
       clientVersion: i.clientVersion,
       isolation: i.isolation,
       configHash: i.configHash,
+      launchPolicy: i.launchPolicy,
     }),
   );
 }
@@ -519,7 +526,10 @@ export type InvalidReason =
   | "stream-corrupt"
   | "interrupted"
   | "rate-limited"
-  | "machine-load";
+  | "machine-load"
+  | "launch-policy"
+  | "input-failure"
+  | "prompt-not-delivered";
 
 export interface ValidityInputs {
   readonly stateBinaryFingerprintSha256: string | null | undefined;
@@ -544,6 +554,12 @@ export interface ValidityInputs {
   readonly rateLimitStop: string | null;
   /** The pre-registered load rule's evidence for a timed-out attempt, or null (see machineLoadStop). */
   readonly machineLoadStop: string | null;
+  /** ISS-1486 D7: the launch-policy failure (a readback, init event, pre-spawn or denial problem), or null. */
+  readonly launchPolicy?: string | null;
+  /** ISS-1486 D6: the prompt never reached a child that ended on its own, or null. */
+  readonly inputFailure?: string | null;
+  /** ISS-1486 D6: exactly one prompt was delivered; an observation without one is never accepted. */
+  readonly promptDelivered?: boolean;
 }
 
 export function sameHashes(a: Record<string, string>, b: Record<string, string>): boolean {
@@ -566,6 +582,11 @@ export function validity(i: ValidityInputs): { readonly valid: boolean; readonly
   if (i.streamCorrupt) reasons.push("stream-corrupt");
   if (i.rateLimitStop !== null) reasons.push("rate-limited");
   if (i.machineLoadStop !== null) reasons.push("machine-load");
+  const launch = i.launchPolicy !== undefined && i.launchPolicy !== null;
+  const input = i.inputFailure !== undefined && i.inputFailure !== null;
+  if (launch) reasons.push("launch-policy");
+  if (input) reasons.push("input-failure");
+  if (i.promptDelivered === false && !launch && !input) reasons.push("prompt-not-delivered");
   return { valid: reasons.length === 0, reasons };
 }
 
@@ -1139,7 +1160,12 @@ export interface AttemptRecordLike {
   readonly repeat?: number;
   readonly invalidReasons?: readonly string[];
   readonly completion?: string;
+  /** ISS-1486 D8: the launch policy the record was captured under; only LAUNCH_POLICY satisfies a cell. */
+  readonly launchPolicy?: unknown;
 }
+
+/** G10: whether a record may count as an observation: captured under this launch policy. The runner's cell decision and the scorer's selection both use it. */
+export const recordEligible = (r: { readonly launchPolicy?: unknown }): boolean => r.launchPolicy === LAUNCH_POLICY;
 
 export type CellDecision =
   | { readonly kind: "satisfied"; readonly attempt: string; readonly evidenceComplete: boolean }
@@ -1160,9 +1186,9 @@ export function decideCell(attempts: readonly { readonly name: string; readonly 
   const matches = (r: AttemptRecordLike): boolean => r.task === cell.task && r.repeat === cell.repeat;
   const mismatched = numbered.filter((a) => a.record && !matches(a.record)).map((a) => `${a.name} records ${a.record!.task ?? "?"}#${a.record!.repeat ?? "?"}`);
   for (const a of numbered) {
-    if (a.record && matches(a.record) && a.record.completed && a.record.validity === "valid" && a.record.experimentHash === experiment) return { kind: "satisfied", attempt: a.name, evidenceComplete: a.record.evidenceComplete };
+    if (a.record && matches(a.record) && a.record.completed && a.record.validity === "valid" && a.record.experimentHash === experiment && recordEligible(a.record)) return { kind: "satisfied", attempt: a.name, evidenceComplete: a.record.evidenceComplete };
   }
-  const counted = numbered.filter((a) => a.record === null || (a.record.experimentHash === experiment && matches(a.record) && a.record.completion !== "not-started" && !a.record.invalidReasons?.some((r) => r === "rate-limited" || r === "machine-load"))).length;
+  const counted = numbered.filter((a) => a.record === null || (a.record.experimentHash === experiment && matches(a.record) && a.record.completion !== "not-started" && !a.record.invalidReasons?.some((r) => r === "rate-limited" || r === "machine-load" || r === "launch-policy"))).length;
   if (counted > MAX_INVALID_RETRIES) return { kind: "exhausted", mismatched };
   const next = (numbered.at(-1)?.n ?? 0) + 1;
   return { kind: "run", nextAttempt: next, mismatched };
@@ -1179,6 +1205,8 @@ export function attemptDirName(n: number): string {
 
 export interface VerifiedRecord {
   readonly validity: "valid" | "invalid";
+  /** G10: the launch policy the record names, as stored; recordEligible decides. */
+  readonly launchPolicy?: unknown;
   readonly experimentHash: string;
   readonly completed: true;
   readonly evidenceComplete: boolean;
@@ -1246,8 +1274,8 @@ export function verifyAttemptDir(dir: string): AttemptVerification {
 export interface QualificationInputs {
   readonly cells: readonly { readonly task: string; readonly repeat: number; readonly satisfied: boolean; readonly evidenceComplete: boolean }[];
   readonly isolation: "fresh" | "shared";
-  /** A validated owner exception (the runner resolves the id before capture), or null. */
-  readonly ownerException: string | null;
+  /** ISS-1486 D9: the arm's pilot as readPilot verified it; required, and only an ok pilot qualifies. */
+  readonly pilot: PilotCheck;
 }
 
 /** The preregistered matrix: every task in TASKS, repeats 1..REPEATS. */
@@ -1273,7 +1301,8 @@ export function qualifies(i: QualificationInputs): { readonly qualifying: boolea
   if (missing.length > 0) return { qualifying: false, shortCells, unpublishedCells, reason: `missing cells: ${missing.join(", ")}` };
   if (shortCells.length > 0) return { qualifying: false, shortCells, unpublishedCells, reason: `${shortCells.length} cell(s) without a valid observation: ${shortCells.join(", ")}` };
   if (unpublishedCells.length > 0) return { qualifying: false, shortCells, unpublishedCells, reason: `${unpublishedCells.length} observation(s) with incomplete published evidence: ${unpublishedCells.join(", ")}` };
-  if (i.isolation === "shared" && !i.ownerException) return { qualifying: false, shortCells, unpublishedCells, reason: "shared isolation without a recorded owner exception" };
+  if (i.isolation !== "fresh") return { qualifying: false, shortCells, unpublishedCells, reason: "shared isolation is refused (ISS-1486)" };
+  if (!i.pilot.ok) return { qualifying: false, shortCells, unpublishedCells, reason: `no verified pilot: ${i.pilot.reason}` };
   return { qualifying: true, shortCells, unpublishedCells, reason: "every cell has one valid observation with complete evidence" };
 }
 
@@ -1306,4 +1335,305 @@ export function skillPayloadDiff(installedDir: string, sourceDir: string): { rea
   const markerPath = join(installedDir, SKILL_MARKER_FILE);
   const marker = existsSync(markerPath) ? readFileSync(markerPath, "utf-8").trim() : null;
   return { ok: extra.length === 0 && missing.length === 0 && changed.length === 0, extra, missing, changed, marker };
+}
+
+// --- ISS-1486: the launch policy's outcomes, the path mapping and the pilot reader ---------------
+
+/**
+ * D8: one equality-preserving mapping per attempt, applied to both evidence files. Each named root becomes its
+ * token with the suffix kept; any other absolute path becomes `<ABS:n>`, numbered by first appearance, so two
+ * distinct paths stay distinct and a mismatch survives publication.
+ */
+export interface PathRoots { readonly work: string; readonly tmp: string; readonly config: string; readonly pkg: string; readonly home: string }
+
+export function pathMapping(roots: PathRoots): (text: string) => string {
+  const named = ([["<WORK>", roots.work], ["<TMP>", roots.tmp], ["<CONFIG>", roots.config], ["<PKG>", roots.pkg], ["<HOME>", roots.home]] as const)
+    .filter(([, p]) => p.length > 1)
+    .sort((a, b) => b[1].length - a[1].length);
+  const others = new Map<string, string>();
+  const mapOne = (p: string): string => {
+    // A policy rule's `Edit(//abs/**)` form: keep the extra slash and map the absolute path after it.
+    if (p.startsWith("//")) return `/${mapOne(p.slice(1))}`;
+    for (const [token, root] of named) if (p === root || p.startsWith(`${root}/`)) return `${token}${p.slice(root.length)}`;
+    let t = others.get(p);
+    if (t === undefined) { t = `<ABS:${others.size + 1}>`; others.set(p, t); }
+    return t;
+  };
+  return (text: string): string => text.replace(/(?<![A-Za-z0-9_.~-])\/(?:[^\s"'`<>\\,;:)\]}]+)/g, (m) => mapOne(m));
+}
+
+/** D7: one permission denial from the result event, kept verbatim. */
+export interface PermissionDenial { readonly tool_name?: unknown; readonly tool_use_id?: unknown; readonly tool_input?: unknown }
+
+/** D7: the tools whose denial is an expected refusal: the policy denies them and the task never needs them. */
+const EXPECTED_DENIALS: ReadonlySet<string> = new Set(["WebFetch", "WebSearch", "Task"]);
+/** D7: built-in tools the task needs; a denial of one is a blocked required operation. */
+const REQUIRED_TOOLS: ReadonlySet<string> = new Set(["Read", "Glob", "Grep", "Skill", "Agent"]);
+
+/**
+ * D7: classification by tool, never by a path field alone. A Bash denial cannot be judged from its input (the
+ * fixture's tests and git run through Bash), so outside pilot mode it is always blocked. An unknown tool is blocked.
+ */
+export function classifyDenial(d: PermissionDenial, roots: readonly string[], pilot = false): "blocked" | "expected" {
+  const tool = typeof d.tool_name === "string" ? d.tool_name : "";
+  if (tool.startsWith("mcp__storybloq__") || REQUIRED_TOOLS.has(tool)) return "blocked";
+  if (EXPECTED_DENIALS.has(tool)) return "expected";
+  if (tool === "Edit" || tool === "Write") {
+    const fp = (d.tool_input as { file_path?: unknown } | null | undefined)?.file_path;
+    if (typeof fp !== "string" || !fp.startsWith("/")) return "blocked";
+    const p = resolvePath(fp);
+    return roots.some((r) => p === r || p.startsWith(`${r}/`)) ? "blocked" : "expected";
+  }
+  if (tool === "Bash") return pilot ? "expected" : "blocked";
+  return "blocked";
+}
+
+// --- D9 the pilot ------------------------------------------------------------------------------
+
+export const PILOT_FILE = "pilot.json";
+export const PILOT_PROBES = ["bash-inside", "bash-outside", "edit-outside", "edit-inside", "network"] as const;
+export type PilotProbe = (typeof PILOT_PROBES)[number];
+const PROBE_TOOL: Record<PilotProbe, string> = { "bash-inside": "Bash", "bash-outside": "Bash", "edit-outside": "Edit", "edit-inside": "Edit", network: "Bash" };
+
+/** What the pilot's judge holds besides the transcript: the files, the canary and the listener, all observed by the runner. */
+export interface PilotFacts {
+  readonly id: string;
+  readonly paths: Record<"bash-inside" | "bash-outside" | "edit-outside" | "edit-inside", string>;
+  /** Each probe file's content, null when it does not exist, or why it is neither (G9). */
+  readonly contents: Record<"bash-inside" | "bash-outside" | "edit-outside" | "edit-inside", ProbeFile>;
+  readonly canaryBefore: string | null;
+  readonly canaryAfter: string | null;
+  /** G3: the loopback listener's port, which the network probe's command must name. */
+  readonly port: number;
+  /**
+   * J1: `outsideOk` is the runner's own run of the network probe's exact command (a fresh token in place of the id),
+   * outside the sandbox, with the client's environment: the listener saw its token. Without it a refusal could be a
+   * command that cannot work anywhere (no nc on the client's PATH), not the sandbox.
+   */
+  readonly listener: { readonly started: boolean; readonly received: string; readonly controlOk: boolean; readonly outsideOk: boolean };
+}
+
+/**
+ * G9: a probe target as the runner found it, links never followed: its text when it is a regular file the runner
+ * can read, null only when it does not exist (ENOENT), and otherwise why it is neither. Only null is absence.
+ */
+export type ProbeFile = string | null | { readonly unreadable: string };
+
+export function inspectTarget(p: string): ProbeFile {
+  let st: ReturnType<typeof lstatSync>;
+  try { st = lstatSync(p); } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? null : { unreadable: `lstat ${code ?? "failed"}` };
+  }
+  if (st.isSymbolicLink()) return { unreadable: "a link" };
+  if (!st.isFile()) return { unreadable: "not a regular file" };
+  let fd: number | null = null;
+  try {
+    fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW);
+    return readFileSync(fd, "utf-8");
+  } catch (e) {
+    return { unreadable: `read ${(e as NodeJS.ErrnoException).code ?? "failed"}` };
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+export interface ProbeVerdict { readonly probe: PilotProbe; readonly pass: boolean; readonly toolUseId: string | null; readonly detail: string }
+
+/**
+ * D9: the pilot judged only from evidence the runner holds. For each probe, in order: a tool call in the transcript
+ * whose parent is the one Agent call, naming the probe's tool, with the id in its input, and its correlated result;
+ * then the outcome the sandbox must give. Anything missing fails closed.
+ */
+export function judgePilot(events: readonly StreamEvent[], facts: PilotFacts): { readonly pass: boolean; readonly probes: ProbeVerdict[]; readonly problems: string[] } {
+  const problems: string[] = [];
+  if (!facts.listener.started) problems.push("the loopback listener could not start");
+  if (facts.canaryBefore === null) problems.push("the canary could not be written");
+  if (facts.canaryBefore !== null && facts.canaryAfter !== facts.canaryBefore) problems.push("the canary changed");
+  const calls: { id: string; name: string; input: unknown; parent: string | null }[] = [];
+  const results = new Map<string, { isError: boolean; text: string }>();
+  let agentId: string | null = null;
+  for (const e of events) {
+    const parent = (e as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+    const content = (e as { message?: { content?: unknown } }).message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content as { type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean }[]) {
+      if (e.type === "assistant" && b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+        calls.push({ id: b.id, name: b.name, input: b.input, parent: typeof parent === "string" ? parent : null });
+        if (b.name === "Agent" && (parent === null || parent === undefined) && agentId === null) agentId = b.id;
+      }
+      if (e.type === "user" && b.type === "tool_result" && typeof b.tool_use_id === "string") results.set(b.tool_use_id, { isError: b.is_error === true, text: resultText((b as { content?: unknown }).content) });
+    }
+  }
+  if (agentId === null) problems.push("no Agent call by the main session");
+  const denials = ((events.find((e) => e.type === "result") as { permission_denials?: unknown } | undefined)?.permission_denials ?? []) as PermissionDenial[];
+  const probeCalls = calls.filter((c) => c.name !== "Agent" && JSON.stringify(c.input ?? null).includes(facts.id));
+  let cursor = 0;
+  const probes: ProbeVerdict[] = PILOT_PROBES.map((probe): ProbeVerdict => {
+    const fail = (detail: string, id: string | null = null): ProbeVerdict => ({ probe, pass: false, toolUseId: id, detail });
+    const at = probeCalls.findIndex((c, i) => i >= cursor && c.name === PROBE_TOOL[probe] && JSON.stringify(c.input).includes(probeMark(facts.id, probe)));
+    if (at === -1) return fail("no tool call for this probe, in order, carrying the id");
+    cursor = at + 1;
+    const call = probeCalls[at]!;
+    if (agentId === null || call.parent !== agentId) return fail("made outside the subagent", call.id);
+    // G3: the call must be the runner's own probe, byte for byte: a no-op that only carries the mark proves nothing.
+    const input = (call.input ?? {}) as { command?: unknown; file_path?: unknown };
+    if (probe === "edit-inside" || probe === "edit-outside") {
+      if (input.file_path !== facts.paths[probe]) return fail("the call's file_path is not the runner's target", call.id);
+    } else if (input.command !== pilotCommand(facts.id, probe, probe === "network" ? facts.port : facts.paths[probe])) {
+      return fail("the call's command is not the runner's command for this probe", call.id);
+    }
+    const result = results.get(call.id);
+    if (result === undefined) return fail("no tool result for the call", call.id);
+    const want = `${facts.id} ${probe}\n`;
+    const found = probe === "network" ? null : facts.contents[probe];
+    if (found !== null && typeof found === "object") return fail(`the target is not a file the runner can read (${found.unreadable})`, call.id);
+    switch (probe) {
+      case "bash-inside": case "edit-inside":
+        return facts.contents[probe] === want && !result.isError ? { probe, pass: true, toolUseId: call.id, detail: "written inside the work folder" } : fail("the inside write did not land as expected", call.id);
+      case "bash-outside":
+        if (facts.contents[probe] !== null) return fail("a file was written outside the roots", call.id);
+        return result.isError ? { probe, pass: true, toolUseId: call.id, detail: "refused; nothing written outside the roots" } : fail("the call's result is not a refusal", call.id);
+      case "edit-outside": {
+        const denied = denials.some((d) => d.tool_use_id === call.id);
+        if (facts.contents[probe] !== null) return fail("a file was written outside the roots", call.id);
+        return denied ? { probe, pass: true, toolUseId: call.id, detail: "denied; nothing written" } : fail("not in the result's permission denials", call.id);
+      }
+      case "network":
+        if (!facts.listener.controlOk) return fail("the runner's own control connection failed, so a refusal proves nothing", call.id);
+        if (facts.listener.outsideOk !== true) return fail("network probe command does not work outside the sandbox", call.id);
+        if (facts.listener.received.includes(facts.id)) return fail("the listener received the id", call.id);
+        if (!result.isError) return fail("the call's result is not a refusal", call.id);
+        // J1: an error is not enough (a missing command or a refused port is one too); the sandbox's own refusal is.
+        return SANDBOX_NETWORK_REFUSAL.test(result.text) ? { probe, pass: true, toolUseId: call.id, detail: "refused by the sandbox; the listener received nothing" } : fail("the call's result is not a sandbox refusal", call.id);
+    }
+  });
+  return { pass: problems.length === 0 && probes.every((p) => p.pass), probes, problems };
+}
+
+/** J1: how the sandbox refuses a connection: the connect call fails with EPERM, which nc prints as this. */
+export const SANDBOX_NETWORK_REFUSAL = /\bOperation not permitted\b/;
+
+/** A tool result's text: a string, or the text blocks of a content list. */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((c) => (c !== null && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("\n");
+}
+
+/** The token each probe's input carries, so a probe call names both the run and the probe. */
+export const probeMark = (id: string, probe: PilotProbe): string => `${id}-${probe}`;
+
+/**
+ * G3: the exact Bash command the prompt asks for, which the judge requires byte for byte: the two writes print the
+ * id and the probe name into their target, and the network probe pipes the id to the runner's loopback listener.
+ */
+export function pilotCommand(id: string, probe: "bash-inside" | "bash-outside" | "network", target: string | number): string {
+  return probe === "network"
+    ? `printf '${id}' | nc 127.0.0.1 ${String(target)} # ${probeMark(id, probe)}`
+    : `printf '${id} ${probe}\\n' > ${String(target)} # ${probeMark(id, probe)}`;
+}
+
+/** D9: the verified pilot, or why it does not hold. The one input qualifies() requires. */
+export type PilotCheck = { readonly ok: true; readonly id: string } | { readonly ok: false; readonly reason: string };
+
+/** D9: the evidence files pilot.json names and hashes, all beside it. G4: the runner's own observations are the fourth. */
+export const PILOT_EVIDENCE = ["pilot.transcript.jsonl", "pilot.readback.json", "pilot.launch.json", "pilot.facts.json"] as const;
+
+/**
+ * G4: what the runner observed and pilot.json does not decide: the experiment and arm it ran for, the probe facts
+ * the judge reads, and every problem the runner found before the judge (configuration, launch, spawn, input, exit).
+ */
+export interface PilotFactsFile {
+  readonly experimentHash: string;
+  readonly arm: number;
+  readonly id: string;
+  readonly launchPolicy: number;
+  readonly facts: PilotFacts;
+  readonly runProblems: readonly string[];
+  /** G8: the hashes the runner's checks saw before and after the run (null when the run never started). */
+  readonly checks?: PilotChecks;
+}
+
+/** G8: the dist, input and config hashes the pilot's checks compared with preflight's. */
+export interface PilotChecks {
+  readonly distBefore: Record<string, string>;
+  readonly distAfter: Record<string, string> | null;
+  readonly inputsBefore: { readonly hashes: Record<string, string>; readonly errors: Record<string, string> };
+  readonly inputsAfter: { readonly hashes: Record<string, string>; readonly errors: Record<string, string> } | null;
+  readonly configBefore: string;
+  readonly configAfter: string | null;
+}
+
+/**
+ * G4: the pilot's verdict as the evidence gives it, recomputed: the judge over the transcript and the runner's
+ * facts, the launch evidence's own failure, and the readback re-run against the expected values it was compared
+ * with. Pure; the runner and the reader both call it.
+ */
+export function pilotVerdict(events: readonly StreamEvent[], f: PilotFactsFile, launch: { readonly launchFailure?: unknown; readonly expected?: unknown }, readback: { readonly steps?: unknown; readonly incomplete?: unknown }): { readonly pass: boolean; readonly probes: ProbeVerdict[]; readonly problems: string[] } {
+  const judged = judgePilot(events, f.facts);
+  const problems = [...f.runProblems, ...judged.problems];
+  if (launch.launchFailure !== null) problems.push(`launch evidence: ${typeof launch.launchFailure === "string" ? launch.launchFailure : "a launch failure that is not a string"}`);
+  if (readback.incomplete !== false) problems.push("launch evidence: the readback is incomplete");
+  for (const x of readbackProblems(readback.steps as ReadbackStep[], launch.expected as ReadbackExpected)) problems.push(`readback: ${x}`);
+  return { pass: problems.length === 0 && judged.pass, probes: judged.probes, problems };
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * D9: the one shared reader. The pilot holds only when pilot.json is an object of the schema, every evidence file it
+ * hashes is present and unchanged, and (G4) the evidence itself says the pilot passed for this experiment and arm:
+ * the verdict is recomputed from the transcript, the runner's facts and the launch evidence, and pilot.json's
+ * verdicts, identity, launch policy and policy and MCP hashes must all agree with it. G5: a filesystem error is a
+ * failed check, never a throw.
+ */
+export function readPilot(expDir: string, want: { readonly experiment: string; readonly arm: number }): PilotCheck {
+  try {
+    return readPilotUnchecked(expDir, want);
+  } catch (e) {
+    return { ok: false, reason: `the pilot could not be read (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})` };
+  }
+}
+
+function readPilotUnchecked(expDir: string, want: { readonly experiment: string; readonly arm: number }): PilotCheck {
+  const file = join(expDir, PILOT_FILE);
+  if (!existsSync(file)) return { ok: false, reason: `no ${PILOT_FILE} for this experiment` };
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(file, "utf-8")); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== undefined) throw e;
+    return { ok: false, reason: `${PILOT_FILE} is not JSON` };
+  }
+  if (!isObject(parsed)) return { ok: false, reason: `${PILOT_FILE} is malformed` };
+  const p = parsed;
+  const probes = p.probes;
+  const hashes = p.evidence;
+  const schemaOk = typeof p.experimentHash === "string" && typeof p.arm === "number" && typeof p.id === "string" && typeof p.pass === "boolean"
+    && Array.isArray(probes) && probes.length === PILOT_PROBES.length && probes.every((v, i) => isObject(v) && v.probe === PILOT_PROBES[i] && typeof v.pass === "boolean")
+    && isObject(hashes) && PILOT_EVIDENCE.every((f) => typeof hashes[f] === "string" && HEX64.test(hashes[f] as string))
+    && typeof p.policySha256 === "string" && typeof p.mcpSha256 === "string";
+  if (!schemaOk) return { ok: false, reason: `${PILOT_FILE} is malformed` };
+  if (p.experimentHash !== want.experiment) return { ok: false, reason: `${PILOT_FILE} belongs to another experiment` };
+  if (p.arm !== want.arm) return { ok: false, reason: `${PILOT_FILE} is for arm ${String(p.arm)}, not ${want.arm}` };
+  const texts: Record<string, string> = {};
+  for (const f of PILOT_EVIDENCE) {
+    const at = join(expDir, f);
+    if (!existsSync(at)) return { ok: false, reason: `pilot evidence ${f} is missing or changed` };
+    texts[f] = readFileSync(at, "utf-8");
+    if (sha256(texts[f]!) !== hashes[f]) return { ok: false, reason: `pilot evidence ${f} is missing or changed` };
+  }
+  let facts: unknown; let launch: unknown; let readback: unknown;
+  try { facts = JSON.parse(texts["pilot.facts.json"]!); launch = JSON.parse(texts["pilot.launch.json"]!); readback = JSON.parse(texts["pilot.readback.json"]!); } catch { return { ok: false, reason: "pilot evidence is not JSON" }; }
+  if (!isObject(facts) || !isObject(facts.facts) || !Array.isArray(facts.runProblems) || !isObject(launch) || !isObject(readback)) return { ok: false, reason: "pilot evidence is malformed" };
+  const f = facts as unknown as PilotFactsFile;
+  // Identity: the evidence names the experiment, arm, run and launch policy; pilot.json must name the same.
+  if (f.experimentHash !== want.experiment || f.arm !== want.arm || f.id !== p.id) return { ok: false, reason: "the pilot evidence was recorded for another experiment, arm or run" };
+  if (f.launchPolicy !== LAUNCH_POLICY || launch.launchPolicy !== LAUNCH_POLICY || p.launchPolicy !== LAUNCH_POLICY) return { ok: false, reason: `the pilot was not run under launch policy ${LAUNCH_POLICY}` };
+  if (p.policySha256 !== launch.policySha256 || p.mcpSha256 !== launch.mcpSha256) return { ok: false, reason: `${PILOT_FILE}'s policy or MCP hash is not the launch evidence's` };
+  const v = pilotVerdict(parseStream(texts["pilot.transcript.jsonl"]!).events, f, launch, readback);
+  const stored = probes as ProbeVerdict[];
+  if (p.pass !== v.pass || v.probes.some((x, i) => x.pass !== stored[i]!.pass)) return { ok: false, reason: `${PILOT_FILE} disagrees with its evidence` };
+  const failed = v.probes.filter((x) => !x.pass).map((x) => x.probe);
+  if (!v.pass) return { ok: false, reason: `the pilot failed${failed.length ? ` (${failed.join(", ")})` : `: ${v.problems[0] ?? "no reason"}`}` };
+  return { ok: true, id: p.id as string };
 }

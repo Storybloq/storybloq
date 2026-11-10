@@ -16,7 +16,7 @@ import { join, basename, dirname, resolve } from "node:path";
 import { homedir, userInfo, tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { TASKS, sanitize, publicationCheck, jsonShapePreserved, fixtureCredentialAllowlist, verifyAttemptDir, expectedCellKeys, qualifies, environmentSecrets, type VerifiedRecord,
+import { TASKS, recordEligible, LAUNCH_POLICY, sanitize, publicationCheck, jsonShapePreserved, fixtureCredentialAllowlist, verifyAttemptDir, expectedCellKeys, qualifies, environmentSecrets, readPilot, type VerifiedRecord,
   INPUT_PATHS, TASK_MATERIAL, hashInputs, taskMaterial, driftedPaths } from "./continuity-lib.js";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -213,6 +213,7 @@ export function selectObservations(expDir: string, exp: ExperimentFile, rubricVe
     if (!record) { failures.push(`${key}: ${verifyAttemptDir(dir).reason ?? "unverifiable"}`); continue; }
     if (record.validity !== "valid") { failures.push(`${key}: named attempt is ${record.validity}`); continue; }
     if (record.experimentHash !== exp.experimentHash) { failures.push(`${key}: attempt belongs to experiment ${record.experimentHash.slice(0, 12)}`); continue; }
+    if (!recordEligible(record)) { failures.push(`${key}: attempt was not captured under launch policy ${LAUNCH_POLICY}`); continue; }
     if (record.task !== cell.task || record.repeat !== cell.repeat) { failures.push(`${key}: attempt records ${record.task}#${record.repeat}`); continue; }
     if (!record.verifiedEvidenceComplete) { failures.push(`${key}: ${record.verificationReason ?? "evidence incomplete"}`); continue; }
     // Isolation and owner-exception provenance come from the checksum-verified manifest, never from experiment.json.
@@ -232,15 +233,23 @@ export function selectObservations(expDir: string, exp: ExperimentFile, rubricVe
   return { observations, failures };
 }
 
-/** Qualification recomputed from the verified observations, never read back from the saved flag. */
-export function recomputeQualification(exp: ExperimentFile, observations: readonly Observation[]): ReturnType<typeof qualifies> {
-  void exp;
+/** The experiment folder an observation sits in: <exp>/<task>/repeat-<n>/<attempt>. */
+const experimentDirOf = (o: Observation): string => dirname(dirname(dirname(o.attemptDir)));
+
+/**
+ * Qualification recomputed from the verified observations, never read back from the saved flag. ISS-1486 D9: the
+ * arm's published pilot is read with the runner's own reader and is a required input; without an experiment
+ * folder (given, or the one the observations sit in) there is no pilot, so nothing qualifies.
+ */
+export function recomputeQualification(exp: ExperimentFile, observations: readonly Observation[], expDir?: string): ReturnType<typeof qualifies> {
+  const dir = expDir ?? (observations[0] ? experimentDirOf(observations[0]) : null);
+  const pilot = dir === null ? { ok: false as const, reason: "no experiment folder to read the pilot from" } : readPilot(dir, { experiment: exp.experimentHash, arm: exp.arm });
   const have = new Set(observations.map((o) => `${o.task}#${o.repeat}`));
   const cells = expectedCellKeys().map((k) => { const [task, rep] = k.split("#"); return { task: task ?? "", repeat: Number(rep), satisfied: have.has(k), evidenceComplete: have.has(k) }; });
   // Provenance is read from the verified observations (all agree with each other and with experiment.json by construction, see selectObservations).
   const p = verifiedProvenance(observations);
   if (!p) return { qualifying: false, shortCells: expectedCellKeys().filter((k) => !have.has(k)), unpublishedCells: [], reason: observations.length === 0 ? "no verified observations" : "observations disagree on experiment identity" };
-  return qualifies({ cells, isolation: p.isolation === "fresh" ? "fresh" : "shared", ownerException: p.ownerExceptionId });
+  return qualifies({ cells, isolation: p.isolation === "fresh" ? "fresh" : "shared", pilot });
 }
 
 /** The one experiment identity every verified observation carries, or null when there are none or they disagree. */
@@ -347,9 +356,9 @@ export function compareTaskMaterial(baseline: TaskMaterialResult, candidate: Tas
   return { ok: baseline.sha256 === candidate.sha256 && differing.length === 0, differing, problem: null };
 }
 
-export function renderReport(exp: ExperimentFile, agg: Aggregate, observations: readonly Observation[], failures: readonly string[], rubricVersion: string, material?: TaskMaterialResult): string {
+export function renderReport(exp: ExperimentFile, agg: Aggregate, observations: readonly Observation[], failures: readonly string[], rubricVersion: string, material?: TaskMaterialResult, expDir?: string): string {
   const p = verifiedProvenance(observations);
-  const q = recomputeQualification(exp, observations);
+  const q = recomputeQualification(exp, observations, expDir);
   const saved = exp.qualification;
   const pending = observations.filter((o) => !o.score);
   const scoringComplete = pending.length === 0 && observations.length === expectedCellKeys().length && failures.length === 0;
@@ -413,7 +422,7 @@ async function main(): Promise<void> {
     // The file name carries the build version only when the verified manifests agree on it; experiment.json's claim never names a report.
     const ver = verifiedProvenance(observations)?.storybloqVersion.replace(/[^0-9.]/g, "") ?? "unverified";
     const out = join(a1, `results-${new Date().toISOString().slice(0, 10)}-${ver}-rubric${rubricVersion}.md`);
-    publishText(out, renderReport(exp, agg, observations, failures, rubricVersion, taskMaterialFor(observations, failures)), allowlist);
+    publishText(out, renderReport(exp, agg, observations, failures, rubricVersion, taskMaterialFor(observations, failures), a1), allowlist);
     process.stdout.write(`${out}\n`);
   } else if (cmd === "compare") {
     const base = experimentTaskMaterial(a1, rubricVersion);

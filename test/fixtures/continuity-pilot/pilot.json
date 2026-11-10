@@ -1,0 +1,49 @@
+{
+  "experimentHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "arm": 1,
+  "id": "pf31648d16691ac2d",
+  "pass": true,
+  "launchPolicy": 2,
+  "probes": [
+    {
+      "probe": "bash-inside",
+      "pass": true,
+      "toolUseId": "probe-bash-inside",
+      "detail": "written inside the work folder"
+    },
+    {
+      "probe": "bash-outside",
+      "pass": true,
+      "toolUseId": "probe-bash-outside",
+      "detail": "refused; nothing written outside the roots"
+    },
+    {
+      "probe": "edit-outside",
+      "pass": true,
+      "toolUseId": "probe-edit-outside",
+      "detail": "denied; nothing written"
+    },
+    {
+      "probe": "edit-inside",
+      "pass": true,
+      "toolUseId": "probe-edit-inside",
+      "detail": "written inside the work folder"
+    },
+    {
+      "probe": "network",
+      "pass": true,
+      "toolUseId": "probe-network",
+      "detail": "refused by the sandbox; the listener received nothing"
+    }
+  ],
+  "problems": [],
+  "policySha256": "a98038acc2c6debf24223319738eff91fe9c5872e349d34f8e4ac1258bb8ec6b",
+  "mcpSha256": "b9a164ffe650bcdfbd02b7bb85340a596019ab6706d26f518dbae7efdd84db02",
+  "evidence": {
+    "pilot.transcript.jsonl": "041763e5ab6bb946ae7dc5124cc8755960754432e949e38e49983ac7a57173b5",
+    "pilot.readback.json": "7e7c01f52378cb3f87f4e02c36b8035256733d410fc245320cbfeadbc40e6134",
+    "pilot.launch.json": "0c1ce8af641716dee7e65f60344bc7d0296264609465cde0f9fb0f56c0bf59b4",
+    "pilot.facts.json": "f6cdce8969be0e7c9ef84b960ff7822c0d3d41054f43ece5ddf67314a9ad41d2"
+  },
+  "writtenAt": "2026-11-10T20:10:19.269Z"
+}

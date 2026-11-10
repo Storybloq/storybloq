@@ -5,16 +5,18 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import type { ChildProcess } from "node:child_process";
+import { writeVerifiedPilot } from "./continuity-pilot-fixture.js";
 import {
   parseStream, summarizeStream, usageContext, validity, rateLimitStop, machineLoadStop, parseSwapFree, LOAD_RULE, completion, sanitize, publicationCheck, jsonShapePreserved, fixtureCredentialAllowlist, environmentSecrets, ambiguousEnvironmentSecrets,
   diffLedger, decideCell, qualifies, expectedCellKeys, experimentHash, materialize, variantDiscoveryViolations, skillPayloadDiff, hashInputs, hashTree, sha256,
-  verifyAttemptDir, isWellFormedEvent, TASKS, REPEATS, MAX_INVALID_RETRIES, type ValidityInputs,
+  verifyAttemptDir, isWellFormedEvent, TASKS, REPEATS, MAX_INVALID_RETRIES, type ValidityInputs, LAUNCH_POLICY, recordEligible, PILOT_EVIDENCE, PILOT_FILE, PILOT_PROBES,
   TASK_MATERIAL, taskMaterialEntries, taskMaterial, hashInputsByPath, driftedPaths, classifyInputDrift, NON_EXECUTED_INPUTS, INPUT_PATHS as LIB_INPUT_PATHS,
 } from "../../scripts/continuity-lib.js";
 import {
-  buildClaudeArgs, parseArgs, buildManifestHash, readAttempts, INPUT_PATHS, checkOutputPaths, validateOwnerException, effectiveConfigHash, commandTokens,
-  provisionFreshConfig, runAttempt, runMatrix, RateLimitStopError, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, type Preflight, type RunOptions, type SpawnFn,
+  parseArgs, buildManifestHash, readAttempts, INPUT_PATHS, checkOutputPaths, effectiveConfigHash, commandTokens, SHARED_REFUSAL, refuseShared, continuityTools, continuityOptions,
+  provisionFreshConfig, runAttempt, runMatrix, RateLimitStopError, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
 } from "../../scripts/continuity-run.js";
 import { aggregate, COMPARISON_CHECKPOINT, scoringRequest, validateScore, mechanicalFailureScore, selectObservations, renderReport, loadScore, publishText, type AttemptRecord, type Observation,
   taskMaterialOf, experimentTaskMaterial, compareTaskMaterial, type TaskMaterialResult } from "../../scripts/continuity-score.js";
@@ -26,7 +28,7 @@ const tmp = (p: string): string => mkdtempSync(join(tmpdir(), p));
 
 /** A record in the verified schema; tests override what they care about. */
 function baseRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return { validity: "valid", experimentHash: "x".repeat(64), completed: true, evidenceComplete: true, task: "T-4", repeat: 1, attempt: 1, arm: 1, completion: "completed", completionReason: "ok", requiredArtefacts: [], invalidReasons: [], wallMs: 1000, ...over };
+  return { validity: "valid", experimentHash: "x".repeat(64), completed: true, evidenceComplete: true, task: "T-4", repeat: 1, attempt: 1, arm: 1, completion: "completed", completionReason: "ok", requiredArtefacts: [], invalidReasons: [], wallMs: 1000, launchPolicy: LAUNCH_POLICY, ...over };
 }
 
 /** Writes an attempt directory the way the runner does: files, record.json, a manifest covering all of them, the completed marker. */
@@ -54,6 +56,15 @@ const SID = "11111111-2222-4333-8444-555555555555";
 const stateLine = (s: string): string => `instruction\n\n---\n**Session:** ${SID}\n**State:** ${s}\n`;
 const u = (input: number, create: number, read: number): Record<string, number> => ({ input_tokens: input, cache_creation_input_tokens: create, cache_read_input_tokens: read, output_tokens: 5 });
 const INIT = ev("system", { subtype: "init", claude_code_version: "2.1.278", model: "claude-opus-5", mcp_servers: [{ name: "storybloq", status: "connected" }], skills: ["story"], plugins: [] });
+/** ISS-1486: the pinned storybloq tools, and the init event the launch policy accepts (Agent among the built-ins). */
+const TOOLS = continuityTools();
+const POLICY_INIT = ev("system", { subtype: "init", claude_code_version: "2.1.322", model: "claude-opus-5", permissionMode: "dontAsk", apiKeySource: "none", mcp_servers: [{ name: "storybloq", status: "connected" }],
+  tools: [...continuityOptions("high").builtInTools, ...TOOLS.map((t) => `mcp__storybloq__${t}`)], skills: ["story"], plugins: [] });
+const PILOT_OK = { ok: true as const, id: "pilot-1" };
+/** A verified pilot for one arm: a real one the runner published, relabelled (G4: the reader recomputes it from its evidence). */
+function writePilot(expDir: string, experiment = "e".repeat(64), arm = 1): void {
+  writeVerifiedPilot(expDir, experiment, arm);
+}
 
 /** A synthetic stream in the real shape: init, start call -> PLAN, discovery reads, plan_written, a subagent turn, result. */
 function syntheticStream(): string {
@@ -685,12 +696,16 @@ describe("hashing", () => {
     expect(hashInputs([{ label: "x", path: d }])).not.toBe(h1);
   });
   it("experiment hash changes on any stable input, including the configuration fingerprint, and the build manifest ignores HEAD", () => {
-    const i = { arm: 1 as const, inputTreeHash: "t", buildManifestHash: "b", model: "m", effort: "high", timeoutMs: 1, maxBudgetUsd: 2, clientVersion: "c", isolation: "fresh" as const, configHash: "cfg" };
+    const i = { arm: 1 as const, inputTreeHash: "t", buildManifestHash: "b", model: "m", effort: "high", timeoutMs: 1, maxBudgetUsd: 2, clientVersion: "c", isolation: "fresh" as const, configHash: "cfg", launchPolicy: LAUNCH_POLICY };
     expect(experimentHash(i)).toBe(experimentHash({ ...i }));
     for (const k of Object.keys(i) as (keyof typeof i)[]) expect(experimentHash({ ...i, [k]: k === "arm" ? 2 : k === "isolation" ? "shared" : typeof i[k] === "number" ? 99 : "x" })).not.toBe(experimentHash(i));
-    const m = { workspaceHead: "a", nodeVersion: "v", packageJsonSha256: "1", lockfileSha256: "2", installedLockSha256: "3", tsupConfigSha256: "4", dist: {}, storybloqVersion: "1", storybloqExecutable: "e", claudeVersion: "c" };
+    const m = { workspaceHead: "a", nodeVersion: "v", packageJsonSha256: "1", lockfileSha256: "2", installedLockSha256: "3", tsupConfigSha256: "4", dist: {}, evalMcpSha256: "5", codexSha256: "6", codexVersion: "v", storybloqVersion: "1", storybloqExecutable: "e", claudeVersion: "c" };
     expect(buildManifestHash(m)).toBe(buildManifestHash({ ...m, workspaceHead: "b" }));
     expect(buildManifestHash(m)).not.toBe(buildManifestHash({ ...m, dist: { "dist/mcp.js": "x" } }));
+    expect(buildManifestHash(m)).not.toBe(buildManifestHash({ ...m, evalMcpSha256: "6" }));
+    // J2: a different codex, by bytes or by version, is a different build.
+    expect(buildManifestHash(m)).not.toBe(buildManifestHash({ ...m, codexSha256: "7" }));
+    expect(buildManifestHash(m)).not.toBe(buildManifestHash({ ...m, codexVersion: "w" }));
   });
 });
 
@@ -714,7 +729,7 @@ describe("ledger snapshot diff", () => {
 describe("cells, retries, qualification", () => {
   const E = "exp";
   const CELL = { task: "T-4", repeat: 1 };
-  const rec = (validity: "valid" | "invalid", exp = E, evidenceComplete = true, task = "T-4", repeat = 1) => ({ validity, experimentHash: exp, completed: true, evidenceComplete, task, repeat });
+  const rec = (validity: "valid" | "invalid", exp = E, evidenceComplete = true, task = "T-4", repeat = 1) => ({ validity, experimentHash: exp, completed: true, evidenceComplete, task, repeat, launchPolicy: LAUNCH_POLICY });
   it("an empty cell runs attempt 1; attempt numbers continue across restarts", () => {
     expect(decideCell([], E, CELL)).toEqual({ kind: "run", nextAttempt: 1, mismatched: [] });
     expect(decideCell([{ name: "attempt-002", record: rec("invalid") }], E, CELL)).toEqual({ kind: "run", nextAttempt: 3, mismatched: [] });
@@ -752,20 +767,20 @@ describe("cells, retries, qualification", () => {
     expect(decideCell([...mixedRun, at(5, "model-drift")], E, CELL)).toEqual({ kind: "exhausted", mismatched: [] });
     expect(decideCell([at(1, "config-drift"), at(2, "rate-limited"), at(3, "rate-limited"), at(4, "stream-corrupt"), at(5, "rate-limited")], E, CELL)).toEqual({ kind: "run", nextAttempt: 6, mismatched: [] });
   });
-  it("qualifies only for exactly the preregistered cells, each satisfied with complete evidence; shared needs an exception", () => {
+  it("qualifies only for exactly the preregistered cells, each satisfied with complete evidence, under a verified pilot; shared never qualifies", () => {
     const all = TASKS.flatMap((task) => Array.from({ length: REPEATS }, (_, i) => ({ task, repeat: i + 1, satisfied: true, evidenceComplete: true })));
     expect(expectedCellKeys()).toHaveLength(15);
-    expect(qualifies({ cells: all, isolation: "fresh", ownerException: null }).qualifying).toBe(true);
-    expect(qualifies({ cells: all, isolation: "shared", ownerException: null }).qualifying).toBe(false);
-    expect(qualifies({ cells: all, isolation: "shared", ownerException: "r-xyz" }).qualifying).toBe(true);
+    expect(qualifies({ cells: all, isolation: "fresh", pilot: PILOT_OK }).qualifying).toBe(true);
+    expect(qualifies({ cells: all, isolation: "shared", pilot: PILOT_OK })).toMatchObject({ qualifying: false, reason: "shared isolation is refused (ISS-1486)" });
+    expect(qualifies({ cells: all, isolation: "fresh", pilot: { ok: false, reason: "the pilot failed (network)" } })).toMatchObject({ qualifying: false, reason: "no verified pilot: the pilot failed (network)" });
     const dup = Array.from({ length: 15 }, () => ({ task: "T-2.a", repeat: 1, satisfied: true, evidenceComplete: true }));
-    expect(qualifies({ cells: dup, isolation: "fresh", ownerException: null }).reason).toMatch(/duplicate cells/);
-    const q = qualifies({ cells: all.map((c, i) => (i === 7 ? { ...c, satisfied: false } : c)), isolation: "fresh", ownerException: null });
+    expect(qualifies({ cells: dup, isolation: "fresh", pilot: PILOT_OK }).reason).toMatch(/duplicate cells/);
+    const q = qualifies({ cells: all.map((c, i) => (i === 7 ? { ...c, satisfied: false } : c)), isolation: "fresh", pilot: PILOT_OK });
     expect(q.qualifying).toBe(false); expect(q.shortCells).toEqual(["T-2.c#2"]);
-    const short = qualifies({ cells: all.slice(0, 14), isolation: "fresh", ownerException: null });
+    const short = qualifies({ cells: all.slice(0, 14), isolation: "fresh", pilot: PILOT_OK });
     expect(short.qualifying).toBe(false); expect(short.reason).toBe("missing cells: T-4#3");
-    expect(qualifies({ cells: [...all.slice(0, 14), { task: "T-4", repeat: 4, satisfied: true, evidenceComplete: true }], isolation: "fresh", ownerException: null }).reason).toMatch(/unknown cells: T-4#4/);
-    const unpub = qualifies({ cells: all.map((c, i) => (i === 3 ? { ...c, evidenceComplete: false } : c)), isolation: "fresh", ownerException: null });
+    expect(qualifies({ cells: [...all.slice(0, 14), { task: "T-4", repeat: 4, satisfied: true, evidenceComplete: true }], isolation: "fresh", pilot: PILOT_OK }).reason).toMatch(/unknown cells: T-4#4/);
+    const unpub = qualifies({ cells: all.map((c, i) => (i === 3 ? { ...c, evidenceComplete: false } : c)), isolation: "fresh", pilot: PILOT_OK });
     expect(unpub.qualifying).toBe(false); expect(unpub.unpublishedCells).toEqual(["T-2.b#1"]);
   });
   it("the shared verifier trusts nothing from record.json alone: record hash, manifest schema, required artefacts, artefact bytes", () => {
@@ -802,17 +817,19 @@ describe("cells, retries, qualification", () => {
 });
 
 describe("dispatcher arguments, CLI and preflight helpers", () => {
-  it("enables slash commands and tools, pins model and effort, restricts MCP to our config, forwards the budget", () => {
-    const args = buildClaudeArgs({ prompt: "/story auto T-2", model: "claude-opus-5", effort: "high", mcpConfigPath: "/w/.continuity-mcp.json", maxBudgetUsd: 15 });
-    expect(args).not.toContain("--restricted");
-    expect(args).not.toContain("--disable-slash-commands");
-    expect(args.slice(0, 2)).toEqual(["-p", "/story auto T-2"]);
-    expect(args).toContain("--strict-mcp-config");
-    expect(args[args.indexOf("--mcp-config") + 1]).toBe("/w/.continuity-mcp.json");
-    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("15");
-    expect(args[args.indexOf("--effort") + 1]).toBe("high");
-    expect(args).toContain("--no-session-persistence");
-    expect(args[args.indexOf("--output-format") + 1]).toBe("stream-json");
+  it("ISS-1486: shared isolation and an owner exception are refused at the command line and at every entry point, before any spawn", async () => {
+    const out = tmp("cont-out-"); const raw = tmp("cont-raw-");
+    expect(() => parseArgs(["--isolation", "shared", "--out", out, "--raw-out", raw])).toThrow(SHARED_REFUSAL);
+    expect(() => parseArgs(["--owner-exception", "r-aaaaaaaaaaaaaaaa", "--out", out, "--raw-out", raw])).toThrow(SHARED_REFUSAL);
+    expect(parseArgs(["--out", out, "--raw-out", raw]).isolation).toBe("fresh");
+    expect(() => refuseShared({ isolation: "shared" })).toThrow(SHARED_REFUSAL);
+    expect(() => refuseShared({ isolation: "fresh", ownerException: "r-aaaaaaaaaaaaaaaa" })).toThrow(SHARED_REFUSAL);
+    expect(() => refuseShared({ isolation: "fresh", ownerException: null })).not.toThrow();
+    const o = options({ isolation: "shared" }); const pf = fakePreflight(); let spawned = 0;
+    const spawnFn: SpawnFn = () => { spawned++; throw new Error("spawned"); };
+    await expect(runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn }))).rejects.toThrow(SHARED_REFUSAL);
+    await expect(runMatrix(o, pf, deps({ spawnFn }))).rejects.toThrow(SHARED_REFUSAL);
+    expect(spawned).toBe(0);
   });
   it("parses and validates options; skip-build and duplicate tasks are refused", () => {
     const out = tmp("cont-out-"); const raw = tmp("cont-raw-");
@@ -820,7 +837,7 @@ describe("dispatcher arguments, CLI and preflight helpers", () => {
     expect(o.tasks).toEqual(["T-2.c", "T-4"]); expect(o.isolation).toBe("fresh"); expect(o.repeats).toBe(3);
     expect(() => parseArgs(["--tasks", "T-9", "--out", out, "--raw-out", raw])).toThrow(/unknown task/);
     expect(() => parseArgs(["--tasks", "T-4,T-4", "--out", out, "--raw-out", raw])).toThrow(/twice/);
-    expect(() => parseArgs(["--isolation", "loose", "--out", out, "--raw-out", raw])).toThrow(/fresh or shared/);
+    expect(() => parseArgs(["--isolation", "loose", "--out", out, "--raw-out", raw])).toThrow(/is refused/);
     expect(() => parseArgs(["--timeout-ms", "0", "--out", out, "--raw-out", raw])).toThrow(/positive integer/);
     expect(() => parseArgs(["--skip-build", "--out", out, "--raw-out", raw])).toThrow(/not supported/);
     expect(() => parseArgs(["--repeats", "4", "--out", out, "--raw-out", raw])).toThrow(/repeats/);
@@ -839,39 +856,6 @@ describe("dispatcher arguments, CLI and preflight helpers", () => {
     expect(() => checkOutputPaths(out, join(root, "link-to-pkg", "eval"), pkg)).toThrow(/inside the package/);
     mkdirSync(out); symlinkSync(out, join(root, "link-to-out"));
     expect(() => checkOutputPaths(out, join(root, "link-to-out", "raw"), pkg)).toThrow(/overlap/);
-  });
-  it("an owner exception must be a readable, unsuperseded ruling (real schema, successor's supersedes edge) naming T-525 and shared isolation", () => {
-    const ws = tmp("cont-ws-"); mkdirSync(join(ws, ".story", "rulings"), { recursive: true });
-    const seed = JSON.parse(readFileSync(join(FIXTURE, "core", ".story", "rulings", "r-eftp2zdb6as643np.json"), "utf-8")) as Record<string, unknown>;
-    const w = (id: string, text: string, supersedes: string | null = null): void => writeFileSync(join(ws, ".story", "rulings", `${id}.json`), JSON.stringify({ ...seed, id, text, supersedes }));
-    w("r-aaaaaaaaaaaaaaaa", "Owner, 2026-09-20: \"T-525 baseline may be captured in shared isolation on this machine; recorded exception.\"");
-    w("r-bbbbbbbbbbbbbbbb", "Owner: Codex not Gemini for reviews.");
-    w("r-cccccccccccccccc", "Owner: T-525 shared isolation allowed (old wording)");
-    w("r-dddddddddddddddd", "Owner: T-525 shared isolation withdrawn; capture fresh only.", "r-cccccccccccccccc");
-    expect(validateOwnerException("r-aaaaaaaaaaaaaaaa", ws).id).toBe("r-aaaaaaaaaaaaaaaa");
-    expect(() => validateOwnerException("r-bbbbbbbbbbbbbbbb", ws)).toThrow(/does not name T-525 and shared isolation;/);
-    expect(() => validateOwnerException("r-cccccccccccccccc", ws)).toThrow(/superseded by r-dddddddddddddddd/);
-    expect(() => validateOwnerException("r-eeeeeeeeeeeeeeee", ws)).toThrow(/not a readable ruling/);
-    expect(() => validateOwnerException("N-1", ws)).toThrow(/not a ruling id/);
-    writeFileSync(join(ws, ".story", "rulings", "r-ffffffffffffffff.json"), "{corrupt");
-    expect(() => validateOwnerException("r-ffffffffffffffff", ws)).toThrow(/not a readable ruling/);
-  });
-  it("B2: the owner's verbatim text need not name the ticket; T-525 may come from text, narrative.context or scopeTags, shared from text or scopeTags", () => {
-    const ws = tmp("cont-ws2-"); mkdirSync(join(ws, ".story", "rulings"), { recursive: true });
-    const seed = JSON.parse(readFileSync(join(FIXTURE, "core", ".story", "rulings", "r-eftp2zdb6as643np.json"), "utf-8")) as Record<string, unknown>;
-    const w = (id: string, over: Record<string, unknown>): void => writeFileSync(join(ws, ".story", "rulings", `${id}.json`), JSON.stringify({ ...seed, id, supersedes: null, scopeTags: [], ...over }));
-    const verbatim = "why do you even need CLAUDE_CODE_OAUTH_TOKEN? use the shared auth on the system";
-    w("r-gggggggggggggggg", { text: "t-525 may run in SHARED isolation" });
-    w("r-hhhhhhhhhhhhhhhh", { text: verbatim, narrative: { context: "T-525 slice 2 was blocked on a token." } });
-    w("r-jjjjjjjjjjjjjjjj", { text: verbatim, scopeTags: ["T-525"] });
-    w("r-kkkkkkkkkkkkkkkk", { text: "T-525 captures use the machine's auth", scopeTags: ["Shared", "benchmark"] });
-    w("r-mmmmmmmmmmmmmmmm", { text: verbatim, scopeTags: ["t-5250"], narrative: { context: "T-5251 only" } });
-    w("r-nnnnnnnnnnnnnnnn", { text: "T-525 captures use the machine's auth", narrative: { context: "shared isolation" }, scopeTags: ["t-525"] });
-    w("r-pppppppppppppppp", { text: "T-525 shared isolation allowed", status: "withdrawn" });
-    for (const id of ["r-gggggggggggggggg", "r-hhhhhhhhhhhhhhhh", "r-jjjjjjjjjjjjjjjj", "r-kkkkkkkkkkkkkkkk"]) expect(validateOwnerException(id, ws).id, id).toBe(id);
-    expect(() => validateOwnerException("r-mmmmmmmmmmmmmmmm", ws)).toThrow(/does not name T-525;/);
-    expect(() => validateOwnerException("r-nnnnnnnnnnnnnnnn", ws)).toThrow(/does not name shared isolation;/);
-    expect(() => validateOwnerException("r-pppppppppppppppp", ws)).toThrow(/not accepted/);
   });
   it("the effective configuration inventories quoted hook paths, the user CLAUDE.md, the plugin inventory and the skill tree", () => {
     const cfg = tmp("cont-cfg-");
@@ -925,6 +909,7 @@ describe("dispatcher arguments, CLI and preflight helpers", () => {
 
 class FakeChild extends EventEmitter {
   pid = 999999;
+  stdin = new PassThrough();
   stdout = new PassThrough();
   stderr = new PassThrough();
   exitCode: number | null = null;
@@ -941,6 +926,7 @@ class FakeChild extends EventEmitter {
     if (this.exitCode !== null || this.signalCode !== null) return;
     this.exitCode = code; this.signalCode = signal;
     this.stdout.end();
+    this.stdin.destroy();
     setTimeout(() => this.emit("close", code, signal), 0);
   }
 }
@@ -954,6 +940,8 @@ interface FakeBehaviour {
   readonly stateExtra?: Record<string, unknown>;
   /** Stream lines written after the standard ones (B2: a rate-limit stop). */
   readonly tail?: readonly string[];
+  /** ISS-1486: one readback answer changed before it is sent. */
+  readonly mutate?: (answers: Record<string, Record<string, unknown>>) => void;
 }
 
 /** Deterministic dist hashes: the lifecycle tests never need a build. */
@@ -965,67 +953,111 @@ const TM_LABELS = ["test/fixtures/continuity/core", "test/fixtures/continuity/va
 const FAKE_INPUTS: Record<string, string> = Object.fromEntries(INPUT_PATHS.map((p, i) => [p, String(i % 10).repeat(64)]));
 const fakeInputs = (): { hashes: Record<string, string>; errors: Record<string, string> } => ({ hashes: { ...FAKE_INPUTS }, errors: {} });
 
+const sentinel = createRequire(import.meta.url)("../fixtures/t538-claude-sentinel.cjs") as { goodResponses: (x: Record<string, unknown>) => Record<string, Record<string, unknown>> };
+
+/**
+ * ISS-1486: the client's side of the launch, in process. It reads the policy and MCP files the argv names, answers
+ * the six readback requests with the measured shapes (Agent advertised, the server's environment echoed), and hands
+ * the user message's text to `onPrompt`. `mutate` changes one answer before it is sent.
+ */
+function speakLaunch(child: FakeChild, args: readonly string[], cwd: string, onPrompt: (prompt: string) => void, mutate?: (answers: Record<string, Record<string, unknown>>) => void): void {
+  const opt = (k: string): string => args[args.indexOf(k) + 1] ?? "";
+  const policy = JSON.parse(readFileSync(opt("--settings"), "utf-8")) as { sandbox: { filesystem: { allowWrite: string[] } } };
+  const server = (JSON.parse(readFileSync(opt("--mcp-config"), "utf-8")) as { mcpServers: { storybloq: { command: string; args: string[]; env: Record<string, string> } } }).mcpServers.storybloq;
+  const answers = sentinel.goodResponses({ project: cwd, roots: policy.sandbox.filesystem.allowWrite, policy, mcpTools: TOOLS, mcpLaunch: { command: server.command, args: server.args } });
+  for (const s of (answers.mcp_status!.mcpServers as { config: Record<string, unknown> }[])) s.config = { ...s.config, env: { ...server.env } };
+  mutate?.(answers);
+  let pending = "";
+  child.stdin.on("data", (c: Buffer) => {
+    pending += c.toString("utf-8");
+    let nl: number;
+    while ((nl = pending.indexOf("\n")) >= 0) {
+      const text = pending.slice(0, nl); pending = pending.slice(nl + 1);
+      if (text.trim() === "") continue;
+      const msg = JSON.parse(text) as { type: string; request_id?: string; request?: { subtype: string }; message?: { content: unknown } };
+      if (msg.type === "control_request") child.stdout.write(`${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: answers[msg.request!.subtype] } })}\n`);
+      else if (msg.type === "user") {
+        const c = msg.message?.content;
+        onPrompt(typeof c === "string" ? c : Array.isArray(c) ? c.map((b: { text?: string }) => b.text ?? "").join("") : "");
+      }
+    }
+  });
+}
+
 function fakeSpawn(behaviour: FakeBehaviour, seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[]): SpawnFn {
   return (_cmd, args, options) => {
     const cwd = options.cwd as string;
     const env = options.env as NodeJS.ProcessEnv;
-    const ticketId = /\/story auto (T-\d+)/.exec(args[args.indexOf("-p") + 1] ?? "")?.[1] ?? "T-4";
     const child = new FakeChild(behaviour.ignoreTerm === true);
     seen.push({ cwd, env, child });
-    const sessionDir = join(cwd, ".story", "sessions", SID);
-    mkdirSync(sessionDir, { recursive: true });
-    if (!behaviour.noPlanFile) writeFileSync(join(sessionDir, "plan.md"), "# plan\n\nEXISTING: src/http/router.ts\n");
-    writeFileSync(join(sessionDir, "context-digest.md"), "# digest\n");
-    const state: Record<string, unknown> = { state: "IMPLEMENT", status: "active", binaryFingerprint: { mtime: 1, sha256: FAKE_DIST["dist/mcp.js"] }, completedTickets: [], ...behaviour.stateExtra };
-    if (behaviour.complete) {
-      Object.assign(state, { state: "SESSION_END", status: "completed", terminationReason: "normal", completedTickets: [{ id: ticketId }] });
-      const ticket = join(cwd, ".story", "tickets", `${ticketId}.json`);
-      writeFileSync(ticket, JSON.stringify({ ...JSON.parse(readFileSync(ticket, "utf-8")), status: "complete" }, null, 2));
-      mkdirSync(join(cwd, ".story", "handovers"), { recursive: true });
-      const handover = typeof behaviour.handoverText === "function" ? behaviour.handoverText(ticketId) : behaviour.handoverText;
-      writeFileSync(join(cwd, ".story", "handovers", `2026-09-20-${ticketId.toLowerCase()}.md`), handover ?? `# handover\n\n${ticketId} done; knowledgeImpact: new fact recorded\n`);
-      const g = (a: string[]): void => { execFileSync("git", a, { cwd, stdio: "ignore", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }); };
-      g(["add", "-A"]); g(["commit", "-q", "-m", `${ticketId}: done`]);
-    }
-    writeFileSync(join(sessionDir, "state.json"), JSON.stringify(state));
-    const lines = [
-      INIT,
-      assistant("r1", [{ type: "tool_use", id: "t1", name: guide, input: { sessionId: null, action: "start", targetWork: [ticketId] } }], u(10, 0, 100)),
-      toolResult("t1", stateLine("PLAN")),
-      assistant("r2", [{ type: "tool_use", id: "t2", name: "Read", input: { file_path: `${cwd}/src/http/router.ts` } }], u(10, 0, 200)),
-      toolResult("t2", "export class Router {}"),
-      assistant("r3", [{ type: "tool_use", id: "t3", name: guide, input: { sessionId: SID, action: "report", report: { completedAction: "plan_written" } } }], u(10, 0, 300)),
-      toolResult("t3", stateLine("PLAN_REVIEW")),
-    ];
-    if (behaviour.complete) lines.push(ev("result", { subtype: "success", total_cost_usd: 0.5, num_turns: 4, usage: {} }));
-    lines.push(...(behaviour.tail ?? []));
-    setTimeout(() => {
-      for (const l of lines) child.stdout.write(`${l}\n`);
-      if (!behaviour.hang) child.finish(0, null);
-    }, 5);
+    speakLaunch(child, args, cwd, (prompt) => {
+      const ticketId = /^\/story auto (T-\d+)$/.exec(prompt)?.[1] ?? "T-0";
+      const sessionDir = join(cwd, ".story", "sessions", SID);
+      mkdirSync(sessionDir, { recursive: true });
+      if (!behaviour.noPlanFile) writeFileSync(join(sessionDir, "plan.md"), "# plan\n\nEXISTING: src/http/router.ts\n");
+      writeFileSync(join(sessionDir, "context-digest.md"), "# digest\n");
+      const state: Record<string, unknown> = { state: "IMPLEMENT", status: "active", binaryFingerprint: { mtime: 1, sha256: FAKE_DIST["dist/mcp.js"] }, completedTickets: [], ...behaviour.stateExtra };
+      if (behaviour.complete) {
+        Object.assign(state, { state: "SESSION_END", status: "completed", terminationReason: "normal", completedTickets: [{ id: ticketId }] });
+        const ticket = join(cwd, ".story", "tickets", `${ticketId}.json`);
+        writeFileSync(ticket, JSON.stringify({ ...JSON.parse(readFileSync(ticket, "utf-8")), status: "complete" }, null, 2));
+        mkdirSync(join(cwd, ".story", "handovers"), { recursive: true });
+        const handover = typeof behaviour.handoverText === "function" ? behaviour.handoverText(ticketId) : behaviour.handoverText;
+        writeFileSync(join(cwd, ".story", "handovers", `2026-09-20-${ticketId.toLowerCase()}.md`), handover ?? `# handover\n\n${ticketId} done; knowledgeImpact: new fact recorded\n`);
+        const g = (a: string[]): void => { execFileSync("git", a, { cwd, stdio: "ignore", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }); };
+        g(["add", "-A"]); g(["commit", "-q", "-m", `${ticketId}: done`]);
+      }
+      writeFileSync(join(sessionDir, "state.json"), JSON.stringify(state));
+      const lines = [
+        POLICY_INIT,
+        assistant("r1", [{ type: "tool_use", id: "t1", name: guide, input: { sessionId: null, action: "start", targetWork: [ticketId] } }], u(10, 0, 100)),
+        toolResult("t1", stateLine("PLAN")),
+        assistant("r2", [{ type: "tool_use", id: "t2", name: "Read", input: { file_path: `${cwd}/src/http/router.ts` } }], u(10, 0, 200)),
+        toolResult("t2", "export class Router {}"),
+        assistant("r3", [{ type: "tool_use", id: "t3", name: guide, input: { sessionId: SID, action: "report", report: { completedAction: "plan_written" } } }], u(10, 0, 300)),
+        toolResult("t3", stateLine("PLAN_REVIEW")),
+      ];
+      if (behaviour.complete) lines.push(ev("result", { subtype: "success", total_cost_usd: 0.5, num_turns: 4, usage: {}, permission_denials: [] }));
+      lines.push(...(behaviour.tail ?? []));
+      setTimeout(() => {
+        for (const l of lines) child.stdout.write(`${l}\n`);
+        if (!behaviour.hang) child.finish(0, null);
+      }, 5);
+    }, behaviour.mutate);
     return child as unknown as ChildProcess;
   };
 }
+
+/** J2: a codex that only answers --version: the fake client never starts the server, so nothing else runs it. */
+const CODEX_VERSION_ONLY = ((): string => {
+  const f = join(mkdtempSync(join(tmpdir(), "cont-codex-")), "codex");
+  writeFileSync(f, "#!/bin/sh\necho codex-cli 0.0.0-version-only\n", { mode: 0o755 });
+  return f;
+})();
 
 function fakePreflight(over: Partial<Preflight> = {}): Preflight {
   const dist = fakeDist();
   const template = tmp("cont-template-"); provisionFreshConfig(template);
   const cfg = effectiveConfigHash(template);
   return {
-    build: { workspaceHead: "h", nodeVersion: process.version, packageJsonSha256: "p", lockfileSha256: "l", installedLockSha256: null, tsupConfigSha256: "t", dist, storybloqVersion: "1.15.9", storybloqExecutable: join(PKG, "dist", "cli.js"), claudeVersion: "2.1.278 (Claude Code)" },
+    build: { workspaceHead: "h", nodeVersion: process.version, packageJsonSha256: "p", lockfileSha256: "l", installedLockSha256: null, tsupConfigSha256: "t", dist, evalMcpSha256: existsSync(EVAL_MCP_BUNDLE) ? sha256(readFileSync(EVAL_MCP_BUNDLE)) : "bundle-missing", ...codexFingerprint(CODEX_VERSION_ONLY), storybloqVersion: "1.15.9", storybloqExecutable: join(PKG, "dist", "cli.js"), claudeVersion: "2.1.278 (Claude Code)" },
     // distHashes is injected per call (see deps()); the manifest carries the same synthetic values.
     buildManifestHash: "bmh", inputTreeHash: "ith", experiment: "e".repeat(64), isolation: "fresh", sharedConfigDir: null, configHash: cfg.sha256, configInventory: cfg.inventory,
     inputHashes: { ...FAKE_INPUTS }, taskMaterialHash: "a".repeat(64), taskMaterialHashes: Object.fromEntries(TM_LABELS.map((l) => [l, "b".repeat(64)])),
-    skillMarker: null, allowlist: fixtureCredentialAllowlist(join(FIXTURE, "core")), ownerException: null, ...over,
+    // The client here is a fake, so the server's wrapper is never run; the launch needs only a codex that answers --version (J2).
+    skillMarker: null, allowlist: fixtureCredentialAllowlist(join(FIXTURE, "core")), tools: TOOLS, codexBin: CODEX_VERSION_ONLY, ...over,
   };
 }
 
 function options(over: Partial<RunOptions> = {}): RunOptions {
-  return { arm: 1, tasks: ["T-4"], repeats: 1, model: "claude-opus-5", effort: "high", isolation: "fresh", ownerException: null, out: tmp("cont-out-"), rawOut: tmp("cont-raw-"), timeoutMs: 5000, sigkillGraceMs: 200, maxBudgetUsd: 1, ...over };
+  const o: RunOptions = { arm: 1, tasks: ["T-4"], repeats: 1, model: "claude-opus-5", effort: "high", isolation: "fresh", out: tmp("cont-out-"), rawOut: tmp("cont-raw-"), timeoutMs: 5000, sigkillGraceMs: 200, maxBudgetUsd: 1, ...over };
+  // ISS-1486 D9: every run needs the arm's verified pilot beside the attempts; the lifecycle tests are not about it.
+  writePilot(join(o.out, "e".repeat(12)), "e".repeat(64), o.arm);
+  return o;
 }
 
 /** Every lifecycle call goes through here so no test depends on a built dist/. */
-type LoadDeps = { loadSample?: () => { load1: number | null; swapFreeBytes: number | null }; loadSampleMs?: number; now?: () => number };
+type LoadDeps = { loadSample?: () => { load1: number | null; swapFreeBytes: number | null }; loadSampleMs?: number; now?: () => number; provision?: (dest: string) => void; readbackTimeoutMs?: number };
 const deps = (extra: { spawnFn: SpawnFn; signals?: EventEmitter; log?: (line: string) => void } & LoadDeps): { spawnFn: SpawnFn; signals?: EventEmitter; distHashes: () => Record<string, string>; inputHashes: typeof fakeInputs } & LoadDeps =>
   ({ loadSample: () => ({ load1: 1, swapFreeBytes: 8 * 1024 ** 3 }), ...extra, distHashes: fakeDist, inputHashes: fakeInputs });
 /** A clock that advances a minute per reading, so a few real milliseconds of sampling span the rule's five minutes. */
@@ -1038,7 +1070,7 @@ describe("attempt lifecycle (fake child process, no model)", () => {
   it("a completed session is valid, completed, evidence-complete, and every published byte is sanitised", async () => {
     const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
     const r = await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn: fakeSpawn({ complete: true }, seen) }));
-    expect(r).toEqual({ validity: "valid", completion: "completed", interrupted: false, rateLimited: false, machineLoad: false, evidenceComplete: true, inputDrift: { invalidating: [], disclosed: [], errors: {} }, configDrift: null, invalidReasons: [], wallMs: expect.any(Number), exitCode: 0 });
+    expect(r).toEqual({ validity: "valid", completion: "completed", interrupted: false, rateLimited: false, machineLoad: false, evidenceComplete: true, inputDrift: { invalidating: [], disclosed: [], errors: {} }, configDrift: null, invalidReasons: [], wallMs: expect.any(Number), exitCode: 0, launchPolicy: null, inputFailure: null });
     const pub = pubDirOf(o, pf); const raw = rawDirOf(o, pf);
     for (const f of ["record.json", "completed", "artefacts.sha256.json", "load.json", "evidence.jsonl", "plan.initial.md", "plan.md", "plan-context.md", "manifest.json", "usage.json", "redaction.json", "task.json", "handover.md", "ledger.changes.json"]) expect(existsSync(join(pub, f)), f).toBe(true);
     expect(existsSync(join(raw, "transcript.jsonl"))).toBe(true);
@@ -1116,16 +1148,19 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(r.summary).toContain("T-4#1: satisfied by attempt-002");
   });
 
-  it("ISS-1315: a config that drifted since preflight spawns nothing, costs no attempt, exits the matrix, and resumes once restored", async () => {
-    const shared = tmp("cont-shared-"); provisionFreshConfig(shared);
-    mkdirSync(join(shared, "plugins")); writeFileSync(join(shared, "plugins", "known_marketplaces.json"), JSON.stringify({ m: { source: { repo: "a/m" }, lastUpdated: "t1" } }));
-    const cfg = effectiveConfigHash(shared);
-    const o = options({ tasks: ["T-4", "T-3"], isolation: "shared" });
-    const pf = fakePreflight({ isolation: "shared", sharedConfigDir: shared, configHash: cfg.sha256, configInventory: cfg.inventory });
-    writeFileSync(join(shared, "plugins", "known_marketplaces.json"), JSON.stringify({ m: { source: { repo: "b/m" }, lastUpdated: "t1" } }));
-    writeFileSync(join(shared, "CLAUDE.md"), "drifted");
+  it("ISS-1315 under ISS-1486: a fresh config that differs from preflight's spawns nothing, costs no attempt, names the files, exits the matrix, and resumes once restored", async () => {
+    let drift = true;
+    // D4: fresh provisioning writes no plugin inventory; any inventory file that appears is drift, named.
+    const provision = (dest: string): void => {
+      provisionFreshConfig(dest);
+      if (!drift) return;
+      mkdirSync(join(dest, "plugins")); writeFileSync(join(dest, "plugins", "known_marketplaces.json"), JSON.stringify({ m: { source: { repo: "b/m" }, lastUpdated: "t1" } }));
+      writeFileSync(join(dest, "CLAUDE.md"), "drifted");
+    };
+    const o = options({ tasks: ["T-4", "T-3"] });
+    const pf = fakePreflight();
     const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const lines: string[] = [];
-    const err = await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: (l) => lines.push(l) })).catch((e: unknown) => e);
+    const err = await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: (l) => lines.push(l), provision })).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ConfigDriftStopError);
     expect((err as Error).message).toContain("config drifted since preflight (CLAUDE.md, plugins/known_marketplaces.json)");
     expect(seen).toHaveLength(0);
@@ -1136,14 +1171,12 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(readAttempts(join(expDir, "T-4", "repeat-1"))[0]!.record).toMatchObject({ completion: "not-started", invalidReasons: ["config-drift"] });
     expect(existsSync(join(expDir, "T-3"))).toBe(false);
     // Restored: the refusal is not counted, so the cell resumes at attempt-002 with its full retry budget.
-    rmSync(join(shared, "CLAUDE.md"));
-    writeFileSync(join(shared, "plugins", "known_marketplaces.json"), JSON.stringify({ m: { source: { repo: "a/m" }, lastUpdated: "t2" } }));
+    drift = false;
     const again: typeof seen = [];
-    const r = await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, again), log: () => {} }));
+    const r = await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, again), log: () => {}, provision }));
     expect(again).toHaveLength(2);
     expect(r.summary).toContain("T-4#1: satisfied by attempt-002");
   });
-
   it("ISS-1315: a not-started refusal never counts toward the retry budget", () => {
     const rec = (n: number, extra: Record<string, unknown> = {}) => ({ name: `attempt-00${n}`, record: { validity: "invalid" as const, experimentHash: "e", completed: true, evidenceComplete: false, task: "T-4", repeat: 1, invalidReasons: ["config-drift"], ...extra } });
     const refused = [1, 2, 3, 4, 5, 6].map((n) => rec(n, { completion: "not-started" }));
@@ -1227,7 +1260,7 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(existsSync(join(o2.out, pf.experiment.slice(0, 12), "QUALIFYING"))).toBe(false);
     // The rule the stop enforces, pinned directly: one unpublished observation is enough to disqualify.
     const cells = [...TASKS].flatMap((task) => [1, 2, 3].map((repeat) => ({ task, repeat, satisfied: true, evidenceComplete: !(task === "T-3" && repeat === 1) })));
-    expect(qualifies({ cells, isolation: "fresh", ownerException: null })).toMatchObject({ qualifying: false, unpublishedCells: ["T-3#1"] });
+    expect(qualifies({ cells, isolation: "fresh", pilot: PILOT_OK })).toMatchObject({ qualifying: false, unpublishedCells: ["T-3#1"] });
   }, 120_000);
 
   it("a blocked artefact stays private, the observation stands, and evidence completeness is recorded on the cell", async () => {
@@ -1262,21 +1295,21 @@ describe("attempt lifecycle (fake child process, no model)", () => {
   it("plan.initial.md belongs to the first main-session plan_written call only; a later copy never substitutes and subagent calls are ignored", async () => {
     const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
     // The first main-session plan_written arrives while plan.md does not exist yet; a subagent call and a second main call follow once it does.
-    const spawnFn: SpawnFn = (_c, _a, options) => {
+    const spawnFn: SpawnFn = (_c, args, options) => {
       const cwd = options.cwd as string;
       const child = new FakeChild(false);
       seen.push({ cwd, env: options.env as NodeJS.ProcessEnv, child });
       const sessionDir = join(cwd, ".story", "sessions", SID);
       mkdirSync(sessionDir, { recursive: true });
       writeFileSync(join(sessionDir, "state.json"), JSON.stringify({ state: "IMPLEMENT", status: "active", binaryFingerprint: { mtime: 1, sha256: FAKE_DIST["dist/mcp.js"] }, completedTickets: [] }));
-      setTimeout(() => {
-        child.stdout.write(`${INIT}\n${assistant("r1", [{ type: "tool_use", id: "t1", name: guide, input: { sessionId: null, action: "start" } }], u(1, 0, 1))}\n${toolResult("t1", stateLine("PLAN"))}\n`);
+      speakLaunch(child, args, cwd, () => setTimeout(() => {
+        child.stdout.write(`${POLICY_INIT}\n${assistant("r1", [{ type: "tool_use", id: "t1", name: guide, input: { sessionId: null, action: "start" } }], u(1, 0, 1))}\n${toolResult("t1", stateLine("PLAN"))}\n`);
         child.stdout.write(`${assistant("r2", [{ type: "tool_use", id: "first", name: guide, input: { report: { completedAction: "plan_written" } } }], u(1, 0, 2))}\n${toolResult("first", stateLine("PLAN_REVIEW"))}\n`);
         writeFileSync(join(sessionDir, "plan.md"), "# revised plan\n");
         child.stdout.write(`${assistant("r3", [{ type: "tool_use", id: "sub", name: guide, input: { report: { completedAction: "plan_written" } } }], u(1, 0, 3), "parent-x")}\n${toolResult("sub", stateLine("PLAN"), "parent-x")}\n`);
         child.stdout.write(`${assistant("r4", [{ type: "tool_use", id: "second", name: guide, input: { report: { completedAction: "plan_written" } } }], u(1, 0, 4))}\n${toolResult("second", stateLine("IMPLEMENT"))}\n`);
         child.finish(0, null);
-      }, 5);
+      }, 5));
       return child as unknown as ChildProcess;
     };
     const r = await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn }));
@@ -1365,6 +1398,12 @@ describe("fixture materialisation", () => {
   it("the fixture app's tests run before the T-3 move, fail with a stale consumer import, and pass once every import is updated", () => {
     const dest = tmp("cont-app-");
     materialize(FIXTURE, 1, "T-3", dest);
+    // Precondition: the fixture app's tests are .ts files, which a bare `node --test` finds and runs only on a node
+    // that strips types by default (22.18.0 or later on 22, 23.6.0 or later). An older node reports "tests 0".
+    const version = execFileSync("node", ["--version"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const [major = 0, minor = 0] = version.replace(/^v/, "").split(".").map(Number);
+    const stripsTypes = major > 23 || (major === 23 && minor >= 6) || (major === 22 && minor >= 18);
+    expect(stripsTypes, `the node on PATH is ${version}; this row needs node 22.18.0 or later (23.6.0 or later on 23) to run the fixture app's .ts tests`).toBe(true);
     const run = (): string => execFileSync("node", ["--test"], { cwd: dest, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
     expect(run()).toMatch(/# pass 4\n# fail 0/);
     mkdirSync(join(dest, "packages"), { recursive: true });
@@ -1527,6 +1566,9 @@ describe("scoring", () => {
     }
     const full = selectObservations(expDir, { ...base, cells: allCells }, "1");
     expect(full.failures).toEqual([]);
+    // ISS-1486 D9: without the arm's verified pilot beside the attempts, nothing is citable; with it, the cells decide.
+    expect(renderReport({ ...base, cells: allCells }, aggregate(full.observations), full.observations, full.failures, "1")).toContain("NOT citable");
+    writePilot(expDir, E, 1);
     expect(renderReport({ ...base, cells: allCells }, aggregate(full.observations), full.observations, full.failures, "1")).toContain("This file is citable as the release baseline.");
     const empty = selectObservations(expDir, { ...base, cells: [] }, "1");
     expect(empty.failures).toHaveLength(15);
@@ -1554,6 +1596,32 @@ describe("scoring", () => {
     expect(dup.failures).toEqual(["T-2.a#1: listed twice in experiment.json", "T-4#3: absent from experiment.json"]);
     expect(dup.observations).toHaveLength(15);
     expect(renderReport({ ...base, cells: [...allCells.slice(0, 14), allCells[0]!] }, aggregate(dup.observations), dup.observations, dup.failures, "1")).toContain("NOT citable");
+  });
+  it("G10: a record with no launch policy, or another one, is refused by the runner and the scorer alike, with a valid pilot beside it", () => {
+    const E = "e".repeat(64);
+    const base = { experimentHash: E, arm: 1, model: "m", effort: "high", isolation: "fresh", ownerException: null, build: { storybloqVersion: "1.15.9" }, qualification: { qualifying: true, reason: "stale", shortCells: [] } };
+    const allCells = TASKS.flatMap((task) => [1, 2, 3].map((repeat) => ({ task, repeat, satisfied: true, evidenceComplete: true, attempt: "attempt-001" })));
+    for (const bad of ["absent", 1, "2"] as const) {
+      const expDir = tmp("cont-g10-");
+      writePilot(expDir, E, 1);
+      for (const c of allCells) {
+        const dir = join(expDir, c.task, `repeat-${c.repeat}`, "attempt-001");
+        const rec = baseRecord({ task: c.task, repeat: c.repeat, experimentHash: E, requiredArtefacts: ["manifest.json"] });
+        if (c.task === "T-4" && c.repeat === 1) { if (bad === "absent") delete rec.launchPolicy; else rec.launchPolicy = bad; }
+        writeAttempt(dir, rec, { "manifest.json": JSON.stringify(MANIFEST) });
+        writeFileSync(join(dir, "score.rubric1.json"), JSON.stringify(good(c.task, true, true)));
+      }
+      const s = selectObservations(expDir, { ...base, cells: allCells }, "1");
+      expect(s.failures, String(bad)).toEqual([`T-4#1: attempt was not captured under launch policy ${LAUNCH_POLICY}`]);
+      expect(s.observations).toHaveLength(14);
+      expect(renderReport({ ...base, cells: allCells }, aggregate(s.observations), s.observations, s.failures, "1")).toContain("NOT citable");
+      // The runner reads the same record and never counts it for its cell; a conforming neighbour still satisfies its own.
+      expect(decideCell(readAttempts(join(expDir, "T-4", "repeat-1")), E, { task: "T-4", repeat: 1 }).kind).toBe("run");
+      expect(decideCell(readAttempts(join(expDir, "T-4", "repeat-2")), E, { task: "T-4", repeat: 2 }).kind).toBe("satisfied");
+    }
+    // The one check both sides use.
+    expect(recordEligible({ launchPolicy: LAUNCH_POLICY })).toBe(true);
+    for (const v of [undefined, null, 1, "2", 3]) expect(recordEligible({ launchPolicy: v })).toBe(false);
   });
 });
 

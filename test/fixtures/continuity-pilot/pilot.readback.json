@@ -1,0 +1,1986 @@
+{
+  "steps": [
+    {
+      "requestId": "r1",
+      "subtype": "initialize",
+      "outcome": "success",
+      "response": {
+        "commands": [],
+        "agents": [],
+        "account": {
+          "tokenSource": "none",
+          "apiProvider": "firstParty"
+        },
+        "current_permission_mode": "dontAsk",
+        "claude_code_version": "2.1.322"
+      }
+    },
+    {
+      "requestId": "r2",
+      "subtype": "get_settings",
+      "outcome": "success",
+      "response": {
+        "effective": {
+          "permissions": {
+            "defaultMode": "dontAsk",
+            "allow": [
+              "Read",
+              "Glob",
+              "Grep",
+              "Bash",
+              "Skill",
+              "Agent",
+              "Edit(/<WORK>/**)",
+              "Edit(/<TMP>/**)",
+              "mcp__storybloq__storybloq_arrangement_coordinate",
+              "mcp__storybloq__storybloq_arrangement_create",
+              "mcp__storybloq__storybloq_arrangement_get",
+              "mcp__storybloq__storybloq_arrangement_rebind",
+              "mcp__storybloq__storybloq_arrangement_update",
+              "mcp__storybloq__storybloq_autonomous_guide",
+              "mcp__storybloq__storybloq_blocker_list",
+              "mcp__storybloq__storybloq_capability_add",
+              "mcp__storybloq__storybloq_capability_check",
+              "mcp__storybloq__storybloq_capability_get",
+              "mcp__storybloq__storybloq_capability_list",
+              "mcp__storybloq__storybloq_capability_match",
+              "mcp__storybloq__storybloq_capability_update",
+              "mcp__storybloq__storybloq_checkpoint_attach",
+              "mcp__storybloq__storybloq_checkpoint_change",
+              "mcp__storybloq__storybloq_checkpoint_create",
+              "mcp__storybloq__storybloq_checkpoint_evidence",
+              "mcp__storybloq__storybloq_checkpoint_reopen",
+              "mcp__storybloq__storybloq_checkpoint_resolve",
+              "mcp__storybloq__storybloq_checkpoint_retire",
+              "mcp__storybloq__storybloq_context_brief",
+              "mcp__storybloq__storybloq_earmark_assign",
+              "mcp__storybloq__storybloq_earmark_get",
+              "mcp__storybloq__storybloq_earmark_release",
+              "mcp__storybloq__storybloq_earmark_reserve",
+              "mcp__storybloq__storybloq_gate_ack_contest",
+              "mcp__storybloq__storybloq_gate_ack_create",
+              "mcp__storybloq__storybloq_gate_ack_get",
+              "mcp__storybloq__storybloq_handover_create",
+              "mcp__storybloq__storybloq_handover_get",
+              "mcp__storybloq__storybloq_handover_latest",
+              "mcp__storybloq__storybloq_handover_list",
+              "mcp__storybloq__storybloq_health",
+              "mcp__storybloq__storybloq_issue_create",
+              "mcp__storybloq__storybloq_issue_get",
+              "mcp__storybloq__storybloq_issue_list",
+              "mcp__storybloq__storybloq_issue_meta_get",
+              "mcp__storybloq__storybloq_issue_meta_set",
+              "mcp__storybloq__storybloq_issue_meta_unset",
+              "mcp__storybloq__storybloq_issue_update",
+              "mcp__storybloq__storybloq_lesson_create",
+              "mcp__storybloq__storybloq_lesson_digest",
+              "mcp__storybloq__storybloq_lesson_get",
+              "mcp__storybloq__storybloq_lesson_list",
+              "mcp__storybloq__storybloq_lesson_reinforce",
+              "mcp__storybloq__storybloq_lesson_update",
+              "mcp__storybloq__storybloq_node_list",
+              "mcp__storybloq__storybloq_note_create",
+              "mcp__storybloq__storybloq_note_get",
+              "mcp__storybloq__storybloq_note_list",
+              "mcp__storybloq__storybloq_note_update",
+              "mcp__storybloq__storybloq_phase_create",
+              "mcp__storybloq__storybloq_phase_current",
+              "mcp__storybloq__storybloq_phase_list",
+              "mcp__storybloq__storybloq_phase_tickets",
+              "mcp__storybloq__storybloq_recap",
+              "mcp__storybloq__storybloq_recommend",
+              "mcp__storybloq__storybloq_review_lenses_judge",
+              "mcp__storybloq__storybloq_review_lenses_prepare",
+              "mcp__storybloq__storybloq_review_lenses_synthesize",
+              "mcp__storybloq__storybloq_roster_get",
+              "mcp__storybloq__storybloq_ruling_accept",
+              "mcp__storybloq__storybloq_ruling_create",
+              "mcp__storybloq__storybloq_ruling_get",
+              "mcp__storybloq__storybloq_ruling_list",
+              "mcp__storybloq__storybloq_ruling_propose",
+              "mcp__storybloq__storybloq_ruling_supersede",
+              "mcp__storybloq__storybloq_ruling_withdraw",
+              "mcp__storybloq__storybloq_selftest",
+              "mcp__storybloq__storybloq_session_guard",
+              "mcp__storybloq__storybloq_session_intel",
+              "mcp__storybloq__storybloq_session_milestone",
+              "mcp__storybloq__storybloq_session_report",
+              "mcp__storybloq__storybloq_setup_apply",
+              "mcp__storybloq__storybloq_setup_report",
+              "mcp__storybloq__storybloq_setup_verify",
+              "mcp__storybloq__storybloq_snapshot",
+              "mcp__storybloq__storybloq_status",
+              "mcp__storybloq__storybloq_term_add",
+              "mcp__storybloq__storybloq_term_get",
+              "mcp__storybloq__storybloq_term_list",
+              "mcp__storybloq__storybloq_term_match",
+              "mcp__storybloq__storybloq_term_update",
+              "mcp__storybloq__storybloq_ticket_blocked",
+              "mcp__storybloq__storybloq_ticket_create",
+              "mcp__storybloq__storybloq_ticket_get",
+              "mcp__storybloq__storybloq_ticket_list",
+              "mcp__storybloq__storybloq_ticket_meta_get",
+              "mcp__storybloq__storybloq_ticket_meta_set",
+              "mcp__storybloq__storybloq_ticket_meta_unset",
+              "mcp__storybloq__storybloq_ticket_next",
+              "mcp__storybloq__storybloq_ticket_update",
+              "mcp__storybloq__storybloq_validate"
+            ],
+            "deny": [
+              "WebFetch",
+              "WebSearch",
+              "Task"
+            ],
+            "disableBypassPermissionsMode": "disable"
+          },
+          "sandbox": {
+            "enabled": true,
+            "failIfUnavailable": true,
+            "autoAllowBashIfSandboxed": true,
+            "allowUnsandboxedCommands": false,
+            "excludedCommands": [],
+            "filesystem": {
+              "allowWrite": [
+                "<WORK>",
+                "<TMP>"
+              ]
+            },
+            "network": {
+              "allowedDomains": [],
+              "strictAllowlist": true
+            }
+          },
+          "env": {},
+          "hooks": {}
+        },
+        "sources": [
+          {
+            "source": "userSettings",
+            "settings": {
+              "env": {},
+              "hooks": {}
+            }
+          },
+          {
+            "source": "flagSettings",
+            "settings": {
+              "permissions": {
+                "defaultMode": "dontAsk",
+                "allow": [
+                  "Read",
+                  "Glob",
+                  "Grep",
+                  "Bash",
+                  "Skill",
+                  "Agent",
+                  "Edit(/<WORK>/**)",
+                  "Edit(/<TMP>/**)",
+                  "mcp__storybloq__storybloq_arrangement_coordinate",
+                  "mcp__storybloq__storybloq_arrangement_create",
+                  "mcp__storybloq__storybloq_arrangement_get",
+                  "mcp__storybloq__storybloq_arrangement_rebind",
+                  "mcp__storybloq__storybloq_arrangement_update",
+                  "mcp__storybloq__storybloq_autonomous_guide",
+                  "mcp__storybloq__storybloq_blocker_list",
+                  "mcp__storybloq__storybloq_capability_add",
+                  "mcp__storybloq__storybloq_capability_check",
+                  "mcp__storybloq__storybloq_capability_get",
+                  "mcp__storybloq__storybloq_capability_list",
+                  "mcp__storybloq__storybloq_capability_match",
+                  "mcp__storybloq__storybloq_capability_update",
+                  "mcp__storybloq__storybloq_checkpoint_attach",
+                  "mcp__storybloq__storybloq_checkpoint_change",
+                  "mcp__storybloq__storybloq_checkpoint_create",
+                  "mcp__storybloq__storybloq_checkpoint_evidence",
+                  "mcp__storybloq__storybloq_checkpoint_reopen",
+                  "mcp__storybloq__storybloq_checkpoint_resolve",
+                  "mcp__storybloq__storybloq_checkpoint_retire",
+                  "mcp__storybloq__storybloq_context_brief",
+                  "mcp__storybloq__storybloq_earmark_assign",
+                  "mcp__storybloq__storybloq_earmark_get",
+                  "mcp__storybloq__storybloq_earmark_release",
+                  "mcp__storybloq__storybloq_earmark_reserve",
+                  "mcp__storybloq__storybloq_gate_ack_contest",
+                  "mcp__storybloq__storybloq_gate_ack_create",
+                  "mcp__storybloq__storybloq_gate_ack_get",
+                  "mcp__storybloq__storybloq_handover_create",
+                  "mcp__storybloq__storybloq_handover_get",
+                  "mcp__storybloq__storybloq_handover_latest",
+                  "mcp__storybloq__storybloq_handover_list",
+                  "mcp__storybloq__storybloq_health",
+                  "mcp__storybloq__storybloq_issue_create",
+                  "mcp__storybloq__storybloq_issue_get",
+                  "mcp__storybloq__storybloq_issue_list",
+                  "mcp__storybloq__storybloq_issue_meta_get",
+                  "mcp__storybloq__storybloq_issue_meta_set",
+                  "mcp__storybloq__storybloq_issue_meta_unset",
+                  "mcp__storybloq__storybloq_issue_update",
+                  "mcp__storybloq__storybloq_lesson_create",
+                  "mcp__storybloq__storybloq_lesson_digest",
+                  "mcp__storybloq__storybloq_lesson_get",
+                  "mcp__storybloq__storybloq_lesson_list",
+                  "mcp__storybloq__storybloq_lesson_reinforce",
+                  "mcp__storybloq__storybloq_lesson_update",
+                  "mcp__storybloq__storybloq_node_list",
+                  "mcp__storybloq__storybloq_note_create",
+                  "mcp__storybloq__storybloq_note_get",
+                  "mcp__storybloq__storybloq_note_list",
+                  "mcp__storybloq__storybloq_note_update",
+                  "mcp__storybloq__storybloq_phase_create",
+                  "mcp__storybloq__storybloq_phase_current",
+                  "mcp__storybloq__storybloq_phase_list",
+                  "mcp__storybloq__storybloq_phase_tickets",
+                  "mcp__storybloq__storybloq_recap",
+                  "mcp__storybloq__storybloq_recommend",
+                  "mcp__storybloq__storybloq_review_lenses_judge",
+                  "mcp__storybloq__storybloq_review_lenses_prepare",
+                  "mcp__storybloq__storybloq_review_lenses_synthesize",
+                  "mcp__storybloq__storybloq_roster_get",
+                  "mcp__storybloq__storybloq_ruling_accept",
+                  "mcp__storybloq__storybloq_ruling_create",
+                  "mcp__storybloq__storybloq_ruling_get",
+                  "mcp__storybloq__storybloq_ruling_list",
+                  "mcp__storybloq__storybloq_ruling_propose",
+                  "mcp__storybloq__storybloq_ruling_supersede",
+                  "mcp__storybloq__storybloq_ruling_withdraw",
+                  "mcp__storybloq__storybloq_selftest",
+                  "mcp__storybloq__storybloq_session_guard",
+                  "mcp__storybloq__storybloq_session_intel",
+                  "mcp__storybloq__storybloq_session_milestone",
+                  "mcp__storybloq__storybloq_session_report",
+                  "mcp__storybloq__storybloq_setup_apply",
+                  "mcp__storybloq__storybloq_setup_report",
+                  "mcp__storybloq__storybloq_setup_verify",
+                  "mcp__storybloq__storybloq_snapshot",
+                  "mcp__storybloq__storybloq_status",
+                  "mcp__storybloq__storybloq_term_add",
+                  "mcp__storybloq__storybloq_term_get",
+                  "mcp__storybloq__storybloq_term_list",
+                  "mcp__storybloq__storybloq_term_match",
+                  "mcp__storybloq__storybloq_term_update",
+                  "mcp__storybloq__storybloq_ticket_blocked",
+                  "mcp__storybloq__storybloq_ticket_create",
+                  "mcp__storybloq__storybloq_ticket_get",
+                  "mcp__storybloq__storybloq_ticket_list",
+                  "mcp__storybloq__storybloq_ticket_meta_get",
+                  "mcp__storybloq__storybloq_ticket_meta_set",
+                  "mcp__storybloq__storybloq_ticket_meta_unset",
+                  "mcp__storybloq__storybloq_ticket_next",
+                  "mcp__storybloq__storybloq_ticket_update",
+                  "mcp__storybloq__storybloq_validate"
+                ],
+                "deny": [
+                  "WebFetch",
+                  "WebSearch",
+                  "Task"
+                ],
+                "disableBypassPermissionsMode": "disable"
+              },
+              "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "autoAllowBashIfSandboxed": true,
+                "allowUnsandboxedCommands": false,
+                "excludedCommands": [],
+                "filesystem": {
+                  "allowWrite": [
+                    "<WORK>",
+                    "<TMP>"
+                  ]
+                },
+                "network": {
+                  "allowedDomains": [],
+                  "strictAllowlist": true
+                }
+              },
+              "env": {},
+              "hooks": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "requestId": "r3",
+      "subtype": "get_sandbox_dialog",
+      "outcome": "success",
+      "response": {
+        "supported": true,
+        "locked": true,
+        "overrides_locked": true,
+        "policy_origins": [],
+        "enabled": true,
+        "enabled_in_settings": true,
+        "mode": "auto-allow",
+        "auto_allow_available": true,
+        "no_sandbox_allowed": true,
+        "unsandboxed_fallback": false,
+        "dependencies": {
+          "errors": [],
+          "warnings": []
+        },
+        "excluded_commands": [],
+        "restrictions": {
+          "fs_deny_read": [],
+          "fs_allow_read": [],
+          "fs_allow_write": [
+            "<WORK>",
+            "<TMP>"
+          ],
+          "fs_deny_write": [],
+          "network_allowed_domains": [],
+          "network_denied_domains": [],
+          "network_managed": false,
+          "unix_sockets": [],
+          "allow_all_unix_sockets": false,
+          "ignored_glob_patterns": []
+        }
+      }
+    },
+    {
+      "requestId": "r4",
+      "subtype": "list_permission_rules",
+      "outcome": "success",
+      "response": {
+        "state": {
+          "rules": [
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Read",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Read",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Glob",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Glob",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Grep",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Grep",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Bash",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Bash",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Skill",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Skill",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Agent",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Agent",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Edit(/<WORK>/**)",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Edit(/<WORK>/**)",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "Edit(/<TMP>/**)",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Edit(/<TMP>/**)",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_arrangement_coordinate",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_arrangement_coordinate",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_arrangement_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_arrangement_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_arrangement_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_arrangement_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_arrangement_rebind",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_arrangement_rebind",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_arrangement_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_arrangement_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_autonomous_guide",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_autonomous_guide",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_blocker_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_blocker_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_capability_add",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_capability_add",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_capability_check",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_capability_check",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_capability_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_capability_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_capability_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_capability_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_capability_match",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_capability_match",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_capability_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_capability_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_attach",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_attach",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_change",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_change",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_evidence",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_evidence",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_reopen",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_reopen",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_resolve",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_resolve",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_checkpoint_retire",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_checkpoint_retire",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_context_brief",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_context_brief",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_earmark_assign",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_earmark_assign",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_earmark_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_earmark_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_earmark_release",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_earmark_release",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_earmark_reserve",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_earmark_reserve",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_gate_ack_contest",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_gate_ack_contest",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_gate_ack_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_gate_ack_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_gate_ack_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_gate_ack_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_handover_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_handover_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_handover_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_handover_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_handover_latest",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_handover_latest",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_handover_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_handover_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_health",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_health",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_meta_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_meta_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_meta_set",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_meta_set",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_meta_unset",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_meta_unset",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_issue_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_issue_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_lesson_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_lesson_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_lesson_digest",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_lesson_digest",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_lesson_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_lesson_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_lesson_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_lesson_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_lesson_reinforce",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_lesson_reinforce",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_lesson_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_lesson_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_node_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_node_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_note_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_note_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_note_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_note_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_note_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_note_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_note_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_note_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_phase_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_phase_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_phase_current",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_phase_current",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_phase_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_phase_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_phase_tickets",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_phase_tickets",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_recap",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_recap",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_recommend",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_recommend",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_review_lenses_judge",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_review_lenses_judge",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_review_lenses_prepare",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_review_lenses_prepare",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_review_lenses_synthesize",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_review_lenses_synthesize",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_roster_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_roster_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_accept",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_accept",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_propose",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_propose",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_supersede",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_supersede",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ruling_withdraw",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ruling_withdraw",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_selftest",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_selftest",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_session_guard",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_session_guard",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_session_intel",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_session_intel",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_session_milestone",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_session_milestone",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_session_report",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_session_report",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_setup_apply",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_setup_apply",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_setup_report",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_setup_report",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_setup_verify",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_setup_verify",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_snapshot",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_snapshot",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_status",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_status",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_term_add",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_term_add",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_term_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_term_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_term_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_term_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_term_match",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_term_match",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_term_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_term_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_blocked",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_blocked",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_create",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_create",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_list",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_list",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_meta_get",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_meta_get",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_meta_set",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_meta_set",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_meta_unset",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_meta_unset",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_next",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_next",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_ticket_update",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_ticket_update",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "allow",
+              "source": "flagSettings",
+              "rule": "mcp__storybloq__storybloq_validate",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "mcp__storybloq__storybloq_validate",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "deny",
+              "source": "flagSettings",
+              "rule": "WebFetch",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "WebFetch",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "deny",
+              "source": "flagSettings",
+              "rule": "WebSearch",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "WebSearch",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "deny",
+              "source": "flagSettings",
+              "rule": "Task",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "Task",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            },
+            {
+              "behavior": "deny",
+              "source": "toolsNarrowing",
+              "rule": "WebFetch",
+              "description": {
+                "prefix": "Any use of the ",
+                "emphasis": "WebFetch",
+                "suffix": " tool"
+              },
+              "editability": "readonly"
+            }
+          ],
+          "workspaceDirectories": [],
+          "originalCwd": "<WORK>",
+          "managedOnly": false
+        }
+      }
+    },
+    {
+      "requestId": "r5",
+      "subtype": "mcp_status",
+      "outcome": "success",
+      "response": {
+        "mcpServers": [
+          {
+            "name": "storybloq",
+            "status": "connected",
+            "serverInfo": {
+              "name": "storybloq",
+              "version": "1.16.0"
+            },
+            "config": {
+              "type": "stdio",
+              "command": "<ABS:3>",
+              "args": [
+                "<ABS:4>",
+                "CODEX_HOME",
+                "HOME",
+                "LANG",
+                "PATH",
+                "STORYBLOQ_EVAL_EVENTS",
+                "STORYBLOQ_EVAL_OUTSIDE",
+                "STORYBLOQ_EVAL_TOOLS",
+                "STORYBLOQ_GLOBAL_DIR",
+                "STORYBLOQ_PROJECT_ROOT",
+                "TMPDIR",
+                "--",
+                "<ABS:5>",
+                "sandbox",
+                "-c",
+                "sandbox_mode=\"workspace-write\"",
+                "-c",
+                "sandbox_workspace_write.writable_roots=[\"<WORK>\",\"<WORK>/.git\",\"<TMP>\"]",
+                "-c",
+                "sandbox_workspace_write.network_access=false",
+                "-c",
+                "sandbox_workspace_write.exclude_slash_tmp=true",
+                "-c",
+                "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+                "--",
+                "<ABS:6>",
+                "<PKG>/.eval-dist/eval-mcp.js",
+                "--entry",
+                "mcp"
+              ],
+              "env": {
+                "PATH": "env-value:b12f25ed927e854c0cdb17e6",
+                "HOME": "env-value:ed12027cba9951e8de742c01",
+                "TMPDIR": "env-value:fcde215fb8e05a648032185d",
+                "LANG": "env-value:6d740721dc35cb86cb1e8346",
+                "CODEX_HOME": "env-value:18fefecd5a93bd04c29f5cc1",
+                "STORYBLOQ_PROJECT_ROOT": "env-value:a3b2db9a59853d10fde36f9b",
+                "STORYBLOQ_GLOBAL_DIR": "env-value:33faf9052399cbde3cede4bb",
+                "STORYBLOQ_EVAL_EVENTS": "env-value:48e588b936c5a293b9a5dc54",
+                "STORYBLOQ_EVAL_OUTSIDE": "env-value:b56f68ad49c84a3cf258f479",
+                "STORYBLOQ_EVAL_TOOLS": "env-value:8c5d935c79f20ec0f51accdd"
+              }
+            },
+            "transport": "stdio",
+            "scope": "dynamic",
+            "source": "dynamic",
+            "tools": [
+              {
+                "name": "storybloq_arrangement_coordinate",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_arrangement_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_arrangement_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_arrangement_rebind",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_arrangement_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_autonomous_guide",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_blocker_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_capability_add",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_capability_check",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_capability_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_capability_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_capability_match",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_capability_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_attach",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_change",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_evidence",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_reopen",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_resolve",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_checkpoint_retire",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_context_brief",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_earmark_assign",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_earmark_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_earmark_release",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_earmark_reserve",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_gate_ack_contest",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_gate_ack_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_gate_ack_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_handover_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_handover_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_handover_latest",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_handover_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_health",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_meta_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_meta_set",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_meta_unset",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_issue_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_lesson_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_lesson_digest",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_lesson_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_lesson_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_lesson_reinforce",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_lesson_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_node_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_note_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_note_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_note_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_note_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_phase_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_phase_current",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_phase_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_phase_tickets",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_recap",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_recommend",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_review_lenses_judge",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_review_lenses_prepare",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_review_lenses_synthesize",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_roster_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_accept",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_propose",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_supersede",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ruling_withdraw",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_selftest",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_session_guard",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_session_intel",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_session_milestone",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_session_report",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_setup_apply",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_setup_report",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_setup_verify",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_snapshot",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_status",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_term_add",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_term_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_term_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_term_match",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_term_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_blocked",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_create",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_list",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_meta_get",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_meta_set",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_meta_unset",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_next",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_ticket_update",
+                "annotations": {}
+              },
+              {
+                "name": "storybloq_validate",
+                "annotations": {}
+              }
+            ],
+            "capabilities": {}
+          }
+        ]
+      }
+    },
+    {
+      "requestId": "r6",
+      "subtype": "get_hooks_listing",
+      "outcome": "success",
+      "response": {
+        "events": [],
+        "hooks": [],
+        "eventCatalog": [],
+        "policy": {
+          "disabledByPolicy": false,
+          "managedOnly": false,
+          "pluginOnly": false,
+          "allDisabled": false,
+          "policyHookCount": 0
+        }
+      }
+    }
+  ],
+  "problems": [],
+  "incomplete": false,
+  "permissionDenials": [
+    {
+      "tool_name": "Edit",
+      "tool_use_id": "probe-edit-outside",
+      "tool_input": {
+        "file_path": "<ABS:2>",
+        "old_string": "",
+        "new_string": "pf31648d16691ac2d edit-outside\n",
+        "note": "pf31648d16691ac2d-edit-outside"
+      }
+    }
+  ],
+  "denialClasses": [
+    "expected"
+  ]
+}

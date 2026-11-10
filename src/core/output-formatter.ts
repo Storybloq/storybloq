@@ -3661,9 +3661,9 @@ export function formatReference(
   lines.push("");
   lines.push("### JSON output envelope");
   lines.push("");
-  lines.push('`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn.');
+  lines.push('`--format json` returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, keeps error envelopes, drops partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` have their own text/json shapes; Bus commands use their versioned wire format. These reject `--raw` at argument validation, before execution. `--help` names each command\'s shape. Round-trip description/impact/content via JSON: markdown fences grow through `update --stdin`; updates strip them and warn.');
   lines.push("");
-  lines.push("Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.");
+  lines.push("Run `storybloq <command>`. Positionals follow the command; ? marks optional flags. `<command> --help` gives value types and choices; `storybloq reference --format json` gives full usage strings.");
   lines.push("");
   for (const cmd of commands) {
     // A usage with alternatives ("storybloq x <a> | storybloq x --b") renders each form with its own flags.
@@ -3709,7 +3709,7 @@ export function formatReference(
   lines.push("");
   lines.push("## Review verdict artifacts");
   lines.push("");
-  lines.push("Review JSON lives in `.story/sessions/<sessionId>/telemetry/reviews/<target>-<stage>-r<round>.json`. Generations above the first append `-g<generation>` before `.json`, preserving the `*-code-r*.json` glob. Generation also appears in the payload. Redirects and plan-review rejects restart round numbering; old artifacts may mix pre-generation rounds whose colliding files were silently dropped.");
+  lines.push("Review JSON: `.story/sessions/<sessionId>/telemetry/reviews/<target>-<stage>-r<round>.json`. Generations after the first append `-g<generation>` before `.json`, keeping the `*-code-r*.json` glob; the payload also carries the generation. Redirects and plan-review rejects restart round numbering; old artifacts may mix pre-generation rounds whose colliding files were silently dropped.");
   lines.push("");
   lines.push("### Joining a round to what produced it");
   lines.push("");
@@ -3727,7 +3727,7 @@ export function formatReference(
   lines.push("");
   lines.push("### Reading absent values");
   lines.push("");
-  lines.push("Fields are optional. Missing means unrecorded, not measured-empty or old: current records can omit backend ids when none were supplied, or work/item ids when no item existed. Missing `normalizerVersion` permits unnormalized severities such as `blocking`; missing `artifactStatus` means existence is unknown. `reviewerIdentity.evidence` distinguishes observed execution from configuration: `configured` proves intent only; prefer `unknown`/`none` to a guessed model.");
+  lines.push("Fields are optional. Missing means unrecorded, not measured-empty or old: current records can omit backend ids when none were supplied, or work/item ids when no item existed. Missing `normalizerVersion` permits unnormalized severities like `blocking`; missing `artifactStatus` means existence unknown. `reviewerIdentity.evidence` separates observed execution from configuration: `configured` proves intent only; prefer `unknown`/`none` to a guessed model.");
   lines.push("");
   lines.push("`payloadConsistent` compares a verdict with its findings. Change-requesting verdicts with zero findings are repaired before becoming rounds and counted in `reviewRepairAttempts`; these populations must never be summed.");
   lines.push("");
@@ -3749,11 +3749,11 @@ export function formatReference(
   lines.push("");
   lines.push("Drive a federation or large backlog with a persistent ledger, lower-tier implementation agents where available, and independent review gates. Read `orchestrator-mode.md` for enrichment, sizing, the six-stage pipeline, workflow scripts, and rules.");
   lines.push("");
-  lines.push("`/story orchestrate` requires explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Requires callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend orchestration for a capable client and substantial actionable backlog; selection still requires opt-in.");
+  lines.push("`/story orchestrate` needs explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Needs callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend it for a capable client with a substantial actionable backlog; selection still needs opt-in.");
   lines.push("");
   lines.push("## /story triage");
   lines.push("");
-  lines.push("`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, identifies fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once and requires explicit confirmation, with a snapshot first. Read `triage-mode.md` for the checks and the report format.");
+  lines.push("`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, finds fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once, needs explicit confirmation, snapshot first. `triage-mode.md` has the checks and report format.");
   lines.push("");
   lines.push("## /story bus");
   lines.push("");

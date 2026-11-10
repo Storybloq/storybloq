@@ -1458,6 +1458,30 @@ const MATRIX: Coverage[] = [
       expect(res.out).toContain("--drop names NOPE; an adapter drops only");
     },
   },
+  {
+    // --trailer-pattern is literal with no trim: a{1,3} stays one value, and the
+    // empty second value survives (empty: "preserve") and is refused by name.
+    key: "land --trailer-pattern",
+    check: (dir) => {
+      const res = run(dir, "land", "HEAD", "--trailer-pattern", "a{1,3}", "--trailer-pattern", "");
+      expect(res.code, res.out).toBe(1);
+      expect(res.out).toContain("invalid pattern trailer-pattern 2: empty");
+    },
+  },
+  {
+    // --hygiene-pattern is literal with no trim: q=x{1,3} stays one value (split, 3}
+    // would be refused as not name=regex), and the empty second value is refused by name.
+    key: "land --hygiene-pattern",
+    check: (dir) => {
+      const res = run(dir, "land", "HEAD", "--hygiene-pattern", "q=x{1,3}", "--hygiene-pattern", "");
+      expect(res.code, res.out).toBe(1);
+      expect(res.out).toContain("invalid pattern hygiene-pattern 2: empty");
+      // No trim: the leading space stays in the pattern name.
+      const spaced = run(dir, "land", "HEAD", "--hygiene-pattern", " q=");
+      expect(spaced.code, spaced.out).toBe(1);
+      expect(spaced.out).toContain("invalid pattern  q: empty regex");
+    },
+  },
 ];
 
 describe("ISS-886 registration coverage matrix", () => {

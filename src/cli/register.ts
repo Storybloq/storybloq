@@ -4293,6 +4293,67 @@ export function registerGateAckCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// land (ISS-1432)
+// ---------------------------------------------------------------------------
+
+export function registerLandCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "land <sha>",
+    "Push exactly one reviewed commit onto a remote branch after trailer, hygiene and secrets checks (CLI-only; no MCP tool)",
+    (y) =>
+      arrayOptions(addFormatOption(
+        y
+          .positional("sha", { type: "string", demandOption: true, describe: "The commit to land" })
+          .option("remote", { type: "string", default: "origin", describe: "Remote whose URL is the destination" })
+          .option("branch", { type: "string", default: "main", describe: "Remote branch to land on" })
+          .option("repo", { type: "string", describe: "Repository to land from (default: the current directory)" })
+          .option("item", { type: "string", describe: "Ticket or issue to record the landing receipt on" })
+          .option("secrets-scan", { type: "boolean", default: true, describe: "Scan the commit with gitleaks (--no-secrets-scan skips it)" }),
+      ), {
+        // Comma literal and no trim, so a{1,3} reaches the handler whole; an empty
+        // pattern is kept so land's own refusal names it instead of it vanishing.
+        "trailer-pattern": { ...LITERAL_KEEP_BLANK, describe: "Extra refused trailer regex (repeatable; adds to the defaults)" },
+        "hygiene-pattern": { ...LITERAL_KEEP_BLANK, describe: "Extra refused added-line pattern as name=regex (repeatable)" },
+      }),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      const { landEnv } = await import("../core/land.js");
+      const { handleLand } = await import("./commands/land.js");
+      const { runLandCommand } = await import("./run.js");
+      // The board matters only for the receipt, so it is discovered only with --item,
+      // and a discovery failure becomes land's own HELD 0 instead of aborting the CLI.
+      let boardRoot: string | null = null;
+      let boardError: string | undefined;
+      if (argv.item !== undefined) {
+        try {
+          boardRoot = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+        } catch (err) {
+          boardError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      const strings = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : v === undefined ? [] : [String(v)]);
+      const result = await runLandCommand(argv as BoardWriteArgv, format, landEnv(process.env), async () => handleLand(
+        {
+          sha: String(argv.sha),
+          repo: (argv.repo as string | undefined) ?? process.cwd(),
+          remote: argv.remote as string,
+          branch: argv.branch as string,
+          boardRoot,
+          ...(boardError !== undefined ? { boardError } : {}),
+          ...(argv.item !== undefined ? { item: String(argv.item) } : {}),
+          secretsScan: argv["secrets-scan"] !== false,
+          trailerPatterns: strings(argv["trailer-pattern"]),
+          hygienePatterns: strings(argv["hygiene-pattern"]),
+        },
+        format,
+      ));
+      writeOutput(result.output, format);
+      process.exitCode = result.exitCode;
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // landings (T-477)
 // ---------------------------------------------------------------------------
 

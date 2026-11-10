@@ -19,7 +19,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "status",
     description:
-      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions.",
+      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; trims activeSessions/resumableSessions/expiredLeaseSessions records to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; trims bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions.",
     usage: "storybloq status [--format <json|md>] [--client-task-id <value>] [--compact]",
     flags: ["--format", "--client-task-id", "--compact"],
   },
@@ -722,7 +722,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus setup",
-    description: "Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks when hook delivery is on. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery in a v1->v2 upgrade only.",
+    description: "Connect this task to the Bus (idempotent, resumable): inits or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks when hook delivery is on. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery only in a v1->v2 upgrade.",
     usage: "storybloq bus setup [--client <claude|codex>] [--task-id <value>] [--surface <claude_cli|codex_cli|codex_desktop>] [--delivery <live|poll>] [--wake <never|idle>] [--session-name <value>] [--transport-address <value>] [--replace <value>] [--force-archive] [--format <md|json>]",
     flags: ["--client", "--task-id", "--surface", "--delivery", "--wake", "--session-name", "--transport-address", "--replace", "--force-archive", "--format"],
   },
@@ -758,7 +758,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus poll",
-    description: "Poll unacknowledged messages for the task-bound endpoint. --limit caps the messages returned, wait drain included. --wait blocks until a message or --timeout (v2 only), then exits 0 = message delivered, 4 = timed out, 5 = another --wait already owns this endpoint.",
+    description: "Poll unacknowledged messages for the task-bound endpoint. --limit caps returned messages, wait drain included. --wait blocks until a message or --timeout (v2 only); exit 0 = message delivered, 4 = timed out, 5 = another --wait owns this endpoint.",
     usage: "storybloq bus poll [--endpoint <value>] [--client <claude|codex>] [--task-id <value>] [--limit <number>] [--wait] [--timeout <number>] [--format <md|json>]",
     flags: ["--endpoint", "--client", "--task-id", "--limit", "--wait", "--timeout", "--format"],
   },
@@ -959,6 +959,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     description: "Mark a gate-ack contested (record + surfaced flag only)",
     usage: "storybloq gate-ack contest <id> --reason <value> [--commit] [--format <json|md>]",
     flags: ["--reason", "--format", "--commit"],
+  },
+  {
+    name: "land",
+    description: "Push one reviewed commit after checks (CLI-only)",
+    usage: "storybloq land <sha> [--remote <value>] [--branch <value>] [--repo <value>] [--item <value>] [--secrets-scan=false] [--trailer-pattern <value>] [--hygiene-pattern <value>] [--format <json|md>]",
+    flags: ["--remote", "--branch", "--repo", "--item", "--secrets-scan", "--trailer-pattern", "--hygiene-pattern", "--format"],
   },
   {
     name: "landings",

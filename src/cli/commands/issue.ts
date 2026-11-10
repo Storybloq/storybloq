@@ -15,6 +15,8 @@ import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
 import type { IssueUpdateInput } from "../../core/update-inputs.js";
 import {
   withProjectLock,
+  withProjectLockForReceipt,
+  issueFilePath,
   writeIssueUnlocked,
   deleteIssue,
 } from "../../core/project-loader.js";
@@ -874,4 +876,31 @@ export async function handleIssueDelete(
     return { output: JSON.stringify(successEnvelope({ id, deleted: true }), null, 2) };
   }
   return { output: `Deleted issue ${displayLabel ?? id}.` };
+}
+
+/**
+ * ISS-1432: appends one landing receipt to the issue's `landings` metadata.
+ * The record is found by its canonical `id` and file path captured before the
+ * push, never re-resolved through the display id. A pending transaction
+ * journal is refused, not recovered (`withProjectLockForReceipt`).
+ */
+export async function appendIssueLanding(
+  root: string,
+  target: { readonly id: string; readonly displayId: string; readonly path: string },
+  entry: Record<string, unknown>,
+): Promise<void> {
+  await withProjectLockForReceipt(root, async ({ state }) => {
+    const existing = state.issueByID(target.id);
+    if (!existing || displayIdOf(existing) !== target.displayId || issueFilePath(root, existing.id) !== target.path) {
+      throw new CliValidationError("conflict", "item changed since preflight");
+    }
+    const prior = getMetadata(existing as Record<string, unknown>, "landings", ISSUE_CORE_METADATA_KEYS);
+    if (prior.found && !Array.isArray(prior.value)) {
+      throw new CliValidationError("invalid_input", "existing landings is not an array");
+    }
+    const landings = prior.found ? [...(prior.value as unknown[]), entry] : [entry];
+    const updated = setMetadata(existing as Record<string, unknown>, "landings", landings, ISSUE_CORE_METADATA_KEYS) as Issue;
+    validatePostWriteIssueState(updated, state, false);
+    await writeIssueUnlocked(updated, root);
+  });
 }

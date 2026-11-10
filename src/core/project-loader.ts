@@ -1476,6 +1476,8 @@ export interface WithProjectLockOptions {
 
 interface InternalLockOptions extends WithProjectLockOptions {
   _skipConflictCheck?: boolean;
+  /** ISS-1432: refuse, never recover, when a transaction journal is pending. */
+  _refuseRecovery?: boolean;
 }
 
 /**
@@ -1492,7 +1494,13 @@ async function withProjectLockInternal(
   const wrapDir = join(absRoot, ".story");
 
   await withLock(wrapDir, async () => {
-    await doRecoverTransaction(wrapDir);
+    if (options._refuseRecovery) {
+      if (await transactionJournalPresent(wrapDir)) {
+        throw new ProjectLoaderError("conflict", PENDING_JOURNAL_MESSAGE);
+      }
+    } else {
+      await doRecoverTransaction(wrapDir);
+    }
 
     const result = await loadProjectUnlocked(absRoot);
 
@@ -1538,6 +1546,45 @@ export async function withProjectLock(
   handler: (result: LoadResult) => Promise<void>,
 ): Promise<void> {
   return withProjectLockInternal(root, options, handler);
+}
+
+/** ISS-1432: the refusal `storybloq land` gives when a transaction is pending. */
+export const PENDING_JOURNAL_MESSAGE = "pending transaction journal present; run storybloq repair first";
+
+/**
+ * ISS-1432: true when `.story/.txn.json` exists. Only ENOENT means absent; any
+ * other probe error is thrown, the same rule `doRecoverTransaction` uses.
+ */
+export async function transactionJournalPresent(wrapDir: string): Promise<boolean> {
+  try {
+    await stat(join(wrapDir, ".txn.json"));
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw new ProjectLoaderError("io_error", "Failed to probe transaction journal presence", err);
+  }
+}
+
+/**
+ * ISS-1432: the lock a landing receipt is written under. Strict loading and
+ * every check of `withProjectLock` run unchanged, but a pending transaction
+ * journal is refused instead of recovered, so appending a receipt never
+ * rewrites another item's files.
+ */
+export async function withProjectLockForReceipt(
+  root: string,
+  handler: (result: LoadResult) => Promise<void>,
+): Promise<void> {
+  return withProjectLockInternal(root, { strict: true, _refuseRecovery: true }, handler);
+}
+
+/**
+ * ISS-1432: loads the project without taking the lock and without recovering
+ * a pending transaction. It only reads. `storybloq land` resolves its item
+ * with it before any network call.
+ */
+export async function loadProjectNoRecover(root: string): Promise<LoadResult> {
+  return loadProjectUnlocked(resolve(root));
 }
 
 /**

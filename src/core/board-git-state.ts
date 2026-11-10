@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
@@ -141,7 +142,15 @@ export interface GitRawOptions {
   readonly timeoutMs?: number;
   readonly maxBytes?: number;
   readonly input?: string;
+  /**
+   * ISS-1432: the base environment. Absent means the environment the active
+   * report runs under (`BoardWriteContext.gitEnv`), else the process env.
+   */
+  readonly env?: NodeJS.ProcessEnv;
 }
+
+/** ISS-1432: the git environment of the report in progress, if its context set one. */
+const reportGitEnv = new AsyncLocalStorage<NodeJS.ProcessEnv>();
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -171,7 +180,7 @@ export function runGitRaw(cwd: string, args: readonly string[], opts: GitRawOpti
     try {
       child = spawn("git", ["--literal-pathspecs", ...args], {
         cwd,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+        env: { ...(opts.env ?? reportGitEnv.getStore() ?? process.env), GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
@@ -514,6 +523,12 @@ function repositorySplit(groups: readonly RepoGroup[], unplaced: readonly Target
  * an explicitly successful result. Never throws.
  */
 export async function reportBoardWrite(context: BoardWriteContext): Promise<BoardWriteReport> {
+  // ISS-1432: every git call the report makes runs under the context's env.
+  if (context.gitEnv) return reportGitEnv.run(context.gitEnv, () => reportBoardWriteInner(context));
+  return reportBoardWriteInner(context);
+}
+
+async function reportBoardWriteInner(context: BoardWriteContext): Promise<BoardWriteReport> {
   const targets: Target[] = [...context.targets.entries()].map(([abs, kind]) => ({ abs: realPathOf(abs), kind, rel: "", display: projectRelative(abs), required: context.required?.has(abs) === true }));
   const lines: string[] = [];
   const git: BoardGitEntry[] = [];

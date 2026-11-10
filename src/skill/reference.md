@@ -4,12 +4,12 @@
 
 ### JSON output envelope
 
-`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn.
+`--format json` returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, keeps error envelopes, drops partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` have their own text/json shapes; Bus commands use their versioned wire format. These reject `--raw` at argument validation, before execution. `--help` names each command's shape. Round-trip description/impact/content via JSON: markdown fences grow through `update --stdin`; updates strip them and warn.
 
-Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.
+Run `storybloq <command>`. Positionals follow the command; ? marks optional flags. `<command> --help` gives value types and choices; `storybloq reference --format json` gives full usage strings.
 
 - **init** (--name?, --force?, --type?, --language?, --node?, --format?) - Initialize a new .story/ project
-- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions.
+- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; trims activeSessions/resumableSessions/expiredLeaseSessions records to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; trims bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions.
 - **ticket list** (--status?, --phase?, --type?, --priority?, --waiting-on?, --format?, --node?) - List tickets with optional filters
 - **ticket get <id>** (--format?) - Get ticket details by ID
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
@@ -126,13 +126,13 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **migrate** (--dry-run?, --format?) - Migrate config schema to the latest version
 - **dispatch [ids..]** (--format?, --recommend?, --all?, --count?, --yes?, --dry-run?) - Dispatch work to Agent View background sessions
 - **bus init** (--format?) - Low-level initializer: enable the local Storybloq Bus v2 for this project (prefer `storybloq bus setup`). Fresh v2 runtime only; a v1 runtime refuses with `upgrade_required`, and `bus setup` runs the guided drain/upgrade.
-- **bus setup** (--client?, --task-id?, --surface?, --delivery?, --wake?, --session-name?, --transport-address?, --replace?, --force-archive?, --format?) - Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks when hook delivery is on. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery in a v1->v2 upgrade only.
+- **bus setup** (--client?, --task-id?, --surface?, --delivery?, --wake?, --session-name?, --transport-address?, --replace?, --force-archive?, --format?) - Connect this task to the Bus (idempotent, resumable): inits or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks when hook delivery is on. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery only in a v1->v2 upgrade.
 - **bus auto-attach <state>** (--client?, --task-id?, --surface?, --force-archive?, --format?) - Turn per-session Bus auto-attach on or off (default off). `on` runs `bus setup` once and sets the flag; each new session then attaches at SessionStart, taking a proven-dead peer's slot and mail. `off` clears the flag, keeping runtime and endpoints.
 - **bus join [legacy-role]** (--client?, --task-id?, --surface?, --replace?, --format?) - Deprecated: roles are now per-message, so the legacy role argument is ignored. Use `storybloq bus setup`.
 - **bus leave** (--endpoint?, --client?, --task-id?, --format?) - Retire the Bus endpoint owned by this task
 - **bus endpoint retire <endpoint-id>** (--force, --reason, --format?) - Force-retire an endpoint with unknown liveness
 - **bus send** (--endpoint?, --client?, --task-id?, --thread?, --thread-kind?, --predecessor-thread?, --to?, --kind, --severity?, --body, --idempotency-key, --in-reply-to?, --issue?, --ticket?, --commit?, --ci-run?, --file?, --format?) - Create a Bus thread or send a reply. Routing always targets the sole peer; `--to` is deprecated and ignored.
-- **bus poll** (--endpoint?, --client?, --task-id?, --limit?, --wait?, --timeout?, --format?) - Poll unacknowledged messages for the task-bound endpoint. --limit caps the messages returned, wait drain included. --wait blocks until a message or --timeout (v2 only), then exits 0 = message delivered, 4 = timed out, 5 = another --wait already owns this endpoint.
+- **bus poll** (--endpoint?, --client?, --task-id?, --limit?, --wait?, --timeout?, --format?) - Poll unacknowledged messages for the task-bound endpoint. --limit caps returned messages, wait drain included. --wait blocks until a message or --timeout (v2 only); exit 0 = message delivered, 4 = timed out, 5 = another --wait owns this endpoint.
 - **bus ack <message-id>** (--endpoint?, --client?, --task-id?, --disposition, --reason?, --format?) - Record delivery disposition for one Bus message
 - **bus status** (--format?) - Show concise Bus runtime state
 - **bus doctor** (--format?) - Validate Bus storage, endpoint, and mailbox integrity
@@ -166,6 +166,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **gate-ack get <id>** (--format?) - Get a gate-ack
 - **gate-ack create** (--arrangement, --gate, --ticket, --plan-file?, --from-staged?, --codex-session-id?, --verdict?, --rounds?, --deltas?, --format?, --commit?) - Create a gate-ack
 - **gate-ack contest <id>** (--reason, --format?, --commit?) - Mark a gate-ack contested (record + surfaced flag only)
+- **land <sha>** (--remote?, --branch?, --repo?, --item?, --secrets-scan?, --trailer-pattern?, --hygiene-pattern?, --format?) - Push one reviewed commit after checks (CLI-only)
 - **landings** (--since?, --limit?, --format?) - Commits that touched tickets/issues, with review coverage (CLI-only; no MCP tool)
 - **node list** (--format?) - List configured nodes
 - **review-stats** (--fleet?, --open-window?, --close-window?, --contract?, --format?) - Review efficiency metrics over review verdict artifacts
@@ -318,7 +319,7 @@ Destructive, admin, and git-integration workflows (delete, reconcile, conflicts,
 
 ## Review verdict artifacts
 
-Review JSON lives in `.story/sessions/<sessionId>/telemetry/reviews/<target>-<stage>-r<round>.json`. Generations above the first append `-g<generation>` before `.json`, preserving the `*-code-r*.json` glob. Generation also appears in the payload. Redirects and plan-review rejects restart round numbering; old artifacts may mix pre-generation rounds whose colliding files were silently dropped.
+Review JSON: `.story/sessions/<sessionId>/telemetry/reviews/<target>-<stage>-r<round>.json`. Generations after the first append `-g<generation>` before `.json`, keeping the `*-code-r*.json` glob; the payload also carries the generation. Redirects and plan-review rejects restart round numbering; old artifacts may mix pre-generation rounds whose colliding files were silently dropped.
 
 ### Joining a round to what produced it
 
@@ -336,7 +337,7 @@ With `itemAttemptId`, `generation` tracks replans within that attempt: redirects
 
 ### Reading absent values
 
-Fields are optional. Missing means unrecorded, not measured-empty or old: current records can omit backend ids when none were supplied, or work/item ids when no item existed. Missing `normalizerVersion` permits unnormalized severities such as `blocking`; missing `artifactStatus` means existence is unknown. `reviewerIdentity.evidence` distinguishes observed execution from configuration: `configured` proves intent only; prefer `unknown`/`none` to a guessed model.
+Fields are optional. Missing means unrecorded, not measured-empty or old: current records can omit backend ids when none were supplied, or work/item ids when no item existed. Missing `normalizerVersion` permits unnormalized severities like `blocking`; missing `artifactStatus` means existence unknown. `reviewerIdentity.evidence` separates observed execution from configuration: `configured` proves intent only; prefer `unknown`/`none` to a guessed model.
 
 `payloadConsistent` compares a verdict with its findings. Change-requesting verdicts with zero findings are repaired before becoming rounds and counted in `reviewRepairAttempts`; these populations must never be summed.
 
@@ -358,11 +359,11 @@ Creates issues automatically when storybloq MCP tools or CLI are available. Chec
 
 Drive a federation or large backlog with a persistent ledger, lower-tier implementation agents where available, and independent review gates. Read `orchestrator-mode.md` for enrichment, sizing, the six-stage pipeline, workflow scripts, and rules.
 
-`/story orchestrate` requires explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Requires callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend orchestration for a capable client and substantial actionable backlog; selection still requires opt-in.
+`/story orchestrate` needs explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Needs callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend it for a capable client with a substantial actionable backlog; selection still needs opt-in.
 
 ## /story triage
 
-`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, identifies fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once and requires explicit confirmation, with a snapshot first. Read `triage-mode.md` for the checks and the report format.
+`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, finds fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once, needs explicit confirmation, snapshot first. `triage-mode.md` has the checks and report format.
 
 ## /story bus
 

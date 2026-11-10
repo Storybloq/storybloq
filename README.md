@@ -342,6 +342,13 @@ All commands accept `--format json|md` (default `md`). Pipe JSON through `jq` fo
 | `storybloq export [--phase <id>] [--all] [--format json\|md]` | Self-contained project document |
 | `storybloq limit-status [--cancel <key>] [--requeue <key>]` | Pending usage-limit auto-resumes (global across projects) |
 
+### Landing commits (CLI only)
+
+| Command | Description |
+|---------|-------------|
+| `storybloq land <sha> [--remote origin] [--branch main] [--repo <dir>] [--item <id>] [--no-secrets-scan] [--trailer-pattern <re>] [--hygiene-pattern <name>=<re>]` | Push exactly one reviewed commit onto the remote branch, or refuse and name the failed check. Checks run in order: a one-commit fast-forward of the remote tip, no attribution trailers, no home paths, private IPv4 addresses or socket paths in added lines, valid `.story` JSON, and a gitleaks scan. The push is a compare-and-swap on the tip it read, and the remote branch is read back afterwards. `--item` records a landing receipt on that ticket or issue. Exit 0 landed, 1 held, 3 landed with the receipt not written |
+| `storybloq landings [--since <ref>] [--limit N]` | Commits that touched tickets or issues, with review coverage |
+
 ### Storybloq Bus (opt-in)
 
 | Command | Description |

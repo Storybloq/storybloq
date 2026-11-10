@@ -28,6 +28,8 @@ import { crossNodeStatusRecord, observeProject } from "../../federation/cross-no
 import { join } from "node:path";
 import {
   withProjectLock,
+  withProjectLockForReceipt,
+  ticketFilePath,
   writeTicketUnlocked,
   deleteTicket,
   sortKeysDeep,
@@ -1058,4 +1060,31 @@ export async function handleTicketStart(
     return { output: JSON.stringify(successEnvelope(ticketJsonBody(updatedTicket)), null, 2) };
   }
   return { output: `Started ticket ${(updatedTicket as Record<string, unknown>).displayId as string | undefined ?? updatedTicket.id}: ${updatedTicket.title}` };
+}
+
+/**
+ * ISS-1432: appends one landing receipt to the ticket's `landings` metadata.
+ * The record is found by its canonical `id` and file path captured before the
+ * push, never re-resolved through the display id. A pending transaction
+ * journal is refused, not recovered (`withProjectLockForReceipt`).
+ */
+export async function appendTicketLanding(
+  root: string,
+  target: { readonly id: string; readonly displayId: string; readonly path: string },
+  entry: Record<string, unknown>,
+): Promise<void> {
+  await withProjectLockForReceipt(root, async ({ state }) => {
+    const existing = state.ticketByID(target.id);
+    if (!existing || displayIdOf(existing) !== target.displayId || ticketFilePath(root, existing.id) !== target.path) {
+      throw new CliValidationError("conflict", "item changed since preflight");
+    }
+    const prior = getMetadata(existing as Record<string, unknown>, "landings", TICKET_CORE_METADATA_KEYS);
+    if (prior.found && !Array.isArray(prior.value)) {
+      throw new CliValidationError("invalid_input", "existing landings is not an array");
+    }
+    const landings = prior.found ? [...(prior.value as unknown[]), entry] : [entry];
+    const updated = setMetadata(existing as Record<string, unknown>, "landings", landings, TICKET_CORE_METADATA_KEYS) as Ticket;
+    validatePostWriteState(updated, state, false);
+    await writeTicketUnlocked(updated, root);
+  });
 }

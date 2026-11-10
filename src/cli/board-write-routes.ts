@@ -16,6 +16,7 @@ export const CLI_REPORTING_RUNNERS: readonly string[] = [
   "runCatalogWrite",
   "runRulingWrite",
   "runArrangementMaintenance",
+  "runLandCommand",
 ];
 
 /** Handlers that are not board writes, each with the reason. */

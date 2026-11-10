@@ -309,6 +309,40 @@ export async function runBoardWrite<R extends BoardWriteResult>(
   return { ...result, output: applyBoardGitReport(result.output, format, report) };
 }
 
+/**
+ * ISS-1432: the runner for `storybloq land`. Built on the `runBoardWrite`
+ * logic: the receipt write is recorded and reported, with every report git
+ * call under the land environment (`gitEnv`). A throw from the report step
+ * never changes the exit code; the handler's result is returned with
+ * "git report unavailable: <message>" (a text line, or `data.gitReport`).
+ */
+export async function runLandCommand<R extends BoardWriteResult>(
+  argv: BoardWriteArgv,
+  format: OutputFormat,
+  gitEnv: NodeJS.ProcessEnv,
+  fn: () => Promise<R> | R,
+): Promise<R> {
+  const tool = (argv._ ?? []).map(String).join(" ");
+  const { value: result, context } = await runWithBoardWriteContext(tool, false, async () => fn(), { gitEnv });
+  if (result.errorCode || result.isError || (result.exitCode !== undefined && result.exitCode !== 0)) return result;
+  let report: BoardWriteReport;
+  try {
+    report = await reportBoardWrite(context);
+  } catch (err) {
+    const note = `git report unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    if (format !== "json") return { ...result, output: `${result.output}\n${note}` };
+    try {
+      const envelope = JSON.parse(result.output) as Record<string, unknown>;
+      const data = envelope.data as Record<string, unknown>;
+      return { ...result, output: JSON.stringify({ ...envelope, data: { ...data, gitReport: note } }, null, 2) };
+    } catch {
+      return result;
+    }
+  }
+  if (report.git.length === 0 && !report.gitCommit) return result;
+  return { ...result, output: applyBoardGitReport(result.output, format, report) };
+}
+
 export async function runDeleteCommand(
   argv: BoardWriteArgv,
   format: OutputFormat,

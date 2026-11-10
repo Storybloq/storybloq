@@ -29,6 +29,11 @@ export interface BoardWriteContext {
    * to be whole (a checkpoint's copied evidence file). Absent means none.
    */
   readonly required?: Set<string>;
+  /**
+   * ISS-1432: the environment the git report runs under. Absent means the
+   * process environment, which every caller before ISS-1432 relies on.
+   */
+  readonly gitEnv?: NodeJS.ProcessEnv;
 }
 
 const boardWriteContext = new AsyncLocalStorage<BoardWriteContext>();
@@ -38,8 +43,9 @@ export async function runWithBoardWriteContext<T>(
   tool: string,
   commit: boolean,
   fn: () => Promise<T>,
+  opts: { gitEnv?: NodeJS.ProcessEnv } = {},
 ): Promise<{ value: T; context: BoardWriteContext }> {
-  const context: BoardWriteContext = { tool, commit, targets: new Map(), required: new Set() };
+  const context: BoardWriteContext = { tool, commit, targets: new Map(), required: new Set(), ...(opts.gitEnv ? { gitEnv: opts.gitEnv } : {}) };
   const value = await boardWriteContext.run(context, fn);
   return { value, context };
 }

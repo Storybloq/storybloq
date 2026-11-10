@@ -104,6 +104,7 @@ async function runCli(taskLocal = false): Promise<void> {
     registerGateAckCommand,
     registerCheckpointCommand,
     registerLandingsCommand,
+    registerLandCommand,
     registerEarmarkCommand,
     registerLessonCommand,
     registerRecommendCommand,
@@ -276,6 +277,7 @@ async function runCli(taskLocal = false): Promise<void> {
   cli = registerGateAckCommand(cli);
   cli = registerCheckpointCommand(cli);
   cli = registerLandingsCommand(cli);
+  cli = registerLandCommand(cli);
   cli = registerEarmarkCommand(cli);
   cli = registerLessonCommand(cli);
   cli = registerHandoverCommand(cli);

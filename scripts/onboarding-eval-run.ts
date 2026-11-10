@@ -47,7 +47,7 @@
  * regrade/NNN/ beside the record (onboarding-eval-regrade.ts).
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,10 @@ import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 import { runInGroup, type GroupControl } from "../src/core/process-group.js";
+import {
+  codexApprovalProblems, codexApprovalTables, envFor, envKeyProblems, HOST_CHECKS_RAW, hostChecksText, launchHeld, leftoverCheck, processOutcome, serverLaunchFailure, serverLaunchLines,
+  sandboxedRun, serverLaunch, TURN_LIMITS, writeServerLauncher, type SandboxedRun, TurnCapture, type AttemptCapture, type EnvInputs, type LeftoverCheck, type ProcessOutcome, type TurnHostChecks,
+} from "./onboarding-eval-host.js";
 import {
   claudeArgvProblems, claudePolicyObject, claudePolicySettings, claudeReadback, claudeTurnArgs, initEventConsulted, initEventProblems, policyFileProblems, READBACK_TIMEOUT_MS, readbackExpected, userMessage,
   type ClaudeExpected, type ReadbackIo, type ReadbackStep,
@@ -67,15 +71,18 @@ import {
   type PackageTurn, type StoryReader, type TurnResponse, type Variant,
 } from "./onboarding-eval-drive.js";
 import {
-  CHECK_SET_VERSION, claudeTurn, codexSandboxProblems, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, recipeContract, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
+  CHECK_SET_VERSION, claudeTurn, codexSandboxProblems, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, recipeContract, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, turnArgs,
   type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { applySetupReviewChecks, STORE_COPY } from "./onboarding-eval-checkset6.js";
+import { ancestorProblems, canaryProblems, makeCanary, attemptBase, CLAUDE_STATE_DIRS, CODEX_STATE_DIRS, configProblems, credentialLinkEntry, fileEntry, treeEntries, type Manifest, type ManifestEntry as ConfigEntry } from "./onboarding-eval-config.js";
+import { hitText, type Collected, type Purpose, type ScanResult } from "./onboarding-eval-collect.js";
+import { ReviewBudget, ReviewServer, ReviewTurn, SERVED_DEADLINE_MS, SERVED_RAW, servedLinesText, STREAM_CAP_BYTES, type ServeCommand, type ServedLine } from "./onboarding-eval-review.js";
 import { applySetupRunChecks, cs7FinalLedger, type Cs7FinalLedger, type FollowUp } from "./onboarding-eval-checkset7.js";
 import type { InvocationMapping } from "./onboarding-eval-checkset7-events.js";
 import { buildEval, EVAL_DIST } from "./build-eval.mjs";
 import {
-  applySessionChecks, attemptBypass, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, observeEvidence, OBSERVATIONS_RAW, ownerEdits, sessionScript,
+  applySessionChecks, attemptBypassAsync, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, OBSERVATIONS_RAW, ownerEdits, sessionScript,
   sessionSpans, SESSIONS_RAW, sessionsText, setupIdOf, storeRevisionCount, SESSION_VARIANTS, variantFixture, type HarnessFacts, type SessionVariant,
   demoFacts,
 } from "./onboarding-eval-sessions.js";
@@ -106,9 +113,11 @@ interface Options {
   readonly toolSets: string | null;
   /** How long each readback control request may take (4.4: 30 s); lower only in tests. */
   readonly readbackTimeoutMs: number;
+  /** 5.6: the folder each attempt tree is made in; the per-user temp folder unless a test names another. */
+  readonly attemptBase: string;
 }
 
-/** Plan 5.4's pinned inventory, once commit 2 adds it. */
+/** Plan 5.4's pinned inventory: the degraded and full lists, and the withheld names with their reasons. */
 export const TOOL_SETS_FILE = join(PKG_ROOT, "scripts", "onboarding-eval-tools.json");
 
 /** The two storybloq tool inventories: before a project exists and after. */
@@ -152,6 +161,7 @@ function parseArgs(argv: readonly string[]): Options {
     maxBudgetUsd: Number(get("max-budget-usd", "15")),
     toolSets: get("tool-sets") === undefined ? null : resolve(get("tool-sets")!),
     readbackTimeoutMs: Number(get("readback-timeout-ms", String(READBACK_TIMEOUT_MS))),
+    attemptBase: resolve(get("attempt-base") ?? attemptBase()),
   };
 }
 
@@ -376,12 +386,12 @@ export function scrubClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
- * Every home a client or its reviewer can resolve lies under the scratch
- * directory: HOME and CODEX_HOME always, CLAUDE_CONFIG_DIR for Claude, and no
- * inherited client variable beyond the ones the runner set. Returns the
+ * Every home a client or its reviewer can resolve lies under the scratch directory: HOME and TMPDIR always,
+ * CODEX_HOME for Codex, CLAUDE_CONFIG_DIR for Claude, and no inherited client variable beyond the ones the
+ * runner set. Given the client column (T-538 5.3), the key set must be exactly that column's. Returns the
  * problems; empty means isolated.
  */
-export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: Client): string[] {
+export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: Client, column?: Record<string, string>): string[] {
   const problems: string[] = [];
   const under = (k: string): void => {
     const v = env[k];
@@ -389,12 +399,14 @@ export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: 
     else if (!resolve(v).startsWith(`${resolve(work)}/`)) problems.push(`${k}=${v} is outside the scratch directory`);
   };
   under("HOME");
-  under("CODEX_HOME");
-  if (client === "codex") under("TMPDIR");
+  if (client === "codex") under("CODEX_HOME");
+  else if (env.CODEX_HOME !== undefined) under("CODEX_HOME");
+  under("TMPDIR");
   if (client === "claude") under("CLAUDE_CONFIG_DIR");
   // Check set 7: the evaluation entry's events log and fault selector are the runner's own.
-  const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT"]);
+  const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_CLIENT", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT", "STORYBLOQ_EVAL_FAULT_ID", "STORYBLOQ_EVAL_REVIEW_RESPONSES"]);
   for (const k of Object.keys(env)) if (INHERITED_CLIENT_ENV.test(k) && !allowed.has(k)) problems.push(`${k} is inherited`);
+  if (column !== undefined) problems.push(...envKeyProblems(env, column, "client"));
   return problems;
 }
 
@@ -414,41 +426,229 @@ function buildIdentity(): Record<string, string> {
   };
 }
 
-function provisionClaude(home: string): string {
+/** Claude's config folder and its manifest entries (5.6): the skill, the two files, and Claude's own state folders. */
+function provisionClaude(home: string): { readonly configDir: string; readonly entries: ConfigEntry[] } {
   const configDir = join(home, "claude-config");
   mkdirSync(configDir, { recursive: true });
   cpSync(join(PKG_ROOT, "src", "skill"), join(configDir, "skills", "story"), { recursive: true });
   writeFileSync(join(configDir, "settings.json"), `${JSON.stringify({ env: {}, hooks: {} }, null, 2)}\n`);
   writeFileSync(join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`);
-  return configDir;
+  const entries: ConfigEntry[] = [
+    ...treeEntries(join(configDir, "skills", "story")), fileEntry(join(configDir, "settings.json")), fileEntry(join(configDir, ".claude.json")),
+    ...CLAUDE_STATE_DIRS.map((d): ConfigEntry => ({ kind: "runtime-dir", path: join(configDir, d) })),
+  ];
+  return { configDir, entries };
 }
 
 /**
  * A scratch CODEX_HOME holding only the subscription auth (by link) and a
- * config this runner wrote. As the evaluated client it also carries this
- * checkout's MCP server and skill; as Claude's shell-launched reviewer it
- * carries nothing else: no MCP servers, no skills, no sessions, no profiles.
+ * config this runner wrote. As the evaluated client it also carries the tool
+ * server's sandboxed launch (T-538 5.2), one approval per inventory name (5.4,
+ * Addendum B) and this checkout's skill; the server's environment arrives per
+ * turn (5.3), so the config names no variable. As Claude's shell-launched
+ * reviewer it carries nothing else: no MCP servers, no skills, no sessions, no
+ * profiles.
  */
-function provisionCodexHome(home: string, realAuth: string, role: "client" | "reviewer", variant: Variant): string {
+function provisionCodexHome(home: string, realAuth: string, role: "client" | "reviewer", variant: Variant, server?: { readonly launch: { readonly command: string; readonly args: readonly string[] }; readonly tools: readonly string[]; readonly project: string }): { readonly codexHome: string; readonly entries: ConfigEntry[] } {
   const codexHome = join(home, ".codex");
   mkdirSync(codexHome, { recursive: true });
-  if (existsSync(realAuth)) symlinkSync(realAuth, join(codexHome, "auth.json"));
-  else if (role === "client") throw new Error(`onboarding-eval: no Codex auth at ${realAuth}`);
-  const lines: string[] = [];
+  const entries: ConfigEntry[] = [];
+  if (existsSync(realAuth)) {
+    symlinkSync(realAuth, join(codexHome, "auth.json"));
+    entries.push(credentialLinkEntry(join(codexHome, "auth.json")));
+  } else if (role === "client") throw new Error(`onboarding-eval: no Codex auth at ${realAuth}`);
+  let text = "";
   if (role === "client") {
+    if (server === undefined) throw new Error("onboarding-eval: the Codex client needs its tool server launch");
     cpSync(join(PKG_ROOT, "src", "skill"), join(home, ".agents", "skills", "story"), { recursive: true });
-    const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
-    lines.push(
+    const lines = [
       "[mcp_servers.storybloq]",
-      `command = ${JSON.stringify(process.execPath)}`,
-      `args = [${[mcp.path, ...mcp.args].map((a) => JSON.stringify(a)).join(", ")}]`,
-      "[mcp_servers.storybloq.env]",
-      'STORYBLOQ_CLIENT = "codex"',
-    );
+      `command = ${JSON.stringify(server.launch.command)}`,
+      `args = [${server.launch.args.map((a) => JSON.stringify(a)).join(", ")}]`,
+    ];
     if (variant === "reviewer-unavailable") lines.push("[features]", "multi_agent = false");
+    text = `${lines.join("\n")}\n\n${codexApprovalTables(server.tools)}`;
+    const weak = codexApprovalProblems(text, server.tools);
+    if (weak.length > 0) throw new Error(`onboarding-eval: the Codex config's tool approvals do not hold: ${weak.join("; ")}`);
+    // Addendum B rule (a), measured on codex 0.163.0: the table Codex appends on a first turn, written here last in its
+    // exact form, leaves the file byte-identical over turns, so the manifest's hash stays strict.
+    text = `${text.endsWith("\n") ? text : `${text}\n`}${codexTrustTable(server.project)}`;
+    entries.push(...treeEntries(join(home, ".agents", "skills", "story")));
   }
-  writeFileSync(join(codexHome, "config.toml"), lines.length > 0 ? `${lines.join("\n")}\n` : "");
-  return codexHome;
+  writeFileSync(join(codexHome, "config.toml"), text);
+  entries.push(fileEntry(join(codexHome, "config.toml")), ...CODEX_STATE_DIRS.map((d): ConfigEntry => ({ kind: "runtime-dir", path: join(codexHome, d) })));
+  return { codexHome, entries };
+}
+
+/** The project trust table exactly as codex 0.163.0 appends it to config.toml (Addendum B), a blank line first. */
+export function codexTrustTable(project: string): string {
+  return `\n[projects.${JSON.stringify(project)}]\ntrust_level = "trusted"\n`;
+}
+
+/**
+ * 5.5: the served reviewer's own folders. `reviewer-bin` holds links to node, git and, unless the variant is
+ * reviewer-unavailable, codex; never claude. `reviewer-home/.codex` holds only the link to the owner's
+ * auth.json, made with symlink and checked with lstat, never opened.
+ */
+/** 5.8: one collector call's deadline (the attempt remainder of 7.4 comes with commit 4). */
+export const COLLECT_DEADLINE_MS = 120_000;
+const COLLECT_STDOUT_CAP = 256 * 1024 * 1024;
+
+/** A purpose whose problems end the attempt as infrastructure; the others are named and scored without. */
+const EVIDENCE_PURPOSES: readonly Purpose[] = ["ledger", "events", "store"];
+
+/**
+ * 5.8: the runner never reads a model-writable tree itself. Each read is one collector process, in its own
+ * group under a deadline, that copies (or digests, archives, observes) and prints its result; the runner reads
+ * only the printed result and the copy under `work/collected/<n>/`, outside every root.
+ */
+export class Collector {
+  private n = 0;
+  /** Problems in project files and rollouts: named in the record, the run scored without them. */
+  readonly named: string[] = [];
+  constructor(private readonly work: string, private readonly o: { readonly deadlineMs?: number; readonly script?: string; readonly execArgv?: readonly string[] } = {}) {}
+
+  async call(args: readonly string[], what: string, stdin?: Buffer): Promise<unknown> {
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let len = 0;
+    const deadlineMs = this.o.deadlineMs ?? COLLECT_DEADLINE_MS;
+    const tmp = join(this.work, "collected");
+    mkdirSync(tmp, { recursive: true, mode: 0o700 });
+    const r = await runInGroup({
+      command: process.execPath, args: [...(this.o.execArgv ?? process.execArgv), this.o.script ?? join(PKG_ROOT, "scripts", "onboarding-eval-collect.ts"), ...args], cwd: tmp,
+      env: { PATH: "/usr/bin:/bin", HOME: tmp, TMPDIR: tmp, LANG: "C" }, timeoutMs: deadlineMs, killGraceMs: TURN_LIMITS.graceMs, stdin: stdin ?? Buffer.alloc(0),
+      onStdout: (c) => { if (len < COLLECT_STDOUT_CAP) { out.push(c); len += c.length; } },
+      onStderr: (c) => { if (err.length < 64) err.push(c); },
+    });
+    const unconfirmed = r.cleanup !== "confirmed" ? "; its stop was not confirmed, so the attempt is quarantined" : "";
+    if (r.timedOut) throw new Error(`onboarding-eval: evidence: ${what}: the collector passed its ${deadlineMs} ms deadline and was stopped${unconfirmed}`);
+    if (r.exitCode !== 0 || unconfirmed !== "") throw new Error(`onboarding-eval: evidence: ${what}: the collector failed (${r.spawnError ?? r.exitCode ?? r.signal})${unconfirmed}: ${Buffer.concat(err).toString("utf-8").trim()}`);
+    return JSON.parse(Buffer.concat(out).toString("utf-8"));
+  }
+
+  /** A copy of `src` (a folder) for one purpose; the path returned mirrors `src` and is absent when `src` was. */
+  async copy(purpose: Purpose, src: string): Promise<string> {
+    const dest = join(this.work, "collected", String(++this.n), basename(src));
+    const c = await this.call(["collect", purpose, src, dest], src) as Collected;
+    for (const e of c.entries) {
+      if (e.problem === null) continue;
+      const at = e.path === "." ? src : join(src, e.path);
+      if (EVIDENCE_PURPOSES.includes(purpose)) throw new Error(`onboarding-eval: evidence: ${at}: ${e.problem}`);
+      this.named.push(`evidence: ${at}: ${e.problem}`);
+    }
+    return dest;
+  }
+
+  async digest(root: string): Promise<Record<string, string>> {
+    const d = await this.call(["digest", root], root) as { digest: Record<string, string>; problems: string[] };
+    for (const p of d.problems) this.named.push(`evidence: ${p}`);
+    return d.digest;
+  }
+
+  archive(project: string, dest: string): Promise<ArchiveResult> { return this.call(["archive", project, dest], project) as Promise<ArchiveResult>; }
+  observe(project: string, at: EvidenceObservation["at"]): Promise<EvidenceObservation[]> { return this.call(["observe", project, JSON.stringify(at)], project) as Promise<EvidenceObservation[]>; }
+  /** 5.9: the held secrets go on stdin, never on the command line. */
+  scan(paths: readonly string[], secrets: readonly string[]): Promise<ScanResult> {
+    return this.call(["scan", ...paths], paths.join(", "), Buffer.from(secrets.join("\n"), "utf-8")) as Promise<ScanResult>;
+  }
+
+  /** F8: the project scan (5.6) in a collector process under its deadline, never in the runner. */
+  projectScan(project: string): Promise<string[]> { return this.call(["project-scan", project], project) as Promise<string[]>; }
+
+  ledgerState(story: string): Promise<{ readonly digest: string; readonly problems: readonly string[] }> { return this.call(["ledger-state", story], story) as Promise<{ digest: string; problems: string[] }>; }
+}
+
+/** 5.9: a packet over this is refused, not partly scanned. */
+export const PACKET_LIMIT_BYTES = 16 * 1024 * 1024;
+/** 5.9: written beside the record when the attempt is invalid; the judge refuses a record that has one. */
+export const INVALID_FILE = "invalid.json";
+/** F13: stands in a published record until its 5.9 scan clears; the judge refuses a record that holds it. */
+export const SCAN_PENDING_FILE = "scan-pending.json";
+
+/** F12: a harness command whose process group was not confirmed gone stops the attempt, whatever its exit, before its result is used. */
+export function stopUnconfirmed<T extends { readonly cleanup: "confirmed" | "unconfirmed"; readonly status: number | null; readonly signal: NodeJS.Signals | null }>(r: T, command: string): T {
+  if (r.cleanup !== "confirmed") throw new Error(`onboarding-eval: harness stop: the sandboxed harness command ${JSON.stringify(command.slice(0, 80))} ended (${r.status ?? r.signal}) but its process group was not confirmed gone; the attempt stops`);
+  return r;
+}
+
+/** F13: the 5.9 scan of a published record; the pending marker goes only when it is clean, and stays on any failure. */
+export async function scanAndClear(collector: Pick<Collector, "scan">, recordDir: string, rawDir: string, packetBytes: number, secrets: readonly string[]): Promise<void> {
+  const scan = await collector.scan([recordDir, rawDir], secrets);
+  const invalid = invalidReasons(packetBytes, scan);
+  if (invalid.length > 0) {
+    writeFileSync(join(recordDir, INVALID_FILE), `${JSON.stringify({ invalid, hits: scan.hits, unreadable: scan.unreadable }, null, 2)}\n`, { flag: "wx" });
+    throw new Error(`onboarding-eval: invalid: ${invalid.join("; ")}; the judge is not called and the matrix stops`);
+  }
+  unlinkSync(join(recordDir, SCAN_PENDING_FILE));
+}
+
+/** 5.9's verdict on what would reach the judge: the reasons the attempt is invalid, empty when the scan found none. */
+export function invalidReasons(packetBytes: number, scan: ScanResult): string[] {
+  const out: string[] = [];
+  if (packetBytes > PACKET_LIMIT_BYTES) out.push(`the packet is ${packetBytes} bytes, over the ${PACKET_LIMIT_BYTES} byte limit, and is refused, not partly scanned`);
+  for (const h of scan.hits) out.push(`a credential form in ${hitText(h)}`);
+  for (const u of scan.unreadable) out.push(`not scanned: ${u}`);
+  return out;
+}
+
+/** 5.7: a harness command's deadline. */
+const HARNESS_DEADLINE_MS = 120_000;
+
+/** Words for /bin/sh -c, each single-quoted. */
+export function shellWords(words: readonly string[]): string {
+  return words.map((w) => `'${w.replace(/'/g, "'\\''")}'`).join(" ");
+}
+
+/** How long the review worker outlives a turn's deadline and twice its grace. */
+const WORKER_MARGIN_MS = 60_000;
+
+function provisionReviewer(work: string, realAuth: string, variant: Variant, codexBin: string): { readonly bin: string; readonly home: string; readonly tmp: string } {
+  const bin = join(work, "reviewer-bin");
+  const home = join(work, "reviewer-home");
+  const tmp = join(work, "reviewer-tmp");
+  mkdirSync(bin);
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  mkdirSync(tmp);
+  const git = resolveOnPath("git", process.env.PATH ?? "");
+  if (git === null) throw new Error("onboarding-eval: git is not on PATH; the served reviewer needs it");
+  symlinkSync(process.execPath, join(bin, "node"));
+  symlinkSync(realpathSync(git), join(bin, "git"));
+  if (variant !== "reviewer-unavailable") symlinkSync(codexBin, join(bin, "codex"));
+  const link = join(home, ".codex", "auth.json");
+  symlinkSync(realAuth, link);
+  if (!lstatSync(link).isSymbolicLink() || readlinkSync(link) !== realAuth) throw new Error("onboarding-eval: the served reviewer's auth link does not hold");
+  return { bin, home, tmp };
+}
+
+/** 5.5: `node <checkout>/dist/cli.js setup-review <argv>` in its own group, cwd the project, the decoded stdin, each stream capped. */
+export function serveReviewCommand(cli: string, project: string, env: NodeJS.ProcessEnv): ServeCommand {
+  return async (args, stdin, timeoutMs, setStop, watch) => {
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let outLen = 0;
+    let errLen = 0;
+    // One byte past the cap is kept so the response can say it was truncated.
+    const keep = (into: Buffer[], len: number, c: Buffer): number => { const room = STREAM_CAP_BYTES + 1 - len; if (room > 0) into.push(c.subarray(0, room)); return len + Math.min(room > 0 ? room : 0, c.length); };
+    const r = await runInGroup({
+      command: process.execPath, args: [cli, "setup-review", ...args], cwd: project, env, timeoutMs, killGraceMs: TURN_LIMITS.graceMs,
+      onStdout: (c) => { watch(c, "stdout"); outLen = keep(out, outLen, c); },
+      onStderr: (c) => { watch(c, "stderr"); errLen = keep(err, errLen, c); },
+      control: (c: GroupControl) => { setStop(() => c.stop()); c.write(stdin); c.endInput(); },
+    });
+    setStop(null);
+    return { exit: r.timedOut ? null : r.exitCode, stdout: Buffer.concat(out), stderr: Buffer.concat(err), cleanup: r.cleanup, timedOut: r.timedOut };
+  };
+}
+
+/** Claude's MCP file: the one sandboxed launch (5.2) and the server's environment column (5.3). Written new, 0600. */
+export function claudeMcpText(launch: { readonly command: string; readonly args: readonly string[] }, env: Readonly<Record<string, string>>): string {
+  return JSON.stringify({ mcpServers: { storybloq: { command: launch.command, args: [...launch.args], env: { ...env } } } }, null, 2);
+}
+
+function writeClaudeMcpFile(file: string, text: string): void {
+  if (existsSync(file)) unlinkSync(file);
+  writeFileSync(file, text, { mode: 0o600, flag: "wx" });
 }
 
 interface TurnResult {
@@ -460,6 +660,8 @@ interface TurnResult {
   readonly infraFailure: string | null;
   /** A Claude turn's readback exchange (4.4), saved as turn-NN-<label>.readback.json; null for Codex. */
   readonly readback: { readonly steps: readonly ReadbackStep[]; readonly mcpTools: readonly string[]; readonly permissionDenials: unknown } | null;
+  /** 5.1 and 5.2: what the host saw around the turn, a replay input once the main loop names its file. */
+  readonly host: Omit<TurnHostChecks, "file">;
 }
 
 /** A Claude run's launch files and the expectations each turn is checked against. */
@@ -490,11 +692,11 @@ export function launchExpected(l: ClaudeLaunch): ClaudeExpected {
 
 /** The observed models from this thread's rollout file under the scratch CODEX_HOME. */
 export function rolloutModels(codexHome: string, threadId: string): string[] {
-  return codexRolloutModels(rolloutLines(codexHome, threadId));
+  return codexRolloutModels(rolloutLines(join(codexHome, "sessions"), threadId));
 }
 
-/** Every parsed line of this thread's rollout files under the scratch CODEX_HOME. */
-function rolloutLines(codexHome: string, threadId: string): Record<string, unknown>[] {
+/** Every parsed line of this thread's rollout files under a sessions folder (5.8: the collector's copy of the client's). */
+function rolloutLines(sessionsDir: string, threadId: string): Record<string, unknown>[] {
   const found: string[] = [];
   const walk = (dir: string): void => {
     if (!existsSync(dir)) return;
@@ -504,7 +706,7 @@ function rolloutLines(codexHome: string, threadId: string): Record<string, unkno
       else if (name.endsWith(".jsonl") && name.includes(threadId)) found.push(p);
     }
   };
-  walk(join(codexHome, "sessions"));
+  walk(sessionsDir);
   const lines: Record<string, unknown>[] = [];
   for (const f of found) {
     for (const l of readFileSync(f, "utf-8").split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* partial line */ } }
@@ -514,19 +716,31 @@ function rolloutLines(codexHome: string, threadId: string): Record<string, unkno
 
 interface TurnCtx {
   readonly project: string;
-  readonly env: NodeJS.ProcessEnv;
+  /** The client column (5.3), replaced between sessions when the fault variables change. */
+  env: NodeJS.ProcessEnv;
+  /** The server column, delivered to Codex per turn; Claude reads it from its MCP file. */
+  serverEnv: Readonly<Record<string, string>>;
   readonly clientBin: string;
   readonly writableRoots: readonly string[];
-  readonly claude: ClaudeLaunch | null;
+  claude: ClaudeLaunch | null;
   sessionId: string | null;
   first: boolean;
+  /** 5.1 and 5.2: the attempt tree the leftover check reads, the events log the launch lines land in, the pinned inventory's sha256, and the attempt's capture so far. */
+  readonly host: { readonly tree: string; readonly events: string; readonly toolsSha256: string; readonly capture: AttemptCapture };
+  /** 5.5: starts the turn's review side (the collector worker and the server) for a turn with this deadline; the stop ends the client turn. */
+  readonly review: ((deadlineMs: number, stopTurn: () => void) => ReviewTurn) | null;
+  /** 5.6: the provisioned configuration, checked before every turn with the project scan. */
+  manifest: Manifest | null;
+  /** 5.8: the only reader of a model-writable tree. */
+  readonly collector: Collector;
 }
 
 /**
- * One owner turn, in its own process group under one deadline (T-538 commit 1; the limits come in commit 2).
- * A Claude turn is refused before spawn unless its argv and both launch files hold (4.3); its effective
+ * One owner turn, in its own process group under one deadline of at most 40 minutes, with its capture limits
+ * (5.1). A Claude turn is refused before spawn unless its argv and both launch files hold (4.3); its effective
  * settings are read back over stdin before the prompt is written (4.4), and only when they hold is the prompt
- * sent, with stdin closed at the result event. A Codex turn has its stdin closed.
+ * sent, with stdin closed at the result event. A Codex turn has its stdin closed at spawn. After the group is
+ * gone the attempt tree is checked for leftovers, and the turn must have added a held server launch (5.2).
  */
 async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<TurnResult> {
   const bin = ctx.clientBin;
@@ -544,11 +758,19 @@ async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<
     ];
     if (weak.length > 0) throw new Error(`onboarding-eval: the turn's sandbox does not hold: ${weak.join("; ")}`);
   } else {
-    args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: [], sessionId: ctx.sessionId, first: ctx.first, writableRoots: ctx.writableRoots }, prompt);
-    const weak = codexSandboxProblems(args, ctx.writableRoots);
+    args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: [], sessionId: ctx.sessionId, first: ctx.first, writableRoots: ctx.writableRoots, serverEnv: ctx.serverEnv }, prompt);
+    const weak = codexSandboxProblems(args, ctx.writableRoots, ctx.serverEnv);
     if (weak.length > 0) throw new Error(`onboarding-eval: the turn's sandbox does not hold: ${weak.join("; ")}`);
   }
+  // 5.6, after the launch's own checks: what the client loads is checked before every turn; a change since provisioning, or a project that now
+  // holds a name a client loads, is a harness stop before the turn.
+  if (ctx.manifest !== null) {
+    const held = [...configProblems(ctx.manifest), ...await ctx.collector.projectScan(ctx.project)];
+    if (held.length > 0) throw new Error(`onboarding-eval: harness stop before the turn: ${held.join("; ")}`);
+  }
 
+  const deadlineMs = Math.min(o.timeoutMs, TURN_LIMITS.deadlineMs);
+  const eventsBefore = fileSize(await collectedEvents(ctx.collector, ctx.host.events));
   const lines: string[] = [];
   let pending = "";
   let stderr = "";
@@ -580,20 +802,27 @@ async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<
       control?.endInput();
     }
   };
+  // Past a limit the capture stops appending and the group is stopped once (5.1); never a throw from a data callback.
+  const capture = new TurnCapture(ctx.host.capture, () => { (control as GroupControl | null)?.stop(); });
   const run = runInGroup({
-    command: bin, args, cwd: ctx.project, env: ctx.env, timeoutMs: o.timeoutMs,
+    command: bin, args, cwd: ctx.project, env: ctx.env, timeoutMs: deadlineMs, killGraceMs: TURN_LIMITS.graceMs,
     onStdout: (c) => {
-      pending += outText.write(c);
+      const kept = capture.take("stdout", c);
+      if (kept.length === 0) return;
+      pending += outText.write(kept);
       let nl = pending.indexOf("\n");
       while (nl !== -1) { line(pending.slice(0, nl)); pending = pending.slice(nl + 1); nl = pending.indexOf("\n"); }
     },
-    onStderr: (c) => { stderr += errText.write(c); },
-    ...(expected !== null ? { control: (c: GroupControl) => { control = c; } } : {}),
+    onStderr: (c) => { const kept = capture.take("stderr", c); if (kept.length > 0) stderr += errText.write(kept); },
+    // Both clients get the stop handle; a Codex turn's input is closed at once.
+    control: (c: GroupControl) => { control = c; if (expected === null) c.endInput(); },
   }).finally(() => {
     settled = true;
     for (const w of waiters.values()) w(null);
   });
 
+  // 5.5: the review side lives for the turn; a request folder failure stops the client.
+  const review = ctx.review?.(deadlineMs, () => { (control as GroupControl | null)?.stop(); }) ?? null;
   let launch: string | null = null;
   let readback: TurnResult["readback"] = null;
   if (expected !== null) {
@@ -620,15 +849,29 @@ async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<
     readback = { steps: rb.steps, mcpTools: [...expected.mcpTools], permissionDenials: null };
   }
   const r = await run;
+  // 5.5: stopped and awaited, whatever ended the turn, before the leftover check.
+  const reviewEnd = review === null ? null : await review.end();
   pending += outText.end();
   stderr += errText.end();
   if (pending !== "") line(pending);
   const raw = lines.length > 0 ? `${lines.join("\n")}\n` : "";
   // A write refused only because the result already ended the input owes nothing once the prompt went out; a refused prompt write is a failure.
   const inputError = r.inputError === undefined || (r.inputError === "write after endInput" && promptWritten) ? null : r.inputError;
+  // 5.1: after the group is gone, any process still holding a file or a working directory under the tree is a leftover.
+  const leftover = leftoverCheck(ctx.host.tree);
+  // 5.2: the server launches this turn added. Every one must be held with the pinned inventory, and a turn
+  // with none ran no sandboxed storybloq server (serverLaunchFailure, the predicate the regrade replays).
+  const launchLines = serverLaunchLines(readFrom(await collectedEvents(ctx.collector, ctx.host.events), eventsBefore));
+  const launches = launchLines.map((l) => l.attempt);
+  const servers = launchLines.filter((l) => launchHeld(l, ctx.host.toolsSha256)).map((l) => l.attempt);
+  if (launch === null) launch = serverLaunchFailure(launchLines, ctx.host.toolsSha256);
   const facts = (t: EvalTurn, l: string | null): TurnFailureFacts => ({
-    spawnError: r.spawnError, launch: l, inputError, timedOut: r.timedOut, timeoutMs: o.timeoutMs, signal: r.signal, exitCode: r.exitCode,
-    terminal: t.terminal, cleanup: r.cleanup, cleanupDetail: r.cleanupDetail,
+    spawnError: r.spawnError, launch: l, inputError, limit: capture.exceeded, review: reviewEnd?.failure ?? null, timedOut: r.timedOut, timeoutMs: deadlineMs, outcome: processOutcome(r.exitCode, r.signal, false),
+    terminal: t.terminal,
+    // An unconfirmed stop of the review worker or a served command is the turn's unconfirmed cleanup.
+    cleanup: r.cleanup === "confirmed" && (reviewEnd?.cleanup ?? "confirmed") === "confirmed" ? "confirmed" : "unconfirmed",
+    cleanupDetail: r.cleanup !== "confirmed" ? r.cleanupDetail : reviewEnd?.cleanupDetail ?? null,
+    leftover,
   });
   let turn: EvalTurn;
   if (o.client === "claude") {
@@ -650,40 +893,71 @@ async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<
     for (const l of raw.split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") parsed.push(v); } catch { /* non-JSON line */ } }
     turn = codexTurn(parsed, CHECK_SET_VERSION);
     if (ctx.first && turn.sessionId) ctx.sessionId = turn.sessionId;
-    if (ctx.sessionId && ctx.env.CODEX_HOME) turn = { ...turn, models: rolloutModels(ctx.env.CODEX_HOME, ctx.sessionId) };
+    if (ctx.sessionId && typeof ctx.env.CODEX_HOME === "string") turn = { ...turn, models: codexRolloutModels(rolloutLines(await ctx.collector.copy("rollouts", join(ctx.env.CODEX_HOME, "sessions")), ctx.sessionId)) };
   }
   ctx.first = false;
   const infraFailure = turnInfraFailure(facts(turn, launch));
-  return { turn, raw, stderr, exitCode: r.exitCode, infraFailure, readback };
+  return { turn, raw, stderr, exitCode: r.exitCode, infraFailure, readback, host: { launches, servers, leftover: { status: leftover.status, reason: leftover.reason }, limit: capture.exceeded, review: reviewEnd?.failure ?? null } };
 }
 
-/** What decides a turn's infrastructure failure: the group's result, the launch check, and the parsed terminal. */
+/** The collector's copy of the events log's folder, and the log's path in it (5.8). */
+async function collectedEvents(c: Collector, eventsFile: string): Promise<string> {
+  return join(await c.copy("events", dirname(eventsFile)), basename(eventsFile));
+}
+
+/** A runner-owned copy's size; 0 when it is absent. */
+function fileSize(copy: string): number {
+  return existsSync(copy) ? statSync(copy).size : 0;
+}
+
+/** The bytes a file gained past `offset`, as text; empty when it is missing or did not grow. */
+function readFrom(file: string, offset: number): string {
+  if (!existsSync(file)) return "";
+  const size = statSync(file).size;
+  if (size <= offset) return "";
+  const buf = Buffer.alloc(size - offset);
+  const fd = openSync(file, "r");
+  try { readSync(fd, buf, 0, buf.length, offset); } finally { closeSync(fd); }
+  return buf.toString("utf-8");
+}
+
+/** What decides a turn's infrastructure failure: the group's result, the launch check, the limits, the parsed terminal and the leftover check. */
 export interface TurnFailureFacts {
   readonly spawnError: string | null;
   readonly launch: string | null;
   readonly inputError: string | null;
+  /** 5.1: the capture limit the turn passed (`limit: ...`), or null. */
+  readonly limit: string | null;
+  /** 5.5: the request folder's failure (`review requests: ...`), or null; ranked after the limit. */
+  readonly review?: string | null;
   readonly timedOut: boolean;
   readonly timeoutMs: number;
-  readonly signal: string | null;
-  readonly exitCode: number | null;
+  /** The process result as read by its launch kind (Addendum B). */
+  readonly outcome: ProcessOutcome;
   readonly terminal: { readonly status: string; readonly detail: string };
   readonly cleanup: "confirmed" | "unconfirmed";
   readonly cleanupDetail: string | null;
+  /** 5.1: the leftover check after the group is gone; null where none ran. */
+  readonly leftover: LeftoverCheck | null;
 }
 
 /**
- * A turn's infrastructure failure, the first that holds: spawn failed, `launch: `, `input: `, timed out, killed
- * by, exit, terminal, and last `cleanup: ` when the group's end was not confirmed. Null for a clean turn.
+ * A turn's infrastructure failure, the first that holds: spawn failed, `launch: `, `input: `, the limit, the request folder's failure (5.5), timed
+ * out, the process result's form (`killed by`, `exit`, or the wrapped form), terminal, then `cleanup: ` when the
+ * group's end was not confirmed, and last `cleanup: ` naming a leftover or a failed leftover check. Null for a
+ * clean turn.
  */
 export function turnInfraFailure(f: TurnFailureFacts): string | null {
   if (f.spawnError !== null) return `spawn failed: ${f.spawnError}`;
   if (f.launch !== null) return `launch: ${f.launch}`;
   if (f.inputError !== null) return `input: ${f.inputError}`;
+  if (f.limit !== null) return f.limit;
+  if ((f.review ?? null) !== null) return f.review!;
   if (f.timedOut) return `timed out after ${f.timeoutMs} ms`;
-  if (f.signal) return `killed by ${f.signal}`;
-  if (f.exitCode !== 0) return `exit ${f.exitCode}`;
+  if (f.outcome.form !== null) return f.outcome.form;
   if (f.terminal.status !== "completed") return `terminal ${f.terminal.status}: ${f.terminal.detail}`;
   if (f.cleanup !== "confirmed") return `cleanup: ${f.cleanup}${f.cleanupDetail !== null ? `: ${f.cleanupDetail}` : ""}`;
+  if (f.leftover !== null && f.leftover.status !== "clean") return `cleanup: ${f.leftover.reason}`;
   return null;
 }
 
@@ -720,10 +994,20 @@ export function diskReader(story: string): StoryReader {
 
 async function main(): Promise<void> {
   const o = parseArgs(process.argv.slice(2));
-  // T-538 commit 1: a Claude run needs the pinned tool inventory before anything is built or spawned.
-  const toolSets = o.client === "claude" ? claudeToolSets(o.toolSets) : null;
+  // T-538 5.4: every run needs the pinned tool inventory before anything is built or spawned.
+  const toolSetsFile = o.toolSets ?? TOOL_SETS_FILE;
+  const toolSets = claudeToolSets(o.toolSets);
+  const toolsSha256 = sha256(readFileSync(toolSetsFile));
+  // 5.2: the codex executable every sandbox launch uses, resolved once from the runner's own PATH, never looked up again.
+  const codexOnPath = resolveOnPath("codex", process.env.PATH ?? "");
+  if (codexOnPath === null) throw new Error("onboarding-eval: codex is not on PATH; the tool server runs under its sandbox wrapper");
+  const codexBin = realpathSync(codexOnPath);
+  const codexVersion = spawnSync(codexBin, ["--version"], { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" }, timeout: 30_000 });
+  if (codexVersion.status !== 0) throw new Error(`onboarding-eval: ${codexBin} --version failed`);
   assertSubscriptionAuthOnly(process.env, "onboarding-eval");
   if (!existsSync(join(PKG_ROOT, "dist", "mcp.js"))) throw new Error("onboarding-eval: dist/mcp.js is missing; build this checkout first");
+  // 5.5: served reviews run this checkout's real CLI on the host.
+  if (!existsSync(join(PKG_ROOT, "dist", "cli.js"))) throw new Error("onboarding-eval: dist/cli.js is missing; build this checkout first");
   // Check set 7: the evaluation bundle, rebuilt whenever its inputs changed.
   const evalBuild = CHECK_SET_VERSION >= 7 ? await buildEval(PKG_ROOT) : null;
   if (o.client === "claude" && !process.env.CLAUDE_CODE_OAUTH_TOKEN) throw new Error("onboarding-eval: CLAUDE_CODE_OAUTH_TOKEN is required for a fresh Claude config");
@@ -738,75 +1022,138 @@ async function main(): Promise<void> {
   const firstPrompt = firstPromptFor(o.client, readFileSync(join(fixtureDir, "opening-prompt.txt"), "utf-8"));
 
   const runId = `${o.client}-${o.fixture}-${o.variant}-${new Date().toISOString().replace(/[:.]/g, "")}`;
-  const work = mkdtempSync(join(tmpdir(), "onboarding-eval-"));
+  // 5.6: the attempt tree lives under the per-user temp folder, by its canonical path, with no ancestor a client loads from.
+  mkdirSync(o.attemptBase, { recursive: true, mode: 0o700 });
+  const work = realpathSync(mkdtempSync(join(o.attemptBase, "a-")));
+  const ancestors = ancestorProblems(work);
+  if (ancestors.length > 0) throw new Error(`onboarding-eval: the attempt tree's ancestors hold client configuration: ${ancestors.join("; ")}`);
   const project = materializeFixture(o.fixture, work);
   const rawDir = join(o.rawOut, runId);
   mkdirSync(rawDir, { recursive: true });
 
-  // The real Codex auth is located before the environment is scrubbed; nothing else of the real homes is used.
+  // The real Codex auth is located before anything else; nothing else of the real homes is used.
   const realCodexAuth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
-  const env: NodeJS.ProcessEnv = scrubClientEnv(process.env);
-  for (const k of ALTERNATE_AUTH_ENV_VARS) delete env[k];
-  env.STORYBLOQ_GLOBAL_DIR = join(work, "storybloq-global");
+  const globalDir = join(work, "storybloq-global");
   // Check set 6 (T-536): the setup reviewer's store, per run, so rule 2 reads this run's revisions only.
   // The name carries the default store's prefix, so a turn that touches it reads as touching the store in a replay too.
   const setupReviewStore = join(work, "storybloq-setup-review-store");
-  env.STORYBLOQ_SETUP_REVIEW_DIR = setupReviewStore;
   // Check set 7: every storybloq process appends to one events log, outside the project.
   const eventsFile = join(work, "eval-events", "events.jsonl");
-  if (CHECK_SET_VERSION >= 7) {
-    mkdirSync(dirname(eventsFile), { recursive: true });
-    env.STORYBLOQ_EVAL_EVENTS = eventsFile;
-  }
+  mkdirSync(dirname(eventsFile), { recursive: true });
   // The client binary is resolved on the ORIGINAL path, before any filtering below touches PATH.
   const clientBin = resolveOnPath(o.client, process.env.PATH ?? "");
   if (clientBin === null) throw new Error(`onboarding-eval: ${o.client} is not on PATH`);
   // Refreshes and config writes (the skill copies, ~/.claude, ~/.agents, ~/.codex) land in a scratch HOME for both clients.
-  const home = join(work, "home");
+  const home = join(work, "client-home");
   mkdirSync(home, { recursive: true });
-  env.HOME = home;
   // ISS-1455: the attempt's temp folder is its own, under the one attempt tree, and writable by name.
   const attemptTmp = join(work, "tmp");
   mkdirSync(attemptTmp, { recursive: true });
-  env.TMPDIR = attemptTmp;
-  const writableRoots = [home, attemptTmp, env.STORYBLOQ_GLOBAL_DIR, setupReviewStore, dirname(eventsFile), join(project, ".git")];
+  // 5.2: the wrapper's own CODEX_HOME (empty: no configuration, no credential) and the folder the server's self-probe tries.
+  const runnerHome = join(work, "sandbox-runner-home");
+  const outsideProbe = join(work, "outside-probe");
+  mkdirSync(runnerHome);
+  mkdirSync(outsideProbe);
+  // 5.5: served reviews. Requests land in the model-writable events folder; answers in a folder outside every root.
+  const reviewRequests = join(dirname(eventsFile), "review-requests");
+  const reviewResponses = join(work, "review-responses");
+  mkdirSync(reviewResponses, { mode: 0o700 });
+  const served = provisionReviewer(work, realCodexAuth, variant, codexBin);
+  const reviewerEnv: NodeJS.ProcessEnv = {
+    PATH: `${served.bin}${delimiter}/usr/bin${delimiter}/bin`, HOME: served.home, CODEX_HOME: join(served.home, ".codex"),
+    STORYBLOQ_SETUP_REVIEW_DIR: setupReviewStore, STORYBLOQ_GLOBAL_DIR: globalDir, TMPDIR: served.tmp, LANG: process.env.LANG || "en_US.UTF-8",
+  };
+  const servedLines: ServedLine[] = [];
+  let turnEndsAt = 0;
+  const reviewServer = new ReviewServer({
+    requests: reviewRequests, responses: reviewResponses, project, store: setupReviewStore, budget: new ReviewBudget(),
+    // Compared in memory by the scan, never stored or logged.
+    secrets: [process.env.CLAUDE_CODE_OAUTH_TOKEN ?? ""].filter((x) => x.length >= 16),
+    deadlineMs: () => Math.max(0, Math.min(SERVED_DEADLINE_MS, turnEndsAt - Date.now() - TURN_LIMITS.graceMs)),
+    serve: serveReviewCommand(join(PKG_ROOT, "dist", "cli.js"), project, reviewerEnv),
+    log: (l) => servedLines.push(l),
+  });
+  const startReview = (deadlineMs: number, stopTurn: () => void): ReviewTurn => {
+    turnEndsAt = Date.now() + deadlineMs;
+    return new ReviewTurn({
+      // The worker outlives the turn's own stop (deadline, grace, then the kill and its confirmation), so a turn that
+      // times out is recorded as timed out, never as an exited worker; end() stops the worker in every case.
+      server: reviewServer, timeoutMs: deadlineMs + 2 * TURN_LIMITS.graceMs + WORKER_MARGIN_MS, onFailure: stopTurn,
+      worker: {
+        command: process.execPath, args: [...process.execArgv, join(PKG_ROOT, "scripts", "onboarding-eval-collect.ts"), "requests", reviewRequests], cwd: served.tmp,
+        env: { PATH: `/usr/bin${delimiter}/bin`, HOME: served.tmp, TMPDIR: served.tmp, LANG: process.env.LANG || "en_US.UTF-8" },
+      },
+    });
+  };
   const launcher = installCliLauncher(join(work, "cli-bin"));
-  env.PATH = `${dirname(launcher)}${delimiter}${env.PATH ?? ""}`;
+  let clientPath = `${dirname(launcher)}${delimiter}${scrubClientEnv(process.env).PATH ?? ""}`;
+  if (variant === "reviewer-unavailable") clientPath = pathWithout(clientPath, join(work, "bin"), hiddenReviewers(CHECK_SET_VERSION));
+  // The roots the client's own tools may write (Claude's policy; Codex's workspace-write), and the server's: the same, with the project named.
+  // Section 3 and 5.6: the same five roots for every client, its tools and the server; the client's home, its
+  // configuration and the review store lie beside them.
+  const claudeRoots = [project, join(project, ".git"), attemptTmp, globalDir, dirname(eventsFile)];
+  const writableRoots = claudeRoots;
+  const serverRoots = claudeRoots;
+  const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
+  // 5.3: one environment table. The token is passed through and never read, logged or hashed.
+  let envInputs: EnvInputs = {
+    client: o.client, path: clientPath, home, tmp: attemptTmp, lang: process.env.LANG || "en_US.UTF-8",
+    ...(o.client === "codex" ? { clientCodexHome: join(home, ".codex") } : { claudeConfigDir: join(work, "claude-config"), oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }),
+    runnerHome, globalDir, events: eventsFile, fault: o.fault, reviewStore: setupReviewStore, outside: outsideProbe, tools: toolSetsFile, degraded: variant === "degraded",
+    reviewResponses,
+  };
+  let env: NodeJS.ProcessEnv = envFor("client", envInputs);
+  let serverEnv = envFor("server", envInputs);
+  // F2: every client starts the server through a launcher that keeps exactly the server column's variables; the
+  // client's own environment never reaches the wrapper or the server. It lies outside every root, read-only, and
+  // its bytes are checked with the configuration before every turn. The names are fixed here; a variable the
+  // column drops after session 1 is unset in both columns, so the launcher passes nothing for it.
+  const serverLauncher = writeServerLauncher(work);
+  if (underAnyRoot(serverLauncher, serverRoots)) throw new Error(`onboarding-eval: ${serverLauncher} is under a writable root`);
+  const launch = serverLaunch(codexBin, process.execPath, mcp.path, serverRoots, serverLauncher, Object.keys(serverEnv));
   let claudeLaunch: ClaudeLaunch | null = null;
+  const manifestEntries: ConfigEntry[] = [fileEntry(serverLauncher)];
   if (o.client === "claude") {
-    env.CLAUDE_CONFIG_DIR = provisionClaude(work);
+    const claudeConfig = provisionClaude(work);
+    if (claudeConfig.configDir !== envInputs.claudeConfigDir) throw new Error("onboarding-eval: the Claude config folder is not the provisioned one");
+    manifestEntries.push(...claudeConfig.entries);
     // ISS-1463: no bypass. The policy file (4.1) and the MCP file are written once, outside every root, and
     // checked byte for byte before every turn; Agent and Task are denied by the policy in every variant.
-    const roots = [project, join(project, ".git"), attemptTmp, env.STORYBLOQ_GLOBAL_DIR, dirname(eventsFile)];
     const policyFile = join(work, "claude-policy.json");
     const mcpFile = join(work, "mcp.json");
-    for (const f of [policyFile, mcpFile]) if (underAnyRoot(f, roots)) throw new Error(`onboarding-eval: ${f} is under a writable root`);
-    const policyText = claudePolicySettings(roots, allowedToolsOf(toolSets!));
+    for (const f of [policyFile, mcpFile]) if (underAnyRoot(f, claudeRoots)) throw new Error(`onboarding-eval: ${f} is under a writable root`);
+    const policyText = claudePolicySettings(claudeRoots, allowedToolsOf(toolSets));
     writeFileSync(policyFile, policyText, { mode: 0o400, flag: "wx" });
-    const mcp = storybloqEntry(CHECK_SET_VERSION, "mcp");
-    const mcpLaunch = { command: process.execPath, args: [mcp.path, ...mcp.args] };
-    const mcpText = JSON.stringify({ mcpServers: { storybloq: mcpLaunch } }, null, 2);
-    writeFileSync(mcpFile, mcpText, { mode: 0o600, flag: "wx" });
+    if (JSON.stringify(mcp.args) !== JSON.stringify(["--entry", "mcp"])) throw new Error("onboarding-eval: the evaluation entry's arguments are not --entry mcp");
+    const mcpLaunch = { command: launch.command, args: [...launch.args] };
+    const mcpText = claudeMcpText(mcpLaunch, serverEnv);
+    writeClaudeMcpFile(mcpFile, mcpText);
     claudeLaunch = {
-      model: o.model, policyFile, policySha256: sha256(policyText), mcpFile, mcpSha256: sha256(mcpText), mcpLaunch, project, roots, toolSets: toolSets!, maxBudgetUsd: o.maxBudgetUsd,
+      model: o.model, policyFile, policySha256: sha256(policyText), mcpFile, mcpSha256: sha256(mcpText), mcpLaunch, project, roots: claudeRoots, toolSets, maxBudgetUsd: o.maxBudgetUsd,
     };
-    if (variant === "degraded") env.ENABLE_TOOL_SEARCH = "true";
-    // A Codex reviewer the model launches from its shell gets auth and nothing else.
-    env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "reviewer", variant);
+    // A Codex reviewer the model launches from its shell gets auth and nothing else; it finds it at HOME/.codex.
+    manifestEntries.push(...provisionCodexHome(home, realCodexAuth, "reviewer", variant).entries, fileEntry(policyFile), fileEntry(mcpFile));
   } else {
-    env.CODEX_HOME = provisionCodexHome(home, realCodexAuth, "client", variant);
+    const codex = provisionCodexHome(home, realCodexAuth, "client", variant, { launch, tools: allowedToolsOf(toolSets), project });
+    if (codex.codexHome !== envInputs.clientCodexHome) throw new Error("onboarding-eval: the Codex home is not the provisioned one");
+    manifestEntries.push(...codex.entries);
   }
-  const isolation = isolationProblems(env, work, o.client);
+  // 5.6: the configuration the client loads, checked before every turn; the project scanned before the first.
+  const manifest: Manifest = { folders: o.client === "claude" ? [home, envInputs.claudeConfigDir!] : [home], entries: manifestEntries };
+  const configNow = configProblems(manifest);
+  if (configNow.length > 0) throw new Error(`onboarding-eval: the provisioned configuration does not hold: ${configNow.join("; ")}`);
+  const collector = new Collector(work);
+  const scanned = await collector.projectScan(project);
+  if (scanned.length > 0) throw new Error(`onboarding-eval: the project holds what a client would load: ${scanned.join("; ")}`);
+  const isolation = isolationProblems(env, work, o.client, envFor("client", envInputs));
   if (isolation.length > 0) throw new Error(`onboarding-eval: client environment is not isolated: ${isolation.join("; ")}`);
   // What a shell under this environment actually resolves, recorded with the run.
   const effective = spawnSync("/bin/sh", ["-c", 'printf "%s\\n%s\\n%s\\n" "$HOME" "${CODEX_HOME-}" "${CLAUDE_CONFIG_DIR-}"'], { env, encoding: "utf-8" }).stdout.split("\n");
   const effectivePaths = { home: effective[0] ?? "", codexHome: effective[1] ?? "", claudeConfigDir: effective[2] ?? "" };
-  if (effectivePaths.home !== env.HOME || effectivePaths.codexHome !== env.CODEX_HOME) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
+  if (effectivePaths.home !== env.HOME || effectivePaths.codexHome !== (env.CODEX_HOME ?? "")) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
   if (variant === "reviewer-unavailable") {
-    // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin.
-    const reviewers = hiddenReviewers(CHECK_SET_VERSION);
-    env.PATH = pathWithout(env.PATH ?? "", join(work, "bin"), reviewers);
-    for (const name of reviewers) {
+    // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin and the server's wrapper from codexBin.
+    for (const name of hiddenReviewers(CHECK_SET_VERSION)) {
       const probe = spawnSync("/bin/sh", ["-c", `command -v ${name}`], { env, encoding: "utf-8" });
       if (probe.status === 0) throw new Error(`onboarding-eval: ${name} is still on the eval PATH (${probe.stdout.trim()})`);
     }
@@ -814,13 +1161,20 @@ async function main(): Promise<void> {
   const resolvedCli = spawnSync("/bin/sh", ["-c", "command -v storybloq"], { env, encoding: "utf-8" }).stdout.trim();
   if (resolvedCli !== launcher) throw new Error(`onboarding-eval: storybloq resolves to ${resolvedCli || "nothing"}, not this checkout's launcher ${launcher}`);
   const identity = {
-    ...buildIdentity(), clientBin, cliLauncher: launcher, effectivePaths, codexReviewerAuth: existsSync(join(env.CODEX_HOME!, "auth.json")),
+    ...buildIdentity(), clientBin, cliLauncher: launcher, effectivePaths, codexReviewerAuth: existsSync(join(home, ".codex", "auth.json")),
+    codexBin, codexVersion: codexVersion.stdout.trim(), toolSetsSha256: toolsSha256,
     ...(evalBuild !== null ? { evalInputDigest: evalBuild.digest } : {}),
   };
 
-  const before = treeDigest(project);
+  // 5.9: monitoring only, compared after every turn; a change stops the matrix.
+  const canary = makeCanary(join(work, "canary"));
+  const before = await collector.digest(project);
   const exclusion = runtimeExclusion(project);
-  const ctx: TurnCtx = { project, env, clientBin, writableRoots, claude: claudeLaunch, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
+  const ctx: TurnCtx = {
+    project, env, serverEnv, clientBin, writableRoots, claude: claudeLaunch, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true,
+    host: { tree: work, events: eventsFile, toolsSha256, capture: { used: 0 } }, review: startReview, manifest, collector,
+  };
+  const hostChecks: TurnHostChecks[] = [];
   // T-538 commit 1: each Claude turn's readback, a replay input with the tool set its launch expected.
   const readbacks: { readonly path: string; readonly sha256: string; readonly mcpTools: readonly string[] }[] = [];
   const state = newDriveState(CHECK_SET_VERSION);
@@ -831,25 +1185,39 @@ async function main(): Promise<void> {
   const facts: { -readonly [K in keyof HarnessFacts]: HarnessFacts[K] } = { ...NO_FACTS, fault: o.fault };
   const observations: EvidenceObservation[] = [];
   const snapshotFile = `${eventsFile}.setup-snapshot.json`;
-  const snapshotTickets = (): readonly object[] => (existsSync(snapshotFile) ? cs7SnapshotLedger(readFileSync(snapshotFile, "utf-8")).tickets : []);
+  // 5.8: the setup snapshot as the collector last copied it, refreshed after every turn of the variant that reads it.
+  let snapshotCopy: string | null = null;
+  const snapshotTickets = (): readonly object[] => (snapshotCopy !== null ? cs7SnapshotLedger(snapshotCopy).tickets : []);
+  const refreshSnapshot = async (): Promise<void> => {
+    const copy = join(dirname(await collectedEvents(collector, eventsFile)), basename(snapshotFile));
+    snapshotCopy = existsSync(copy) ? readFileSync(copy, "utf-8") : null;
+  };
   const later = session === null ? undefined : () => {
     if (session === "milestone-demo") facts.dependent = rubric.followUp === undefined ? null : gatedTicket(snapshotTickets(), rubric.followUp.checkpoint);
     return laterSessions(session, o.client === "claude" ? "/story" : "$story", sessionScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8")), facts.dependent);
   };
-  if (o.fault !== null) env.STORYBLOQ_EVAL_FAULT = o.fault;
-  // The harness's own CLI calls log to their own file, never the run's events.
-  const harnessEnv = (): NodeJS.ProcessEnv => {
-    const e: NodeJS.ProcessEnv = { ...env, STORYBLOQ_EVAL_EVENTS: join(work, "eval-events", "harness-events.jsonl") };
-    delete e.STORYBLOQ_EVAL_FAULT;
-    return e;
+  // The harness's own CLI calls log to their own file, never the run's events, and never carry a fault.
+  // 5.7: every harness command on the project runs under the sandbox wrapper with the five roots, in its own group,
+  // with an environment of its own: the wrapper's empty CODEX_HOME and no client credential.
+  // Its HOME is a folder of its own under the tmp root, so nothing it writes lands in the client's home (5.6).
+  const harnessHome = join(attemptTmp, "harness-home");
+  mkdirSync(harnessHome, { recursive: true, mode: 0o700 });
+  const sandboxEnv = (): NodeJS.ProcessEnv => ({
+    PATH: envInputs.path, HOME: harnessHome, TMPDIR: envInputs.tmp, LANG: envInputs.lang, CODEX_HOME: runnerHome, STORYBLOQ_CLIENT: envInputs.client,
+    STORYBLOQ_GLOBAL_DIR: envInputs.globalDir, STORYBLOQ_SETUP_REVIEW_DIR: envInputs.reviewStore, STORYBLOQ_EVAL_EVENTS: join(work, "eval-events", "harness-events.jsonl"),
+  });
+  const wrappedForm = (r: SandboxedRun): { killedBy?: string; exitForm?: string } => {
+    const w = processOutcome(r.status, r.signal, true);
+    return w.killedBy !== null && w.form !== null && r.signal === null ? { killedBy: w.killedBy, exitForm: w.form } : {};
   };
-  const harnessCli = (args: readonly string[]): string => {
-    const r = spawnSync(launcher, args, { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
-    if (r.status !== 0) throw new Error(`onboarding-eval: harness step storybloq ${args.join(" ")} failed (${r.status ?? r.signal}): ${(r.stderr ?? "").trim()}`);
-    return r.stdout ?? "";
+  const inSandbox = async (command: string): Promise<SandboxedRun> => stopUnconfirmed(await sandboxedRun({ codexBin, roots: writableRoots, cwd: project, command, deadlineMs: HARNESS_DEADLINE_MS, env: sandboxEnv() }), command);
+  const harnessCli = async (args: readonly string[]): Promise<string> => {
+    const r = await inSandbox(shellWords([launcher, ...args]));
+    if (r.status !== 0) throw new Error(`onboarding-eval: harness step storybloq ${args.join(" ")} failed (${r.status ?? r.signal}): ${r.stderr.trim()}`);
+    return r.stdout;
   };
   let current = 1;
-  const beforeTurn = (n: number, label: string): void => {
+  const beforeTurn = async (n: number, label: string): Promise<void> => {
     if (session === null) return;
     if (n !== current) {
       // A fresh client: no resume, a new session id.
@@ -857,18 +1225,32 @@ async function main(): Promise<void> {
       ctx.first = true;
       if (current === 1) {
         if (o.fault !== null) facts.fired = existsSync(`${eventsFile}.fired`);
-        delete env.STORYBLOQ_EVAL_FAULT;
+        // 5.3: the fault variables leave both columns after session 1; Claude's MCP file is rewritten and its sha256 updated before the next turn.
+        envInputs = { ...envInputs, fault: null, faultId: null };
+        env = envFor("client", envInputs);
+        serverEnv = envFor("server", envInputs);
+        ctx.env = env;
+        ctx.serverEnv = serverEnv;
+        if (ctx.claude !== null) {
+          const text = claudeMcpText(ctx.claude.mcpLaunch, serverEnv);
+          writeClaudeMcpFile(ctx.claude.mcpFile, text);
+          ctx.claude = { ...ctx.claude, mcpSha256: sha256(text) };
+          // F11: the manifest's entry for the MCP file follows the rewrite, so the check before the next turn holds it.
+          const mcpFile = ctx.claude.mcpFile;
+          if (ctx.manifest !== null) ctx.manifest = { ...ctx.manifest, entries: ctx.manifest.entries.map((e) => (e.kind === "file" && e.path === mcpFile ? fileEntry(mcpFile) : e)) };
+        }
         if (session === "interrupted-edited") {
-          const edits = ownerEdits(cs7FinalLedger(diskReader(join(project, ".story"))).tickets);
+          const edits = ownerEdits(cs7FinalLedger(diskReader(await collector.copy("ledger", join(project, ".story")))).tickets);
           if (edits !== null) {
-            harnessCli(["ticket", "update", edits.edgeTicket, "--add-blocked-by", edits.blocker]);
-            harnessCli(["ticket", "update", edits.describedTicket, "--description", edits.description]);
+            await harnessCli(["ticket", "update", edits.edgeTicket, "--add-blocked-by", edits.blocker]);
+            await harnessCli(["ticket", "update", edits.describedTicket, "--description", edits.description]);
           }
           facts.edits = edits;
         }
         if (session === "restart") {
-          const id = setupIdOf(readEventsLog(existsSync(eventsFile) ? readFileSync(eventsFile, "utf-8") : null).log);
-          facts.report = id === null ? null : harnessCli(["setup-report", "--setup", id]).split("\n").map((l) => l.trim()).filter((l) => l !== "");
+          const events = await collectedEvents(collector, eventsFile);
+          const id = setupIdOf(readEventsLog(existsSync(events) ? readFileSync(events, "utf-8") : null).log);
+          facts.report = id === null ? null : (await harnessCli(["setup-report", "--setup", id])).split("\n").map((l) => l.trim()).filter((l) => l !== "");
         }
       }
       current = n;
@@ -876,18 +1258,19 @@ async function main(): Promise<void> {
     if (session === "milestone-demo" && label === "demo-approval") {
       const demo = rubric.demo;
       if (demo !== undefined) {
-        const r = spawnSync("/bin/sh", ["-c", demo.command], { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
-        facts.demo = demoFacts(demo.command, demo.stdout, r);
+        const r = await inSandbox(demo.command);
+        facts.demo = demoFacts(demo.command, demo.stdout, { status: r.status, signal: r.signal, stdout: r.stdout, ...wrappedForm(r), ...(r.spawnError !== null ? { error: new Error(r.spawnError) } : {}), ...(r.timedOut ? { error: new Error(`timed out after ${HARNESS_DEADLINE_MS} ms`) } : {}) });
       }
     }
-    if (session === "milestone-demo" && n >= 2) observations.push(...observeEvidence(project, { kind: "turn", index: state.turns.length }));
+    if (session === "milestone-demo" && n >= 2) observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
   };
   const flow = driveFlow({ variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion, ...(later !== undefined ? { later } : {}) }, state);
   for (let step = flow.next(); !step.done;) {
     const request = step.value;
-    beforeTurn(request.session ?? 1, request.label);
+    await beforeTurn(request.session ?? 1, request.label);
     const r = await runClientTurn(o, ctx, request.prompt);
     const stem = join(rawDir, `turn-${String(++turnNo).padStart(2, "0")}-${request.label}`);
+    hostChecks.push({ file: basename(stem), ...r.host });
     writeFileSync(`${stem}.jsonl`, r.raw);
     writeFileSync(`${stem}.stderr.txt`, r.stderr);
     if (r.readback !== null) {
@@ -895,32 +1278,40 @@ async function main(): Promise<void> {
       writeFileSync(`${stem}.readback.json`, text);
       readbacks.push({ path: basename(`${stem}.readback.json`), sha256: sha256(text), mcpTools: r.readback.mcpTools });
     }
-    const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, treeDigest(project), exclusion) };
+    const changed = canaryProblems(canary);
+    if (changed.length > 0) throw new Error(`onboarding-eval: ${changed.join("; ")} after turn ${turnNo}; the matrix stops`);
+    const after = await collector.digest(project);
+    if (session === "milestone-demo") await refreshSnapshot();
+    const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, after, exclusion) };
     step = flow.next(response);
   }
   // The evidence as the last session left it.
-  if (session === "milestone-demo") observations.push(...observeEvidence(project, { kind: "turn", index: state.turns.length }));
+  if (session === "milestone-demo") observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
   // T-538 S5b: then the harness's own ordinary status update on the gated dependent, which the checkpoint must refuse.
   if (session === "milestone-demo" && facts.dependent !== null) {
-    facts.bypass = attemptBypass(join(project, ".story"), facts.dependent, (args) => {
-      const r = spawnSync(launcher, args, { cwd: project, env: harnessEnv(), encoding: "utf-8", timeout: 120_000 });
-      return spawnedResult(r);
+    facts.bypass = await attemptBypassAsync(() => collector.ledgerState(join(project, ".story")), facts.dependent, async (args) => {
+      const r = await inSandbox(shellWords([launcher, ...args]));
+      return { status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr, ...wrappedForm(r), ...(r.spawnError !== null ? { error: new Error(r.spawnError) } : {}), ...(r.timedOut ? { error: new Error(`timed out after ${HARNESS_DEADLINE_MS} ms`) } : {}) };
     });
   }
+  // 5.8: the evidence as the collector copied it after the last turn and the harness's own steps.
+  const storeCopy = await collector.copy("store", setupReviewStore);
+  const eventsCopy = await collectedEvents(collector, eventsFile);
+  const storyCopy = await collector.copy("ledger", join(project, ".story"));
   if (CHECK_SET_VERSION >= 6) {
-    applySetupReviewChecks(state, setupReviewStore, variant);
+    applySetupReviewChecks(state, storeCopy, variant, servedLines);
     // Always present for check set 6, empty when nothing ran, so a missing copy is a loss the regrade names.
-    if (existsSync(setupReviewStore)) cpSync(setupReviewStore, join(rawDir, STORE_COPY), { recursive: true, verbatimSymlinks: true });
+    if (existsSync(storeCopy)) cpSync(storeCopy, join(rawDir, STORE_COPY), { recursive: true, verbatimSymlinks: true });
     else mkdirSync(join(rawDir, STORE_COPY));
   }
   let replayInputs: ManifestEntry[] = [];
   if (CHECK_SET_VERSION >= 7) {
     // The raw inputs are copied first, so the regrade reads exactly what the run graded.
-    const events = existsSync(eventsFile) ? readFileSync(eventsFile) : null;
-    const snapshot = existsSync(`${eventsFile}.setup-snapshot.json`) ? readFileSync(`${eventsFile}.setup-snapshot.json`) : null;
+    const events = existsSync(eventsCopy) ? readFileSync(eventsCopy) : null;
+    const snapshot = existsSync(`${eventsCopy}.setup-snapshot.json`) ? readFileSync(`${eventsCopy}.setup-snapshot.json`) : null;
     if (events !== null) writeFileSync(join(rawDir, EVENTS_RAW), events);
     if (snapshot !== null) writeFileSync(join(rawDir, SNAPSHOT_RAW), snapshot);
-    const story = join(project, ".story");
+    const story = storyCopy;
     const r = applySetupRunChecks(state, {
       eventsText: events === null ? null : events.toString("utf-8"),
       snapshotText: snapshot === null ? null : snapshot.toString("utf-8"),
@@ -940,10 +1331,18 @@ async function main(): Promise<void> {
       ...(snapshot !== null ? [{ path: SNAPSHOT_RAW, sha256: sha256(snapshot) }] : []),
       ...readbacks.map((x) => ({ path: x.path, sha256: x.sha256 })),
     ];
+    // 5.1 and 5.2: each turn's server launches, leftover check and limit, so the regrade replays every host failure.
+    const hostText = hostChecksText(hostChecks, toolsSha256);
+    writeFileSync(join(rawDir, HOST_CHECKS_RAW), hostText);
+    replayInputs.push({ path: HOST_CHECKS_RAW, sha256: sha256(hostText) });
+    // 5.5: the served commands, empty when none ran.
+    const servedText = servedLinesText(servedLines);
+    writeFileSync(join(rawDir, SERVED_RAW), servedText);
+    replayInputs.push({ path: SERVED_RAW, sha256: sha256(servedText) });
     if (session !== null) {
       const log = readEventsLog(events === null ? null : events.toString("utf-8")).log;
       const id = setupIdOf(log);
-      if (session === "interrupted-edited") facts.storeRevisions = id === null ? 0 : storeRevisionCount(setupReviewStore, id);
+      if (session === "interrupted-edited") facts.storeRevisions = id === null ? 0 : storeRevisionCount(storeCopy, id);
       if (session === "empty-idea-verify") facts.testEnabled = existsSync(join(story, "config.json")) && (JSON.parse(readFileSync(join(story, "config.json"), "utf-8")) as { recipeOverrides?: { stages?: { TEST?: { enabled?: unknown } } } }).recipeOverrides?.stages?.TEST?.enabled === true;
       const sessionsFile = sessionsText({ sessions: sessionSpans(state.turns), harness: facts });
       writeFileSync(join(rawDir, SESSIONS_RAW), sessionsFile);
@@ -966,13 +1365,14 @@ async function main(): Promise<void> {
   const { reviewEvidence, bound } = evidence;
   const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"), CHECK_SET_VERSION, evidence.reviewLines, evidence.judgeLines ?? []);
 
-  const story = join(project, ".story");
+  const story = storyCopy;
   const { inspection, ledgerRecords } = inspectAfter(state, diskReader(story), rubric, () => JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>, variant);
 
   // The fixture project as the owner supplied it (no .story): the briefs, and every other file as the
   // implementation evidence any "already built" or "working" claim must rest on.
   const { briefs, projectFiles } = fixtureEvidence(join(fixtureDir, "project"));
 
+  const rolloutContext = ctx.sessionId !== null ? rolloutInstructions(rolloutLines(await collector.copy("rollouts", join(home, ".codex", "sessions")), ctx.sessionId)) : { status: "unknown" as const };
   const packetText = buildPacketText({
     runId, semanticLines, reviewSkipped, exclusion, rubric, briefs, projectFiles, turns, evidence, ledgerRecords,
     setupRecord: existsSync(story) ? setupRecordFrom(diskReader(story)) : "", final: state.final, checkSet: CHECK_SET_VERSION,
@@ -980,6 +1380,8 @@ async function main(): Promise<void> {
   const verdict = runVerdict(failures, packetText, null, semanticLines, bound);
   const recordDir = join(o.out, runId);
   mkdirSync(recordDir, { recursive: true });
+  // F13: the judge refuses this record while the marker stands; only a clean scan below removes it.
+  writeFileSync(join(recordDir, SCAN_PENDING_FILE), `${JSON.stringify({ pending: "the 5.9 scan has not cleared this record" })}\n`, { flag: "wx" });
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify({
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model, checkSetVersion: CHECK_SET_VERSION,
     // T-538 commit 1 (plan 6.4): this route's record; the regrade re-runs each readback against claudeLaunch.
@@ -991,20 +1393,25 @@ async function main(): Promise<void> {
       },
     } : {}),
     modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: state.rounds, reviewSkipped, reviewEvidence,
+    // 5.8: entries of the project or the rollouts the collector could not take, named; the run is scored without them.
+    ...(collector.named.length > 0 ? { evidenceNamed: collector.named } : {}),
     writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures, infraFailed: state.infraFailed,
     semanticLines, bound, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
     // Check set 5: the fixture contract's reviewer paths, citations outside the package, and the client's instruction context (B3).
     ...(CHECK_SET_VERSION >= 5 ? {
       reviewerInventory: inventoryFor(variant), skillCitations: evidence.skillCitations ?? [],
-      instructionContext: ctx.sessionId !== null && ctx.env.CODEX_HOME ? rolloutInstructions(rolloutLines(ctx.env.CODEX_HOME, ctx.sessionId)) : { status: "unknown" },
+      instructionContext: rolloutContext,
     } : {}),
     // Check set 7: the raw inputs the regrade must find unchanged, each with its sha256.
     ...(CHECK_SET_VERSION >= 7 ? { replayInputs } : {}),
     packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);
-  const archived = archiveProject(project, join(rawDir, "project.after"));
+  const archived = await collector.archive(project, join(rawDir, "project.after"));
   for (const p of archived.problems) process.stderr.write(`archive: ${p}\n`);
+  // 5.9: nothing reaches a model unscanned. The record, the packet and every raw input are scanned before the
+  // judge can be handed the packet; a hit, an unreadable file or an oversize packet makes the attempt invalid.
+  await scanAndClear(collector, recordDir, rawDir, Buffer.byteLength(packetText, "utf-8"), envInputs.oauthToken !== undefined ? [envInputs.oauthToken] : []);
   process.stdout.write(`${runId} ${verdict.verdict}\n${verdict.reasons.map((f) => `  - ${f}`).join("\n")}\n`);
   // 0 only for a full PASS, which needs --finalize with a judge result; mechanical success alone is 3 (pending).
   process.exitCode = verdict.verdict === "FAIL" ? 1 : verdict.verdict === "PENDING_SEMANTIC" ? 3 : 0;

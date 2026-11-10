@@ -35,6 +35,17 @@ export interface EventsAttempt {
   readonly attempt: string;
   readonly pid: number;
   readonly entry: string;
+  /** T-538 5.2: the entry's own confinement probe, when the harness asked for it. */
+  readonly sandbox?: "held" | "absent";
+  /** T-538 5.4: the sha256 of the inventory the entry enforced, when it was given one. */
+  readonly tools?: string;
+}
+
+/** T-538 5.4: a tool the entry did not register because the inventory does not permit it. */
+export interface EventsWithheld {
+  readonly line: number;
+  readonly attempt: string;
+  readonly name: string;
 }
 
 export interface EventsOverlap {
@@ -48,6 +59,7 @@ export interface EventsLog {
   readonly attempts: readonly EventsAttempt[];
   readonly events: readonly SetupEvent[];
   readonly overlaps: readonly EventsOverlap[];
+  readonly withheld?: readonly EventsWithheld[];
 }
 
 export class EventsLogError extends Error {}
@@ -62,6 +74,7 @@ export function parseEventsLog(text: string): EventsLog {
   const attempts: EventsAttempt[] = [];
   const events: SetupEvent[] = [];
   const overlaps: EventsOverlap[] = [];
+  const withheld: EventsWithheld[] = [];
   const known = new Set<string>();
   text.slice(0, -1).split("\n").forEach((raw, line) => {
     let x: Record<string, unknown>;
@@ -73,8 +86,14 @@ export function parseEventsLog(text: string): EventsLog {
     if (typeof x !== "object" || x === null || Array.isArray(x) || !str(x.attempt)) throw new EventsLogError(`events log line ${line + 1} names no attempt`);
     if (x.seq === undefined) {
       if (!Number.isInteger(x.pid) || !str(x.entry) || known.has(x.attempt)) throw new EventsLogError(`events log line ${line + 1} is not an attempt line`);
+      if (x.sandbox !== undefined && x.sandbox !== "held" && x.sandbox !== "absent") throw new EventsLogError(`events log line ${line + 1} is not an attempt line`);
+      if (x.tools !== undefined && !(typeof x.tools === "string" && /^[0-9a-f]{64}$/.test(x.tools))) throw new EventsLogError(`events log line ${line + 1} is not an attempt line`);
       known.add(x.attempt);
-      attempts.push({ line, attempt: x.attempt, pid: x.pid as number, entry: x.entry });
+      attempts.push({
+        line, attempt: x.attempt, pid: x.pid as number, entry: x.entry,
+        ...(x.sandbox !== undefined ? { sandbox: x.sandbox as "held" | "absent" } : {}),
+        ...(x.tools !== undefined ? { tools: x.tools as string } : {}),
+      });
       return;
     }
     if (!known.has(x.attempt)) throw new EventsLogError(`events log line ${line + 1} belongs to no attempt line before it`);
@@ -84,11 +103,16 @@ export function parseEventsLog(text: string): EventsLog {
       overlaps.push({ line, attempt: x.attempt, invocation: x.invocation, open: x.open.map(String) });
       return;
     }
+    if (x.type === "tool-withheld") {
+      if (!str(x.name)) throw new EventsLogError(`events log line ${line + 1} is not a withheld-tool record`);
+      withheld.push({ line, attempt: x.attempt, name: x.name });
+      return;
+    }
     if (!str(x.point) || !strOrNull(x.setupId) || !strOrNull(x.invocation) || !strOrNull(x.revision)) throw new EventsLogError(`events log line ${line + 1} is not an event`);
     events.push({ ...(x as object), line, attempt: x.attempt, seq: x.seq as number, point: x.point, setupId: x.setupId, invocation: x.invocation, revision: x.revision } as SetupEvent);
   });
   if (attempts.length === 0) throw new EventsLogError("the events log has no attempt line");
-  return { attempts, events, overlaps };
+  return { attempts, events, overlaps, withheld };
 }
 
 /** Reads the log, or returns its error as a finding for a run's grading. */

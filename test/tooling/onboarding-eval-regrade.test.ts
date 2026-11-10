@@ -30,6 +30,12 @@ import { evidenceFileSeams } from "../../src/core/checkpoint-evidence-files.js";
 import { transactionSeams } from "../../src/core/project-loader.js";
 import { handleSetupApply } from "../../src/cli/commands/setup-apply.js";
 import { collector } from "../../scripts/eval-fault-mcp.js";
+import { HOST_CHECKS_RAW, hostChecksText, type TurnHostChecks } from "../../scripts/onboarding-eval-host.js";
+import { parseServedLines, POLL_UNANSWERED, SERVED_RAW, type ServedLine } from "../../scripts/onboarding-eval-review.js";
+import { UNSERVED_RECORD } from "../../scripts/onboarding-eval-checkset6.js";
+
+/** A served log as the synthetic run reads it; a malformed one grades as none, so the regrade's refusal is what a row sees. */
+const servedFrom = (text: string): ServedLine[] => { const p = parseServedLines(text); return "lines" in p ? p.lines : []; };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNS = join(HERE, "..", "fixtures", "onboarding-eval-runs", "regrade");
@@ -175,7 +181,21 @@ interface HostV2 {
   readonly steps?: (turn: number, steps: ReadbackStep[]) => ReadbackStep[];
   /** Changes a turn's init event as the stream reports it. */
   readonly init?: (turn: number, init: Record<string, unknown>) => Record<string, unknown> | null;
+  /** T-538 2a: changes a turn's host checks (by default one held server launch, a clean leftover check, no limit). */
+  readonly hostTurn?: (turn: number, hc: TurnHostChecks) => TurnHostChecks;
+  /** P1: the tool server launch lines the turn adds to the events log, given its own held one (none on a launch failure). */
+  readonly turnLaunches?: (turn: number, own: Record<string, unknown>[]) => Record<string, unknown>[];
+  /** 2b: the served commands' log as the run wrote it (default: none ran). */
+  readonly served?: string;
+  /** 2b: changes the review store before the run's checks read it. */
+  readonly plantStore?: (store: string) => void;
+  /** F1: changes the host-check entries as written (add, drop, reorder). */
+  readonly entries?: (hcs: TurnHostChecks[]) => TurnHostChecks[];
+  /** F1: launch lines appended to the events log after every turn's own. */
+  readonly extraLaunches?: readonly Record<string, unknown>[];
 }
+/** The pinned inventory's sha256 as the synthetic events log's held launches carry it. */
+const HOST_TOOLS_SHA = "e".repeat(64);
 const HOST_TOOLS = ["storybloq_status", "storybloq_init", "storybloq_session_guard"];
 const CLAUDE_SID = "0f6c2a8e-1b2c-4d3e-8f90-123456789abc";
 const goodResponses = (createRequire(import.meta.url)("../fixtures/t538-claude-sentinel.cjs") as { goodResponses: (x: ReadbackExpected) => Record<string, unknown> }).goodResponses;
@@ -211,6 +231,18 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
   const raw = new Map<string, string>();
   const state = newDriveState(cs);
   const replayInputs: { path: string; sha256: string }[] = [];
+  const hostTurns: TurnHostChecks[] = [];
+  /** The launch lines the turns add to the events log, in order, whatever a test then claims in the host checks. */
+  const launchLines: Record<string, unknown>[] = [];
+  // A host-v2 run's base events log: its tool server launches are held with the pinned inventory, and the first turn added them.
+  const baseLaunches: string[] = [];
+  const baseEvents = host === null || cs7 === null ? cs7?.events ?? "" : cs7.events.split("\n").map((l) => {
+    if (l === "") return l;
+    const x = JSON.parse(l) as Record<string, unknown>;
+    if (x.seq !== undefined || x.entry !== "mcp") return l;
+    baseLaunches.push(x.attempt as string);
+    return JSON.stringify({ ...x, sandbox: "held", tools: HOST_TOOLS_SHA });
+  }).join("\n");
   const projectRoot = cs7?.projectRoot ?? "/w/project";
   const roots = [projectRoot, join(projectRoot, ".git"), "/w/tmp", "/w/storybloq-global", "/w/eval-events"];
   const launch = { project: projectRoot, roots, policy: claudePolicyObject(roots, HOST_TOOLS), mcpLaunch: { command: "/usr/bin/node", args: ["/pkg/eval-mcp.js"] }, toolSets: {} as Record<string, string[]> };
@@ -222,6 +254,15 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
     const file = turnFile(n, step.value.label);
     const launchFailed = host !== null && (t.infra ?? "").startsWith("launch: ");
     const turnNo = n;
+    if (host !== null) {
+      const own: Record<string, unknown>[] = launchFailed ? [] : [{ attempt: `srv-${n}`, pid: 9000 + n, entry: "mcp", sandbox: "held", tools: HOST_TOOLS_SHA }];
+      const added = host.turnLaunches ? host.turnLaunches(n, own) : own;
+      launchLines.push(...added);
+      const ids = [...(n === 0 ? baseLaunches : []), ...added.map((l) => l.attempt as string)];
+      const held = new Set([...baseLaunches, ...added.filter((l) => l.sandbox === "held" && l.tools === HOST_TOOLS_SHA).map((l) => l.attempt as string)]);
+      const hc: TurnHostChecks = { file, launches: ids, servers: ids.filter((id) => held.has(id)), leftover: { status: "clean", reason: null }, limit: null, review: null };
+      hostTurns.push(host.hostTurn ? host.hostTurn(turnNo, hc) : hc);
+    }
     const text = host === null ? codexRaw(t) : launchFailed ? "" : claudeRaw(t, (e) => (host.init ? host.init(turnNo, e) : e));
     raw.set(`${file}.jsonl`, text).set(`${file}.stderr.txt`, "");
     const parsed = host === null ? regradeTurn(text, cs) : { ...claudeTurn(parseStream(text).events, cs), models: [] as string[] };
@@ -241,14 +282,20 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
     step = flow.next(response);
   }
   if (n !== script.length) throw new Error(`the flow ended after ${n} of ${script.length} scripted turns`);
-  if (cs6 !== null) applySetupReviewChecks(state, cs6.store, variant);
+  const servedText = host?.served ?? "";
+  if (cs6 !== null) host?.plantStore?.(cs6.store);
+  if (cs6 !== null) applySetupReviewChecks(state, cs6.store, variant, host === null ? null : servedFrom(servedText));
   const approval = afterPackage.find((x) => x.label === "approve")?.prompt ?? "";
   if (cs7 !== null) {
+    // A host-v2 run's events log also holds each turn's sandboxed server launch (T-538 2a, plan 5.2).
+    const launches = [...launchLines, ...(host?.extraLaunches ?? [])].map((l) => `${JSON.stringify(l)}\n`).join("");
+    const eventsText = host === null ? cs7.events : `${baseEvents}${baseEvents.endsWith("\n") ? "" : "\n"}${launches}`;
     const r = applySetupRunChecks(state, {
-      eventsText: cs7.events, snapshotText: cs7.snapshot, final: cs7FinalLedger(story ?? NO_STORY), baselineIds: [], baselinePhases: [], approval,
+      eventsText, snapshotText: cs7.snapshot, final: cs7FinalLedger(story ?? NO_STORY), baselineIds: [], baselinePhases: [], approval,
       projectRoot: cs7.projectRoot, contract: recipeContract(rubric.expectedRecipe), observations: null, followUp: null,
     });
-    const files: [string, string | null][] = [["events.jsonl", cs7.events], ["invocations.json", invocationsText(cs7.projectRoot, r.invocations)], ["setup-snapshot.json", cs7.snapshot]];
+    const files: [string, string | null][] = [["events.jsonl", eventsText], ["invocations.json", invocationsText(cs7.projectRoot, r.invocations)], ["setup-snapshot.json", cs7.snapshot],
+      ...(host !== null ? [[HOST_CHECKS_RAW, hostChecksText(host.entries ? host.entries(hostTurns) : hostTurns, HOST_TOOLS_SHA)] as [string, string], [SERVED_RAW, servedText] as [string, string]] : [])];
     for (const [name, text] of files) {
       if (text === null) continue;
       raw.set(name, text);
@@ -597,6 +644,126 @@ describe("regrade: check set 7 reads its replay inputs (T-538 S5a)", () => {
     const { s: codex } = await killed("archive-committed", false, null, [{ text: "", infra }]);
     expect(refused(codex.input)).toContain(`unrecognised infrastructure failure "${infra}"`);
   });
+
+  // --- T-538 commit 2a (plan 5.1, 5.2): each turn's host checks are a replay input --------------------------
+  const one = (n: number, change: (hc: TurnHostChecks) => TurnHostChecks) => ({ hostTurn: (t: number, hc: TurnHostChecks) => (t === n ? change(hc) : hc) });
+
+  it("host-v2 2a: the host checks are a replay input; missing or edited, the record is refused", async () => {
+    const { s } = await killed("archive-committed", true, {});
+    expect(accepted(s.input).manifest.map((m) => m.path)).toContain(HOST_CHECKS_RAW);
+    expect(refused(without(s.input, HOST_CHECKS_RAW))).toBe(`replay input ${HOST_CHECKS_RAW} is missing`);
+    const edited = s.input.readRaw(HOST_CHECKS_RAW).toString("utf-8").replace('"srv-0"', '"srv-1"');
+    expect(refused(withRaw(s.input, HOST_CHECKS_RAW, edited))).toBe(`replay input ${HOST_CHECKS_RAW} does not match its recorded sha256`);
+    expect(refused(withRaw(s.input, HOST_CHECKS_RAW, "{", true))).toBe(`replay input ${HOST_CHECKS_RAW} is malformed`);
+  });
+
+  it("host-v2 2a: a server launch the events log does not hold as sandboxed with the pinned inventory is refused", async () => {
+    const { s } = await killed("archive-committed", true, one(1, (hc) => ({ ...hc, servers: ["srv-elsewhere"] })));
+    expect(refused(s.input)).toMatch(/turn turn-02-inspect names server launch srv-elsewhere, which the events log does not hold as a sandboxed launch with the pinned inventory/);
+  });
+
+  it("host-v2 2a: a turn with no sandboxed server but a clean record is refused", async () => {
+    const { s } = await killed("archive-committed", true, { turnLaunches: (t, own) => (t === 1 ? [] : own) });
+    expect(refused(s.input)).toMatch(/"launch: no sandboxed storybloq server", but the record states no infrastructure failure/);
+    const { s: claimed } = await killed("archive-committed", true, one(0, (hc) => ({ ...hc, servers: [] })));
+    expect(refused(claimed.input)).toMatch(/^replay input host-checks\.json: turn turn-01-\S+ leaves out held server launches it names as launched$/);
+  });
+
+  // --- P1: every tool server launch a turn added must be held with the pinned inventory --------------------
+  const keyless = (id: string) => ({ attempt: id, pid: 7001, entry: "mcp" });
+  const absent = (id: string) => ({ attempt: id, pid: 7002, entry: "mcp", sandbox: "absent", tools: HOST_TOOLS_SHA });
+  const otherSha = (id: string) => ({ attempt: id, pid: 7003, entry: "mcp", sandbox: "held", tools: "d".repeat(64) });
+  for (const [what, line] of [["a launch with no probe and no inventory", keyless], ["a launch whose probe found the outside writable", absent], ["a launch with another inventory", otherSha]] as const) {
+    it(`host-v2 P1: one held launch plus ${what} is the launch failure naming it, and a clean record is refused`, async () => {
+      const extra = { turnLaunches: (t: number, own: Record<string, unknown>[]) => (t === 1 ? [...own, line("srv-x")] : own) };
+      const { s } = await killed("archive-committed", true, extra);
+      expect(refused(s.input)).toMatch(/"launch: unsandboxed storybloq server launch srv-x", but the record states no infrastructure failure/);
+      const { s: kept } = await killed("archive-committed", false, { turnLaunches: (t: number, own: Record<string, unknown>[]) => (t === 0 ? [...own, line("srv-x")] : own) },
+        [{ text: "", infra: "launch: unsandboxed storybloq server launch srv-x" }]);
+      expect(accepted(kept.input).checkSet).toBe(7);
+    });
+  }
+
+  it("host-v2 P1: the turns must name every server launch in the events log, each once and in log order", async () => {
+    const extra = { turnLaunches: (t: number, own: Record<string, unknown>[]) => (t === 1 ? [...own, keyless("srv-x")] : own) };
+    const { s } = await killed("archive-committed", true, { ...extra, ...one(1, (hc) => ({ ...hc, launches: hc.launches.filter((id) => id !== "srv-x") })) });
+    expect(refused(s.input)).toBe(`replay input ${HOST_CHECKS_RAW}: the turns do not name the events log's server launches, each once and in log order`);
+    const { s: unknown } = await killed("archive-committed", true, one(1, (hc) => ({ ...hc, launches: [...hc.launches, "srv-nowhere"] })));
+    expect(refused(unknown.input)).toMatch(/turn turn-02-inspect names server launch srv-nowhere, which the events log does not hold$/);
+  });
+
+  // --- F1: the host checks are exactly the record's turns, in order ---------------------------------------------
+  const F1_REFUSAL = `replay input ${HOST_CHECKS_RAW}: the host checks do not name the record's turns, each once and in turn order`;
+  it("host-v2 F1: an extra entry no recorded turn has, carrying an unheld launch, is refused", async () => {
+    const extra: TurnHostChecks = { file: "turn-99-extra", launches: ["srv-x"], servers: [], leftover: { status: "clean", reason: null }, limit: null, review: null };
+    const { s } = await killed("archive-committed", true, { extraLaunches: [keyless("srv-x")], entries: (hcs) => [...hcs, extra] });
+    expect(refused(s.input)).toBe(F1_REFUSAL);
+  });
+
+  it("host-v2 F1: a missing entry is refused", async () => {
+    const { s } = await killed("archive-committed", true, { entries: (hcs) => hcs.slice(0, -1) });
+    expect(refused(s.input)).toBe(F1_REFUSAL);
+  });
+
+  it("host-v2 F1: reordered entries are refused", async () => {
+    const { s } = await killed("archive-committed", true, { entries: (hcs) => [hcs[1]!, hcs[0]!, ...hcs.slice(2)] });
+    expect(refused(s.input)).toBe(F1_REFUSAL);
+  });
+
+  it("host-v2 2a: a limit the host checks name must be the recorded failure, both ways", async () => {
+    const limit = "limit: stdout over 67108864 bytes";
+    const { s } = await killed("archive-committed", true, one(2, (hc) => ({ ...hc, limit })));
+    expect(refused(s.input)).toMatch(new RegExp(`the host checks name "${limit}", but the record states no infrastructure failure`));
+    const { s: kept } = await killed("archive-committed", false, one(0, (hc) => ({ ...hc, limit })), [{ text: "", terminal: "missing", infra: limit }]);
+    expect(accepted(kept.input).checkSet).toBe(7);
+    const { s: unnamed } = await killed("archive-committed", false, {}, [{ text: "", terminal: "missing", infra: limit }]);
+    expect(refused(unnamed.input)).toMatch(new RegExp(`the recorded limit "${limit}" is not the host checks' no limit`));
+  });
+
+  it("host-v2 2a: a leftover the host checks find must be the recorded cleanup failure", async () => {
+    const leftover = { status: "holders" as const, reason: "leftover: 42 node" };
+    const { s } = await killed("archive-committed", true, one(3, (hc) => ({ ...hc, leftover })));
+    expect(refused(s.input)).toMatch(/the host checks find "cleanup: leftover: 42 node", but the record states no infrastructure failure/);
+    const { s: kept } = await killed("archive-committed", false, one(0, (hc) => ({ ...hc, leftover })), [{ text: "", infra: "cleanup: leftover: 42 node" }]);
+    expect(accepted(kept.input).checkSet).toBe(7);
+    const { s: other } = await killed("archive-committed", false, one(0, (hc) => ({ ...hc, leftover })), [{ text: "", infra: "cleanup: leftover: 7 sleep" }]);
+    expect(refused(other.input)).toMatch(/the recorded "cleanup: leftover: 7 sleep" is not the host checks' "cleanup: leftover: 42 node"/);
+    const failed = { status: "failed" as const, reason: "leftover check failed: lsof: status error" };
+    const { s: unread } = await killed("archive-committed", false, one(0, (hc) => ({ ...hc, leftover: failed })), [{ text: "", infra: "cleanup: leftover check failed: lsof: status error" }]);
+    expect(accepted(unread.input).checkSet).toBe(7);
+  });
+
+  // --- T-538 commit 2b (plan 5.5): the served commands are a replay input, and a record must trace to one -------
+  it("host-v2 2b: the served log is a replay input; missing or malformed, the record is refused", async () => {
+    const { s } = await killed("archive-committed", true, {});
+    expect(accepted(s.input).manifest.map((m) => m.path)).toContain(SERVED_RAW);
+    expect(refused(without(s.input, SERVED_RAW))).toBe(`replay input ${SERVED_RAW} is missing`);
+    expect(refused(withRaw(s.input, SERVED_RAW, "{\n", true))).toBe(`replay input ${SERVED_RAW} is malformed: line 1 is not JSON`);
+    expect(refused(withRaw(s.input, SERVED_RAW, `${JSON.stringify({ id: "../x", argv: null, stdinSha256: null, exit: 64, stdoutSha256: "0".repeat(64), stderrSha256: "0".repeat(64), start: "s", end: "e", published: [] })}\n`, true)))
+      .toBe(`replay input ${SERVED_RAW} is malformed: line 1 is not a served line`);
+  }, 20_000);
+
+  it("host-v2 2b: a completed record planted in the store fails the run by name, and the regrade replays it; planted after the run, the record is refused", async () => {
+    const rec = { setupId: "SS-0123abcd", cycle: 1, recordId: "planted", revisionSha256: "a".repeat(64), state: "completed" };
+    const plantStore = (store: string): void => { mkdirSync(join(store, "pk", "SS-0123abcd", "records"), { recursive: true }); writeFileSync(join(store, "pk", "SS-0123abcd", "records", "planted.json"), JSON.stringify(rec)); };
+    const { s } = await killed("archive-committed", true, { plantStore });
+    expect(s.record.failures).toContain(`${UNSERVED_RECORD}: pk/SS-0123abcd/records/planted.json`);
+    expect(accepted(s.input).checkSet).toBe(7);
+    const { s: clean, store } = await killed("archive-committed", true, {});
+    plantStore(store);
+    expect(refused(clean.input)).toMatch(/failures differ|does not match/);
+  }, 20_000);
+
+  it("host-v2 2b: a request folder failure the host checks name must be the recorded failure, both ways", async () => {
+    const { s } = await killed("archive-committed", true, one(2, (hc) => ({ ...hc, review: POLL_UNANSWERED })));
+    expect(refused(s.input)).toMatch(new RegExp(`the host checks name "${POLL_UNANSWERED}", but the record states no infrastructure failure`));
+    const { s: kept } = await killed("archive-committed", false, one(0, (hc) => ({ ...hc, review: POLL_UNANSWERED })), [{ text: "", terminal: "missing", infra: POLL_UNANSWERED }]);
+    expect(accepted(kept.input).checkSet).toBe(7);
+    const { s: unnamed } = await killed("archive-committed", false, {}, [{ text: "", terminal: "missing", infra: POLL_UNANSWERED }]);
+    expect(refused(unnamed.input)).toMatch(new RegExp(`the recorded "${POLL_UNANSWERED}" is not the host checks' no request folder failure`));
+    const { s: malformed } = await killed("archive-committed", true, one(0, (hc) => ({ ...hc, review: "poll unanswered" })));
+    expect(refused(malformed.input)).toBe(`replay input ${HOST_CHECKS_RAW} is malformed`);
+  }, 20_000);
 
   it("host-v2: an unknown route, a missing claudeLaunch, and a launch failure off the host-v2 route are refused", async () => {
     const { s } = await killed("archive-committed", true, {});

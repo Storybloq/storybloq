@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 export const EVAL_DIST = ".eval-dist";
 // T-538 S5b-0 commit 6a: the in-attempt helper and every script file its bundle pulls in (a test holds this list to the import closure).
-export const HELPER_INPUTS = ["scripts/eval-helper.ts", "scripts/continuity-lib.ts", "scripts/onboarding-eval-checkset6.ts", "scripts/onboarding-eval-checkset7-events.ts", "scripts/onboarding-eval-checkset7-writes.ts", "scripts/onboarding-eval-checkset7.ts", "scripts/onboarding-eval-lib.ts", "scripts/onboarding-eval-sessions.ts", "scripts/onboarding-eval-walk.ts"];
+export const HELPER_INPUTS = ["scripts/eval-helper.ts", "scripts/continuity-lib.ts", "scripts/onboarding-eval-checkset6.ts", "scripts/onboarding-eval-checkset7-events.ts", "scripts/onboarding-eval-checkset7-writes.ts", "scripts/onboarding-eval-checkset7.ts", "scripts/onboarding-eval-lib.ts", "scripts/onboarding-eval-review.ts", "scripts/onboarding-eval-sessions.ts", "scripts/onboarding-eval-walk.ts"];
 /** The bundler's own record of what each output was built from, written beside the bundles. */
 export const EVAL_METAFILE = "metafile-esm.json";
 export const EVAL_INPUTS = ["src", "scripts/eval-fault-mcp.ts", "scripts/build-eval.mjs", "tsup.config.ts", "package.json", "package-lock.json", ...HELPER_INPUTS];

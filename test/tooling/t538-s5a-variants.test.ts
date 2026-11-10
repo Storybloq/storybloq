@@ -20,6 +20,9 @@ import {
   type BypassAttempt, type HarnessFacts, type SessionCheckInputs, type SessionVariant,
 } from "../../scripts/onboarding-eval-sessions.js";
 import { rule9 } from "../../scripts/onboarding-eval-checkset7.js";
+import { makeFakeBin, removeScratchDirs, REVIEW_PACKET } from "../helpers/setup-review-fakes.js";
+import { SERVED_CREDENTIAL, servedRecordProblems, UNSERVED_RECORD } from "../../scripts/onboarding-eval-checkset6.js";
+import type { ServedLine } from "../../scripts/onboarding-eval-review.js";
 import type { EventsLog, InvocationMapping, SetupEvent } from "../../scripts/onboarding-eval-checkset7-events.js";
 import type { EvalCall, EvalTurn } from "../../scripts/onboarding-eval-lib.js";
 
@@ -546,10 +549,16 @@ const TSX = join(PKG, "node_modules", "tsx", "dist", "cli.mjs");
 const RUNNER = join(PKG, "scripts", "onboarding-eval-run.ts");
 
 /** A Codex stand-in: answers by prompt, runs real shell commands (the eval CLI on PATH among them) and reports them as Codex JSONL. */
-const FAKE_CODEX = `
-const { spawnSync } = require("node:child_process");
+const SERVER_START = join(PKG, "test", "fixtures", "t538-server-start.cjs");
+
+/**
+ * The stand-in Codex client. T-538 5.3: the client's environment is the table's, so its settings are written
+ * into it; as a real client does, it starts the tool server its config.toml names with the environment the
+ * turn delivered (5.2) before it answers. `codex sandbox` is the wrapper's stand-in; `--version` answers.
+ */
+const FAKE_CODEX_BODY = `
 const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
-appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+appendFileSync(CFG.FAKE_ARGV_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 const prompt = process.argv[process.argv.length - 1];
 const items = [];
 const run = (command) => {
@@ -558,16 +567,52 @@ const run = (command) => {
   items.push({ type: "command_execution", command, exit_code: r.status === null ? 137 : r.status, aggregated_output: output });
   return output;
 };
-const payload = readFileSync(process.env.FAKE_PAYLOAD, "utf-8").trim();
+const payload = readFileSync(CFG.FAKE_PAYLOAD, "utf-8").trim();
 let text;
-if (prompt.startsWith("$story Set up") || prompt.startsWith("Inspect details") || prompt === process.env.FAKE_ADJUST) text = process.env.FAKE_PACKAGE;
+if (prompt.startsWith("$story Set up") && CFG.FAKE_SERVED_PACKET) {
+  // T-538 5.5: the package carries a served review: gate, run on the packet, then status, whose two lines head it.
+  const packet = readFileSync(CFG.FAKE_SERVED_PACKET, "utf-8");
+  const heredoc = (args) => "storybloq setup-review " + args + " <<'STORYBLOQ_PACKET'\\n" + packet + "STORYBLOQ_PACKET";
+  const gate = run("storybloq setup-review gate");
+  const id = /^Setup id: (SS-[0-9a-f]{8})$/m.exec(gate);
+  if (id === null) text = "gate: " + gate;
+  else {
+    run(heredoc("run --setup " + id[1] + " --backend codex"));
+    const st = run(heredoc("status --setup " + id[1])).split("\\n");
+    const digest = /revision ([0-9a-f]{12})$/.exec(st[1] || "");
+    const plan = packet.slice(packet.indexOf("## Plan\\n") + "## Plan\\n".length).trimEnd();
+    text = digest === null ? "status: " + st.join("\\n") : ["Here is the package.", st[0], st[1], "Plan, revision " + digest[1] + ":", plan, "End of plan, revision " + digest[1], "- Approve setup", "- Adjust the plan", "- Inspect details"].join("\\n");
+  }
+}
+else if (prompt.startsWith("$story Set up") || prompt.startsWith("Inspect details") || prompt === CFG.FAKE_ADJUST) text = CFG.FAKE_PACKAGE;
 else if (prompt === "Approve setup.") text = run("storybloq setup-apply <<'STORYBLOQ_SETUP'\\n" + payload + "\\nSTORYBLOQ_SETUP");
-else if (prompt === "$story" && process.env.FAKE_RESUME === "1") text = run("storybloq setup-apply --resume --setup ${SID}");
-else if (prompt.startsWith("$story auto milestone")) { if (process.env.FAKE_KILL_BYPASS === "1") run("L=$(command -v storybloq); cp \\"$L\\" \\"$L.real\\"; printf '%s\\\\n' '#!/bin/sh' 'case \\"$*\\" in \\"ticket update \\"*\\"--status complete\\"*) echo \\"it waits on owner checkpoint T-2\\" >&2; kill -KILL $$;; esac' 'exec \\"$0.real\\" \\"$@\\"' > \\"$L\\""); writeFileSync("rota.js", "console.log('Today: Sam waters beds 1-4');\\n"); text = "Milestone 1 is built. The demo prints: " + run("${DEMO}"); }
+else if (prompt === "$story" && CFG.FAKE_RESUME === "1") text = run("storybloq setup-apply --resume --setup ${SID}");
+else if (prompt.startsWith("$story auto milestone")) { if (CFG.FAKE_KILL_BYPASS === "1") run("L=$(command -v storybloq); cp \\"$L\\" \\"$L.real\\"; printf '%s\\\\n' '#!/bin/sh' 'case \\"$*\\" in \\"ticket update \\"*\\"--status complete\\"*) echo \\"it waits on owner checkpoint T-2\\" >&2; kill -KILL $$;; esac' 'exec \\"$0.real\\" \\"$@\\"' > \\"$L\\""); writeFileSync("rota.js", "console.log('Today: Sam waters beds 1-4');\\n"); text = "Milestone 1 is built. The demo prints: " + run("${DEMO}"); }
 else text = "Noted.";
 const lines = [{ type: "thread.started", thread_id: "th-fake" }, ...items.map((item) => ({ type: "item.completed", item })), { type: "item.completed", item: { type: "agent_message", text } }, { type: "turn.completed" }];
 process.stdout.write(lines.map((l) => JSON.stringify(l)).join("\\n") + "\\n");
 `;
+
+function writeFakeCodex(bin: string, env: NodeJS.ProcessEnv): void {
+  const cfg = Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("FAKE_")));
+  writeFileSync(join(bin, "codex"), `#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+const S = require(${JSON.stringify(SERVER_START)});
+const CFG = ${JSON.stringify(cfg)};
+const argv0 = process.argv.slice(2);
+// The served reviewer starts codex from reviewer-bin with its own home; that call is answered by the
+// setup reviewer's stand-in (test/helpers/setup-review-fakes), which approves.
+const reviewer = CFG.FAKE_REVIEWER !== undefined && /\\/reviewer-home\\/\\.codex$/.test(process.env.CODEX_HOME || "");
+if (reviewer) require(CFG.FAKE_REVIEWER);
+else if (argv0[0] === "--version") { process.stdout.write("codex-cli 0.0.0-stand-in\\n"); process.exit(0); }
+else if (argv0[0] === "sandbox") S.sandboxStandIn(argv0);
+else (async () => {
+  const launch = S.codexLaunchFromConfig(require("node:path").join(process.env.CODEX_HOME, "config.toml"));
+  if (launch !== null) await S.startServer(launch, { HOME: process.env.HOME, PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, ...S.codexServerEnv(argv0) }, process.cwd());
+${FAKE_CODEX_BODY}
+})();
+`, { mode: 0o755 });
+}
 
 function fakePayload(owner: string, checkpointTitle: string): Record<string, unknown> {
   return {
@@ -725,13 +770,12 @@ describe("the runner's plumbing per variant", () => {
   it.each([[null, "SIGKILL"], [null, null], [2, null]] as const)("status %s signal %s is not a finished run", (status, signal) => {
     expect(() => expectRunnerFinished({ status, signal })).toThrow();
   });
-  it("a status update that prints the checkpoint's words and then dies by a signal is kept as no exit status, and fails the grade", () => {
+  it("a status update that prints the checkpoint's words and then dies by a signal inside the sandbox is kept in the wrapped exit form, and fails the grade", () => {
     const p = PLUMBING.find((x) => x.variant === "milestone-demo")!;
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "t538s-")));
     try {
       const bin = join(dir, "bin");
       mkdirSync(bin);
-      writeFileSync(join(bin, "codex"), `#!${process.execPath}\n${FAKE_CODEX}`, { mode: 0o755 });
       const codexHome = join(dir, "codex-home");
       mkdirSync(codexHome);
       writeFileSync(join(codexHome, "auth.json"), "{}\n");
@@ -743,15 +787,16 @@ describe("the runner's plumbing per variant", () => {
         FAKE_ADJUST: ownerScript(readFileSync(join(PKG, "test", "fixtures", "onboarding", p.fixture, "owner-answers.md"), "utf-8")).adjustment,
       };
       mkdirSync(env.HOME!);
+      writeFakeCodex(bin, env);
       const out = join(dir, "out");
       const raw = join(dir, "raw");
-      const r = spawnSync(process.execPath, [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw], { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
+      const r = spawnSync(process.execPath, [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw, "--attempt-base", join(dir, "att")], { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
       expectRunnerFinished(r);
       const runId = readdirSync(raw)[0]!;
       const sessions = JSON.parse(readFileSync(join(raw, runId, "sessions.json"), "utf-8")) as { harness: HarnessFacts };
-      expect(sessions.harness.bypass, JSON.stringify(sessions.harness.bypass)).toMatchObject({ exitCode: null, signal: "SIGKILL", output: expect.arrayContaining([expect.stringMatching(/waits on owner checkpoints? /)]) });
+      expect(sessions.harness.bypass, JSON.stringify(sessions.harness.bypass)).toMatchObject({ exitCode: 137, killedBy: "SIGKILL", exitForm: "exit 137 (wrapped, signal 9 inside the sandbox)", output: expect.arrayContaining([expect.stringMatching(/waits on owner checkpoints? /)]) });
       const record = JSON.parse(readFileSync(join(out, runId, "record.json"), "utf-8")) as { failures: string[] };
-      expect(record.failures.filter((f) => f.includes("did not exit"))).toEqual([expect.stringContaining("signal SIGKILL")]);
+      expect(record.failures.filter((f) => f.includes("did not exit"))).toEqual([expect.stringContaining("(exit 137 (wrapped, signal 9 inside the sandbox))")]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -763,7 +808,6 @@ describe("the runner's plumbing per variant", () => {
       try {
         const bin = join(dir, "bin");
         mkdirSync(bin);
-        writeFileSync(join(bin, "codex"), `#!${process.execPath}\n${FAKE_CODEX}`, { mode: 0o755 });
         // A stand-in auth file in a scratch CODEX_HOME: the real one is never read.
         const codexHome = join(dir, "codex-home");
         mkdirSync(codexHome);
@@ -776,9 +820,10 @@ describe("the runner's plumbing per variant", () => {
           FAKE_ADJUST: ownerScript(readFileSync(join(PKG, "test", "fixtures", "onboarding", p.fixture, "owner-answers.md"), "utf-8")).adjustment,
         };
         mkdirSync(env.HOME!);
+        writeFakeCodex(bin, env);
         const out = join(dir, "out");
         const raw = join(dir, "raw");
-        const args = [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw, ...(p.fault ? ["--fault", p.fault] : [])];
+        const args = [TSX, RUNNER, "--client", "codex", "--fixture", p.fixture, "--variant", p.variant, "--out", out, "--raw-out", raw, "--attempt-base", join(dir, "att"), ...(p.fault ? ["--fault", p.fault] : [])];
         const r = spawnSync(process.execPath, args, { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
         expectRunnerFinished(r);
         // Plan line 806: these runs reach every later session, so the whole run is read for the client's bypass flag.
@@ -1008,4 +1053,63 @@ describe("the final-tree archive reads the turn's tree without following it (pen
       expect(process.cwd()).toBe(before);
     } finally { rmSync(t.root, { recursive: true, force: true }); }
   });
+});
+
+describe("a served review run end to end (T-538 5.5)", () => {
+  it("interrupted-edited with a served gate, run and status: the review record is traced to the run that made it, live and on --regrade", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "t538v-")));
+    const reviewer = makeFakeBin(["codex"]);
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const codexHome = join(dir, "codex-home");
+      mkdirSync(codexHome);
+      writeFileSync(join(codexHome, "auth.json"), "{}\n");
+      const payloadFile = join(dir, "payload.json");
+      writeFileSync(payloadFile, JSON.stringify(fakePayload("Robin", "Watering rota demo")));
+      const packetFile = join(dir, "packet.md");
+      writeFileSync(packetFile, REVIEW_PACKET);
+      const env: NodeJS.ProcessEnv = {
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, HOME: join(dir, "home"), TMPDIR: dir, CODEX_HOME: codexHome,
+        FAKE_ARGV_LOG: join(dir, "argv.log"), FAKE_PAYLOAD: payloadFile, FAKE_PACKAGE: PACKAGE, FAKE_RESUME: "1",
+        FAKE_ADJUST: ownerScript(readFileSync(join(PKG, "test", "fixtures", "onboarding", "empty-idea", "owner-answers.md"), "utf-8")).adjustment,
+        FAKE_SERVED_PACKET: packetFile, FAKE_REVIEWER: join(reviewer.dir, "codex"),
+      };
+      mkdirSync(env.HOME!);
+      writeFakeCodex(bin, env);
+      const out = join(dir, "out");
+      const raw = join(dir, "raw");
+      const r = spawnSync(process.execPath, [TSX, RUNNER, "--client", "codex", "--fixture", "empty-idea", "--variant", "interrupted-edited", "--out", out, "--raw-out", raw, "--attempt-base", join(dir, "att"), "--fault", "step:handover"], { cwd: PKG, env, encoding: "utf-8", timeout: 280_000 });
+      expectRunnerFinished(r);
+      const runId = readdirSync(raw)[0]!;
+      const served = readFileSync(join(raw, runId, "served-reviews.jsonl"), "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as ServedLine);
+      // The client's gate, run and status were each served on the host and exited 0; the run published one record of the packet it was given.
+      expect(served.map((l) => [l.argv?.[0], l.exit]), r.stdout).toEqual([["gate", 0], ["run", 0], ["status", 0]]);
+      const run = served[1]!;
+      expect(run.published).toHaveLength(1);
+      expect(run.published[0]!.packetSha256).toBe(run.stdinSha256);
+      expect(Object.keys(run.published[0]!.files)).toEqual([expect.stringMatching(/^[0-9a-f]+\/SS-[0-9a-f]{8}\/records\/SR-[0-9a-f]+\/record\.json$/)]);
+      expect(served[2]!.published).toEqual([]);
+      // Check set 6 holds live: no rule line and no unserved record. The store copy holds the record, and without the
+      // served lines it is named, so the trace above is what clears it.
+      const store = join(raw, runId, "setup-review-store");
+      const recordPath = Object.keys(run.published[0]!.files)[0]!;
+      expect(existsSync(join(store, recordPath))).toBe(true);
+      expect(servedRecordProblems(store, served, false)).toEqual([]);
+      expect(servedRecordProblems(store, [], false)).toEqual([`${UNSERVED_RECORD}: ${recordPath}`]);
+      const record = JSON.parse(readFileSync(join(out, runId, "record.json"), "utf-8")) as { verdict: string; failures: string[] };
+      const cs6 = (f: string): boolean => /^rule [1-4]: /.test(f) || f.startsWith(UNSERVED_RECORD) || f.startsWith(SERVED_CREDENTIAL) || f.startsWith("a completed review record");
+      expect(record.failures.filter(cs6), record.failures.join("\n")).toEqual([]);
+      // The regrade replays the run from its raw inputs, served log included, and agrees.
+      const g = spawnSync(process.execPath, [TSX, RUNNER, "--regrade", join(out, runId), "--raw", join(raw, runId)], { cwd: PKG, env, encoding: "utf-8", timeout: 120_000 });
+      expect(g.status, `${g.stdout}\n${g.stderr}`).toBe(record.verdict === "FAIL" ? 1 : 3);
+      const rev = JSON.parse(readFileSync(join(out, runId, "regrade", "001", "regrade.json"), "utf-8")) as { verdict: string; reasons: string[] };
+      expect(rev.verdict).toBe(record.verdict);
+      expect(rev.reasons.filter(cs6)).toEqual([]);
+      expect(rev.reasons.filter((x) => !record.failures.includes(x))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      removeScratchDirs();
+    }
+  }, 300_000);
 });

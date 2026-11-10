@@ -12,10 +12,15 @@
  *   config.mark     a string that must appear in neither the argv nor the environment; logged as a boolean
  *   config.mutate   { sub, path?, value?, how: "set" | "drop" | "late" | "error" }: one answer changed
  *   config.tamper   "edit" | "chmod" | "link" | "same": done to the policy file after the first turn's result
+ *                   T-538 5.6: "skill" edits the provisioned skill, "extra" adds a file to the config folder,
+ *                   "plant" writes .claude/settings.json in the project, "state" writes under Claude's own projects/
  *   config.split    a multibyte character: the first turn's assistant line (in its message id) and a stderr line
  *                   each carry it, written as two writes split inside its bytes, 200 ms apart
  *   config.early    true: the init and result events go out with the last readback answer, before any prompt
  *   config.noInit   with early: the init event is left out
+ *   config.server   false: start no tool server (T-538 5.2's "no sandboxed server" row); otherwise the server the
+ *                   MCP file names is started with its env block over this process's environment, initialized,
+ *                   stopped and awaited before the stand-in exits
  */
 "use strict";
 const fs = require("node:fs");
@@ -74,6 +79,10 @@ function tamper(kind, file) {
   if (kind === "edit") { fs.chmodSync(file, 0o600); fs.appendFileSync(file, " "); fs.chmodSync(file, 0o400); }
   else if (kind === "chmod") fs.chmodSync(file, 0o600);
   else if (kind === "link") { fs.copyFileSync(file, path.join(dir, "policy-real.json")); fs.rmSync(file); fs.symlinkSync(path.join(dir, "policy-real.json"), file); }
+  else if (kind === "skill") fs.appendFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, "skills", "story", "SKILL.md"), " ");
+  else if (kind === "extra") fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, "extra.json"), "{}\n");
+  else if (kind === "plant") { fs.mkdirSync(path.join(process.cwd(), ".claude"), { recursive: true }); fs.writeFileSync(path.join(process.cwd(), ".claude", "settings.json"), "{}\n"); }
+  else if (kind === "state") { fs.mkdirSync(path.join(process.env.CLAUDE_CONFIG_DIR, "projects", "p"), { recursive: true }); fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, "projects", "p", "s.jsonl"), "{}\n"); }
   else if (kind === "same") { fs.copyFileSync(file, path.join(dir, "policy-next.json")); fs.chmodSync(path.join(dir, "policy-next.json"), 0o400); fs.renameSync(path.join(dir, "policy-next.json"), file); }
 }
 
@@ -82,13 +91,14 @@ function main(config) {
   const log = (o) => fs.appendFileSync(config.log, `${JSON.stringify(o)}\n`);
   const env = Object.values(process.env).some((v) => typeof v === "string" && v.includes(config.mark));
   log({ kind: "argv", argv, markInArgv: argv.some((a) => a.includes(config.mark)), markInEnv: env });
-  // The events log every storybloq process appends to; the stand-in starts none, so it only makes sure the file exists.
-  if (process.env.STORYBLOQ_EVAL_EVENTS) fs.appendFileSync(process.env.STORYBLOQ_EVAL_EVENTS, "");
   const opt = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
   const policyFile = opt("--settings");
   const policy = JSON.parse(fs.readFileSync(policyFile, "utf-8"));
   const mcp = JSON.parse(fs.readFileSync(opt("--mcp-config"), "utf-8")).mcpServers.storybloq;
   const project = process.cwd();
+  // As a real client does at launch: the configured server, with the MCP file's environment block.
+  const server = config.server === false ? Promise.resolve(null)
+    : require("./t538-server-start.cjs").startServer({ command: mcp.command, args: mcp.args }, { ...process.env, ...(mcp.env || {}) }, project);
   const tools = fs.existsSync(path.join(project, ".story", "config.json")) ? config.sets.full : config.sets.degraded;
   const answers = goodResponses({ project, roots: policy.sandbox.filesystem.allowWrite, policy, mcpTools: tools, mcpLaunch: { command: mcp.command, args: mcp.args } });
   const m = config.mutate ?? null;
@@ -154,7 +164,7 @@ function main(config) {
     let nl = pending.indexOf("\n");
     while (nl !== -1) { onLine(pending.slice(0, nl)); pending = pending.slice(nl + 1); nl = pending.indexOf("\n"); }
   });
-  process.stdin.on("end", () => { log({ kind: "end" }); process.exit(0); });
+  process.stdin.on("end", () => { server.then(() => { log({ kind: "end" }); process.exit(0); }); });
 }
 
 module.exports = { goodResponses, main };

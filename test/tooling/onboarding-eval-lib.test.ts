@@ -557,10 +557,19 @@ describe("runner safety", () => {
     const scrubbed = scrubClientEnv({ PATH: "/bin", CODEX_HOME: "/real/.codex", CODEX_THREAD_ID: "t", CLAUDE_CONFIG_DIR: "/real", CLAUDE_CODE_SESSION_ID: "s", XDG_CONFIG_HOME: "/real/x", STORYBLOQ_CLIENT: "codex", CLAUDE_CODE_OAUTH_TOKEN: "tok" });
     expect(Object.keys(scrubbed).sort()).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "PATH"]);
     const work = "/tmp/eval-work";
-    const ok = { HOME: `${work}/home`, CODEX_HOME: `${work}/home/.codex`, CLAUDE_CONFIG_DIR: `${work}/claude-config`, STORYBLOQ_GLOBAL_DIR: `${work}/g` };
+    // T-538 2a (5.3): TMPDIR is the attempt's own for both clients; CODEX_HOME is checked for Claude only when present.
+    const ok = { HOME: `${work}/home`, TMPDIR: `${work}/tmp`, CODEX_HOME: `${work}/home/.codex`, CLAUDE_CONFIG_DIR: `${work}/claude-config`, STORYBLOQ_GLOBAL_DIR: `${work}/g` };
     expect(isolationProblems(ok, work, "claude")).toEqual([]);
+    expect(isolationProblems({ HOME: ok.HOME, TMPDIR: ok.TMPDIR, CLAUDE_CONFIG_DIR: ok.CLAUDE_CONFIG_DIR }, work, "claude")).toEqual([]);
+    expect(isolationProblems({ HOME: ok.HOME, CLAUDE_CONFIG_DIR: ok.CLAUDE_CONFIG_DIR }, work, "claude").join()).toContain("TMPDIR is not set");
     expect(isolationProblems({ ...ok, CODEX_HOME: "/Users/me/.codex" }, work, "claude").join()).toContain("CODEX_HOME=/Users/me/.codex is outside");
-    expect(isolationProblems({ HOME: ok.HOME }, work, "claude").join()).toContain("CODEX_HOME is not set");
+    expect(isolationProblems({ HOME: ok.HOME, TMPDIR: ok.TMPDIR }, work, "claude").join()).toContain("CLAUDE_CONFIG_DIR is not set");
+    expect(isolationProblems({ HOME: ok.HOME, TMPDIR: ok.TMPDIR }, work, "codex").join()).toContain("CODEX_HOME is not set");
+    // Given the client column, the key set is exact.
+    const column = { HOME: ok.HOME, TMPDIR: ok.TMPDIR, CODEX_HOME: ok.CODEX_HOME };
+    expect(isolationProblems(column, work, "codex", column)).toEqual([]);
+    expect(isolationProblems({ ...column, LC_ALL: "C" }, work, "codex", column)).toEqual(["LC_ALL is not in the client column"]);
+    expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME, TMPDIR: ok.TMPDIR }, work, "codex", { ...column, LANG: "C" })).toEqual(["LANG is missing from the client environment"]);
     expect(isolationProblems({ ...ok, CODEX_THREAD_ID: "t" }, work, "codex").join()).toContain("CODEX_THREAD_ID is inherited");
     expect(isolationProblems({ HOME: ok.HOME, CODEX_HOME: ok.CODEX_HOME, TMPDIR: `${work}/tmp` }, work, "codex")).toEqual([]);
     // ISS-1455: a Codex turn's temp folder is the attempt's own; workspace-write is told to leave any other out.

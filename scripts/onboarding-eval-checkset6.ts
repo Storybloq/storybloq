@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { normalizeBlock, STOP_LINES } from "../src/core/setup-review.js";
 import type { DriveState, DriveTurn, Variant } from "./onboarding-eval-drive.js";
 import type { EvalCall } from "./onboarding-eval-lib.js";
+import { storeRecordFiles, type ServedLine } from "./onboarding-eval-review.js";
 
 export interface Cs6Call {
   /** The shell command, or null for a non-shell tool (a file read or write). */
@@ -276,7 +277,39 @@ export const STORE_COPY_MISSING = `the run's setup review store copy (${STORE_CO
  * Check set 6 as the run applies it and the regrade and cross-check replay it: the failures go after the
  * flow's own, each as a review failure, read against `storeRoot` (the live store, or the run's copy of it).
  */
-export function applySetupReviewChecks(state: DriveState, storeRoot: string, variant: Variant): void {
+export function applySetupReviewChecks(state: DriveState, storeRoot: string, variant: Variant, served: readonly ServedLine[] | null = null): void {
   const cs6 = checkSetupReview(cs6TurnsFrom(state.turns, state.allCalls), { storeRoot, unavailableArm: variant === "reviewer-unavailable" });
-  for (const f of cs6.failures) { state.failures.push(f); state.sources.push({ kind: "review" }); }
+  // T-538 5.5: a run with served reviews also has every completed record traced to the served command that produced it.
+  const failures = [...cs6.failures, ...(served === null ? [] : servedRecordProblems(storeRoot, served, variant === "reviewer-unavailable"))];
+  for (const f of failures) { state.failures.push(f); state.sources.push({ kind: "review" }); }
+}
+
+export const UNSERVED_RECORD = "a review record no served command produced";
+export const SERVED_CREDENTIAL = "a served review packet carried a credential form; the attempt is invalid";
+
+/**
+ * T-538 5.5: every completed review record in the store appears in exactly one served line's `published`
+ * (same setup id, cycle, record id and file sha256), that line is a `run` that exited 0, and the record's
+ * packet sha256 equals the line's stdin sha256. File times are not used. In the reviewer-unavailable arm any
+ * completed record fails. A request refused for a credential form (exit 65) fails the run as invalid.
+ */
+export function servedRecordProblems(storeRoot: string, served: readonly ServedLine[], unavailableArm: boolean): string[] {
+  const failures: string[] = [];
+  // A packet carrying a credential form was refused before the reviewer saw it, and the attempt is invalid.
+  const credential = served.find((l) => l.exit === 65 && l.refused !== undefined);
+  if (credential !== undefined) failures.push(`${SERVED_CREDENTIAL}: request ${credential.id}`);
+  for (const [path, sha] of [...storeRecordFiles(storeRoot)].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!path.endsWith(".json")) continue;
+    let v: Record<string, unknown>;
+    try { v = JSON.parse(readFileSync(join(storeRoot, path), "utf-8")) as Record<string, unknown>; } catch { continue; }
+    if (v === null || typeof v !== "object" || v.state !== "completed") continue;
+    if (unavailableArm) { failures.push(`a completed review record in the reviewer-unavailable arm: ${path}`); continue; }
+    const producers = served.filter((l) => l.published.some((p) => p.setupId === v.setupId && p.cycle === v.cycle && p.recordId === v.recordId && p.files[path] === sha));
+    const line = producers.length === 1 ? producers[0]! : null;
+    const p = line?.published.find((x) => x.recordId === v.recordId);
+    if (line === null || line.argv?.[0] !== "run" || line.exit !== 0 || line.refused !== undefined || p === undefined || p.packetSha256 !== line.stdinSha256 || v.revisionSha256 !== line.stdinSha256) {
+      failures.push(`${UNSERVED_RECORD}: ${path}`);
+    }
+  }
+  return failures;
 }

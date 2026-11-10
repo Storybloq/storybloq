@@ -7,10 +7,10 @@
  *
  * Needs dist/ built first (`npm run build`); the eval bundle is built here.
  */
-import { describe, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { describe, expect, beforeAll, afterAll, afterEach, vi, it as plainIt } from "vitest";
 import { it, ownSeam } from "./t538-seam-owner.js";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -26,6 +26,8 @@ import { parseOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
 import { setupPaths } from "../../src/core/setup-review.js";
 import { handleSetupApply } from "../../src/cli/commands/setup-apply.js";
 import { collector, ledgerSnapshot } from "../../scripts/eval-fault-mcp.js";
+import { processOutcome, sandboxSettings } from "../../scripts/onboarding-eval-host.js";
+import { TOOL_SETS_FILE } from "../../scripts/onboarding-eval-run.js";
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 300_000 });
 
@@ -164,9 +166,19 @@ function allFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? allFiles(join(dir, d.name)) : [join(dir, d.name)]));
 }
 
+/** A probe folder under the suite's home that this process cannot write (mode 0555). */
+function lockedOutside(): string {
+  const o = join(home, "locked-outside");
+  if (!existsSync(o)) { mkdirSync(o); chmodSync(o, 0o555); }
+  return o;
+}
+
 async function mcpClient(bin: string, cwd: string, extra: Record<string, string>, entry = true): Promise<{ client: Client; close: () => Promise<void> }> {
   const client = new Client({ name: "t538-s5a", version: "1" });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [bin, ...(entry ? ["--entry", "mcp"] : [])], cwd, env: childEnv(extra), stderr: "pipe" });
+  // Entry mcp requires its probe folder and the pinned inventory (Q4 ruling); with no wrapper, a folder this
+  // process cannot write reads as held. A row's own values win.
+  const required: Record<string, string> = entry ? { STORYBLOQ_EVAL_OUTSIDE: lockedOutside(), STORYBLOQ_EVAL_TOOLS: TOOL_SETS_FILE } : {};
+  const transport = new StdioClientTransport({ command: process.execPath, args: [bin, ...(entry ? ["--entry", "mcp"] : [])], cwd, env: childEnv({ ...required, ...extra }), stderr: "pipe" });
   await client.connect(transport);
   return { client, close: async () => { await client.close(); await transport.close(); } };
 }
@@ -273,10 +285,35 @@ describe("G4: a fault kills the process at a point of each class", () => {
     const events = join(scratch, `g4-nth-${n}.jsonl`);
     const r = await evalApply(root, events, "txn:after-commit-entry#2");
     expect([r.status, r.signal]).toEqual([null, "SIGKILL"]);
+    // T-538 2a (Addendum B, ruling 1): unwrapped, the kill reads by its signal.
+    expect(processOutcome(r.status, r.signal, false)).toMatchObject({ form: "killed by SIGKILL", killedBy: "SIGKILL" });
     const [first] = attempts(readEvents(events));
     expect(first!.filter((e) => e.point === "txn:after-commit-entry").length).toBe(2);
     expect(first!.at(-1)!.point).toBe("txn:after-commit-entry");
   });
+});
+
+// T-538 2a (Addendum B, ruling 1): under the real `codex sandbox` wrapper the same kill is reported as exit 137
+// with no signal, and reads as the wrapped form with killedBy derived. Off by default (it needs a codex executable
+// and starts the real macOS sandbox); the skip names its reason in the title.
+const REAL_CODEX = process.env.STORYBLOQ_REAL_CODEX === "1" ? process.env.STORYBLOQ_REAL_CODEX_BIN ?? "" : null;
+const WRAPPED_SKIP = REAL_CODEX === null ? " [skipped: set STORYBLOQ_REAL_CODEX=1 and STORYBLOQ_REAL_CODEX_BIN=<codex executable> to run]" : "";
+describe("G4 wrapped: a fault kill inside the sandbox wrapper", () => {
+  plainIt.skipIf(REAL_CODEX === null)(`exit 137 with no signal, read as the wrapped form with killedBy SIGKILL${WRAPPED_SKIP}`, async () => {
+    expect(existsSync(REAL_CODEX!), `STORYBLOQ_REAL_CODEX_BIN=${REAL_CODEX}`).toBe(true);
+    const root = folder();
+    const events = join(scratch, `g4-wrapped-${n}.jsonl`);
+    const settings = sandboxSettings([root, scratch]).flatMap((x) => ["-c", x]);
+    const child = spawn(REAL_CODEX!, ["sandbox", ...settings, "--", process.execPath, EVAL_CLI, "--entry", "cli", "setup-apply"], {
+      cwd: root, env: childEnv({ STORYBLOQ_EVAL_EVENTS: events, STORYBLOQ_EVAL_FAULT: "step:item:K2" }), stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(payload()));
+    const r = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((done) => child.on("close", (status, signal) => done({ status, signal })));
+    expect([r.status, r.signal]).toEqual([137, null]);
+    expect(processOutcome(r.status, r.signal, true)).toEqual({ exitCode: 137, signal: null, wrapped: true, form: "exit 137 (wrapped, signal 9 inside the sandbox)", killedBy: "SIGKILL" });
+    expect(attempts(readEvents(events))[0]!.at(-1)!.point).toBe("step:item:K2");
+  }, 120_000);
 });
 
 describe("G5: a resumed trace", () => {

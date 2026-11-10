@@ -29,6 +29,8 @@ import {
   type HarnessFacts, type SessionScript, type SessionsFile,
 } from "./onboarding-eval-sessions.js";
 import { EventsLogError, parseEventsLog } from "./onboarding-eval-checkset7-events.js";
+import { parseServedLines, REVIEW_FAILURE_PREFIX, SERVED_RAW, type ServedLine } from "./onboarding-eval-review.js";
+import { HOST_CHECKS_RAW, launchHeld, serverLaunchFailure, type ServerLaunchLine, type TurnHostChecks } from "./onboarding-eval-host.js";
 import { initEventConsulted, initEventProblems, readbackProblems, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 import {
   inventoryFor,
@@ -193,6 +195,12 @@ interface Set7Inputs {
   readonly entries: readonly ManifestEntry[];
   /** T-538 commit 1: a host-v2 Claude record's readback per turn file stem, and what its launch expected. */
   readonly readbacks: ReadonlyMap<string, { readonly steps: readonly ReadbackStep[]; readonly permissionDenials: unknown; readonly expected: ReadbackExpected }>;
+  /** T-538 5.1 and 5.2: a host-v2 record's host checks per turn file stem; every server launch named is a held launch line in the events log. */
+  readonly hostChecks: ReadonlyMap<string, TurnHostChecks>;
+  /** P1: each turn's replayed server launch failure (serverLaunchFailure over the launches it names), by file stem. */
+  readonly serverFailures: ReadonlyMap<string, string | null>;
+  /** 5.5: the served commands of a host-v2 record; null for any other. */
+  readonly served: readonly ServedLine[] | null;
 }
 
 /** A host-v2 record's claudeLaunch, refused unless every field has its shape. */
@@ -287,10 +295,56 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
       entries.push({ path: name, sha256: sha256(bytes) });
     });
   }
+  const hostChecks = new Map<string, TurnHostChecks>();
+  const serverFailures = new Map<string, string | null>();
+  if (record.route === "host-v2") {
+    const bytes = read(HOST_CHECKS_RAW, true)!;
+    let v: { toolsSha256?: unknown; turns?: unknown };
+    try { v = JSON.parse(bytes.toString("utf-8")) as typeof v; } catch { return refuse(`replay input ${HOST_CHECKS_RAW} is malformed`); }
+    if (v === null || typeof v !== "object" || typeof v.toolsSha256 !== "string" || !Array.isArray(v.turns)) refuse(`replay input ${HOST_CHECKS_RAW} is malformed`);
+    const sha = v.toolsSha256 as string;
+    // Every tool server launch in the events log, in log order; each turn names the ones it added.
+    const mcpLaunches = log.attempts.filter((a) => a.entry === "mcp");
+    const byId = new Map<string, ServerLaunchLine>(mcpLaunches.map((a) => [a.attempt, a]));
+    const named: string[] = [];
+    // F1: one host-check entry per recorded turn, named as that turn's file, in turn order: an entry no turn has
+    // would never reach the replay's per-turn check, so a launch it carries would go unchecked.
+    const turnFiles = (Array.isArray(record.turns) ? record.turns as { label?: unknown }[] : []).map((t, i) => turnFile(i, String(t.label)));
+    const entryFiles = (v.turns as unknown[]).map((t) => (t !== null && typeof t === "object" ? (t as Record<string, unknown>).file : undefined));
+    if (!same(entryFiles, turnFiles)) refuse(`replay input ${HOST_CHECKS_RAW}: the host checks do not name the record's turns, each once and in turn order`);
+    for (const t of v.turns as Record<string, unknown>[]) {
+      const lo = t?.leftover as Record<string, unknown> | undefined;
+      const strings = (x: unknown): boolean => Array.isArray(x) && x.every((y) => typeof y === "string");
+      const ok = t !== null && typeof t === "object" && typeof t.file === "string" && strings(t.servers) && strings(t.launches)
+        && lo !== null && typeof lo === "object" && (lo.status === "clean" ? lo.reason === null : (lo.status === "holders" || lo.status === "failed") && typeof lo.reason === "string" && lo.reason !== "")
+        && (t.limit === null || (typeof t.limit === "string" && t.limit.startsWith("limit: ")))
+        && (t.review === null || (typeof t.review === "string" && t.review.startsWith(REVIEW_FAILURE_PREFIX)));
+      if (!ok || hostChecks.has(t.file as string)) refuse(`replay input ${HOST_CHECKS_RAW} is malformed`);
+      const launches = (t.launches as string[]).map((id) => byId.get(id) ?? refuse(`replay input ${HOST_CHECKS_RAW}: turn ${String(t.file)} names server launch ${id}, which the events log does not hold`));
+      for (const id of t.servers as string[]) if (!launches.some((l) => l.attempt === id && launchHeld(l, sha))) refuse(`replay input ${HOST_CHECKS_RAW}: turn ${String(t.file)} names server launch ${id}, which the events log does not hold as a sandboxed launch with the pinned inventory`);
+      const held = launches.filter((l) => launchHeld(l, sha)).map((l) => l.attempt);
+      if (!same(held, t.servers)) refuse(`replay input ${HOST_CHECKS_RAW}: turn ${String(t.file)} leaves out held server launches it names as launched`);
+      named.push(...(t.launches as string[]));
+      hostChecks.set(t.file as string, t as unknown as TurnHostChecks);
+      serverFailures.set(t.file as string, serverLaunchFailure(launches, sha));
+    }
+    // The turns, in order, name every server launch in the events log exactly once and in log order, so no launch is left out of the turn that added it.
+    if (!same(named, mcpLaunches.map((a) => a.attempt))) refuse(`replay input ${HOST_CHECKS_RAW}: the turns do not name the events log's server launches, each once and in log order`);
+    entries.push({ path: HOST_CHECKS_RAW, sha256: sha256(bytes) });
+  }
+  // 5.5: a host-v2 record carries its served commands, empty when none ran.
+  let served: ServedLine[] | null = null;
+  if (record.route === "host-v2") {
+    const bytes = read(SERVED_RAW, true)!;
+    const parsed = parseServedLines(bytes.toString("utf-8"));
+    if ("problem" in parsed) refuse(`replay input ${SERVED_RAW} is malformed: ${parsed.problem}`);
+    served = (parsed as { lines: ServedLine[] }).lines;
+    entries.push({ path: SERVED_RAW, sha256: sha256(bytes) });
+  }
   for (const name of hashOf.keys()) if (!entries.some((e) => e.path === name)) refuse(`the record names replay input ${name}, which check set 7 does not read`);
   return {
     events, snapshot: snapshotBytes === null ? null : snapshotBytes.toString("utf-8"), projectRoot: invocations.projectRoot as string, mapping: invocations.mapping, entries,
-    sessions: sessionsBytes === null ? null : sessionsBytes.toString("utf-8"), observations, readbacks,
+    sessions: sessionsBytes === null ? null : sessionsBytes.toString("utf-8"), observations, readbacks, hostChecks, serverFailures, served,
   };
 }
 
@@ -305,6 +359,10 @@ function checkInfrastructure(index: number, infra: string | null, turn: EvalTurn
   if (hostV2 && infra !== null && infra.startsWith("launch: ")) return;
   // An input or cleanup failure is the group's own report; the raw cannot establish it, and only the host-v2 runner records one.
   if (hostV2 && infra !== null && HOST_V2_OPAQUE.test(infra)) return;
+  // 5.1: a limit is replayed against the turn's host checks (checkHost).
+  if (hostV2 && infra !== null && infra.startsWith("limit: ")) return;
+  // 5.5: so is the request folder's failure.
+  if (hostV2 && infra !== null && infra.startsWith(REVIEW_FAILURE_PREFIX)) return;
   if (infra === null) {
     if (turn.terminal.status !== "completed") refuse(`turn ${index}: the raw terminal is ${turn.terminal.status}, but the record states no infrastructure failure`);
     return;
@@ -336,7 +394,7 @@ function stderrPathOf(failures: readonly string[], runId: string, label: string,
  * once the turn ended on its own); a turn recorded with no failure, or a later one, must find none. The
  * recorded permission denials must be the raw result's.
  */
-function checkLaunch(index: number, rec: { infraFailure: string | null; exitCode: number | null }, rb: NonNullable<ReturnType<Set7Inputs["readbacks"]["get"]>>, raw: string): void {
+function checkLaunch(index: number, rec: { infraFailure: string | null; exitCode: number | null }, rb: NonNullable<ReturnType<Set7Inputs["readbacks"]["get"]>>, raw: string, serverFailure: string | null): void {
   const infra = rec.infraFailure;
   const events = parseStream(raw).events as unknown as Record<string, unknown>[];
   const result = events.find((e) => e.type === "result");
@@ -345,13 +403,32 @@ function checkLaunch(index: number, rec: { infraFailure: string | null; exitCode
   const readback = readbackProblems(rb.steps, rb.expected);
   // The runner's own predicate (initEventConsulted): exit 0 with no failure, launch, terminal or cleanup, each of
   // which implies no timeout and no signal by the failure order. Never for input: the prompt was not delivered.
-  const first = readback[0] ?? (initEventConsulted(infra, rec.exitCode) ? initEventProblems(events, rb.expected.mcpTools)[0] : undefined) ?? null;
+  // T-538 5.2: after the readback, the turn's server launches (serverLaunchFailure), then the init event.
+  const first = readback[0] ?? serverFailure ?? (initEventConsulted(infra, rec.exitCode) ? initEventProblems(events, rb.expected.mcpTools)[0] : undefined) ?? null;
   const replayed = first === null ? null : `launch: ${first}`;
   if (infra !== null && infra.startsWith("launch: ")) {
     if (infra !== replayed) refuse(`turn ${index}: the recorded launch failure "${infra}" is not the replayed readback's ${replayed === null ? "clean result" : `"${replayed}"`}`);
     return;
   }
   if (replayed !== null) refuse(`turn ${index}: the replayed readback finds "${replayed}", but the record states ${infra === null ? "no infrastructure failure" : `"${infra}"`}`);
+}
+
+/**
+ * T-538 5.1: a turn's recorded failure against its host checks, by the runner's failure order (spawn, launch,
+ * input, limit, timed out, exit, terminal, group cleanup, leftover). A limit the turn passed is the failure
+ * unless spawn, launch or input outranks it; a leftover or a failed leftover check means the turn cannot be
+ * clean, and a recorded leftover must be the one the checks name.
+ */
+function checkHost(index: number, infra: string | null, hc: TurnHostChecks): void {
+  const outranks = (x: string): boolean => x.startsWith("spawn failed: ") || x.startsWith("launch: ") || x.startsWith("input: ");
+  if (infra !== null && infra.startsWith("limit: ") && infra !== hc.limit) refuse(`turn ${index}: the recorded limit "${infra}" is not the host checks' ${hc.limit === null ? "no limit" : `"${hc.limit}"`}`);
+  if (hc.limit !== null && infra !== hc.limit && (infra === null || !outranks(infra))) refuse(`turn ${index}: the host checks name "${hc.limit}", but the record states ${infra === null ? "no infrastructure failure" : `"${infra}"`}`);
+  // 5.5: the request folder's failure ranks right after the limit.
+  if (infra !== null && infra.startsWith(REVIEW_FAILURE_PREFIX) && infra !== hc.review) refuse(`turn ${index}: the recorded "${infra}" is not the host checks' ${hc.review === null ? "no request folder failure" : `"${hc.review}"`}`);
+  if (hc.review !== null && hc.limit === null && infra !== hc.review && (infra === null || !outranks(infra))) refuse(`turn ${index}: the host checks name "${hc.review}", but the record states ${infra === null ? "no infrastructure failure" : `"${infra}"`}`);
+  const leftover = hc.leftover.status === "clean" ? null : `cleanup: ${hc.leftover.reason}`;
+  if (leftover !== null && infra === null) refuse(`turn ${index}: the host checks find "${leftover}", but the record states no infrastructure failure`);
+  if (infra !== null && infra.startsWith("cleanup: ") && !infra.startsWith("cleanup: unconfirmed") && infra !== leftover) refuse(`turn ${index}: the recorded "${infra}" is not the host checks' ${leftover === null ? "clean leftover check" : `"${leftover}"`}`);
 }
 
 function parseTurn(client: string, raw: string, checkSet: number): EvalTurn {
@@ -457,9 +534,23 @@ function regradeOrThrow(input: RegradeInput): Regraded {
     const hostV2 = record.route === "host-v2";
     checkInfrastructure(consumed, rec!.infraFailure, turn, hostV2);
     const rb = set7?.readbacks.get(file);
+    const hc = set7?.hostChecks.get(file);
+    if (hostV2) {
+      if (hc === undefined) refuse(`turn ${consumed}: the host-v2 record has no host checks for ${file}`);
+      checkHost(consumed, rec!.infraFailure, hc!);
+    }
     if (hostV2 && client === "claude") {
       if (rb === undefined) refuse(`turn ${consumed}: the host-v2 record has no readback for ${file}`);
-      checkLaunch(consumed, rec!, rb!, raw);
+      checkLaunch(consumed, rec!, rb!, raw, set7!.serverFailures.get(file) ?? null);
+    } else if (hostV2) {
+      // A Codex turn's only launch check is the server launch (5.2); only a spawn failure outranks it.
+      const infra = rec!.infraFailure;
+      const failure = set7!.serverFailures.get(file) ?? null;
+      const replayed = failure === null ? null : `launch: ${failure}`;
+      if (infra === null || !infra.startsWith("spawn failed: ")) {
+        if (infra !== null && infra.startsWith("launch: ") && infra !== replayed) refuse(`turn ${consumed}: the recorded launch failure "${infra}" is not the replayed host checks' ${replayed === null ? "clean result" : `"${replayed}"`}`);
+        if (replayed !== null && infra !== replayed) refuse(`turn ${consumed}: the host checks find "${replayed}", but the record states ${infra === null ? "no infrastructure failure" : `"${infra}"`}`);
+      }
     } else if (rec!.infraFailure !== null && rec!.infraFailure.startsWith("launch: ")) {
       refuse(`turn ${consumed}: unrecognised infrastructure failure "${rec!.infraFailure}"`);
     }
@@ -474,7 +565,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   if (consumed !== recTurns.length) refuse(`the record has ${recTurns.length} turns, the flow ends after ${consumed}`);
   if (cs >= 6) {
     const store = input.setupReviewStore!;
-    applySetupReviewChecks(state, store, variant);
+    applySetupReviewChecks(state, store, variant, set7?.served ?? null);
     for (const [k, v] of Object.entries(treeDigest(store)).sort(([a], [b]) => a.localeCompare(b))) manifest.push({ path: `${STORE_COPY}/${k}`, sha256: v });
   }
   if (set7 !== null) {

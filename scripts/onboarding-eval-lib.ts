@@ -1566,6 +1566,8 @@ export interface TurnSpec {
   readonly first: boolean;
   /** Codex only: what a turn may write. Required there: a turn is never built without its sandbox. */
   readonly writableRoots?: readonly string[];
+  /** Codex only (T-538 5.3): the tool server's environment column, delivered on every turn. */
+  readonly serverEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -1576,7 +1578,16 @@ export interface TurnSpec {
  * linked credential. Web search and child agents are off because each is a way
  * out that this policy does not cover.
  */
-export function codexSandboxArgs(roots: readonly string[]): string[] {
+/**
+ * T-538 5.3: Codex's delivery of the tool server's environment column, one `-c mcp_servers.storybloq.env.<KEY>=<json
+ * string>` per variable in key order, on every turn (a resumed turn without them starts the server with only HOME,
+ * PATH and TMPDIR, measured).
+ */
+export function codexServerEnvArgs(server: Readonly<Record<string, string>>): string[] {
+  return Object.keys(server).sort().flatMap((k) => ["-c", `mcp_servers.storybloq.env.${k}=${JSON.stringify(server[k])}`]);
+}
+
+export function codexSandboxArgs(roots: readonly string[], serverEnv: Readonly<Record<string, string>> = {}): string[] {
   const settings = [
     'sandbox_mode="workspace-write"',
     'approval_policy="never"',
@@ -1586,7 +1597,7 @@ export function codexSandboxArgs(roots: readonly string[]): string[] {
     'web_search="disabled"',
     "features.multi_agent=false",
   ];
-  return settings.flatMap((v) => ["-c", v]);
+  return [...settings.flatMap((v) => ["-c", v]), ...codexServerEnvArgs(serverEnv)];
 }
 
 /**
@@ -1596,11 +1607,11 @@ export function codexSandboxArgs(roots: readonly string[]): string[] {
  * does not name is refused, because either can reopen what the policy closes
  * (--add-dir, a profile, a parent table). Past the terminator is the prompt.
  */
-export function codexSandboxProblems(args: readonly string[], expectedRoots: readonly string[]): string[] {
+export function codexSandboxProblems(args: readonly string[], expectedRoots: readonly string[], serverEnv: Readonly<Record<string, string>> = {}): string[] {
   const problems: string[] = [];
   const end = args.indexOf("--");
   const options = end === -1 ? args : args.slice(0, end);
-  const policy = new Map(codexSandboxArgs(expectedRoots).filter((a) => a !== "-c").map((c) => { const eq = c.indexOf("="); return [c.slice(0, eq), c.slice(eq + 1)] as const; }));
+  const policy = new Map(codexSandboxArgs(expectedRoots, serverEnv).filter((a) => a !== "-c").map((c) => { const eq = c.indexOf("="); return [c.slice(0, eq), c.slice(eq + 1)] as const; }));
   const seen = new Set<string>();
   const config = (c: string): void => {
     const eq = c.indexOf("=");
@@ -1630,7 +1641,7 @@ export function codexSandboxProblems(args: readonly string[], expectedRoots: rea
 export function turnArgs(t: TurnSpec, prompt: string): string[] {
   if (t.client === "claude") return ["-p", ...t.claudeArgs, ...(t.first ? ["--session-id", t.sessionId!] : ["--resume", t.sessionId!]), "--", prompt];
   if (t.writableRoots === undefined) throw new Error("onboarding-eval: a Codex turn needs its writable roots");
-  const common = ["--json", "--model", t.model, ...codexSandboxArgs(t.writableRoots), "--skip-git-repo-check"];
+  const common = ["--json", "--model", t.model, ...codexSandboxArgs(t.writableRoots, t.serverEnv ?? {}), "--skip-git-repo-check"];
   return t.first ? ["exec", ...common, "-C", t.project, "--", prompt] : ["exec", "resume", t.sessionId!, ...common, "--", prompt];
 }
 

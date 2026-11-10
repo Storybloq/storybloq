@@ -74,7 +74,8 @@ import { fileURLToPath } from "node:url";
 
 import { sha256 } from "./continuity-lib.js";
 import { judgeFromResponse, type JudgeRuling } from "./onboarding-eval-lib.js";
-import { packetMismatch, resolveOnPath, rolloutModels } from "./onboarding-eval-run.js";
+import { INVALID_FILE, SCAN_PENDING_FILE, PACKET_LIMIT_BYTES, packetMismatch, resolveOnPath, rolloutModels } from "./onboarding-eval-run.js";
+import { scanForCredentials } from "./onboarding-eval-review.js";
 
 export const JUDGE_MODEL = "gpt-6-astra";
 /** The codex-cli version the lockdown was measured on; `codex --version` must print `codex-cli <this>`. */
@@ -157,7 +158,7 @@ const STDIN_CHUNK = 64 * 1024;
 
 type Outcome =
   | "published" | "spawn-failed" | "stdin-incomplete" | "output-limit" | "timed-out" | "exit-status" | "signal"
-  | "capture-failed" | "stream-malformed" | "publish-failed" | "withdraw-failed" | "no-terminal-event" | "turn-failed" | "tool-used" | "final-message-not-json" | "schema-invalid" | "schema-mapping"
+  | "capture-failed" | "stream-malformed" | "publish-failed" | "withdraw-failed" | "no-terminal-event" | "turn-failed" | "tool-used" | "final-message-not-json" | "schema-invalid" | "schema-mapping" | "credential-in-output"
   | "observed-model-none" | "observed-model-many" | "observed-model-mismatch" | "record-changed";
 
 interface StdinResult { readonly bytesTotal: number; readonly bytesAccepted: number; readonly ended: boolean; readonly error: string | null }
@@ -493,6 +494,64 @@ function readEvents(raw: Buffer): Events {
 }
 
 /** The command. Returns the exit code: 0 published, 2 refused before any reservation or spawn, 3 failed after. */
+/**
+ * 5.9 at the judge: a record the runner marked invalid, a packet over the limit, or a credential form in the
+ * record or the packet (the held token compared in memory) never reaches the judge. The runner's scan of every
+ * raw input ran before the record was left PENDING_SEMANTIC; this one covers what the prompt is built from.
+ */
+export function scanProblem(recordDir: string, snap: { readonly recordBytes: Buffer; readonly packetBytes: Buffer }): string | null {
+  if (existsSync(join(recordDir, INVALID_FILE))) return `the attempt is invalid (${INVALID_FILE}); the judge is not called`;
+  if (existsSync(join(recordDir, SCAN_PENDING_FILE))) return `the record's scan has not cleared (${SCAN_PENDING_FILE}); the judge is not called`;
+  if (snap.packetBytes.length > PACKET_LIMIT_BYTES) return `the packet is ${snap.packetBytes.length} bytes, over the ${PACKET_LIMIT_BYTES} byte limit, and is refused, not partly scanned`;
+  const secrets = process.env.CLAUDE_CODE_OAUTH_TOKEN ? [process.env.CLAUDE_CODE_OAUTH_TOKEN] : [];
+  for (const [name, bytes] of [["record.json", snap.recordBytes], ["grading-packet.json", snap.packetBytes]] as const) {
+    const hit = scanForCredentials(bytes, secrets)[0];
+    if (hit !== undefined) return `a credential form in ${name} at byte ${hit.offset} (${hit.pattern}); the attempt is invalid and the judge is not called`;
+    // F9: JSON escapes (\" and \uXXXX) hide a form from the raw bytes; every decoded key and string is scanned too.
+    let parsed: unknown;
+    try { parsed = JSON.parse(bytes.toString("utf-8")); } catch { continue; }
+    const decoded = decodedCredentialHit(parsed, "", secrets);
+    if (decoded !== null) return `a credential form in ${name} at ${printablePointer(decoded.at, secrets)} (${decoded.pattern}, in a decoded string); the attempt is invalid and the judge is not called`;
+  }
+  return null;
+}
+
+/** H1: a key is printed in a pointer only when it is a short plain name the scan does not flag; otherwise by its position, `@<index>`. */
+const PLAIN_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
+function pointerSegment(k: string, index: number, secrets: readonly string[]): string {
+  if (PLAIN_KEY.test(k) && scanForCredentials(Buffer.from(k, "utf-8"), secrets).length === 0) return k.replace(/~/g, "~0").replace(/\//g, "~1");
+  return `@${index}`;
+}
+
+/** H1: the pointer as printed: scanned once more whole, and withheld if the scan flags it. */
+export function printablePointer(at: string, secrets: readonly string[]): string {
+  if (at === "") return "/";
+  return scanForCredentials(Buffer.from(at, "utf-8"), secrets).length === 0 ? at : "(a path the scan flags, withheld)";
+}
+
+/** F9: the first credential form in a decoded key or string value, by its JSON pointer and pattern, never the value (H1: nor a key that could be it). */
+export function decodedCredentialHit(v: unknown, at: string, secrets: readonly string[]): { readonly at: string; readonly pattern: string } | null {
+  const scan = (s: string, where: string): { at: string; pattern: string } | null => {
+    const h = scanForCredentials(Buffer.from(s, "utf-8"), secrets)[0];
+    return h === undefined ? null : { at: where, pattern: h.pattern };
+  };
+  if (typeof v === "string") return scan(v, at);
+  if (Array.isArray(v)) {
+    for (const [i, x] of v.entries()) { const h = decodedCredentialHit(x, `${at}/${i}`, secrets); if (h !== null) return h; }
+    return null;
+  }
+  if (v !== null && typeof v === "object") {
+    for (const [index, [k, x]] of Object.entries(v).entries()) {
+      const where = `${at}/${pointerSegment(k, index, secrets)}`;
+      const hk = scan(k, where);
+      if (hk !== null) return hk;
+      const h = decodedCredentialHit(x, where, secrets);
+      if (h !== null) return h;
+    }
+  }
+  return null;
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const refuse = (reason: string): number => { process.stderr.write(`onboarding-eval-judge: refused: ${reason}\n`); return 2; };
   if (argv.some((a) => a === "--model" || a.startsWith("--model="))) return refuse(`there is no --model: the judge model is ${JUDGE_MODEL}`);
@@ -501,6 +560,8 @@ export async function main(argv: readonly string[]): Promise<number> {
   let snap: ReturnType<typeof snapshotOf>;
   try { snap = snapshotOf(recordDir); } catch (err) { snap = { problem: `the record could not be read: ${err instanceof Error ? err.message : String(err)}` }; }
   if (snap.problem !== null) return refuse(snap.problem);
+  const unscanned = scanProblem(recordDir, snap);
+  if (unscanned !== null) return refuse(unscanned);
 
   const found = resolveOnPath("codex", process.env.PATH ?? "");
   if (found === null) return refuse("no codex on PATH");
@@ -610,6 +671,9 @@ export async function main(argv: readonly string[]): Promise<number> {
 
     const tmp = join(attempt, "judge.json.tmp");
     const judgeText = `${JSON.stringify(mapped.result, null, 2)}\n`;
+    // 5.9: the judge's output is scanned before anything is published.
+    const outHit = scanForCredentials(Buffer.from(`${judgeText}\n${events.finalMessage ?? ""}`, "utf-8"), process.env.CLAUDE_CODE_OAUTH_TOKEN ? [process.env.CLAUDE_CODE_OAUTH_TOKEN] : [])[0];
+    if (outHit !== undefined) return fail("credential-in-output", { reason: `a credential form in the judge's output (${outHit.pattern})` });
     writeFileSync(tmp, judgeText, { flag: "wx" });
     const unpublished = publish(recordDir, snap, tmp, { commit: () => meta("published", { judgeSha256: sha256(judgeText) }) });
     if (unpublished !== null) return fail(unpublished.outcome, { reason: unpublished.reason, ...unpublished.extra });

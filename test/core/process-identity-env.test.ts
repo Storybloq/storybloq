@@ -406,7 +406,7 @@ describe.runIf(process.platform === "darwin")("the pinned capture", () => {
     const first = ownPinnedSignatureSync();
     const uid = process.geteuid!();
     expect(first).toBe(pinned(uid));
-    vi.spyOn(process, "geteuid").mockReturnValue(uid + 1);
+    vi.spyOn(process as { geteuid: () => number }, "geteuid").mockReturnValue(uid + 1);
     expect(ownPinnedSignatureSync()).toBe(pinned(uid + 1));
     expect(calls).toBe(1);
   });
@@ -570,7 +570,7 @@ describe.runIf(process.platform === "darwin")("the project lock", () => {
       const uid = process.geteuid!();
       expect(bodyOf().pinnedSignature).toMatch(new RegExp(`^darwin2:${uid}:`));
       releaseProjectLock(first);
-      vi.spyOn(process, "geteuid").mockReturnValue(uid + 1);
+      vi.spyOn(process as { geteuid: () => number }, "geteuid").mockReturnValue(uid + 1);
       const second = await acquireProjectLockAsync(lockPath);
       expect(bodyOf().pinnedSignature).toMatch(new RegExp(`^darwin2:${uid + 1}:`));
       releaseProjectLock(second);

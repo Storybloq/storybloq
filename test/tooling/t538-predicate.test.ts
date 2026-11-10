@@ -103,10 +103,10 @@ describe("the launch-shape predicate", () => {
     it.each(Object.keys(doc.NetworkSettings.Networks[net]))("refuses endpoint key %s gone", (key) => {
       expect(problemsAfter(role, (d) => { delete d.NetworkSettings.Networks[net][key]; }).join()).toContain(key);
     });
-    it.each(doc.HostConfig.Mounts.flatMap((m: object, i: number) => Object.keys(m).map((k) => [i, k])))("refuses mount %i key %s gone", (i, key) => {
+    it.each<[number, string]>(doc.HostConfig.Mounts.flatMap((m: object, i: number) => Object.keys(m).map((k): [number, string] => [i, k])))("refuses mount %i key %s gone", (i, key) => {
       expect(problemsAfter(role, (d) => { delete d.HostConfig.Mounts[i][key]; }).join()).toContain("HostConfig.Mounts");
     });
-    it.each(doc.Mounts.flatMap((m: object, i: number) => Object.keys(m).map((k) => [i, k])))("refuses shown mount %i key %s gone", (i, key) => {
+    it.each<[number, string]>(doc.Mounts.flatMap((m: object, i: number) => Object.keys(m).map((k): [number, string] => [i, k])))("refuses shown mount %i key %s gone", (i, key) => {
       expect(problemsAfter(role, (d) => { delete d.Mounts[i][key]; }).join()).toContain("Mounts");
     });
     it.each([["a word", "x"], ["a fraction", 1.5], ["null", null], ["a negative", -1]])("refuses State.Pid as %s", (_n, v) => {

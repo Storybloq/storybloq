@@ -72,7 +72,7 @@ describe.each(KINDS)("$dir through the CLI", (kind) => {
     const root = project();
     seed(root, kind, number);
     const before = stories(root);
-    const out = runE2ECli(fixture, kind.create, { cwd: root });
+    const out = runE2ECli(fixture, [...kind.create], { cwd: root });
     expect(out.status, out.stdout).not.toBe(0);
     expect(`${out.stdout}${out.stderr}`).toContain(`Cannot allocate an id: ${kind.prefix}${number} holds an id whose number is too large`);
     expect(stories(root)).toEqual(before);

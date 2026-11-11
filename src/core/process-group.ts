@@ -19,16 +19,151 @@ export function signalGroup(child: ChildProcess, signal: NodeJS.Signals, own: bo
  * ISS-1470: signalGroup that says what the kill did: "sent", "gone" when the group was already gone
  * (ESRCH, or the child's own kill answering false without a group), or the errno it failed with. signalGroup itself still swallows the answer for callers that
  * only need the attempt (the ISS-1391 terminating-signal handler among them).
+ * ISS-1469: a group signal goes through the child's group handle, so it answers "released" once the handle is disarmed.
  */
 export function signalGroupReported(child: ChildProcess, signal: NodeJS.Signals, own: boolean = OWN_GROUP): string {
+  if (own && child.pid !== undefined) return groupHandle(child, own).signal(signal);
+  return signalChild(child, signal);
+}
+
+/** The child alone (no group: Windows, or no pid): never a negative pid. */
+function signalChild(child: ChildProcess, signal: NodeJS.Signals): string {
   try {
-    if (own && child.pid !== undefined) process.kill(-child.pid, signal);
-    else if (!child.kill(signal)) return "gone";
+    return child.kill(signal) ? "sent" : "gone";
+  } catch (e) {
+    return errorAnswer(e);
+  }
+}
+
+function errorAnswer(e: unknown): string {
+  const code = (e as NodeJS.ErrnoException).code;
+  if (code === "ESRCH") return "gone";
+  return code ?? (e as Error).message;
+}
+
+/**
+ * ISS-1469: the raw group send, with no guard: what a group handle's signal sends once its checks pass.
+ * Production code calls it only as a handle's `send` (setup-review's start probe seam defaults to it);
+ * everything else signals through groupHandle(child).signal.
+ */
+export function rawGroupSend(child: ChildProcess, signal: NodeJS.Signals): string {
+  if (child.pid === undefined) return "gone";
+  try {
+    processGroupSeams.send(child.pid, signal);
     return "sent";
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return "gone";
-    return code ?? (e as Error).message;
+    return errorAnswer(e);
+  }
+}
+
+// --- One handle per owned child (ISS-1469) ---------------------------------------
+
+/**
+ * ISS-1469: the one way a child's process group is signalled or probed. Every caller holding the same
+ * child gets the same handle, so they share one latch: once the handle is disarmed it never sends again.
+ *
+ * It disarms, in the same synchronous step, when any of these is seen: a probe of the group answering
+ * ESRCH (a lifecycle probe, a confirmation poll, or the gone-watch that runs every CONFIRM_POLL_MS from
+ * the leader's exit), the group signal itself answering ESRCH, a SIGKILL that was sent, or settle().
+ * A positive-pid ESRCH alone (the leader reaped) does not disarm: the group may still have members.
+ *
+ * signal(sig) in one synchronous step: disarmed answers "released" and sends nothing. Before the leader's
+ * exit notice, `kill(leaderPid, 0)` answering ESRCH means libuv has already reaped the leader, so the
+ * group is probed first, exactly as after the notice; any other answer means no reap was seen (not that
+ * the leader is unreaped: a replacement process with that number answers too). After the notice, or
+ * after a reap was seen, the signal is sent only when the group probe answers "alive"; "gone" disarms.
+ *
+ * The guarantee: once the group has been seen absent, or a final SIGKILL has gone out, nothing more is
+ * sent to that number by anyone holding the child. The accepted residual: a switch from this group to a
+ * foreign one with no absence seen in between cannot be told apart, so the foreign group is signalled.
+ * That includes a reuse before the leader's exit notice that a replacement answers, a reaped leader whose
+ * number already names a foreign group when the group is probed, and a replacement between a probe and its
+ * signal. The pid counter can wrap while the original group is alive, so no allocation rate bounds it.
+ * On Linux a pidfd for the leader could close this; darwin has no equivalent.
+ */
+export interface GroupHandle {
+  /** "sent", "released" (disarmed: nothing sent), "gone", or the probe's or kill's error code. `send` is a test seam for the raw send. */
+  signal(sig: NodeJS.Signals, send?: (child: ChildProcess, sig: NodeJS.Signals) => string | void): string;
+  /** "alive", "gone" (which disarms), or the error code; it still answers once disarmed. */
+  probe(): "gone" | "alive" | string;
+  /** The run is over: disarm first, then stop the gone-watch. Call it before releasing any callback. */
+  settle(): void;
+  readonly disarmed: boolean;
+}
+
+const handles = new WeakMap<ChildProcess, GroupHandle>();
+
+export function groupHandle(child: ChildProcess, own: boolean = OWN_GROUP): GroupHandle {
+  const known = handles.get(child);
+  if (known) return known;
+  const pid = child.pid;
+  const grouped = own && pid !== undefined;
+  let disarmed = false;
+  let leaderExited = child.exitCode != null || child.signalCode != null;
+  let watch: NodeJS.Timeout | null = null;
+  const stopWatch = (): void => {
+    if (watch !== null) clearTimeout(watch);
+    watch = null;
+  };
+  const disarm = (): void => {
+    disarmed = true;
+    stopWatch();
+  };
+  const probe = (): string => {
+    if (pid === undefined) return "gone";
+    const seen = probeGroup(pid);
+    if (seen === "gone" && grouped) disarm();
+    return seen;
+  };
+  const arm = (): void => {
+    watch = setTimeout(tick, CONFIRM_POLL_MS);
+    watch.unref?.();
+  };
+  const tick = (): void => {
+    watch = null;
+    if (disarmed) return;
+    probe();
+    if (!disarmed) arm();
+  };
+  const handle: GroupHandle = {
+    get disarmed() { return disarmed; },
+    probe,
+    settle: disarm,
+    signal: (sig, send) => {
+      if (!grouped) return signalChild(child, sig);
+      if (disarmed) return "released";
+      if (leaderExited || leaderReaped(pid!)) {
+        const seen = probe();
+        if (seen !== "alive") return seen;
+      }
+      let answer: string;
+      if (send) {
+        const r = send(child, sig);
+        answer = typeof r === "string" ? r : "sent";
+      } else {
+        answer = rawGroupSend(child, sig);
+      }
+      if (answer === "gone" || (answer === "sent" && sig === "SIGKILL")) disarm();
+      return answer;
+    },
+  };
+  if (grouped && typeof child.once === "function") {
+    child.once("exit", () => {
+      leaderExited = true;
+      if (!disarmed && watch === null) arm();
+    });
+  }
+  handles.set(child, handle);
+  return handle;
+}
+
+/** Whether `kill(leaderPid, 0)` answers ESRCH: the leader has been reaped. Any other answer proves nothing either way. */
+function leaderReaped(pid: number): boolean {
+  try {
+    processGroupSeams.leader(pid);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 
@@ -79,6 +214,7 @@ export function untrackGroup(child: ChildProcess): void {
  * running.
  */
 export function release(child: ChildProcess): void {
+  processGroupSeams.onRelease(child);
   child.stdin?.destroy();
   child.stdout?.destroy();
   child.stderr?.destroy();
@@ -92,6 +228,8 @@ export function release(child: ChildProcess): void {
  */
 export function escalate(child: ChildProcess, timeoutMs: number, graceMs: number, onTimeout: () => void, giveUp: () => void): () => void {
   const timers: NodeJS.Timeout[] = [];
+  // ISS-1469: one handle for the timers, the exit listener and the signal handler alike.
+  const handle = groupHandle(child);
   const stopOnExit = (): void => signalGroup(child, "SIGKILL");
   process.once("exit", stopOnExit);
   trackGroup(child);
@@ -100,10 +238,14 @@ export function escalate(child: ChildProcess, timeoutMs: number, graceMs: number
     signalGroup(child, "SIGTERM");
     timers.push(setTimeout(() => {
       signalGroup(child, "SIGKILL");
-      timers.push(setTimeout(giveUp, graceMs));
+      timers.push(setTimeout(() => {
+        handle.settle();
+        giveUp();
+      }, graceMs));
     }, graceMs));
   }, timeoutMs));
   return () => {
+    handle.settle();
     for (const t of timers) clearTimeout(t);
     process.removeListener("exit", stopOnExit);
     untrackGroup(child);
@@ -121,8 +263,21 @@ export const CONFIRM_BOUND_MS = 2000;
  * `kill(-pgid, 0)`, whether runs get their own group (false is the Windows
  * path, provable on any platform with a fake child), and spawn itself.
  */
-export const processGroupSeams: { probe: (pgid: number) => void; ownGroup: boolean; spawn: typeof spawn } = {
+export const processGroupSeams: {
+  probe: (pgid: number) => void;
+  /** ISS-1469: the raw group send, the only non-zero negative-pid kill. */
+  send: (pgid: number, signal: NodeJS.Signals) => void;
+  /** ISS-1469: `kill(leaderPid, 0)`, whose ESRCH says the leader has been reaped. */
+  leader: (pid: number) => void;
+  /** ISS-1469: called first thing in release(), so a row can signal while callbacks are released. */
+  onRelease: (child: ChildProcess) => void;
+  ownGroup: boolean;
+  spawn: typeof spawn;
+} = {
   probe: (pgid) => process.kill(-pgid, 0),
+  send: (pgid, signal) => process.kill(-pgid, signal),
+  leader: (pid) => process.kill(pid, 0),
+  onRelease: () => {},
   ownGroup: OWN_GROUP,
   // Read at call time: a module-load capture breaks a test's partial node:child_process mock.
   spawn: ((...args: Parameters<typeof spawn>) => spawn(...args)) as typeof spawn,
@@ -156,9 +311,9 @@ export interface GroupRunOptions {
   readonly stdin?: Buffer;
   /**
    * ISS-1457: called once with the group id right after spawn, and the run's own group signal, the only
-   * way a caller may signal the group (see GroupSignal).
+   * way a caller may signal the group (see GroupSignal). ISS-1469: and its probe, the way a caller polls it.
    */
-  readonly onSpawn?: (pgid: number, signal: GroupSignal) => void;
+  readonly onSpawn?: (pgid: number, signal: GroupSignal, probe: GroupProbe) => void;
   /** ISS-1457: called once when the leader's exit event fires, before anything else reacts to it. */
   readonly onLeaderExit?: () => void;
   /**
@@ -186,47 +341,15 @@ export interface GroupControl {
 }
 
 /**
- * ISS-1457 round 2: every negative-pid signal a run in group sends. Until the leader's exit event the
- * group id is the live leader's own pid and cannot name anyone else, so the signal goes as it always did.
- * From that event on the id is free for reuse once the last member is gone, so the signal is sent only
- * when a probe in the same synchronous step answers "alive". Answers "sent", or the probe's answer when
- * nothing was sent ("gone", or an error code such as EPERM).
- *
- * The residual, stated as the race it is: a process group id is a pid number, and the system does not hand
- * that number to a new process while any member of the group is alive (POSIX fork/setsid/setpgid never
- * create a process or group whose id is an existing process group's). So an "alive" answer can mislead in
- * one case only: every original member has exited, and an unrelated process has since made that same
- * number its own group id (setsid, or setpgid to it), in the window between the last member's exit and
- * the post-exit probe. The guard cannot tell that group from the original one and signals it. The window
- * is kept short, not closed: each post-exit probe and its signal run in the same synchronous step as the
- * event that calls for them (the leader's exit event, the end of the grace period, the deadline, the CLI's
- * exit or signal), never deferred by a timer the contract does not already require. Closing it needs an
- * anchor process that holds the group alive until the signal; that is a separate follow-up.
- * A run that signalled after the leader's exit says so in GroupRun.signalledAfterLeaderExit.
+ * ISS-1457 round 2: every negative-pid signal a run in group sends, through the child's group handle
+ * (ISS-1469, see GroupHandle for the guarantee and the accepted residual). Answers "sent", "released" once
+ * the handle is disarmed, or the probe's or kill's answer when nothing was sent ("gone", or an error code
+ * such as EPERM). A run that signalled after the leader's exit says so in GroupRun.signalledAfterLeaderExit.
  */
 export type GroupSignal = (signal: NodeJS.Signals) => string;
 
-/**
- * The guarded group signal itself, for every caller that may still signal a group after its leader has
- * exited (runInGroup, and the setup-review start probe). With `leaderExited` false it sends as always.
- * With it true, it sends only when a probe in the same synchronous step answers "alive", and otherwise
- * answers the probe's answer and sends nothing. Without process groups (Windows) the child itself is
- * signalled, which is never a negative pid. `send` is the caller's own signal (a test seam for the probe).
- */
-export function signalGroupGuarded(
-  child: ChildProcess, sig: NodeJS.Signals, leaderExited: boolean, own: boolean = OWN_GROUP,
-  send: (child: ChildProcess, sig: NodeJS.Signals) => string | void = (c, s) => signalGroupReported(c, s, own),
-): string {
-  if (!own || child.pid === undefined) return signalGroupReported(child, sig, false);
-  if (leaderExited) {
-    const seen = probeGroup(child.pid);
-    if (seen !== "alive") return seen;
-  }
-  // ISS-1470: the kill's own answer: only "sent" means the signal was delivered. A test seam that returns
-  // nothing is taken as sent; every production send returns signalGroupReported's answer.
-  const sent = send(child, sig);
-  return typeof sent === "string" ? sent : "sent";
-}
+/** ISS-1469: the run's own group probe, through the same handle: "alive", "gone" (which disarms the handle), or the error code. */
+export type GroupProbe = () => "gone" | "alive" | string;
 
 export interface GroupRun {
   readonly exitCode: number | null;
@@ -276,6 +399,8 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
       resolve({ exitCode: null, signal: null, timedOut: false, spawnError: (e as Error).message, cleanup: "confirmed", cleanupDetail: null });
       return;
     }
+    // ISS-1469: created before any listener of this run, so its exit notice comes first.
+    const handle = groupHandle(child, own);
     const timers: NodeJS.Timeout[] = [];
     const later = (fn: () => void, ms: number): void => { timers.push(setTimeout(fn, ms)); };
     let timedOut = false;
@@ -284,7 +409,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     let exited = false;
     const afterExit: NodeJS.Signals[] = [];
     const groupSignal: GroupSignal = (sig) => {
-      const outcome = signalGroupGuarded(child, sig, exited, own);
+      const outcome = handle.signal(sig);
       if (outcome === "sent" && exited && own) afterExit.push(sig);
       return outcome;
     };
@@ -302,6 +427,8 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     const finish = (r: Omit<GroupRun, "exitCode" | "signal" | "timedOut">): void => {
       if (settled) return;
       settled = true;
+      // ISS-1469: disarmed before any callback is released, so nothing released below can still signal.
+      handle.settle();
       for (const t of timers) clearTimeout(t);
       process.removeListener("exit", stopOnExit);
       untrackGroup(child);
@@ -322,7 +449,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
         if (settled) return;
         if (!gone) {
           // Darwin answers EPERM for a group of just-killed zombies, so any other answer is polled through, never trusted.
-          const seen = probeGroup(pgid);
+          const seen = handle.probe();
           gone = seen === "gone";
           answer = seen === "gone" || seen === "alive" ? null : seen;
         }
@@ -371,14 +498,14 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     const stop = (): void => {
       if (!own) return stopChild();
       if (phase !== "running") return;
-      if (probeGroup(child.pid!) === "gone") return confirm();
+      if (handle.probe() === "gone") return confirm();
       phase = "terming";
       // A group that does not answer alive after the leader's exit gets no signal at all: it is only confirmed.
       if (groupSignal("SIGTERM") !== "sent") return confirm();
       const started = Date.now();
       const wait = (): void => {
         if (phase !== "terming" || settled) return;
-        if (probeGroup(child.pid!) === "gone") return confirm();
+        if (handle.probe() === "gone") return confirm();
         if (Date.now() - started >= grace) return kill();
         later(wait, CONFIRM_POLL_MS);
       };
@@ -396,7 +523,7 @@ export function runInGroup(opts: GroupRunOptions): Promise<GroupRun> {
     const onErr = opts.onStderr ?? opts.onData ?? ((): void => {});
     child.stdout!.on("data", (c: Buffer) => onOut(c));
     child.stderr!.on("data", (c: Buffer) => onErr(c));
-    if (child.pid !== undefined) opts.onSpawn?.(child.pid, groupSignal);
+    if (child.pid !== undefined) opts.onSpawn?.(child.pid, groupSignal, handle.probe);
     // The control callback runs last, once every lifecycle listener is installed, so a throw cannot leave the group unwatched.
     let startControl: (() => void) | null = null;
     if (opts.control && child.pid !== undefined) {
@@ -548,6 +675,8 @@ export async function runOwnedGroup<T>(opts: OwnedGroupOptions, body: (group: Ow
     return { kind: "spawn-error", reason: started.ok ? "no process id" : started.reason };
   }
   const pgid = child.pid;
+  // ISS-1469: every signal and probe of this group, the body's included, goes through one handle.
+  const handle = groupHandle(child, true);
   const stopOnExit = (): void => signalGroup(child, "SIGKILL", true);
   process.once("exit", stopOnExit);
   trackGroup(child);
@@ -559,7 +688,7 @@ export async function runOwnedGroup<T>(opts: OwnedGroupOptions, body: (group: Ow
   const exit = new Promise<void>((resolve) => {
     child.once("exit", (code, signal) => {
       // The leader is reaped by now, so a pid the probe still finds is one it left behind (EPERM, darwin's answer for a group of zombies, counts too).
-      leftOver = probeGroup(pgid) !== "gone";
+      leftOver = handle.probe() !== "gone";
       leaderExit = { code, signal };
       resolve();
     });
@@ -569,7 +698,7 @@ export async function runOwnedGroup<T>(opts: OwnedGroupOptions, body: (group: Ow
     exited: () => leaderExit,
     exit,
     leftAtLeaderExit: () => leftOver,
-    probe: () => probeGroup(pgid),
+    probe: () => handle.probe(),
   };
 
   // Whatever the body returns or throws, the stop below runs: the body's outcome is only held until then.
@@ -579,7 +708,8 @@ export async function runOwnedGroup<T>(opts: OwnedGroupOptions, body: (group: Ow
   } catch (error) {
     value = { ok: false, error };
   }
-  const stopped = await stopOwned(child, pgid, opts.shutdownTimeoutMs);
+  const stopped = await stopOwned(child, handle, pgid, opts.shutdownTimeoutMs);
+  handle.settle();
   process.removeListener("exit", stopOnExit);
   untrackGroup(child);
   release(child);
@@ -589,18 +719,18 @@ export async function runOwnedGroup<T>(opts: OwnedGroupOptions, body: (group: Ow
 const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** SIGTERM, SIGKILL after the shutdown timeout, then the bounded ESRCH confirmation. */
-async function stopOwned(child: ChildProcess, pgid: number, shutdownTimeoutMs: number): Promise<{ cleanup: "confirmed" | "unconfirmed"; cleanupDetail: string | null }> {
-  if (probeGroup(pgid) !== "gone") {
-    signalGroup(child, "SIGTERM", true);
+async function stopOwned(child: ChildProcess, handle: GroupHandle, pgid: number, shutdownTimeoutMs: number): Promise<{ cleanup: "confirmed" | "unconfirmed"; cleanupDetail: string | null }> {
+  if (handle.probe() !== "gone") {
+    handle.signal("SIGTERM");
     const termAt = Date.now();
-    while (probeGroup(pgid) !== "gone" && Date.now() - termAt < shutdownTimeoutMs) await pause(CONFIRM_POLL_MS);
-    if (probeGroup(pgid) !== "gone") signalGroup(child, "SIGKILL", true);
+    while (handle.probe() !== "gone" && Date.now() - termAt < shutdownTimeoutMs) await pause(CONFIRM_POLL_MS);
+    if (handle.probe() !== "gone") handle.signal("SIGKILL");
   }
   const confirmAt = Date.now();
-  let answer = probeGroup(pgid);
+  let answer = handle.probe();
   while (answer !== "gone" && Date.now() - confirmAt < CONFIRM_BOUND_MS) {
     await pause(CONFIRM_POLL_MS);
-    answer = probeGroup(pgid);
+    answer = handle.probe();
   }
   if (answer === "gone") return { cleanup: "confirmed", cleanupDetail: null };
   return {

@@ -10,7 +10,7 @@ import { writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 // ISS-1391's process-group machinery, shared with setup-verify (T-538 S3a-2).
-import { escalate, KILL_GRACE_MS, OWN_GROUP, release, signalGroupGuarded, signalGroupReported, trackGroup, untrackGroup } from "./process-group.js";
+import { escalate, groupHandle, KILL_GRACE_MS, OWN_GROUP, release, rawGroupSend, trackGroup, untrackGroup } from "./process-group.js";
 
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
@@ -310,7 +310,8 @@ export function probeOverrides(port: number, nonce: string): string[] {
  */
 export const startProbeSeams: { listen: (server: Server, ready: () => void) => void; signal: (child: ChildProcess, signal: NodeJS.Signals) => string | void } = {
   listen: (server, ready) => { server.listen(0, "127.0.0.1", ready); },
-  signal: (child, signal) => signalGroupReported(child, signal),
+  // ISS-1469: the raw send a group handle uses once its checks pass; startAttempt calls it only through the handle.
+  signal: (child, signal) => rawGroupSend(child, signal),
 };
 
 /** The detail for a post-exit signal that was not delivered (ISS-1457 round 2, ISS-1470). */
@@ -354,8 +355,9 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
     let timedOut = false;
     let settled = false;
     let stopped = false;
-    // ISS-1457 round 2: once codex's exit is seen its group id may be reused, so every group signal from
-    // then on goes only to a group a probe in the same step finds alive (process-group's guarded signal).
+    // ISS-1457 round 2, ISS-1469: every group signal goes through codex's group handle, which after the exit
+    // (or a reap it sees first) sends only to a group a probe in the same step finds alive, and never again once
+    // the group has been seen gone or SIGKILLed. This flag only decides what a held signal is reported as.
     let leaderExited = false;
     // What stopped a post-exit signal: the same-step probe's answer, or the kill's own (ISS-1470).
     let held: { by: "probe" | "kill"; answer: string } | null = null;
@@ -368,10 +370,10 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         killed = typeof r === "string" ? r : "sent";
         return killed;
       };
-      const outcome = signalGroupGuarded(target, sig, leaderExited, OWN_GROUP, send);
+      const outcome = groupHandle(target).signal(sig, send);
       if (!leaderExited || outcome === "sent") return;
       if (killed !== null) held = { by: "kill", answer: killed };
-      else if (outcome !== "gone") held = { by: "probe", answer: outcome };
+      else if (outcome !== "gone" && outcome !== "released") held = { by: "probe", answer: outcome };
     };
     const stopGroup = (): void => {
       if (stopped || !child) return;
@@ -397,6 +399,8 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
       settled = true;
       if (child) {
         stopGroup();
+        // ISS-1469: disarmed before anything is released.
+        groupHandle(child).settle();
         release(child);
         untrackGroup(child);
         // A group the guarded signal held back from, on an answer other than gone, is named.
@@ -433,6 +437,8 @@ function startAttempt(execDir: string, env: NodeJS.ProcessEnv, attemptMs: number
         return;
       }
       const started = child;
+      // ISS-1469: the group handle first, so its exit notice precedes every listener of this attempt.
+      groupHandle(started);
       started.once("exit", () => { leaderExited = true; });
       trackGroup(started, stopOnExit);
       process.once("exit", stopOnExit);

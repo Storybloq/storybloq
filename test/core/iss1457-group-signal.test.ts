@@ -15,7 +15,7 @@ import { PassThrough } from "node:stream";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { processGroupSeams, runInGroup, signalGroupGuarded, signalGroupReported, type GroupRunOptions } from "../../src/core/process-group.js";
+import { groupHandle, processGroupSeams, runInGroup, signalGroupReported, type GroupRunOptions } from "../../src/core/process-group.js";
 
 const real = { ...processGroupSeams };
 const realKill = process.kill.bind(process);
@@ -159,7 +159,8 @@ describe("the run's one group signal (ISS-1457 round 2)", () => {
       if (pid === -PID && sig !== 0) { tried.push([pid, sig]); throw Object.assign(new Error(code), { code }); }
       return true;
     }) as typeof process.kill);
-    expect(signalGroupGuarded(f.child, "SIGTERM", true, true)).toBe(answer);
+    // ISS-1469: the guarded signal is now the child's group handle.
+    expect(groupHandle(f.child, true).signal("SIGTERM")).toBe(answer);
     f.die();
     const r = await run({ timeoutMs: 10_000 });
     expect(tried).toContainEqual([-PID, "SIGTERM"]);
@@ -173,8 +174,8 @@ describe("the run's one group signal (ISS-1457 round 2)", () => {
     (f.child as unknown as { kill: (s: NodeJS.Signals) => boolean }).kill = (s) => { kills.push(s); return ok; };
     const noPid = Object.assign(Object.create(f.child), { pid: undefined }) as ChildProcess;
     expect(signalGroupReported(f.child, "SIGTERM", false)).toBe(answer);
-    expect(signalGroupGuarded(f.child, "SIGTERM", true, false)).toBe(answer);
-    expect(signalGroupGuarded(noPid, "SIGTERM", true, true)).toBe(answer);
+    expect(groupHandle(f.child, false).signal("SIGTERM")).toBe(answer);
+    expect(groupHandle(noPid, true).signal("SIGTERM")).toBe(answer);
     expect(kills).toEqual(["SIGTERM", "SIGTERM", "SIGTERM"]);
     processGroupSeams.ownGroup = false;
     f.die({ close: false });

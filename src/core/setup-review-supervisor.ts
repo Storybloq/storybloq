@@ -25,7 +25,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, KILL_GRACE_MS, OWN_GROUP, runInGroup, type GroupRun, type GroupSignal } from "./process-group.js";
+import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, KILL_GRACE_MS, OWN_GROUP, runInGroup, type GroupProbe, type GroupRun, type GroupSignal } from "./process-group.js";
 
 /** stderr is relayed up to this many bytes; the rest is dropped and the run says so. */
 export const RELAY_CAP_BYTES = 1024 * 1024;
@@ -81,6 +81,7 @@ export function supervisorMain(): void {
   let state: "waiting" | "running" | "done" = "waiting";
   let pgid: number | null = null;
   let groupSignal: GroupSignal | null = null;
+  let groupProbe: GroupProbe | null = null;
   let leaving = false;
 
   const exitSoon = (): void => {
@@ -112,18 +113,13 @@ export function supervisorMain(): void {
       process.exit(0);
     }
     const group = pgid!;
-    // The run's own group signal: sent as is before the leader's exit, and after it only to a group a probe
-    // in the same step finds alive, so a reused id is never signalled.
+    // The run's own group signal and probe (ISS-1469: one handle): the signal is sent only while no absence
+    // of the group has been seen and no SIGKILL has gone out, and the poll below latches that absence.
     const outcome = groupSignal!("SIGKILL");
     record(outcome === "sent" ? `SIGKILL -${group}` : `no-signal ${outcome}`);
     const started = Date.now();
     const poll = (): void => {
-      let gone = false;
-      try {
-        process.kill(-group, 0);
-      } catch (e) {
-        gone = (e as NodeJS.ErrnoException).code === "ESRCH";
-      }
+      const gone = groupProbe!() === "gone";
       if (gone || Date.now() - started >= CONFIRM_BOUND_MS) {
         record(gone ? "group-gone" : "group-unconfirmed");
         process.exit(gone ? 0 : 1);
@@ -179,9 +175,10 @@ export function supervisorMain(): void {
     void runInGroup({
       command: start.command, args: start.args, cwd: start.cwd, env: start.env, timeoutMs: start.timeoutMs, killGraceMs: start.killGraceMs,
       stdin: Buffer.from(start.stdin, "base64"), onStdout: relay("stdout"), onStderr: relay("stderr"),
-      onSpawn: (id, signal) => {
+      onSpawn: (id, signal, probe) => {
         pgid = id;
         groupSignal = signal;
+        groupProbe = probe;
         send({ type: "started", pgid: id });
       },
       onLeaderExit: () => {

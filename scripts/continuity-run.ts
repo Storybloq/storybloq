@@ -32,6 +32,7 @@ import { jsonShapePreserved,
 import { serverLaunch, writeServerLauncher } from "./onboarding-eval-host.js";
 import { EVAL_DIST } from "./build-eval.mjs";
 import { killSidecar } from "../src/autonomous/liveness.js";
+import { groupHandle } from "../src/core/process-group.js";
 import { loadProject } from "../src/core/project-loader.js";
 import { handleValidate } from "../src/cli/commands/validate.js";
 import type { CommandContext } from "../src/cli/types.js";
@@ -340,14 +341,21 @@ export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; rea
   return { dirs, roots, options, expected, session, args: claudeTurnArgs(expected, session, options), env, server };
 }
 
-/** K1: a signal to a detached child's whole process group (the child alone if it has no pid); the turn and the probe share it. */
+/**
+ * K1: a signal to a detached child's whole process group; the turn and the probe share it. ISS-1494: the group
+ * signal goes through the child's ISS-1469 handle, so once the group has been seen gone or SIGKILLed nothing more
+ * is sent to that number. Whenever the group was not signalled, the child alone is, through Node's own handle,
+ * which never reaches a process that is no longer this child.
+ */
 export function signalGroup(child: ChildProcess, sig: NodeJS.Signals): void {
-  try { if (child.pid) process.kill(-child.pid, sig); else throw new Error("no pid"); } catch { try { child.kill(sig); } catch { /* gone */ } }
+  if (child.pid && groupHandle(child, true).signal(sig) === "sent") return;
+  try { child.kill(sig); } catch { /* gone */ }
 }
 
-/** K1: whether any process is still in the group (signal 0 to the group: ESRCH means none is left). */
-function groupAlive(pgid: number): boolean {
-  try { process.kill(-pgid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === "EPERM"; }
+/** K1: whether any process is still in the child's group (ISS-1494: probed through its handle, so a gone answer disarms it). */
+function groupAlive(child: ChildProcess): boolean {
+  const answer = groupHandle(child, true).probe();
+  return answer === "alive" || answer === "EPERM";
 }
 
 /**
@@ -362,18 +370,24 @@ export async function outsideProbe(command: string, cwd: string, env: NodeJS.Pro
   const from = received.length;
   const seen = (): boolean => Buffer.concat(received.slice(from)).toString("utf-8").includes(token);
   const child = nodeSpawn("/bin/sh", ["-c", command], { cwd, env, stdio: "ignore", detached: true });
-  let ended = false;
-  const exited = new Promise<void>((r) => { child.once("error", () => { ended = true; r(); }); child.once("close", () => { ended = true; r(); }); });
-  let ok = false;
-  for (let i = 0; i < 250 && !ok; i++) {
-    ok = seen();
-    if (!ok) await new Promise((r) => setTimeout(r, 20));
-    if (ended && !ok) { await new Promise((r) => setTimeout(r, 50)); ok = seen(); break; }
+  // ISS-1494: settled on every way out, after the stop and its confirmation, so its gone-watch never outlives the probe.
+  const handle = groupHandle(child, true);
+  try {
+    let ended = false;
+    const exited = new Promise<void>((r) => { child.once("error", () => { ended = true; r(); }); child.once("close", () => { ended = true; r(); }); });
+    let ok = false;
+    for (let i = 0; i < 250 && !ok; i++) {
+      ok = seen();
+      if (!ok) await new Promise((r) => setTimeout(r, 20));
+      if (ended && !ok) { await new Promise((r) => setTimeout(r, 50)); ok = seen(); break; }
+    }
+    signalGroup(child, "SIGKILL");
+    await exited;
+    if (child.pid) for (let i = 0; i < 100 && groupAlive(child); i++) await new Promise((r) => setTimeout(r, 20));
+    return ok;
+  } finally {
+    handle.settle();
   }
-  signalGroup(child, "SIGKILL");
-  await exited;
-  if (child.pid) for (let i = 0; i < 100 && groupAlive(child.pid); i++) await new Promise((r) => setTimeout(r, 20));
-  return ok;
 }
 
 /** D5: every reason the launch must not start, checked immediately before the spawn; empty means it holds. */
@@ -762,129 +776,135 @@ export async function driveClaude(o: RunOptions, launch: Launch, prompt: string,
   const kill: { kind: KillKind } = { kind: null };
 
   const child = spawnFn("claude", launch.args, { cwd: launch.dirs.work, env: launch.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
-  const killGroup = (sig: NodeJS.Signals): void => {
-    signalGroup(child, sig);
-  };
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
-  // An operator signal always wins the classification, also during a timeout's or a policy stop's grace period:
-  // the matrix must stop, and a retry after cancellation is the one thing this record must never permit.
-  const escalate = (kind: Exclude<KillKind, null | "external-kill">): void => {
-    if (kill.kind === null || kind === "runner-signal") kill.kind = kind;
-    killGroup("SIGTERM");
-    if (!killTimer) killTimer = setTimeout(() => killGroup("SIGKILL"), o.sigkillGraceMs);
-  };
-  const onSignal = (): void => escalate("runner-signal");
-  signals.once("SIGINT", onSignal);
-  signals.once("SIGTERM", onSignal);
-  const termTimer = setTimeout(() => escalate("timeout"), o.timeoutMs);
-  const loadSamples: LoadSample[] = [];
-  const takeSample = (): void => { try { loadSamples.push({ t: now(), ...(deps.loadSample ?? sampleMachine)() }); } catch { loadSamples.push({ t: now(), load1: null, swapFreeBytes: null }); } };
-  takeSample();
-  const loadTimer = setInterval(takeSample, deps.loadSampleMs ?? LOAD_RULE.sampleMs);
-
-  let inputError: string | null = null;
-  let inputEnded = false;
-  const stdin = child.stdin;
-  stdin?.on("error", (e: NodeJS.ErrnoException) => { inputError ??= e.code ?? e.message; });
-  const writeIn = (text: string, done?: (err: Error | null | undefined) => void): boolean => {
-    if (!stdin || inputEnded || stdin.destroyed || stdin.writableEnded) return false;
-    try { stdin.write(text, done); return true; } catch (e) { inputError ??= (e as NodeJS.ErrnoException).code ?? (e as Error).message; return false; }
-  };
-  // G6: the prompt counts as delivered only when its write completed with no input error before the first result.
-  // The write callback sets it; the cast keeps the type checker from narrowing it to its first value.
-  let promptAck = "pending" as "pending" | "ok" | "error";
-  let deliveredAtResult: boolean | null = null;
-  const endInput = (): void => { if (inputEnded) return; inputEnded = true; try { stdin?.end(); } catch { /* already closed */ } };
-
-  let settled = false;
-  let resultSeen = false;
-  const answers = new Map<string, { subtype: string; response?: unknown; error?: unknown }>();
-  const waiters = new Map<string, (r: { subtype: string; response?: unknown; error?: unknown } | null) => void>();
-  const line = (text: string, complete: boolean): void => {
-    let v: unknown = null;
-    try { v = JSON.parse(text); } catch { /* not JSON: kept as it came */ }
-    const ev = v as { type?: unknown; response?: { request_id?: unknown; subtype?: unknown; response?: unknown; error?: unknown } } | null;
-    if (complete && ev !== null && typeof ev === "object" && ev.type === "control_response") {
-      const r = ev.response;
-      const id = typeof r?.request_id === "string" ? r.request_id : null;
-      if (id === null || answers.has(id)) return;
-      const answer = { subtype: String(r?.subtype), response: r?.response, error: r?.error };
-      answers.set(id, answer);
-      waiters.get(id)?.(answer);
-      return;
-    }
-    outStream.write(complete ? `${text}\n` : text);
-    onLine(text);
-    if (ev !== null && typeof ev === "object" && ev.type === "result" && !resultSeen) {
-      deliveredAtResult = promptAck === "ok" && inputError === null;
-      resultSeen = true; endInput();
-    }
-  };
-  // One decoder per stream: a character split across two chunks is joined, never replaced.
-  const outText = new StringDecoder("utf-8");
-  let pending = "";
-  child.stdout?.on("data", (d: Buffer) => {
-    pending += outText.write(d);
-    let nl: number;
-    while ((nl = pending.indexOf("\n")) >= 0) { const l = pending.slice(0, nl); pending = pending.slice(nl + 1); line(l, true); }
-  });
-  child.stderr?.on("data", (d: Buffer) => errStream.write(d));
-  const exitP = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((res) => {
-    child.on("error", (error) => res({ code: null, signal: null, error }));
-    child.on("close", (code, signal) => res({ code, signal }));
-  }).then((x) => { settled = true; for (const w of waiters.values()) w(null); return x; });
-
-  let launchFailure: string | null = null;
-  let readbackIncomplete = false;
-  let promptWritten = false;
-  let rb: { readonly steps: readonly ReadbackStep[]; readonly problems: readonly string[] } = { steps: [], problems: [] };
-  let exit: { code: number | null; signal: NodeJS.Signals | null; error?: Error };
+  // ISS-1494: the group's handle lives beside the child and is settled on every way out, after the last intended signal, so its gone-watch never outlives the run.
+  const handle = groupHandle(child, true);
   try {
-    const io: ReadbackIo = {
-      write: (l) => { writeIn(l); },
-      response: (id, ms) => new Promise((done) => {
-        const got = answers.get(id);
-        if (got !== undefined) { done(got); return; }
-        if (settled) { done(null); return; }
-        const t = setTimeout(() => { waiters.delete(id); done(null); }, ms);
-        waiters.set(id, (r) => { clearTimeout(t); waiters.delete(id); done(r); });
-      }),
+    const killGroup = (sig: NodeJS.Signals): void => {
+      signalGroup(child, sig);
     };
-    rb = await claudeReadback(io, readbackExpected(launch.expected, launch.options), deps.readbackTimeoutMs ?? READBACK_TIMEOUT_MS);
-    const complete = rb.steps.length === READBACK_REQUESTS.length && rb.steps.every((s) => s.outcome === "success");
-    if (rb.problems.length > 0) {
-      // A wrong answer is the policy's; a missing one is the policy's only while the child was still running and
-      // nothing else had ended it. Otherwise the cause that ended it keeps its class and the readback is incomplete.
-      if (complete || (!settled && kill.kind === null)) {
-        launchFailure = rb.problems[0]!;
-        if (!settled) escalate("policy-stop");
-      } else {
-        readbackIncomplete = true;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    // An operator signal always wins the classification, also during a timeout's or a policy stop's grace period:
+    // the matrix must stop, and a retry after cancellation is the one thing this record must never permit.
+    const escalate = (kind: Exclude<KillKind, null | "external-kill">): void => {
+      if (kill.kind === null || kind === "runner-signal") kill.kind = kind;
+      killGroup("SIGTERM");
+      if (!killTimer) killTimer = setTimeout(() => killGroup("SIGKILL"), o.sigkillGraceMs);
+    };
+    const onSignal = (): void => escalate("runner-signal");
+    signals.once("SIGINT", onSignal);
+    signals.once("SIGTERM", onSignal);
+    const termTimer = setTimeout(() => escalate("timeout"), o.timeoutMs);
+    const loadSamples: LoadSample[] = [];
+    const takeSample = (): void => { try { loadSamples.push({ t: now(), ...(deps.loadSample ?? sampleMachine)() }); } catch { loadSamples.push({ t: now(), load1: null, swapFreeBytes: null }); } };
+    takeSample();
+    const loadTimer = setInterval(takeSample, deps.loadSampleMs ?? LOAD_RULE.sampleMs);
+
+    let inputError: string | null = null;
+    let inputEnded = false;
+    const stdin = child.stdin;
+    stdin?.on("error", (e: NodeJS.ErrnoException) => { inputError ??= e.code ?? e.message; });
+    const writeIn = (text: string, done?: (err: Error | null | undefined) => void): boolean => {
+      if (!stdin || inputEnded || stdin.destroyed || stdin.writableEnded) return false;
+      try { stdin.write(text, done); return true; } catch (e) { inputError ??= (e as NodeJS.ErrnoException).code ?? (e as Error).message; return false; }
+    };
+    // G6: the prompt counts as delivered only when its write completed with no input error before the first result.
+    // The write callback sets it; the cast keeps the type checker from narrowing it to its first value.
+    let promptAck = "pending" as "pending" | "ok" | "error";
+    let deliveredAtResult: boolean | null = null;
+    const endInput = (): void => { if (inputEnded) return; inputEnded = true; try { stdin?.end(); } catch { /* already closed */ } };
+
+    let settled = false;
+    let resultSeen = false;
+    const answers = new Map<string, { subtype: string; response?: unknown; error?: unknown }>();
+    const waiters = new Map<string, (r: { subtype: string; response?: unknown; error?: unknown } | null) => void>();
+    const line = (text: string, complete: boolean): void => {
+      let v: unknown = null;
+      try { v = JSON.parse(text); } catch { /* not JSON: kept as it came */ }
+      const ev = v as { type?: unknown; response?: { request_id?: unknown; subtype?: unknown; response?: unknown; error?: unknown } } | null;
+      if (complete && ev !== null && typeof ev === "object" && ev.type === "control_response") {
+        const r = ev.response;
+        const id = typeof r?.request_id === "string" ? r.request_id : null;
+        if (id === null || answers.has(id)) return;
+        const answer = { subtype: String(r?.subtype), response: r?.response, error: r?.error };
+        answers.set(id, answer);
+        waiters.get(id)?.(answer);
+        return;
       }
-    } else if (!settled && !resultSeen && inputError === null && kill.kind === null) {
-      promptWritten = writeIn(userMessage(prompt), (err) => {
-        if (err) { promptAck = "error"; inputError ??= (err as NodeJS.ErrnoException).code ?? err.message; } else if (promptAck === "pending") promptAck = "ok";
-      });
+      outStream.write(complete ? `${text}\n` : text);
+      onLine(text);
+      if (ev !== null && typeof ev === "object" && ev.type === "result" && !resultSeen) {
+        deliveredAtResult = promptAck === "ok" && inputError === null;
+        resultSeen = true; endInput();
+      }
+    };
+    // One decoder per stream: a character split across two chunks is joined, never replaced.
+    const outText = new StringDecoder("utf-8");
+    let pending = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      pending += outText.write(d);
+      let nl: number;
+      while ((nl = pending.indexOf("\n")) >= 0) { const l = pending.slice(0, nl); pending = pending.slice(nl + 1); line(l, true); }
+    });
+    child.stderr?.on("data", (d: Buffer) => errStream.write(d));
+    const exitP = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((res) => {
+      child.on("error", (error) => res({ code: null, signal: null, error }));
+      child.on("close", (code, signal) => res({ code, signal }));
+    }).then((x) => { settled = true; for (const w of waiters.values()) w(null); return x; });
+
+    let launchFailure: string | null = null;
+    let readbackIncomplete = false;
+    let promptWritten = false;
+    let rb: { readonly steps: readonly ReadbackStep[]; readonly problems: readonly string[] } = { steps: [], problems: [] };
+    let exit: { code: number | null; signal: NodeJS.Signals | null; error?: Error };
+    try {
+      const io: ReadbackIo = {
+        write: (l) => { writeIn(l); },
+        response: (id, ms) => new Promise((done) => {
+          const got = answers.get(id);
+          if (got !== undefined) { done(got); return; }
+          if (settled) { done(null); return; }
+          const t = setTimeout(() => { waiters.delete(id); done(null); }, ms);
+          waiters.set(id, (r) => { clearTimeout(t); waiters.delete(id); done(r); });
+        }),
+      };
+      rb = await claudeReadback(io, readbackExpected(launch.expected, launch.options), deps.readbackTimeoutMs ?? READBACK_TIMEOUT_MS);
+      const complete = rb.steps.length === READBACK_REQUESTS.length && rb.steps.every((s) => s.outcome === "success");
+      if (rb.problems.length > 0) {
+        // A wrong answer is the policy's; a missing one is the policy's only while the child was still running and
+        // nothing else had ended it. Otherwise the cause that ended it keeps its class and the readback is incomplete.
+        if (complete || (!settled && kill.kind === null)) {
+          launchFailure = rb.problems[0]!;
+          if (!settled) escalate("policy-stop");
+        } else {
+          readbackIncomplete = true;
+        }
+      } else if (!settled && !resultSeen && inputError === null && kill.kind === null) {
+        promptWritten = writeIn(userMessage(prompt), (err) => {
+          if (err) { promptAck = "error"; inputError ??= (err as NodeJS.ErrnoException).code ?? err.message; } else if (promptAck === "pending") promptAck = "ok";
+        });
+      }
+      exit = await exitP;
+    } finally {
+      clearTimeout(termTimer); if (killTimer) clearTimeout(killTimer);
+      clearInterval(loadTimer);
+      signals.off("SIGINT", onSignal); signals.off("SIGTERM", onSignal);
+      if (!settled && child.exitCode === null && child.signalCode === null) killGroup("SIGKILL");
     }
-    exit = await exitP;
+    takeSample();
+    pending += outText.end();
+    if (pending !== "") line(pending, false);
+    await new Promise<void>((r) => outStream.end(r));
+    await new Promise<void>((r) => errStream.end(r));
+    if (exit.signal === "SIGKILL" && kill.kind === null) kill.kind = "external-kill";
+    const survivors = child.pid ? pgrep(["-g", String(child.pid)], launch.dirs.work) : "";
+    if (survivors) killGroup("SIGKILL");
+    // G6: delivered when the prompt's write completed cleanly before the first result (or, with no result, at all); an
+    // input error that only follows the result (ending the input) changes nothing, and a result never excuses an earlier one.
+    const promptDelivered = promptWritten && (deliveredAtResult ?? (promptAck === "ok" && inputError === null));
+    return { exit, killKind: kill.kind, started, loadSamples, streamErrors, readback: rb, readbackIncomplete, launchFailure, promptWritten, promptDelivered, inputError, resultSeen, survivors };
   } finally {
-    clearTimeout(termTimer); if (killTimer) clearTimeout(killTimer);
-    clearInterval(loadTimer);
-    signals.off("SIGINT", onSignal); signals.off("SIGTERM", onSignal);
-    if (!settled && child.exitCode === null && child.signalCode === null) killGroup("SIGKILL");
+    handle.settle();
   }
-  takeSample();
-  pending += outText.end();
-  if (pending !== "") line(pending, false);
-  await new Promise<void>((r) => outStream.end(r));
-  await new Promise<void>((r) => errStream.end(r));
-  if (exit.signal === "SIGKILL" && kill.kind === null) kill.kind = "external-kill";
-  const survivors = child.pid ? pgrep(["-g", String(child.pid)], launch.dirs.work) : "";
-  if (survivors) killGroup("SIGKILL");
-  // G6: delivered when the prompt's write completed cleanly before the first result (or, with no result, at all); an
-  // input error that only follows the result (ending the input) changes nothing, and a result never excuses an earlier one.
-  const promptDelivered = promptWritten && (deliveredAtResult ?? (promptAck === "ok" && inputError === null));
-  return { exit, killKind: kill.kind, started, loadSamples, streamErrors, readback: rb, readbackIncomplete, launchFailure, promptWritten, promptDelivered, inputError, resultSeen, survivors };
 }
 
 /**

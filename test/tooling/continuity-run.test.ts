@@ -21,6 +21,7 @@ import {
 import { aggregate, COMPARISON_CHECKPOINT, scoringRequest, validateScore, mechanicalFailureScore, selectObservations, renderReport, loadScore, publishText, type AttemptRecord, type Observation,
   taskMaterialOf, experimentTaskMaterial, compareTaskMaterial, type TaskMaterialResult } from "../../scripts/continuity-score.js";
 import { SessionKilledError } from "../../scripts/headless-common.js";
+import { processGroupSeams } from "../../src/core/process-group.js";
 
 const PKG = resolve(__dirname, "../..");
 const FIXTURE = resolve(__dirname, "../fixtures/continuity");
@@ -1119,6 +1120,26 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     const record = JSON.parse(readFileSync(join(pubDirOf(o, pf), "record.json"), "utf-8")) as Record<string, unknown>;
     expect(record.killKind).toBe("timeout");
     expect(record.invalidReasons).toEqual([]);
+  });
+
+  it("ISS-1494: the group signal fails, the leader exits, the group answers alive then EPERM; after driveClaude returns, its handle probes no more", async () => {
+    const saved = { ...processGroupSeams };
+    let probes = 0;
+    try {
+      processGroupSeams.send = () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }); };
+      processGroupSeams.leader = () => {};
+      processGroupSeams.probe = () => { if (++probes > 2) throw Object.assign(new Error("not permitted"), { code: "EPERM" }); };
+      const o = options({ timeoutMs: 80, sigkillGraceMs: 40 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+      const spawnFn = fakeSpawn({ hang: true, ignoreTerm: true }, seen);
+      // The fake reports only close; a real child reports its exit first, which is what arms the handle's gone-watch.
+      await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn: (c, a, opt) => { const ch = spawnFn(c, a, opt); ch.on("close", (code: number | null, sig: NodeJS.Signals | null) => ch.emit("exit", code, sig)); return ch; } }));
+      expect(seen[0]!.child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+      const first = probes;
+      await new Promise((r) => setTimeout(r, 150));
+      expect(probes).toBe(first);
+    } finally {
+      Object.assign(processGroupSeams, saved);
+    }
   });
 
   it("an operator signal escalates, marks the attempt interrupted, and stops the matrix before any further spawn", async () => {

@@ -128,7 +128,10 @@ describe("finding 4: the CLI's housekeeping is client-home provisioning", () => 
     }
   }, 120_000);
 
-  it("with NO_UPDATE_NOTIFIER cleared, status writes the update cache under HOME: the opt-out is what holds the home still", async (ctx) => {
+  // ISS-1492: before the fix this row pinned the cache landing under HOME/.claude whatever the env said,
+  // so only NO_UPDATE_NOTIFIER held the home still. The cache now follows STORYBLOQ_GLOBAL_DIR, which the
+  // client env sets to the run's global dir: the home stays still even with the opt-out cleared.
+  it("with NO_UPDATE_NOTIFIER cleared, status writes the update cache under the run's global dir, never the client home", async (ctx) => {
     const reachable = await fetch("https://registry.npmjs.org/@storybloq%2fstorybloq/latest", { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
     if (!reachable) ctx.skip();
     const a = arm("codex");
@@ -137,7 +140,9 @@ describe("finding 4: the CLI's housekeeping is client-home provisioning", () => 
       const { NO_UPDATE_NOTIFIER, ...cleared } = envFor("client", a.inputs);
       expect(NO_UPDATE_NOTIFIER).toBe("1");
       cli(a, cleared, "status");
-      expect(configProblems(manifest)).toContain(`config: ${join(a.inputs.home, ".claude", "storybloq", "update-check.json")} is not in the manifest`);
+      expect(existsSync(join(a.inputs.globalDir, "update-check.json"))).toBe(true);
+      expect(existsSync(join(a.inputs.home, ".claude", "storybloq", "update-check.json"))).toBe(false);
+      expect(configProblems(manifest)).toEqual([]);
     } finally {
       rmSync(a.dir, { recursive: true, force: true });
     }

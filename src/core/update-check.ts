@@ -7,8 +7,8 @@
  * most four HTTP requests per day per machine across ALL entry points, and
  * zero requests when NO_UPDATE_NOTIFIER or CI is set (ISS-777).
  *
- * Cache location: ~/.claude/storybloq/update-check.json
- *   (hidden from git-scoped .story/ by being outside the project)
+ * Cache location: <updateCacheDir()>/update-check.json (ISS-1492): STORYBLOQ_GLOBAL_DIR, else
+ *   CLAUDE_CONFIG_DIR/storybloq, else ~/.claude/storybloq. Outside the project, so hidden from .story/.
  *
  * Design:
  * - The 6h freshness gate lives in one helper (isCacheFresh) and is applied
@@ -28,9 +28,9 @@
 
 import { writeFileSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { readBoundedFile } from "./bounded-read.js";
+import { updateCacheDir } from "./global-config.js";
 
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/@storybloq/storybloq/latest";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours (ISS-1237: a day hid a same-day release)
@@ -50,7 +50,7 @@ export interface UpdateInfo {
 
 /** ISS-1091 (F10): exported for the e2e acceptance probe's audited-path list. */
 export function cachePath(): string {
-  return join(homedir(), ".claude", "storybloq", "update-check.json");
+  return join(updateCacheDir(), "update-check.json");
 }
 
 /**
@@ -114,7 +114,7 @@ function writeCache(latestVersion: string): void {
   // never created, which is another writer's in-flight temp.
   let owned: { path: string; fd: number } | null = null;
   try {
-    mkdirSync(join(homedir(), ".claude", "storybloq"), { recursive: true });
+    mkdirSync(dirname(p), { recursive: true });
     const data: UpdateCache = { latestVersion, fetchedAt: Date.now() };
     const tmp = `${p}.tmp.${process.pid}.${Date.now()}.${randomBytes(2).toString("hex")}`;
     const fd = openSync(tmp, "wx", 0o600);

@@ -7,10 +7,29 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readBoundedFile } from "./bounded-read.js";
+import { claudeConfigDir } from "./claude-config-dir.js";
 
-/** Established global state dir (see core/update-check.ts). Env override is for tests + E2E sims. */
+/**
+ * Established global state dir: STORYBLOQ_GLOBAL_DIR (tests + E2E sims), else ~/.claude/storybloq.
+ *
+ * ISS-1492: deliberately does NOT follow CLAUDE_CONFIG_DIR, unlike updateCacheDir() below. What lives
+ * here is durable (the global config.json kill switches, the T-534 retirement marker and limit ledger,
+ * the ISS-1493 ownership cache), so moving it with CLAUDE_CONFIG_DIR would silently strand an existing
+ * user's state. It stays at this resolution until a migrated move.
+ */
 export function storybloqGlobalDir(): string {
   return process.env.STORYBLOQ_GLOBAL_DIR || join(homedir(), ".claude", "storybloq");
+}
+
+/**
+ * ISS-1492: where the update-check cache lives. STORYBLOQ_GLOBAL_DIR when set and non-empty, else
+ * <Claude config dir>/storybloq, which is CLAUDE_CONFIG_DIR/storybloq when that is set and non-empty and
+ * ~/.claude/storybloq otherwise (the old path, so existing users keep their cache). Unlike
+ * storybloqGlobalDir() it follows Claude's config dir, as the hook reconcile in the same housekeeping
+ * does: the cache is recomputable (one registry request), so following the config dir loses nothing.
+ */
+export function updateCacheDir(): string {
+  return process.env.STORYBLOQ_GLOBAL_DIR || join(claudeConfigDir(), "storybloq");
 }
 
 /**

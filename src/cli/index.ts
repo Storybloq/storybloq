@@ -177,6 +177,9 @@ async function runCli(taskLocal = false): Promise<void> {
 
   let cli = yargs(rawArgs)
     .scriptName("storybloq")
+    // ISS-1492: --version exits here, after preCommandHousekeeping has run but before its unref'd
+    // background registry fetch can land, so --version never refreshes the update-check cache. That is
+    // deliberate: --version stays instant and never waits on the network; any other command refreshes.
     .version(version)
     .strict()
     .demandCommand(1, "Specify a command. Run with --help for available commands.")

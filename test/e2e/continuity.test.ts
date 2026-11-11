@@ -43,9 +43,10 @@ const MAP = JSON.parse(readFileSync(join(FIXTURE, "fixture-map.json"), "utf-8"))
 const FACTS = JSON.parse(readFileSync(join(FIXTURE, "facts.json"), "utf-8")) as { facts: { id: string; text: string; carriers: Record<string, string[]> }[]; arm2MustNotContain: string[] };
 
 const roots: string[] = [];
-function copy(arm: 1 | 2 | 3, task: (typeof TASKS)[number] = "T-2.a", git = false): string {
+function copy(arm: 1 | 2 | 3, task: (typeof TASKS)[number] = "T-2.a", git = false, prepare?: (dest: string) => void): string {
   const dest = mkdtempSync(join(tmpdir(), "continuity-e2e-"));
   materialize(FIXTURE, arm, task, dest);
+  prepare?.(dest);
   if (git) {
     const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
     const g = (args: string[]): void => { execFileSync("git", args, { cwd: dest, env, stdio: "ignore" }); };
@@ -142,9 +143,6 @@ describe("continuity cases 4 and 5: compatibility (green today, pinned)", () => 
   });
 });
 
-describe("continuity cases owned by later 1.16.0 tickets (RED evidence recorded by each owner)", () => {
-  it.todo("9 arm 2 subset: with the capability file removed, cases 1 to 5 and 7 pass and the disclosure says no capability inventory (T-526)");
-});
 
 /** Starts a plan-mode session on T-2 through the real guide; returns the session id, its dir, and the PLAN text. */
 async function startPlan(root: string): Promise<{ sid: string; dir: string; text: string }> {
@@ -412,6 +410,100 @@ function handoverAdded(root: string, before: readonly string[]): string {
   expect(added).toHaveLength(1);
   return readFileSync(join(root, ".story", "handovers", added[0]!), "utf-8");
 }
+
+/** Case 9: arm 3 as filed, then the capability file removed before the temp repository is committed. The glossary stays. */
+function removeCapabilities(dest: string): void {
+  rmSync(join(dest, ".story", "capabilities.json"));
+}
+
+describe("continuity case 9: arm 2 subset, the capability file removed (T-526)", () => {
+  const { R1, R2, R3, R4, R5 } = MAP.rulings as Record<"R1" | "R2" | "R3" | "R4" | "R5", string>;
+
+  it("9 control: arm 3 as filed delivers cap-logging and no missing-inventory disclosure, so the removal is what changes the brief", async () => {
+    const { dir } = await startPlan(copy(3, "T-2.a", true));
+    const brief = readFileSync(join(dir, "context-brief.md"), "utf-8");
+    expect(brief).toContain("(cap-logging)");
+    expect(brief).not.toContain("no capability inventory");
+  });
+
+  it("9 cases 1, 5 and 7: the guide's brief has no binding, R2 then R1 suggested, R3 absent, the disclosure says no capability inventory, and the EXISTING gate holds", async () => {
+    const root = copy(3, "T-2.a", true, removeCapabilities);
+    expect(existsSync(join(root, ".story", "capabilities.json"))).toBe(false);
+    expect(existsSync(join(root, ".story", "glossary.json"))).toBe(true);
+    const { sid, dir, text } = await startPlan(root);
+    expect(text).toContain("## Context brief");
+    expect(text).not.toContain(R3);
+    const brief = readFileSync(join(dir, "context-brief.md"), "utf-8");
+    expect(brief).toContain("none: this item cites no rulings");
+    const suggested = brief.slice(brief.indexOf("## Suggested accepted rulings"), brief.indexOf("## Disclosure"));
+    expect(suggested.indexOf(`**${R2}**`)).toBeGreaterThan(-1);
+    expect(suggested.indexOf(`**${R1}**`)).toBeGreaterThan(suggested.indexOf(`**${R2}**`));
+    expect(brief).not.toContain(R3);
+    const disclosure = brief.slice(brief.indexOf("## Disclosure"));
+    expect(disclosure).toContain("no capability inventory");
+    expect(disclosure).not.toContain("capabilities unavailable");
+    expect(disclosure).not.toContain("no glossary");
+    expect(brief).not.toContain("(cap-logging)");
+    const digest = readFileSync(join(dir, "context-digest.md"), "utf-8");
+    expect(digest).not.toContain(R3);
+    writeFileSync(join(dir, "plan.md"), "# Plan\n\n1. Add logging to src/jobs/JobQueue.ts.\n");
+    expect(await report(root, sid, { completedAction: "plan_written" })).toContain("Plan not accepted: the plan has no EXISTING line.");
+    writeFileSync(join(dir, "plan.md"), `# Plan\n\n${EXISTING_OK}\n\n1. Add logging to src/jobs/JobQueue.ts through AppLogger.\n`);
+    expect(await report(root, sid, { completedAction: "plan_written" })).toMatch(/Plan Review -- Round 1/);
+  });
+
+  it("9 case 2: suggested R2, cited on the item, then binding in the packet, enforced by the guard, and binding at the plan reviewer", async () => {
+    const root = copy(3, "T-2.a", true, removeCapabilities);
+    expect((await buildContextBrief(root, "T-2")).suggested.map((x) => x.id)).toContain(R2);
+    const t = join(root, ".story", "tickets", "T-2.json");
+    writeFileSync(t, JSON.stringify({ ...JSON.parse(readFileSync(t, "utf-8")), citesRulings: [R2] }, null, 2));
+    const after = await buildContextBrief(root, "T-2");
+    expect(after.suggested.map((x) => x.id)).not.toContain(R2);
+    expect(after.binding).toHaveLength(1);
+    const res = await citationsForReviewTarget(root, "T-2");
+    expect(res.kind === "resolved" && res.citations.map((c) => c.citedId)).toEqual([R2]);
+    expect((await guardPlanNamesCitedRulings(root, "T-2", "# Plan\n\nNo ids here.")).ok).toBe(false);
+    expect((await guardPlanNamesCitedRulings(root, "T-2", `# Plan\n\nFollows ${R2}.`)).ok).toBe(true);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-qam", "cite R2"], { cwd: root, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: "ignore" });
+    const { sid, dir } = await startPlan(root);
+    expect(readFileSync(join(dir, "context-brief.md"), "utf-8")).toContain("no capability inventory");
+    writeFileSync(join(dir, "plan.md"), `# Plan\n\n${EXISTING_OK}\n\n1. Add logging per ${R2}.\n`);
+    const review = await report(root, sid, { completedAction: "plan_written" });
+    const suggestedAt = review.indexOf("# Suggested (not binding)");
+    expect(suggestedAt).toBeGreaterThan(-1);
+    expect(review.slice(0, suggestedAt)).toContain(R2);
+    expect(review.slice(suggestedAt, review.indexOf("# Plan checks"))).not.toContain(R2);
+  });
+
+  it("9 case 3: the proposal R4 reaches the item beside its citations, the guard does not enforce it, R1 stays current", async () => {
+    const root = withLifecycle(copy(3, "T-2.a", false, removeCapabilities));
+    const { rulings, lifecycleById, unavailableIds } = loadRulingsSafe(root);
+    expect(lifecycleById.get(R4)).toBe("proposed");
+    expect(buildSuccessorIndex(rulings).successorsByTarget.get(R1)).toBeUndefined();
+    const ctx = buildCitationResolutionContext(rulings, unavailableIds, "complete", false);
+    expect(resolveCitation(R1, ctx)).toMatchObject({ status: "resolved", stale: false, current: { id: R1 } });
+    const res = await citationsForReviewTarget(root, "T-2");
+    expect(res.kind).toBe("resolved");
+    if (res.kind !== "resolved") return;
+    expect(res.proposals.map((p) => p.id)).toEqual([R4]);
+    expect(res.citations.map((c) => c.citedId)).not.toContain(R4);
+    expect(await guardPlanNamesCitedRulings(root, "T-2", "# Plan\n\nNothing about rulings.")).toEqual({ ok: true, note: `Proposals against this item (not enforced): ${R4}` });
+  });
+
+  it("9 case 4: a citation of the superseded R5 resolves forward to R1 with R1's wording through the packet path", async () => {
+    const root = copy(3, "T-2.a", false, removeCapabilities);
+    const t = join(root, ".story", "tickets", "T-2.json");
+    writeFileSync(t, JSON.stringify({ ...JSON.parse(readFileSync(t, "utf-8")), citesRulings: [R5] }, null, 2));
+    const res = await citationsForReviewTarget(root, "T-2");
+    expect(res.kind).toBe("resolved");
+    if (res.kind !== "resolved") return;
+    const c = res.citations[0]!;
+    expect(res.citations).toHaveLength(1);
+    expect(c).toMatchObject({ status: "resolved", citedId: R5, stale: true, current: { id: R1 }, chain: [R5, R1] });
+    if (c.status !== "resolved") return;
+    expect(c.current.text).toContain("Logging keeps redaction and request ids on every path");
+  });
+});
 
 describe("continuity cases 8 and 15: knowledge review at completion (T-527)", () => {
   it("8 completion: the T-3 move owes cap-logging a review; a report without knowledgeImpact is retried; the maintained stale-reference advances and lands in the handover", async () => {

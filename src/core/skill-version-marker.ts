@@ -25,14 +25,15 @@
  * check keep reading it as they always have.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, realpathSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, realpathSync, lstatSync, statSync, accessSync, constants as fsConstants, openSync, readSync, closeSync, renameSync, unlinkSync } from "node:fs";
+import { delimiter as pathDelimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { compareVersionStrings } from "./team-capabilities.js";
 import { readBoundedFile } from "./bounded-read.js";
 import { sanitizeDisplayPath } from "./display-text.js";
 import { claudeConfigDir, claudeConfigDisplay, claudeSettingsPath } from "./claude-config-dir.js";
+import { storybloqGlobalDir } from "./global-config.js";
 
 /** T-502: exported so the health check's default adapter reads the same file name. */
 export const SKILL_MARKER_FILE = ".storybloq-version";
@@ -357,9 +358,286 @@ export interface RefreshOwnershipResult {
 /**
  * Test seam and per-process memo for the verdict. It spawns npm, so it is
  * computed only when a write is pending, and at most once per process.
+ * ISS-1493: `cache` is the disk entry that matches this process's key, once
+ * the verdict has been read from or written to it; the notice gate uses it.
  */
-export const refreshOwner: { override: (() => RefreshOwnership) | null; memo: { value: RefreshOwnershipResult } | null; noticed: boolean } =
-  { override: null, memo: null, noticed: false };
+export const refreshOwner: {
+  override: (() => RefreshOwnership) | null;
+  memo: { value: RefreshOwnershipResult } | null;
+  noticed: boolean;
+  cache: OwnershipCacheEntry | null;
+  /** Test seam (ISS-1493 N3): runs after ownership is resolved and before the entry is persisted. */
+  beforePersist: (() => void) | null;
+} = { override: null, memo: null, noticed: false, cache: null, beforePersist: null };
+
+/**
+ * ISS-1493: the verdict remembered across processes. Without it every CLI
+ * call with a stale or unmarked skill copy spawned `npm root -g` (and npm
+ * wrote a log under HOME/.npm) and printed the notice again. The entry is
+ * valid only while everything the verdict was computed from is unchanged:
+ * the running package, the inputs that decide npm's prefix, the global
+ * package npm named, and the marker state of every skill target. Each of
+ * those is read with no spawn. There is no expiry; any change is a miss.
+ */
+export const OWNERSHIP_CACHE_FILE = "refresh-ownership.json";
+const OWNERSHIP_CACHE_MAX_BYTES = 16_384;
+
+/** The parts of the key computed fresh on every read (no spawn). */
+export interface OwnershipLocalKey {
+  readonly runningRoot: string;
+  readonly execPath: string | null;
+  readonly prefixEnv: readonly (string | null)[];
+  /** Realpath of the first npm on PATH (found without a spawn). */
+  readonly npm: string;
+  /** Realpath of the node npm's shebang runs (ISS-1493 O2). */
+  readonly node: string;
+  /** npm_config_userconfig, NPM_CONFIG_USERCONFIG, npm_config_globalconfig, NPM_CONFIG_GLOBALCONFIG. */
+  readonly configEnv: readonly (string | null)[];
+  /** Hash of the user npmrc that applies, and of the global npmrc ("absent" when the file does not exist). */
+  readonly userconfig: string;
+  readonly globalconfig: string;
+  readonly skills: readonly { readonly dir: string; readonly skill: boolean; readonly marker: string | null; readonly fingerprint: string | null }[];
+}
+
+export interface OwnershipCacheEntry {
+  readonly version: 1;
+  readonly local: OwnershipLocalKey;
+  /** What `npm root -g` answered when the verdict was computed. */
+  readonly npmRoot: string;
+  /** The identity of the global package npm named, at that time ("absent" when none). */
+  readonly globalPackage: string;
+  readonly verdict: RefreshOwnership;
+  readonly runningRoot: string | null;
+  readonly globalRoot: string | null;
+  readonly noticed: boolean;
+}
+
+export function ownershipCachePath(): string {
+  return join(storybloqGlobalDir(), OWNERSHIP_CACHE_FILE);
+}
+
+function realpathOrNull(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+const NPM_CONFIG_MAX_BYTES = 65_536;
+
+/**
+ * ISS-1493 N2: "absent" only when the file does not exist. An existing file
+ * that cannot be read, is not a regular file, or is over the bound returns
+ * null, which disables the cache: its content is unknown, not empty.
+ */
+function configFileHash(p: string): string | null {
+  try {
+    const st = statSync(p);
+    if (!st.isFile() || st.size > NPM_CONFIG_MAX_BYTES) return null;
+    const body = readFileSync(p);
+    if (body.length > NPM_CONFIG_MAX_BYTES) return null;
+    // ISS-1493 O1: a file that itself sets prefix or globalconfig moves what
+    // npm reads; that resolution is npm's, so the cache is bypassed.
+    if (setsNpmLocationKey(body.toString("utf-8"))) return null;
+    return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+  } catch (err: unknown) {
+    const code = (err as { code?: string } | null)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : null;
+  }
+}
+
+/** ISS-1493 O1: true when any ini line's key, trimmed and case-insensitive, is prefix or globalconfig (any value). */
+function setsNpmLocationKey(body: string): boolean {
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith(";") || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    const key = (eq === -1 ? line : line.slice(0, eq)).trim().replace(/^["']|["']$/g, "").toLowerCase();
+    if (key === "prefix" || key === "globalconfig") return true;
+  }
+  return false;
+}
+
+/** ISS-1493 N1: the realpath of the first executable `npm` on PATH, by walking PATH (no spawn). */
+function npmOnPath(): string | null {
+  return onPath(process.platform === "win32" ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
+}
+
+/**
+ * ISS-1493 O2: the node npm runs under, from npm's own shebang (bounded
+ * read). `#!/usr/bin/env node` resolves node by the same PATH walk; an
+ * absolute node path is used as is. Anything else (another interpreter, a
+ * shell shim, Windows) is not simple enough to key on: null.
+ */
+function npmInterpreter(npm: string): string | null {
+  if (process.platform === "win32") return null;
+  let head: string;
+  try {
+    const fd = openSync(npm, "r");
+    try {
+      const buf = Buffer.alloc(256);
+      head = buf.subarray(0, readSync(fd, buf, 0, 256, 0)).toString("utf-8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const first = (head.split("\n")[0] ?? "").replace(/\r$/, "");
+  if (!first.startsWith("#!")) return null;
+  const [cmd = "", arg, ...rest] = first.slice(2).trim().split(/\s+/);
+  if (cmd === "/usr/bin/env" && arg === "node" && rest.length === 0) return onPath(["node"]);
+  if (arg === undefined && cmd.startsWith("/") && cmd.split("/").pop() === "node") return realpathOrNull(cmd);
+  return null;
+}
+
+/** The realpath of the first executable regular file named one of `names` on PATH (no spawn). */
+function onPath(names: readonly string[]): string | null {
+  const dirs = (process.env.PATH ?? "").split(pathDelimiter);
+  // ISS-1493 P1: an empty or relative component is the current directory to
+  // a real lookup; the answer then depends on cwd, so the cache is bypassed.
+  if (dirs.some((d) => d === "" || !isAbsolute(d))) return null;
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+        accessSync(candidate, fsConstants.X_OK);
+        return realpathSync(candidate);
+      } catch {
+        // not this one
+      }
+    }
+  }
+  return null;
+}
+
+/** Key parts a, b and d of the plan: running root, npm prefix inputs, skill marker state. Null when the running root cannot be resolved. */
+export async function ownershipLocalKey(): Promise<OwnershipLocalKey | null> {
+  try {
+    const { resolveSkillSourceDir } = await import("../cli/commands/setup-skill.js");
+    const runningRoot = realpathSync(resolve(resolveSkillSourceDir(), "..", ".."));
+    // ISS-1493 N1: every input npm reads to answer `root -g`; any one that
+    // cannot be determined bypasses the cache (no read, no write).
+    const npm = npmOnPath();
+    if (npm === null) return null;
+    const node = npmInterpreter(npm);
+    if (node === null) return null;
+    const env = (k: string): string | null => process.env[k] || null;
+    const configEnv = ["npm_config_userconfig", "NPM_CONFIG_USERCONFIG", "npm_config_globalconfig", "NPM_CONFIG_GLOBALCONFIG"].map(env);
+    const userconfig = configFileHash(configEnv[0] ?? configEnv[1] ?? join(homedir(), ".npmrc"));
+    // npm's default global npmrc is <prefix>/etc/npmrc, the prefix being the
+    // configured one or else that of the node npm runs under (bin/node -> two levels up).
+    const prefix = env("npm_config_prefix") ?? env("NPM_CONFIG_PREFIX") ?? env("PREFIX") ?? dirname(dirname(node));
+    const globalconfig = configFileHash(configEnv[2] ?? configEnv[3] ?? join(prefix, "etc", "npmrc"));
+    if (userconfig === null || globalconfig === null) return null;
+    return {
+      runningRoot,
+      execPath: realpathOrNull(process.execPath),
+      prefixEnv: ["npm_config_prefix", "NPM_CONFIG_PREFIX", "PREFIX"].map((k) => process.env[k] ?? null),
+      npm,
+      node,
+      configEnv,
+      userconfig,
+      globalconfig,
+      skills: skillTargets().map((t) => ({
+        dir: t.dir,
+        skill: existsSync(join(t.dir, "SKILL.md")),
+        marker: readSkillMarker(t.id),
+        fingerprint: readSkillFingerprint(t.id),
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Key part c: the global package's package.json as it is now, by realpath and stat identity. */
+export function globalPackageIdentity(npmRoot: string): string {
+  const pkgDir = join(npmRoot, "@storybloq", "storybloq");
+  try {
+    const st = lstatSync(join(pkgDir, "package.json"));
+    return `${realpathOrNull(pkgDir) ?? "?"}|${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`;
+  } catch {
+    return "absent";
+  }
+}
+
+const strOrNull = (x: unknown): boolean => x === null || typeof x === "string";
+
+/** ISS-1493 N4: the full local key shape, every field. */
+function isLocalKey(v: unknown): v is OwnershipLocalKey {
+  if (typeof v !== "object" || v === null) return false;
+  const k = v as Record<string, unknown>;
+  return typeof k.runningRoot === "string" && strOrNull(k.execPath) && typeof k.npm === "string" && typeof k.node === "string" &&
+    Array.isArray(k.prefixEnv) && k.prefixEnv.length === 3 && k.prefixEnv.every(strOrNull) &&
+    Array.isArray(k.configEnv) && k.configEnv.length === 4 && k.configEnv.every(strOrNull) &&
+    typeof k.userconfig === "string" && typeof k.globalconfig === "string" &&
+    Array.isArray(k.skills) && k.skills.every((x: unknown) => {
+      if (typeof x !== "object" || x === null) return false;
+      const t = x as Record<string, unknown>;
+      return typeof t.dir === "string" && typeof t.skill === "boolean" && strOrNull(t.marker) && strOrNull(t.fingerprint);
+    });
+}
+
+function isEntry(v: unknown): v is OwnershipCacheEntry {
+  if (typeof v !== "object" || v === null) return false;
+  const e = v as Record<string, unknown>;
+  return e.version === 1 && isLocalKey(e.local) && typeof e.npmRoot === "string" &&
+    typeof e.globalPackage === "string" && (e.verdict === "owner" || e.verdict === "foreign" || e.verdict === "unknown") &&
+    (e.runningRoot === null || typeof e.runningRoot === "string") && (e.globalRoot === null || typeof e.globalRoot === "string") &&
+    typeof e.noticed === "boolean";
+}
+
+/** The entry on disk, or null for anything but a regular, bounded, well-shaped file. */
+export function readOwnershipCache(): OwnershipCacheEntry | null {
+  const p = ownershipCachePath();
+  try {
+    if (!lstatSync(p).isFile()) return null;
+    const body = readBoundedFile(p, OWNERSHIP_CACHE_MAX_BYTES);
+    if (body === null) return null;
+    const parsed: unknown = JSON.parse(body);
+    return isEntry(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write-then-rename (the update-check.ts pattern, mirrored here): a failed
+ * write leaves the previous entry intact, and the rename replaces a symlink
+ * at the path instead of writing through it. Best-effort and silent.
+ */
+function writeOwnershipCache(entry: OwnershipCacheEntry): boolean {
+  const p = ownershipCachePath();
+  let owned: { path: string; fd: number } | null = null;
+  try {
+    mkdirSync(storybloqGlobalDir(), { recursive: true });
+    const tmp = `${p}.tmp.${process.pid}.${Date.now()}.${randomBytes(2).toString("hex")}`;
+    const fd = openSync(tmp, "wx", 0o600);
+    owned = { path: tmp, fd };
+    writeFileSync(fd, `${JSON.stringify(entry, null, 2)}\n`, "utf-8");
+    closeSync(fd);
+    owned = { path: tmp, fd: -1 };
+    renameSync(tmp, p);
+    owned = null;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (owned !== null) {
+      if (owned.fd >= 0) {
+        try { closeSync(owned.fd); } catch { /* ignore */ }
+      }
+      try { unlinkSync(owned.path); } catch { /* ignore */ }
+    }
+  }
+}
+
+function sameKey(a: OwnershipLocalKey, b: OwnershipLocalKey): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 const PACKAGE_NAME = "@storybloq/storybloq";
 
@@ -369,30 +647,62 @@ function storybloqPackageRoot(dir: string): string | null {
   return pkg.name === PACKAGE_NAME ? real : null;
 }
 
-async function computeRefreshOwnership(): Promise<RefreshOwnershipResult> {
+/** The verdict, plus what npm answered (null when npm itself failed, which is never cached). */
+async function computeRefreshOwnership(): Promise<{ readonly result: RefreshOwnershipResult; readonly npmRoot: string | null; readonly identityBefore: string | null }> {
   let runningRoot: string | null = null;
   let globalRoot: string | null = null;
+  let npmRoot: string | null = null;
   try {
     const { resolveSkillSourceDir, npmGlobalRoot } = await import("../cli/commands/setup-skill.js");
     // <pkg>/src/skill in both the dist and the source layout.
     runningRoot = realpathSync(resolve(resolveSkillSourceDir(), "..", ".."));
-    const npmRoot = npmGlobalRoot();
-    if (npmRoot === null) return { verdict: "unknown", runningRoot, globalRoot };
-    globalRoot = storybloqPackageRoot(join(npmRoot, "@storybloq", "storybloq"));
-    if (globalRoot === null) return { verdict: "unknown", runningRoot, globalRoot };
+    npmRoot = npmGlobalRoot();
+    if (npmRoot === null) return { result: { verdict: "unknown", runningRoot, globalRoot }, npmRoot, identityBefore: null };
+    const identityBefore = globalPackageIdentity(npmRoot);
+    // A package that is absent or not ours is an answer npm gave: cacheable.
+    try {
+      globalRoot = storybloqPackageRoot(join(npmRoot, "@storybloq", "storybloq"));
+    } catch {
+      globalRoot = null;
+    }
+    if (globalRoot === null) return { result: { verdict: "unknown", runningRoot, globalRoot }, npmRoot, identityBefore };
     const same = process.platform === "win32"
       ? globalRoot.toLowerCase() === runningRoot.toLowerCase()
       : globalRoot === runningRoot;
-    return { verdict: same ? "owner" : "foreign", runningRoot, globalRoot };
+    return { result: { verdict: same ? "owner" : "foreign", runningRoot, globalRoot }, npmRoot, identityBefore };
   } catch {
-    return { verdict: "unknown", runningRoot, globalRoot };
+    return { result: { verdict: "unknown", runningRoot, globalRoot }, npmRoot: null, identityBefore: null };
   }
+}
+
+/** ISS-1493: the disk entry when it still matches, else the computation (one npm spawn), remembered when npm answered. */
+async function cachedOrComputedOwnership(): Promise<RefreshOwnershipResult> {
+  const local = await ownershipLocalKey();
+  if (local !== null) {
+    const entry = readOwnershipCache();
+    if (entry !== null && sameKey(entry.local, local) && globalPackageIdentity(entry.npmRoot) === entry.globalPackage) {
+      refreshOwner.cache = entry;
+      return { verdict: entry.verdict, runningRoot: entry.runningRoot, globalRoot: entry.globalRoot };
+    }
+  }
+  const { result, npmRoot, identityBefore } = await computeRefreshOwnership();
+  refreshOwner.beforePersist?.();
+  // ISS-1493 N3: persist only when the global package is the one the verdict
+  // was read from: identity taken before reading ownership and again now.
+  if (local !== null && npmRoot !== null && identityBefore !== null && globalPackageIdentity(npmRoot) === identityBefore) {
+    const entry: OwnershipCacheEntry = {
+      version: 1, local, npmRoot, globalPackage: identityBefore,
+      verdict: result.verdict, runningRoot: result.runningRoot, globalRoot: result.globalRoot, noticed: false,
+    };
+    if (writeOwnershipCache(entry)) refreshOwner.cache = entry;
+  }
+  return result;
 }
 
 /** The memoised verdict (the override, when a test set one). */
 export async function refreshOwnershipVerdict(): Promise<RefreshOwnershipResult> {
   if (refreshOwner.override) return { verdict: refreshOwner.override(), runningRoot: null, globalRoot: null };
-  if (refreshOwner.memo === null) refreshOwner.memo = { value: await computeRefreshOwnership() };
+  if (refreshOwner.memo === null) refreshOwner.memo = { value: await cachedOrComputedOwnership() };
   return refreshOwner.memo.value;
 }
 
@@ -403,14 +713,21 @@ export function refreshOwnership(): RefreshOwnershipResult | null {
 }
 
 /**
- * True when this process may write. Otherwise prints the one notice (once per
- * process) and returns false.
+ * True when this process may write. Otherwise prints the one notice and
+ * returns false: once per process, and (ISS-1493) once per cached state, so a
+ * later process in the same state stays quiet.
  */
 async function mayAutoRefresh(): Promise<boolean> {
   const { verdict, runningRoot, globalRoot } = await refreshOwnershipVerdict();
   if (verdict === "owner") return true;
   if (!refreshOwner.noticed) {
     refreshOwner.noticed = true;
+    const cached = refreshOwner.cache;
+    if (cached !== null && cached.noticed) return false;
+    if (cached !== null) {
+      const marked: OwnershipCacheEntry = { ...cached, noticed: true };
+      if (writeOwnershipCache(marked)) refreshOwner.cache = marked;
+    }
     const running = runningRoot === null ? "unknown location" : sanitizeDisplayPath(runningRoot);
     const global = globalRoot === null ? "not found" : sanitizeDisplayPath(globalRoot);
     process.stderr.write(

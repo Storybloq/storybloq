@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claudeArgvProblems, claudePolicyObject, claudePolicySettings, claudeReadback, claudeTurnArgs, controlRequest, initEventProblems, policyFileProblems, READBACK_REQUESTS,
-  readbackProblems, userMessage, type ClaudeExpected, type ClaudeSession, type ReadbackExpected, type ReadbackStep,
+  readbackProblems, readbackExpected, policyOptionsProblems, ONBOARDING_OPTIONS, userMessage, type ClaudeExpected, type ClaudeSession, type ReadbackExpected, type ReadbackStep,
 } from "../../scripts/headless-policy.js";
 
 const ROOTS = ["/w/project", "/w/project/.git", "/w/tmp", "/w/storybloq-global", "/w/eval-events"];
@@ -335,4 +335,50 @@ describe("4.4 the stream's init event", () => {
     expect(initEventProblems(init(over), DEGRADED)[0]).toBe(field);
   });
   it("no init event fails", () => { expect(initEventProblems([], DEGRADED)[0]).toBe("init: no system init event"); });
+});
+
+describe("T-525 E2: settingSources", () => {
+  const NONE = { ...ONBOARDING_OPTIONS, settingSources: "none" as const };
+  const head = (v: string): string[] => { const a = claudeTurnArgs(E, FIRST); return a.slice(a.indexOf("--setting-sources"), a.indexOf("--setting-sources") + 2).concat(v); };
+  it("the default and an explicit \"user\" keep the T-538 argv, argv check and readback expectation byte for byte", () => {
+    const user = { ...ONBOARDING_OPTIONS, settingSources: "user" as const };
+    expect(claudeTurnArgs(E, FIRST, user)).toEqual(claudeTurnArgs(E, FIRST));
+    expect(claudeTurnArgs(E, FIRST)).toContain("user");
+    expect(JSON.stringify(readbackExpected(E))).toBe(JSON.stringify(readbackExpected(E, user)));
+    expect("settingSources" in readbackExpected(E)).toBe(false);
+    expect(head("x").slice(0, 2)).toEqual(["--setting-sources", "user"]);
+  });
+  it("\"none\" passes an empty source list, and its argv passes only its own check", () => {
+    const a = claudeTurnArgs(E, FIRST, NONE);
+    expect(a[a.indexOf("--setting-sources") + 1]).toBe("");
+    expect(claudeArgvProblems(a, E, FIRST, NONE)).toEqual([]);
+    expect(claudeArgvProblems(claudeTurnArgs(E, FIRST), E, FIRST, NONE).length).toBeGreaterThan(0);
+    expect(claudeArgvProblems(a, E, FIRST).length).toBeGreaterThan(0);
+  });
+  it("an unknown value is an options problem", () => {
+    expect(policyOptionsProblems({ ...ONBOARDING_OPTIONS, settingSources: "all" as never }).join("\n")).toMatch(/settingSources/);
+  });
+  const XN: ReadbackExpected = { ...X, settingSources: "none" };
+  const flagOnly = (v: { source: string }[]) => v.filter((s) => s.source === "flagSettings");
+  it("\"none\": exactly flagSettings holding the policy passes", () => {
+    expect(readbackProblems(changed("get_settings", "sources", flagOnly, XN), XN)).toEqual([]);
+  });
+  it.each([
+    ["flagSettings plus userSettings (the T-538 shape)", (v: { source: string }[]) => v],
+    ["no sources", () => []],
+    ["flagSettings plus projectSettings", (v: { source: string }[]) => [...flagOnly(v), { source: "projectSettings", settings: {} }]],
+    ["flagSettings plus localSettings", (v: { source: string }[]) => [...flagOnly(v), { source: "localSettings", settings: {} }]],
+    ["flagSettings plus policySettings", (v: { source: string }[]) => [...flagOnly(v), { source: "policySettings", settings: {} }]],
+    ["flagSettings with another policy", (v: { source: string; settings?: Record<string, unknown> }[]) => v.filter((s) => s.source === "flagSettings").map((s) => ({ ...s, settings: { ...s.settings, hooks: { Stop: [] } } }))],
+  ])("\"none\": %s is refused", (_n, f) => {
+    expect(readbackProblems(changed("get_settings", "sources", f, XN), XN)[0]).toBe("get_settings.sources");
+  });
+  it("readbackExpected carries \"none\" from the options, so the launch's own expectation refuses the user source", () => {
+    const xn = readbackExpected(E, NONE);
+    expect(xn.settingSources).toBe("none");
+    expect(readbackProblems(changed("get_settings", "sources", (v: unknown[]) => v, { ...X, ...xn }), xn)[0]).toBe("get_settings.sources");
+  });
+  it("the default still refuses flagSettings alone", () => {
+    expect(readbackProblems(changed("get_settings", "sources", flagOnly), X)[0]).toBe("get_settings.sources");
+  });
 });

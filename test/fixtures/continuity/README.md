@@ -94,3 +94,11 @@ Everything under `storybloq/` is projected to the public repository. Only saniti
 
 - v0 (2026-09-20): core as above. No proposal record, no catalogs.
 - v1 (2026-09-22): overlays/lifecycle carries R4, the proposed ruling against R1 (T-522). Core unchanged; no behavioural arm includes it.
+
+## Signed-in isolation (T-525 Addendum E, owner ruling r-hs5j319qkr3gjvtz)
+
+`--isolation signed-in` runs the Claude client on the operator's signed-in account: only the client process gets the real HOME (from the password database) and the default config dir, with no token. Any token or API-key variable, or CLAUDE_CONFIG_DIR, in the driver's environment is a refusal by name. The client loads no settings source but the run's own `--settings` file (`--setting-sources ""`), and the readback must show flagSettings alone. Every other process, the storybloq server and the model's CLI calls included, runs under a scratch HOME; the model reaches storybloq only through a pinned launcher (`env -i`, the scratch HOME, `NO_UPDATE_NOTIFIER=1`). The real home is accounted for by a metadata-only inventory (`scripts/continuity-home.ts`) that never opens a file; credential and unrecognised files are checked by existence, size, mode and mtime only.
+
+What it can claim: the Claude arm runs on the operator's signed-in account in the real HOME. Client-side writes to the operator's Claude state are detected at the endpoints, not prevented, and files that hold credentials are checked by metadata only. Everything else runs under scratch homes.
+
+Status: the mode refuses to spawn claude, even with `--live-ack <ruling id>`, until E3's per-prompt provenance checks and the M2 to M6 evidence exist, and no signed-in record qualifies until then. M2 to M6 are owner-gated live steps.

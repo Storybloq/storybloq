@@ -148,7 +148,12 @@ export interface ExperimentInputs {
   readonly timeoutMs: number;
   readonly maxBudgetUsd: number;
   readonly clientVersion: string;
-  readonly isolation: "fresh" | "shared";
+  readonly isolation: "fresh" | "shared" | "signed-in";
+  /**
+   * T-525 Addendum E, signed-in only: the setting sources, the pinned launcher's hash and the home
+   * classifier version. Absent for fresh, so every fresh hash is unchanged.
+   */
+  readonly signedIn?: { readonly settingSources: "none"; readonly launcherSha256: string; readonly homeClassifierVersion: number };
   /** The effective client configuration (shared: the live config dir; fresh: the provisioned template). */
   readonly configHash: string;
   /** ISS-1486 D8: the launch policy version; a record captured under another one never satisfies a cell. */
@@ -173,6 +178,7 @@ export function experimentHash(i: ExperimentInputs): string {
       isolation: i.isolation,
       configHash: i.configHash,
       launchPolicy: i.launchPolicy,
+      ...(i.signedIn === undefined ? {} : { signedIn: { settingSources: i.signedIn.settingSources, launcherSha256: i.signedIn.launcherSha256, homeClassifierVersion: i.signedIn.homeClassifierVersion } }),
     }),
   );
 }
@@ -1273,7 +1279,7 @@ export function verifyAttemptDir(dir: string): AttemptVerification {
 
 export interface QualificationInputs {
   readonly cells: readonly { readonly task: string; readonly repeat: number; readonly satisfied: boolean; readonly evidenceComplete: boolean }[];
-  readonly isolation: "fresh" | "shared";
+  readonly isolation: "fresh" | "shared" | "signed-in";
   /** ISS-1486 D9: the arm's pilot as readPilot verified it; required, and only an ok pilot qualifies. */
   readonly pilot: PilotCheck;
 }
@@ -1287,6 +1293,16 @@ export function expectedCellKeys(): string[] {
  * QUALIFYING needs exactly the preregistered cells, each with one valid observation whose evidence is
  * complete. Duplicate, unknown or out-of-range cells disqualify; the reason names every missing key.
  */
+/**
+ * T-525 Addendum E: the gates that must exist before a signed-in launch spawns claude or a signed-in record
+ * qualifies; every refusal names them. Kept here, not in continuity-signed-in.ts, so the helper bundle's
+ * inputs stay unchanged.
+ */
+export const SIGNED_IN_MISSING_GATES = [
+  "E3 per-prompt provenance checks (plugins, skills, agents, hooks and memory listed empty or the run's own)",
+  "M2 to M6 evidence (setting-source behaviour, inventory method, real-home gate, fixture exclusions, live turns)",
+] as const;
+
 export function qualifies(i: QualificationInputs): { readonly qualifying: boolean; readonly shortCells: string[]; readonly unpublishedCells: string[]; readonly reason: string } {
   const expected = expectedCellKeys();
   const keys = i.cells.map((c) => `${c.task}#${c.repeat}`);
@@ -1301,6 +1317,8 @@ export function qualifies(i: QualificationInputs): { readonly qualifying: boolea
   if (missing.length > 0) return { qualifying: false, shortCells, unpublishedCells, reason: `missing cells: ${missing.join(", ")}` };
   if (shortCells.length > 0) return { qualifying: false, shortCells, unpublishedCells, reason: `${shortCells.length} cell(s) without a valid observation: ${shortCells.join(", ")}` };
   if (unpublishedCells.length > 0) return { qualifying: false, shortCells, unpublishedCells, reason: `${unpublishedCells.length} observation(s) with incomplete published evidence: ${unpublishedCells.join(", ")}` };
+  // T-525 Addendum E: signed-in records qualify only once E3's provenance checks and the M2 to M6 evidence exist.
+  if (i.isolation === "signed-in") return { qualifying: false, shortCells, unpublishedCells, reason: `signed-in isolation does not qualify yet: missing gates: ${SIGNED_IN_MISSING_GATES.join("; ")}` };
   if (i.isolation !== "fresh") return { qualifying: false, shortCells, unpublishedCells, reason: "shared isolation is refused (ISS-1486)" };
   if (!i.pilot.ok) return { qualifying: false, shortCells, unpublishedCells, reason: `no verified pilot: ${i.pilot.reason}` };
   return { qualifying: true, shortCells, unpublishedCells, reason: "every cell has one valid observation with complete evidence" };

@@ -16,7 +16,7 @@ import {
 } from "../../scripts/continuity-lib.js";
 import {
   parseArgs, buildManifestHash, readAttempts, INPUT_PATHS, checkOutputPaths, effectiveConfigHash, commandTokens, SHARED_REFUSAL, refuseShared, continuityTools, continuityOptions,
-  provisionFreshConfig, runAttempt, runMatrix, RateLimitStopError, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
+  provisionFreshConfig, runAttempt, runMatrix, runPilot, driveClaude, type Launch, RateLimitStopError, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
 } from "../../scripts/continuity-run.js";
 import { aggregate, COMPARISON_CHECKPOINT, scoringRequest, validateScore, mechanicalFailureScore, selectObservations, renderReport, loadScore, publishText, type AttemptRecord, type Observation,
   taskMaterialOf, experimentTaskMaterial, compareTaskMaterial, type TaskMaterialResult } from "../../scripts/continuity-score.js";
@@ -830,6 +830,25 @@ describe("dispatcher arguments, CLI and preflight helpers", () => {
     await expect(runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn }))).rejects.toThrow(SHARED_REFUSAL);
     await expect(runMatrix(o, pf, deps({ spawnFn }))).rejects.toThrow(SHARED_REFUSAL);
     expect(spawned).toBe(0);
+  });
+  it("T-525: signed-in is refused at every execution entry point and at the driveClaude spawn boundary, with a supplied Preflight", async () => {
+    // Token-shaped names in this process's env would be named first; take them out for the row, values untouched.
+    const { signedInEnvProblems, SIGNED_IN_MISSING_GATES } = await import("../../scripts/continuity-signed-in.js");
+    const saved: Record<string, string | undefined> = {};
+    for (const k of signedInEnvProblems(process.env)) { saved[k] = process.env[k]; delete process.env[k]; }
+    try {
+      const o = options({ isolation: "signed-in", liveAck: "r-hs5j319qkr3gjvtz" }); const pf = fakePreflight(); let spawned = 0;
+      const spawnFn: SpawnFn = () => { spawned++; throw new Error("spawned"); };
+      const gates = SIGNED_IN_MISSING_GATES[0]; // toThrow(string) matches a substring of the message
+      await expect(runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn }))).rejects.toThrow(gates);
+      await expect(runPilot(o, pf, deps({ spawnFn }))).rejects.toThrow(gates);
+      await expect(runMatrix(o, pf, deps({ spawnFn }))).rejects.toThrow(gates);
+      const dir = tmp("cont-drive-");
+      await expect(driveClaude(o, {} as Launch, "p", { transcript: join(dir, "t"), stderr: join(dir, "e") }, deps({ spawnFn }), () => {})).rejects.toThrow(gates);
+      expect(spawned).toBe(0);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v;
+    }
   });
   it("parses and validates options; skip-build and duplicate tasks are refused", () => {
     const out = tmp("cont-out-"); const raw = tmp("cont-raw-");

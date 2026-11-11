@@ -35,6 +35,7 @@ import { killSidecar } from "../src/autonomous/liveness.js";
 import { loadProject } from "../src/core/project-loader.js";
 import { handleValidate } from "../src/cli/commands/validate.js";
 import type { CommandContext } from "../src/cli/types.js";
+import { signedInEnvProblems, signedInSpawnRefusal } from "./continuity-signed-in.js";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = resolve(SCRIPT_DIR, "..");
@@ -112,8 +113,10 @@ export interface RunOptions {
   readonly repeats: number;
   readonly model: string;
   readonly effort: string;
-  /** ISS-1486 D4: always fresh. The type keeps "shared" only so the entry points can be shown to refuse it. */
-  readonly isolation: "fresh" | "shared";
+  /** ISS-1486 D4: fresh, or T-525 Addendum E's signed-in. The type keeps "shared" only so the entry points can be shown to refuse it. */
+  readonly isolation: "fresh" | "shared" | "signed-in";
+  /** Addendum E: the owner ruling id a signed-in live launch names. */
+  readonly liveAck?: string;
   /** ISS-1486 D9: run the pilot for the arm instead of the matrix. */
   readonly pilot?: boolean;
   readonly out: string;
@@ -137,7 +140,8 @@ export function parseArgs(argv: readonly string[]): RunOptions {
   // ISS-1486 D4: shared isolation runs the client on the owner's live config, which the launch policy cannot hold.
   if (argv.includes("--owner-exception")) throw new Error(`continuity-run: --owner-exception is refused (${SHARED_REFUSAL})`);
   const isolation = get("isolation", "fresh");
-  if (isolation !== "fresh") throw new Error(`continuity-run: --isolation ${String(isolation)} is refused (${SHARED_REFUSAL})`);
+  if (isolation !== "fresh" && isolation !== "signed-in") throw new Error(`continuity-run: --isolation ${String(isolation)} is refused (${SHARED_REFUSAL})`);
+  const liveAck = get("live-ack");
   const timeoutMs = Number(get("timeout-ms", "1800000"));
   const sigkillGraceMs = Number(get("sigkill-grace-ms", "15000"));
   assertValidTimerMs(timeoutMs, "timeout-ms", "continuity-run");
@@ -152,6 +156,7 @@ export function parseArgs(argv: readonly string[]): RunOptions {
     model: get("model", "claude-opus-5")!,
     effort: get("effort", "high")!,
     isolation,
+    ...(liveAck === undefined ? {} : { liveAck }),
     pilot: argv.includes("--pilot"),
     out, rawOut, timeoutMs, sigkillGraceMs,
     maxBudgetUsd: Number(get("max-budget-usd", "15")),
@@ -180,11 +185,11 @@ export function checkOutputPaths(out: string, rawOut: string, pkgRoot: string): 
 // --- ISS-1486: the launch under the shared policy ---------------------------------------------
 
 /** Why shared isolation and the owner exception are refused, named in every refusal. */
-export const SHARED_REFUSAL = "ISS-1486: the continuity runner runs only fresh isolation, under the shared launch policy";
+export const SHARED_REFUSAL = "ISS-1486: the continuity runner runs only fresh isolation, under the shared launch policy (the one exception is signed-in, owner ruling r-hs5j319qkr3gjvtz)";
 
 /** D4: refused at parseArgs and again at every exported entry point, so a caller building options by hand cannot reach a launch. */
 export function refuseShared(o: { readonly isolation: string; readonly ownerException?: unknown }): void {
-  if (o.isolation !== "fresh") throw new Error(`continuity-run: ${String(o.isolation)} isolation is refused (${SHARED_REFUSAL})`);
+  if (o.isolation !== "fresh" && o.isolation !== "signed-in") throw new Error(`continuity-run: ${String(o.isolation)} isolation is refused (${SHARED_REFUSAL})`);
   if (o.ownerException !== undefined && o.ownerException !== null) throw new Error(`continuity-run: an owner exception is refused (${SHARED_REFUSAL})`);
 }
 
@@ -200,6 +205,11 @@ export function continuityOptions(effort: string): ClaudePolicyOptions {
     extraArgs: [["--effort", effort]],
     extraFlags: ["--no-session-persistence"],
   };
+}
+
+/** T-525 Addendum E2: the signed-in arm's options, the continuity policy with no settings source but the run's --settings file. */
+export function signedInOptions(effort: string): ClaudePolicyOptions {
+  return { ...continuityOptions(effort), settingSources: "none" };
 }
 
 export const CONTINUITY_TOOLS_FILE = join(SCRIPT_DIR, "continuity-tools.json");
@@ -388,6 +398,21 @@ function pgrep(args: string[], cwd: string): string {
   try { return sh("pgrep", args, cwd); } catch { return ""; }
 }
 
+/**
+ * The number of processes whose command line matches `pattern`. Counts only: pgrep without -l prints
+ * process ids, and only their number leaves this function, so no command line (which can carry another
+ * session's token) reaches any text, log or record.
+ */
+export function processCount(pattern: string, cwd: string): number {
+  return pgrep(["-f", pattern], cwd).split("\n").filter((l) => /^\d+$/.test(l.trim())).length;
+}
+
+/** The preflight refusal for a concurrent suite, naming the process kind and a count, never its arguments. */
+export function concurrentSuiteProblem(proc: string, cwd: string): string | null {
+  const n = processCount(proc, cwd);
+  return n > 0 ? `continuity-run: ${n} ${proc} process(es) running on this machine; the memory rule forbids a concurrent suite` : null;
+}
+
 // --- configuration inventory ----------------------------------------------------
 
 /** Tokenises a hook command respecting single and double quotes. */
@@ -552,13 +577,32 @@ export interface Preflight {
   readonly codexBin: string;
 }
 
+/**
+ * T-525 Addendum E1 and the live guard: a signed-in launch refuses on any token or API-key variable (names
+ * only), then refuses to spawn claude: without --live-ack it names the ack, with it the missing gates.
+ */
+export function refuseSignedIn(o: Pick<RunOptions, "liveAck">, env: NodeJS.ProcessEnv): never {
+  const names = signedInEnvProblems(env);
+  if (names.length > 0) throw new Error(`continuity-run: signed-in isolation refuses these variables (names only): ${names.join(", ")}`);
+  throw new Error(signedInSpawnRefusal(o.liveAck));
+}
+
+/**
+ * T-525: every execution entry point (runPilot, runAttempt, runMatrix) and the driveClaude spawn boundary
+ * refuse a signed-in launch, so a supplied Preflight cannot route around preflight's own refusal.
+ */
+export function refuseSignedInLaunch(o: Pick<RunOptions, "isolation" | "liveAck">, env: NodeJS.ProcessEnv = process.env): void {
+  if (o.isolation === "signed-in") refuseSignedIn(o, env);
+}
+
 export function preflight(o: RunOptions): Preflight {
   refuseShared(o);
+  if (o.isolation === "signed-in") refuseSignedIn(o, process.env);
   refuseAmbiguousSecrets(process.env);
   assertSubscriptionAuthOnly(process.env, "continuity-run");
   for (const proc of ["vitest", "jest"]) {
-    const found = pgrep(["-fl", proc], PKG_ROOT);
-    if (found) throw new Error(`continuity-run: ${proc} is running on this machine; the memory rule forbids a concurrent suite:\n${found}`);
+    const problem = concurrentSuiteProblem(proc, PKG_ROOT);
+    if (problem) throw new Error(problem);
   }
   checkOutputPaths(o.out, o.rawOut, PKG_ROOT);
   const dirty = sh("git", ["status", "--porcelain", "--", ...INPUT_PATHS], PKG_ROOT);
@@ -704,6 +748,8 @@ export interface LaunchRun {
  * Control responses never reach the transcript; stdin ends at the result event.
  */
 export async function driveClaude(o: RunOptions, launch: Launch, prompt: string, files: { readonly transcript: string; readonly stderr: string }, deps: AttemptDeps, onLine: (line: string) => void): Promise<LaunchRun> {
+  // T-525: the spawn boundary itself refuses a signed-in launch, whatever entry point reached it.
+  refuseSignedInLaunch(o);
   const spawnFn = deps.spawnFn ?? (nodeSpawn as unknown as SpawnFn);
   const now = deps.now ?? Date.now;
   const signals: SignalSource = deps.signals ?? process;
@@ -959,6 +1005,7 @@ function mappedPublisher(dirs: LaunchDirs, allowlist: readonly string[]): (text:
 
 export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repeat: number, attemptNo: number, deps: AttemptDeps = {}): Promise<AttemptOutcome> {
   refuseShared(o);
+  refuseSignedInLaunch(o);
   requirePilot(o, pf);
   const now = deps.now ?? Date.now;
   const readDist = deps.distHashes ?? distHashes;
@@ -1315,6 +1362,7 @@ export interface PilotOutcome {
  */
 export async function runPilot(o: RunOptions, pf: Preflight, deps: AttemptDeps = {}): Promise<PilotOutcome> {
   refuseShared(o);
+  refuseSignedInLaunch(o);
   const expDir = experimentDir(o, pf);
   const id = `p${randomBytes(8).toString("hex")}`;
   // G7: a fresh raw folder for this invocation, named by its id and created exclusively: a retry never reads or
@@ -1477,6 +1525,7 @@ type CellRow = { task: string; repeat: number; satisfied: boolean; evidenceCompl
 
 export async function runMatrix(o: RunOptions, pf: Preflight, deps: AttemptDeps = {}): Promise<MatrixResult> {
   refuseShared(o);
+  refuseSignedInLaunch(o);
   // D9: the pilot is checked before anything is spent; a missing, failed or foreign one starts nothing.
   requirePilot(o, pf);
   const shortExp = pf.experiment.slice(0, 12);

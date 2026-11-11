@@ -60,7 +60,15 @@ export interface ClaudePolicyOptions {
   readonly deny: readonly string[];
   readonly extraArgs: readonly (readonly [string, string])[];
   readonly extraFlags: readonly string[];
+  /**
+   * T-525 Addendum E2: which settings sources the client loads besides the run's --settings file. Absent or
+   * "user" is the T-538 contract (the provisioned user settings plus flagSettings); "none" passes
+   * `--setting-sources ""`, so the readback must show flagSettings alone.
+   */
+  readonly settingSources?: "user" | "none";
 }
+
+const settingSourcesArg = (o: ClaudePolicyOptions): string => (o.settingSources === "none" ? "" : "user");
 
 /** The onboarding runner's options: exactly the constants of T-538 commit 1, so its policy, argv and readback are unchanged. */
 export const ONBOARDING_OPTIONS: ClaudePolicyOptions = Object.freeze({
@@ -91,6 +99,7 @@ export function policyOptionsProblems(o: ClaudePolicyOptions): string[] {
     if ((CLAUDE_BYPASS as readonly string[]).includes(v)) problems.push(`options: ${v} is a bypass spelling`);
   }
   for (const t of o.allowBuiltIns) if (o.deny.includes(t)) problems.push(`options: ${t} is both allowed and denied`);
+  if (o.settingSources !== undefined && o.settingSources !== "user" && o.settingSources !== "none") problems.push(`options: settingSources ${String(o.settingSources)} is neither "user" nor "none"`);
   return problems;
 }
 
@@ -136,7 +145,7 @@ export function claudeTurnArgs(e: ClaudeExpected, session: ClaudeSession, o: Cla
   return [
     "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--model", e.model, "--tools", o.builtInTools.join(","), "--permission-mode", "dontAsk", "--permission-prompts", "none",
-    "--setting-sources", "user", "--settings", e.policyFile, "--strict-mcp-config", "--mcp-config", e.mcpFile,
+    "--setting-sources", settingSourcesArg(o), "--settings", e.policyFile, "--strict-mcp-config", "--mcp-config", e.mcpFile,
     "--max-budget-usd", String(e.maxBudgetUsd),
     ...o.extraArgs.flatMap(([k, v]) => [k, v]), ...o.extraFlags,
     ...(session.kind === "first" ? ["--session-id", session.id] : ["--resume", session.id]),
@@ -158,7 +167,7 @@ export function claudeArgvProblems(args: readonly string[], e: ClaudeExpected, s
   // Built from entries, so every key is an own property (a `__proto__` name could never reach the prototype).
   const valued: Record<string, string> = Object.fromEntries([
     ["--input-format", "stream-json"], ["--output-format", "stream-json"], ["--model", e.model], ["--tools", o.builtInTools.join(",")],
-    ["--permission-mode", "dontAsk"], ["--permission-prompts", "none"], ["--setting-sources", "user"], ["--settings", e.policyFile],
+    ["--permission-mode", "dontAsk"], ["--permission-prompts", "none"], ["--setting-sources", settingSourcesArg(o)], ["--settings", e.policyFile],
     ["--mcp-config", e.mcpFile], ["--max-budget-usd", String(e.maxBudgetUsd)], ["--session-id", session.id], ["--resume", session.id],
     ...o.extraArgs.map(([k, v]) => [k, v] as const),
   ]);
@@ -255,11 +264,14 @@ export interface ReadbackExpected {
   readonly policy: Record<string, unknown>;
   readonly mcpTools: readonly string[];
   readonly mcpLaunch: McpLaunch;
+  /** E2: present only as "none"; absent keeps the user-plus-flag source contract. */
+  readonly settingSources?: "none";
 }
 
 export const readbackExpected = (e: ClaudeExpected, o: ClaudePolicyOptions = ONBOARDING_OPTIONS): ReadbackExpected => ({
   project: e.project, roots: [...e.roots], policy: claudePolicyObject(e.roots, e.allowedTools, o), mcpTools: [...e.mcpTools],
   mcpLaunch: { command: e.mcpLaunch.command, args: [...e.mcpLaunch.args], ...(e.mcpLaunch.env === undefined ? {} : { env: { ...e.mcpLaunch.env } }) },
+  ...(o.settingSources === "none" ? { settingSources: "none" as const } : {}),
 });
 
 /** JSON with object keys sorted, so equal values have equal text. */
@@ -351,7 +363,10 @@ export function readbackProblems(steps: readonly ReadbackStep[], x: ReadbackExpe
   const settings = body("get_settings");
   if (settings !== null) {
     const sources = settings.sources;
-    const want = [{ source: "userSettings", settings: CLAUDE_USER_SETTINGS }, { source: "flagSettings", settings: x.policy }];
+    // E2: with no user source, exactly one source remains, flagSettings holding the policy.
+    const want = x.settingSources === "none"
+      ? [{ source: "flagSettings", settings: x.policy }]
+      : [{ source: "userSettings", settings: CLAUDE_USER_SETTINGS }, { source: "flagSettings", settings: x.policy }];
     const got = Array.isArray(sources) ? sources.map((s) => ({ source: obj(s)?.source, settings: obj(s)?.settings })) : null;
     if (got === null || got.length !== want.length || !want.every((w) => got.some((g) => same(g, w)))) problems.push("get_settings.sources");
   }

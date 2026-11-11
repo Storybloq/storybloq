@@ -1340,13 +1340,13 @@ describe("regrade: code round 1", () => {
     } finally { run.done(); rmSync(fixtures, { recursive: true, force: true }); }
   });
 
-  it("prints the guarantee and the limitation with a legacy regrade's result", () => {
+  it("prints the guarantee and the limitation with a legacy regrade's result", async () => {
     const run = storedRun("a7-run6");
     const out: string[] = [];
     const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; });
     const exitCode = process.exitCode;
     try {
-      regradeCli(["--regrade", run.record, "--raw", run.raw]);
+      await regradeCli(["--regrade", run.record, "--raw", run.raw]);
       expect(process.exitCode).toBe(3);
       const text = out.join("");
       expect(text).toContain(" revision 1 pending PENDING_SEMANTIC\n");

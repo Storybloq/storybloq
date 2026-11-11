@@ -60,6 +60,19 @@ export interface EventsLog {
   readonly events: readonly SetupEvent[];
   readonly overlaps: readonly EventsOverlap[];
   readonly withheld?: readonly EventsWithheld[];
+  /** T-538 6.1: one record per schedule entry that fired, written by the collector just before its kill. */
+  readonly fired?: readonly EventsFired[];
+}
+
+/** T-538 6.1: `{type: "fault-fired", id, selector, point, target, invocation}` on its attempt's sequence. */
+export interface EventsFired {
+  readonly line: number;
+  readonly attempt: string;
+  readonly id: string;
+  readonly selector: string;
+  readonly point: string;
+  readonly target: string | null;
+  readonly invocation: string | null;
 }
 
 export class EventsLogError extends Error {}
@@ -75,6 +88,7 @@ export function parseEventsLog(text: string): EventsLog {
   const events: SetupEvent[] = [];
   const overlaps: EventsOverlap[] = [];
   const withheld: EventsWithheld[] = [];
+  const fired: EventsFired[] = [];
   const known = new Set<string>();
   text.slice(0, -1).split("\n").forEach((raw, line) => {
     let x: Record<string, unknown>;
@@ -108,11 +122,16 @@ export function parseEventsLog(text: string): EventsLog {
       withheld.push({ line, attempt: x.attempt, name: x.name });
       return;
     }
+    if (x.type === "fault-fired") {
+      if (!str(x.id) || !str(x.selector) || !str(x.point) || !strOrNull(x.target) || !strOrNull(x.invocation)) throw new EventsLogError(`events log line ${line + 1} is not a fired record`);
+      fired.push({ line, attempt: x.attempt, id: x.id, selector: x.selector, point: x.point, target: x.target, invocation: x.invocation });
+      return;
+    }
     if (!str(x.point) || !strOrNull(x.setupId) || !strOrNull(x.invocation) || !strOrNull(x.revision)) throw new EventsLogError(`events log line ${line + 1} is not an event`);
     events.push({ ...(x as object), line, attempt: x.attempt, seq: x.seq as number, point: x.point, setupId: x.setupId, invocation: x.invocation, revision: x.revision } as SetupEvent);
   });
   if (attempts.length === 0) throw new EventsLogError("the events log has no attempt line");
-  return { attempts, events, overlaps, withheld };
+  return { attempts, events, overlaps, withheld, ...(fired.length > 0 ? { fired } : {}) };
 }
 
 /** Reads the log, or returns its error as a finding for a run's grading. */

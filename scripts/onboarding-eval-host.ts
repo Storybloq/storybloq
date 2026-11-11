@@ -284,6 +284,9 @@ export function envFor(role: EnvRole, i: EnvInputs): Record<string, string> {
   need("HOME", i.home);
   need("TMPDIR", i.tmp);
   need("LANG", i.lang);
+  // Finding 4 (pen ruling, option A): the product's own opt-out holds the registry update check (and its cache
+  // write under HOME) off in both columns; turns have no network, so that path could not be measured anyway.
+  env.NO_UPDATE_NOTIFIER = "1";
   if (role === "client") {
     if (i.client === "codex") need("CODEX_HOME", i.clientCodexHome);
     else {

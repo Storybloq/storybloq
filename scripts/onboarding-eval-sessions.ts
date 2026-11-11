@@ -19,8 +19,11 @@ import { cs7TurnsFrom, findCheckpoint, type CheckpointSpec, type EvidenceObserva
 import type { DriveState, Variant } from "./onboarding-eval-drive.js";
 import { parseSetupMeta } from "../src/core/setup-meta.js";
 import { readBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
+import { checkSchedule, parseSelector, pointMatches, type ScheduleFact } from "./onboarding-eval-schedule.js";
+import { STATES_RAW, statesFindings, type StateRecord } from "./onboarding-eval-states.js";
+import { EDITED_RAW, editedSnapshotFindings, END_RAW, killRaw, parseTreeSnap, preservationFindings, type TreeSnap } from "./onboarding-eval-preserve.js";
 
-export const SESSION_VARIANTS = ["interrupted", "interrupted-edited", "milestone-demo", "empty-idea-verify", "restart"] as const;
+export const SESSION_VARIANTS = ["interrupted", "interrupted-edited", "milestone-demo", "milestone-states", "empty-idea-verify", "restart"] as const;
 export type SessionVariant = (typeof SESSION_VARIANTS)[number];
 
 export const isSessionVariant = (v: string): v is SessionVariant => (SESSION_VARIANTS as readonly string[]).includes(v);
@@ -28,12 +31,15 @@ export const isSessionVariant = (v: string): v is SessionVariant => (SESSION_VAR
 /** The variants that take `--fault`: the fault is set in session 1 only. */
 export const isFaultVariant = (v: string): boolean => v === "interrupted" || v === "interrupted-edited";
 
+/** T-538 6.2: the variants that run a milestone, show its demo and try the checkpoint's gate afterwards. */
+export const isDemoVariant = (v: string | null): boolean => v === "milestone-demo" || v === "milestone-states";
+
 /** The variant the setup flow runs as: a session variant's setup is the plain one. */
 export const baseVariant = (v: Variant | SessionVariant): Variant => (isSessionVariant(v) ? "none" : v);
 
 /** The fixture a variant runs on, when it fixes one. */
 export function variantFixture(v: SessionVariant): string | null {
-  return v === "milestone-demo" ? "checkpoint-demo" : v === "empty-idea-verify" ? "empty-idea" : null;
+  return v === "milestone-demo" ? "checkpoint-demo" : v === "milestone-states" ? "checkpoint-states" : v === "empty-idea-verify" ? "empty-idea" : null;
 }
 
 export const SESSIONS_RAW = "sessions.json";
@@ -61,6 +67,9 @@ export interface SessionScript {
   readonly demoApproval: string;
   /** milestone-demo: the change the owner asks for after approval. */
   readonly changeRequest: string;
+  /** milestone-states (T-538 6.2): the owner withdrawing the approval, then approving again. */
+  readonly reopen: string;
+  readonly reapproval: string;
 }
 
 export function sessionScript(text: string): SessionScript {
@@ -76,6 +85,8 @@ export function sessionScript(text: string): SessionScript {
     milestoneRun: section(/Milestone run turn/i) || "auto milestone 1",
     demoApproval: section(/Demo approval turn/i),
     changeRequest: section(/Change request turn/i),
+    reopen: section(/Reopen turn/i),
+    reapproval: section(/Reapproval turn/i),
   };
 }
 
@@ -84,17 +95,29 @@ export function sessionScript(text: string): SessionScript {
  * (`/story` or `$story`); `dependent` is the ticket the milestone checkpoint
  * gates, read from the setup snapshot (milestone-demo only).
  */
-export function laterSessions(v: SessionVariant, invoke: string, script: SessionScript, dependent: string | null): LaterSession[] {
+/**
+ * The sessions after the first. `armed` (T-538 6.1) is how many sessions a fault schedule arms: the interrupted
+ * variants then have that many later sessions, each opening the setup again, so the attempt has armed + 1 in all.
+ */
+export function laterSessions(v: SessionVariant, invoke: string, script: SessionScript, dependent: string | null, armed = 1): LaterSession[] {
+  const reopen = (from: number): LaterSession[] => Array.from({ length: Math.max(armed - 1, 0) }, (_, i) => ({ setup: true, turns: [{ label: `session-${from + i}-open`, prompt: invoke }] }));
   switch (v) {
     case "interrupted":
-      return [{ setup: true, turns: [{ label: "session-2-open", prompt: invoke }] }];
+      return [{ setup: true, turns: [{ label: "session-2-open", prompt: invoke }] }, ...reopen(3)];
     case "interrupted-edited":
-      return [{ setup: true, turns: [{ label: "session-2-open", prompt: invoke }, { label: "edit-ruling", prompt: script.editRuling }] }];
+      return [{ setup: true, turns: [{ label: "session-2-open", prompt: invoke }, { label: "edit-ruling", prompt: script.editRuling }] }, ...reopen(3)];
     case "milestone-demo":
       if (script.demoApproval === "" || script.changeRequest === "") throw new Error("milestone-demo needs the fixture's \"Demo approval turn\" and \"Change request turn\" sections");
       // With no gated dependent in the snapshot there is no targeted run; the variant check names the missing block.
       return [
         { setup: false, turns: [{ label: "milestone-run", prompt: `${invoke} ${script.milestoneRun}` }, { label: "demo-approval", prompt: script.demoApproval }, { label: "change-request", prompt: script.changeRequest }] },
+        ...(dependent === null ? [] : [{ setup: false, turns: [{ label: "dependent-run", prompt: `${invoke} auto ${dependent}` }] }]),
+      ];
+    case "milestone-states":
+      // T-538 6.2: session 2 approves, withdraws, approves again and changes the checkpoint; session 3 is the targeted run.
+      if (script.demoApproval === "" || script.reopen === "" || script.reapproval === "" || script.changeRequest === "") throw new Error("milestone-states needs the fixture's \"Demo approval turn\", \"Reopen turn\", \"Reapproval turn\" and \"Change request turn\" sections");
+      return [
+        { setup: false, turns: [{ label: "milestone-run", prompt: `${invoke} ${script.milestoneRun}` }, { label: "demo-approval", prompt: script.demoApproval }, { label: "reopen", prompt: script.reopen }, { label: "reapproval", prompt: script.reapproval }, { label: "change-request", prompt: script.changeRequest }] },
         ...(dependent === null ? [] : [{ setup: false, turns: [{ label: "dependent-run", prompt: `${invoke} auto ${dependent}` }] }]),
       ];
     case "empty-idea-verify":
@@ -134,8 +157,13 @@ export function demoFacts(command: string, expected: string, r: { readonly statu
 export interface HarnessFacts {
   /** The `--fault` selector set in session 1, or null. */
   readonly fault: string | null;
-  /** Whether the fault's `.fired` marker existed after session 1; null when no fault was set. */
+  /** Whether the fault's marker existed after session 1; null when no fault was set. */
   readonly fired: boolean | null;
+  /**
+   * T-538 6.1: the fault schedule, one entry per armed session, each with whether its own `.fired.<id>` marker
+   * existed after its session; null for a run without one (every stored run before 6.1).
+   */
+  readonly schedule: readonly ScheduleFact[] | null;
   /** interrupted-edited: the owner edits the harness made between the sessions. */
   readonly edits: { readonly edgeTicket: string; readonly blocker: string; readonly describedTicket: string; readonly description: string } | null;
   /** milestone-demo: the demo command, the rubric's stdout, and what the harness's own run printed and how it ended. */
@@ -169,7 +197,7 @@ export interface BypassAttempt {
   readonly ledgerProblems?: readonly string[];
 }
 
-export const NO_FACTS: HarnessFacts = { fault: null, fired: null, edits: null, demo: null, dependent: null, report: null, storeRevisions: null, testEnabled: null, bypass: null };
+export const NO_FACTS: HarnessFacts = { fault: null, fired: null, schedule: null, edits: null, demo: null, dependent: null, report: null, storeRevisions: null, testEnabled: null, bypass: null };
 
 export interface SessionsFile {
   readonly sessions: readonly SessionSpan[];
@@ -214,7 +242,16 @@ export function parseSessionsFile(text: string, turnCount: number, callCount: nu
     call = s.calls[1];
   });
   if (turn !== turnCount || call !== callCount) throw new SessionsError(`the sessions cover ${turn} of ${turnCount} turns and ${call} of ${callCount} calls`);
-  return { sessions: spans, harness: { ...NO_FACTS, ...(v.harness as Partial<HarnessFacts>) } };
+  const harness = { ...NO_FACTS, ...(v.harness as Partial<HarnessFacts>) };
+  if (harness.schedule !== null) scheduleFactsOrThrow(harness.schedule);
+  return { sessions: spans, harness };
+}
+
+/** 6.1: a recorded schedule is a list of entries the parser would accept, each with a boolean `fired`. */
+function scheduleFactsOrThrow(schedule: unknown): void {
+  const entry = (e: unknown): e is ScheduleFact => e !== null && typeof e === "object" && Number.isInteger((e as ScheduleFact).session) && typeof (e as ScheduleFact).id === "string" && typeof (e as ScheduleFact).selector === "string" && typeof (e as ScheduleFact).fired === "boolean";
+  if (!Array.isArray(schedule) || schedule.length === 0 || !schedule.every(entry)) throw new SessionsError("has a malformed fault schedule");
+  try { checkSchedule(schedule); } catch (err) { throw new SessionsError(`has a fault schedule the runner refuses (${err instanceof Error ? err.message : String(err)})`); }
 }
 
 // --- artifacts -----------------------------------------------------------------------
@@ -225,7 +262,8 @@ export function requiredArtifacts(variant: string, completed: boolean): string[]
     "events.jsonl", "invocations.json",
     ...(completed ? ["setup-snapshot.json"] : []),
     ...(isSessionVariant(variant) ? [SESSIONS_RAW] : []),
-    ...(variant === "milestone-demo" ? [OBSERVATIONS_RAW] : []),
+    ...(isDemoVariant(variant) ? [OBSERVATIONS_RAW] : []),
+    ...(variant === "milestone-states" ? [STATES_RAW] : []),
   ];
 }
 
@@ -255,6 +293,63 @@ export interface VariantInputs {
   /** The tickets as the setup's archive left them (the snapshot), for the completions that came before the boundary. */
   readonly ticketsAtSetup: readonly object[];
   readonly checkSet: number;
+  /** T-538 6.1: the recorded tree snapshots, when the run kept them. */
+  readonly faults?: FaultSnapshots;
+  /** T-538 6.2 (milestone-states): the boundary records, recomputed from their copies; null when the run kept none. */
+  readonly states?: readonly StateRecord[] | null;
+  /** The rubric's follow-up title pattern. */
+  readonly followUpTitle?: string | null;
+}
+
+/** T-538 6.1: the tree snapshots a fault run records as replay inputs, and the fixture's protected paths. */
+export interface FaultSnapshots {
+  /** A snapshot's recorded text by raw name (fault-kill.<id>.json, fault-edited.json, fault-end.json), or null when absent. */
+  readonly read: (name: string) => string | null;
+  /** The fixture's own files outside `.story/`, by project-relative path. */
+  readonly protectedPaths: readonly string[];
+}
+
+/**
+ * The preservation rules on a live attempt (plan v5 6.1), applied only to a run whose log holds fired records
+ * (the per-id collector): a stored run with the legacy marker records no snapshot and is regraded as before. A
+ * missing or malformed snapshot is a finding, never a skipped rule.
+ */
+export function faultSnapshotFindings(v: string, harness: HarnessFacts, log: EventsLog | null, faults: FaultSnapshots | undefined): string[] {
+  const fired = log?.fired ?? [];
+  if (log === null || fired.length === 0) return [];
+  if (faults === undefined) return [`${v}: the run kept no fault snapshots`];
+  const out: string[] = [];
+  const snap = (name: string, what: string): TreeSnap | null => {
+    const text = faults.read(name);
+    if (text === null) { out.push(`${v}: the ${what} (${name}) is missing`); return null; }
+    try { return parseTreeSnap(text); } catch (err) { out.push(`${v}: the ${what} (${name}) is malformed: ${(err as Error).message}`); return null; }
+  };
+  const kills = fired.map((f) => snap(killRaw(f.id), `kill snapshot of ${f.id}`));
+  const end = snap(END_RAW, "end snapshot");
+  const first = kills[0] ?? null;
+  let baseline = first;
+  if (v === "interrupted-edited") {
+    const edited = snap(EDITED_RAW, "snapshot after the owner's edits");
+    if (edited !== null && first !== null && harness.edits !== null) out.push(...editedSnapshotFindings(first, edited, harness.edits));
+    baseline = edited;
+  }
+  if (baseline !== null && end !== null) out.push(...preservationFindings(v, { baseline, end, protectedPaths: faults.protectedPaths, selector: fired[0]!.selector, firedLine: fired[0]!.line, log }));
+  // Codex round 1 P6: every later kill snapshot is held too. Each must be complete, and the end must preserve what
+  // it shows, so an item created between two faults and changed after the second kill is caught. The owner's edits
+  // land before session 2, so a later kill already holds them and is compared with the end as it stands. A rule
+  // that reads the whole log (the archive count) gives the same line for every kill; it is kept once. The
+  // config.json rule is held from each kill's own fired line (Codex round 2 Q2).
+  const completeness = (k: TreeSnap, id: string): string[] => [
+    ...(k.truncated ? [`${v}: the kill snapshot of ${id} is truncated`] : []),
+    ...k.problems.map((p) => `${v}: the kill snapshot of ${id}: ${p}`),
+  ];
+  if (v === "interrupted-edited" && first !== null) out.push(...completeness(first, fired[0]!.id));
+  kills.forEach((k, n) => {
+    if (n === 0 || k === null) return;
+    out.push(...completeness(k, fired[n]!.id));
+    if (end !== null) out.push(...preservationFindings(v, { baseline: { ...k, truncated: false, problems: [] }, end, protectedPaths: faults.protectedPaths, selector: fired[n]!.selector, firedLine: fired[n]!.line, log }));
+  });
+  return [...new Set(out)];
 }
 
 const sessionOf = (sessions: readonly SessionSpan[], turn: number): number => sessions.find((s) => turn >= s.turns[0] && turn < s.turns[1])?.session ?? 1;
@@ -301,10 +396,49 @@ export function completionsOf(call: VariantTurn["calls"][number]): string[] {
   return [];
 }
 
+/**
+ * T-538 6.1: each schedule entry fired in its own session, and its fired record (exactly one, by id) names that
+ * entry's selector and a point the selector matches; a `:*` selector's record names the point it resolved to.
+ */
+/**
+ * P5: a fired record's session, from its attempt and invocation through the run's invocation mapping to the turn,
+ * then to the session holding that turn; null when no invocation of the run matches it.
+ */
+export type FiredSession = (r: { readonly attempt: string; readonly invocation: string | null }) => number | null;
+export function firedSessionFrom(mapping: readonly InvocationMapping[], sessions: readonly SessionSpan[]): FiredSession {
+  return (r) => {
+    if (r.invocation === null) return null;
+    const m = mapping.filter((x) => x.attempt === r.attempt && x.invocation === r.invocation);
+    return m.length === 1 ? sessionOf(sessions, m[0]!.turn) : null;
+  };
+}
+
+export function scheduleFindings(v: string, schedule: readonly ScheduleFact[], log: EventsLog | null, sessionOfFired: FiredSession): string[] {
+  const out: string[] = [];
+  for (const e of schedule) {
+    if (!e.fired) out.push(`${v}: the fault ${e.id} (${e.selector}) never fired (no .fired.${e.id} marker after session ${e.session})`);
+    const records = (log?.fired ?? []).filter((r) => r.id === e.id);
+    if (records.length !== 1) { out.push(`${v}: the fault ${e.id} has ${records.length} fired records, not one`); continue; }
+    const r = records[0]!;
+    if (r.selector !== e.selector) out.push(`${v}: the fault ${e.id}'s fired record names the selector ${r.selector}, not ${e.selector}`);
+    if (!pointMatches(parseSelector(e.selector).point, r.point)) out.push(`${v}: the fault ${e.id} fired at ${r.point}, which ${e.selector} does not select`);
+    const s = sessionOfFired(r);
+    if (s === null) out.push(`${v}: the fault ${e.id}'s fired record matches no invocation of the run (attempt ${r.attempt}, invocation ${r.invocation ?? "none"})`);
+    else if (s !== e.session) out.push(`${v}: the fault ${e.id} fired in session ${s}, not session ${e.session}`);
+  }
+  for (const r of log?.fired ?? []) if (!schedule.some((e) => e.id === r.id)) out.push(`${v}: a fired record for ${r.id}, which the schedule does not hold`);
+  return out;
+}
+
 function interruptedFindings(i: VariantInputs): string[] {
   const v = i.variant;
   const out: string[] = [];
-  if (i.harness.fired !== true) out.push(`${v}: the fault ${i.harness.fault ?? "(none set)"} never fired (no .fired marker after session 1)`);
+  const schedule = i.harness.schedule;
+  // The last armed session; the resume is the session after it.
+  const armed = schedule === null ? 1 : schedule.length;
+  if (schedule === null) {
+    if (i.harness.fired !== true) out.push(`${v}: the fault ${i.harness.fault ?? "(none set)"} never fired (no .fired marker after session 1)`);
+  } else out.push(...scheduleFindings(v, schedule, i.log, firedSessionFrom(i.mapping, i.sessions)));
   i.turns.forEach((t, n) => {
     const s = sessionOf(i.sessions, n);
     // The edited variant's session 2 asks the owner about the edited description by design (exit 4), so only a plain resume is held to no question.
@@ -313,9 +447,12 @@ function interruptedFindings(i: VariantInputs): string[] {
   const counts = new Map<string, number>();
   for (const e of i.log?.events ?? []) if (e.point.startsWith("step:item:") || e.point === "step:archive") counts.set(e.point, (counts.get(e.point) ?? 0) + 1);
   for (const [point, n] of counts) if (n > 1) out.push(`${v}: ${point.slice("step:".length)} committed ${n} times`);
-  // The resume is the point: a retry inside session 1 proves nothing about a fresh session picking the setup up.
-  for (const m of i.mapping) if (sessionOf(i.sessions, m.turn) === 1 && m.exitCode === 0) out.push(`${v}: session 1 finished the setup itself (turn ${m.turn + 1}), so the resume was never exercised`);
-  if (!i.mapping.some((m) => sessionOf(i.sessions, m.turn) >= 2 && m.exitCode === 0)) out.push(`${v}: no setup-apply call in session 2 finished the setup`);
+  // The resume is the point: a retry inside an armed session proves nothing about a fresh session picking the setup up.
+  for (const m of i.mapping) {
+    const s = sessionOf(i.sessions, m.turn);
+    if (s <= armed && m.exitCode === 0) out.push(`${v}: session ${s} finished the setup itself (turn ${m.turn + 1}), so the resume was never exercised`);
+  }
+  if (!i.mapping.some((m) => sessionOf(i.sessions, m.turn) > armed && m.exitCode === 0)) out.push(`${v}: no setup-apply call in session ${armed + 1} finished the setup`);
   return out;
 }
 
@@ -353,30 +490,31 @@ function editedFindings(i: VariantInputs): string[] {
 
 function demoFindings(i: VariantInputs): string[] {
   const out: string[] = [];
+  const v = i.variant;
   const d = i.harness.demo;
-  if (d === null) return ["milestone-demo: the harness has no demo run"];
-  if (d.status !== 0 || d.signal || d.error) out.push(`milestone-demo: the demo command did not exit 0 (status ${d.exitForm ?? d.status ?? "none"}, signal ${d.signal ?? "none"}, error ${d.error ?? "none"})`);
-  if (d.stdout.trim() !== d.expected.trim()) out.push(`milestone-demo: the demo command printed "${d.stdout.trim()}", not the rubric's "${d.expected.trim()}"`);
+  if (d === null) return [`${v}: the harness has no demo run`];
+  if (d.status !== 0 || d.signal || d.error) out.push(`${v}: the demo command did not exit 0 (status ${d.exitForm ?? d.status ?? "none"}, signal ${d.signal ?? "none"}, error ${d.error ?? "none"})`);
+  if (d.stdout.trim() !== d.expected.trim()) out.push(`${v}: the demo command printed "${d.stdout.trim()}", not the rubric's "${d.expected.trim()}"`);
   // The demo is shown by running it, before the owner's approval: a narrated result is not a demo.
   // Session 2's turns are milestone-run, demo-approval, change-request (laterSessions): the demo is run inside the first.
   const s2 = i.sessions.find((s) => s.session === 2);
   const shown = s2 !== undefined && i.turns.slice(s2.turns[0], s2.turns[0] + 1).some((t) => t.calls.some((c) => c.command !== null && c.command.includes(d.command)));
-  if (!shown) out.push(`milestone-demo: the demo was shown by narration only; no call before the approval ran ${d.command}`);
+  if (!shown) out.push(`${v}: the demo was shown by narration only; no call before the approval ran ${d.command}`);
   const last = i.sessions.at(-1);
   const blocked = last !== undefined && last.session >= 3 && i.turns.slice(last.turns[0], last.turns[1]).some((t) => /waits on owner checkpoints? /.test(t.text) || t.calls.some((c) => /waits on owner checkpoints? /.test(c.output)));
-  if (!blocked) out.push(`milestone-demo: the targeted run on ${i.harness.dependent ?? "the dependent"} did not come back checkpoint-blocked`);
+  if (!blocked) out.push(`${v}: the targeted run on ${i.harness.dependent ?? "the dependent"} did not come back checkpoint-blocked`);
   // T-538 S5b: an ordinary status update is the other way around the checkpoint; it must be refused by the checkpoint, writing nothing.
   const b = i.harness.bypass;
-  if (b === null) out.push(`milestone-demo: the harness made no status-update attempt on ${i.harness.dependent ?? "the dependent"}`);
+  if (b === null) out.push(`${v}: the harness made no status-update attempt on ${i.harness.dependent ?? "the dependent"}`);
   else {
-    if (b.exitCode === 0) out.push(`milestone-demo: the status update completing ${b.ticket} went through`);
+    if (b.exitCode === 0) out.push(`${v}: the status update completing ${b.ticket} went through`);
     // No exit status is no refusal, whatever the process printed before it died.
     // Under the wrapper a signal inside the sandbox comes back as exit 128 + n: that is no exit status either (Addendum B).
-    else if (b.killedBy !== undefined) out.push(`milestone-demo: the status update on ${b.ticket} did not exit (${b.exitForm ?? `killed by ${b.killedBy}`})`);
-    else if (b.exitCode === null) out.push(`milestone-demo: the status update on ${b.ticket} did not exit (signal ${b.signal ?? "none"}, error ${b.error ?? "none"})`);
-    else if (!b.output.some((l) => /waits on owner checkpoints? /.test(l))) out.push(`milestone-demo: the status update on ${b.ticket} was refused for another reason ("${b.output.join(" | ")}")`);
-    if (b.ledgerChanged) out.push(`milestone-demo: the status update on ${b.ticket} changed the ledger`);
-    for (const p of b.ledgerProblems ?? []) out.push(`milestone-demo: the ledger could not be read as evidence: ${p}`);
+    else if (b.killedBy !== undefined) out.push(`${v}: the status update on ${b.ticket} did not exit (${b.exitForm ?? `killed by ${b.killedBy}`})`);
+    else if (b.exitCode === null) out.push(`${v}: the status update on ${b.ticket} did not exit (signal ${b.signal ?? "none"}, error ${b.error ?? "none"})`);
+    else if (!b.output.some((l) => /waits on owner checkpoints? /.test(l))) out.push(`${v}: the status update on ${b.ticket} was refused for another reason ("${b.output.join(" | ")}")`);
+    if (b.ledgerChanged) out.push(`${v}: the status update on ${b.ticket} changed the ledger`);
+    for (const p of b.ledgerProblems ?? []) out.push(`${v}: the ledger could not be read as evidence: ${p}`);
   }
   return out;
 }
@@ -568,9 +706,10 @@ function restartFindings(i: VariantInputs): string[] {
 /** The variant's own checks; check set 7's rules run beside them over the whole run. */
 export function variantFindings(i: VariantInputs): string[] {
   switch (i.variant) {
-    case "interrupted": return interruptedFindings(i);
-    case "interrupted-edited": return [...interruptedFindings(i), ...editedFindings(i)];
+    case "interrupted": return [...interruptedFindings(i), ...faultSnapshotFindings(i.variant, i.harness, i.log, i.faults)];
+    case "interrupted-edited": return [...interruptedFindings(i), ...editedFindings(i), ...faultSnapshotFindings(i.variant, i.harness, i.log, i.faults)];
     case "milestone-demo": return demoFindings(i);
+    case "milestone-states": return [...demoFindings(i), ...statesFindings(i.states ?? null, i.followUpTitle ?? null)];
     case "empty-idea-verify": return orderFindings(i);
     case "restart": return restartFindings(i);
   }
@@ -625,6 +764,11 @@ export interface SessionCheckInputs {
   readonly ticketsAtSetup: readonly object[];
   /** Whether the run left a raw input by name. */
   readonly present: (name: string) => boolean;
+  /** T-538 6.1: the fault run's recorded tree snapshots. */
+  readonly faults?: FaultSnapshots;
+  /** T-538 6.2: milestone-states' boundary records and the rubric's follow-up title pattern. */
+  readonly states?: readonly StateRecord[] | null;
+  readonly followUpTitle?: string | null;
 }
 
 /** The variant's checks on a driven run: its artifacts, then its own findings, each sourced as the variant's. */
@@ -635,6 +779,9 @@ export function applySessionChecks(state: DriveState, i: SessionCheckInputs): vo
     ...variantFindings({
       variant: i.variant, turns: cs7TurnsFrom(state.turns, state.allCalls), sessions: sessionSpans(state.turns), harness: i.harness,
       log: i.log, mapping: i.mapping, tickets: i.tickets, ticketsAtSetup: i.ticketsAtSetup, checkSet: state.checkSet,
+      ...(i.faults !== undefined ? { faults: i.faults } : {}),
+      ...(i.states !== undefined ? { states: i.states } : {}),
+      ...(i.followUpTitle !== undefined ? { followUpTitle: i.followUpTitle } : {}),
     }),
   ];
   for (const f of findings) {

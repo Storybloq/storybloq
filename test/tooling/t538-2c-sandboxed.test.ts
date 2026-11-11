@@ -4,13 +4,14 @@
  * fixture's; the rows that need the real `codex sandbox` are opt-in (STORYBLOQ_REAL_CODEX=1 with
  * STORYBLOQ_REAL_CODEX_BIN), skipped without it and failing when it is asked for and missing.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { SANDBOXED_STREAM_BYTES, sandboxedRun, sandboxSettings } from "../../scripts/onboarding-eval-host.js";
-import { shellWords } from "../../scripts/onboarding-eval-run.js";
+import { installPythonShims, shellWords, underAnyRoot } from "../../scripts/onboarding-eval-run.js";
+import { configProblems, fileEntry } from "../../scripts/onboarding-eval-config.js";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REAL = process.env.STORYBLOQ_REAL_CODEX === "1";
@@ -103,9 +104,77 @@ describe("no harness process runs in the project but through the wrapper (5.7)",
   });
 });
 
+/**
+ * Pen ruling R1 (T-538 commit 3): the shim folder outside every root, first on the PATH, gives the three spellings
+ * a Python rubric uses the same host `python3`. Each runs the non-npm-tests fixture's suite through sandboxedRun.
+ */
+const SPELLINGS = ["pytest", "python -m pytest", "python3 -m pytest"] as const;
+async function pythonSpellings(codexBin: string): Promise<void> {
+  const l = layout();
+  cpSync(join(PKG, "test", "fixtures", "onboarding", "non-npm-tests", "project"), l.project, { recursive: true });
+  const shimDir = join(l.work, "python-bin");
+  const shims = installPythonShims(shimDir, process.env.PATH ?? "");
+  expect(shims.map((f) => f.slice(shimDir.length + 1))).toEqual(["python", "python3", "pytest"]);
+  expect(underAnyRoot(shimDir, l.roots)).toBe(false);
+  for (const f of shims) {
+    expect(underAnyRoot(f, l.roots), f).toBe(false);
+    expect(statSync(f).mode & 0o222, f).toBe(0);
+  }
+  const env = { ...l.env, PATH: `${shimDir}:${l.env.PATH}` };
+  for (const spelling of SPELLINGS) {
+    const r = await sandboxedRun({ codexBin, roots: l.roots, cwd: l.project, command: `${spelling} -q -p no:cacheprovider`, deadlineMs: 60_000, env });
+    expect(r.status, `${spelling}: ${r.stdout}${r.stderr}`).toBe(0);
+    expect(r.stdout, spelling).toMatch(/\d+ passed/);
+  }
+}
+
+describe("R1: the Python shims give the three rubric spellings one python3", () => {
+  it("python and python3 run the PATH's python3 and pytest runs python3 -m pytest; no python3 on the PATH gives no shims", () => {
+    const d = scratch();
+    const shims = installPythonShims(join(d, "bin"), process.env.PATH ?? "");
+    const py = readFileSync(shims[0]!, "utf-8");
+    expect(py).toMatch(/^#!\/bin\/sh\nexec '\/[^']+\/python3' "\$@"\n$/);
+    expect(readFileSync(shims[1]!, "utf-8")).toBe(py);
+    expect(readFileSync(shims[2]!, "utf-8")).toBe(py.replace(` "$@"`, ` '-m' 'pytest' "$@"`));
+    expect(installPythonShims(join(d, "none"), join(d, "empty"))).toEqual([]);
+    expect(existsSync(join(d, "none"))).toBe(false);
+  });
+  it("the manifest holds the folder in full: a file placed in it, or a shim changed, stops the run by name", () => {
+    const d = scratch();
+    const dir = join(d, "python-bin");
+    const shims = installPythonShims(dir, process.env.PATH ?? "");
+    const manifest = { folders: [dir], entries: shims.map((f) => fileEntry(f)) };
+    expect(configProblems(manifest)).toEqual([]);
+    writeFileSync(join(dir, "node"), "#!/bin/sh\n");
+    expect(configProblems(manifest)).toEqual([`config: ${join(dir, "node")} is not in the manifest`]);
+    rmSync(join(dir, "node"));
+    chmodSync(shims[2]!, 0o755);
+    writeFileSync(shims[2]!, "#!/bin/sh\nexit 0\n");
+    expect(configProblems(manifest)).toEqual([`config: ${shims[2]} changed mode`, `config: ${shims[2]} changed`]);
+  });
+  it("the runner puts the shim folder first on the one PATH the client, the tool server and the harness's commands share, and pins it", () => {
+    const src = readFileSync(join(PKG, "scripts", "onboarding-eval-run.ts"), "utf-8");
+    expect(src).toContain("const pythonShims = installPythonShims(join(work, \"python-bin\"), clientPath);\n  if (pythonShims.length > 0) clientPath = `${join(work, \"python-bin\")}${delimiter}${clientPath}`;");
+    expect(src).toContain("client: o.client, path: clientPath,");
+    expect(src).toContain("PATH: envInputs.path, HOME: harnessHome,");
+    expect(src).toContain("for (const f of pythonShims) if (underAnyRoot(f, writableRoots)) throw");
+    expect(src).toContain("const manifestEntries: ConfigEntry[] = [fileEntry(serverLauncher), ...pythonShims.map((f) => fileEntry(f))];");
+    expect(src).toContain("const shimFolders = pythonShims.length > 0 ? [join(work, \"python-bin\")] : [];");
+    expect(src).toMatch(/const manifest: Manifest = \{ folders: \[[^\n]*\.\.\.shimFolders\], entries: manifestEntries \};/);
+  });
+  it("each spelling runs the non-npm-tests suite through sandboxedRun with the stand-in wrapper", async () => {
+    const d = scratch();
+    await pythonSpellings(standIn(d).bin);
+  }, 120_000);
+});
+
 const REAL_SKIP = REAL ? "" : " [skipped: set STORYBLOQ_REAL_CODEX=1 and STORYBLOQ_REAL_CODEX_BIN=<codex executable> to run]";
 
 describe("the real codex wrapper holds the harness's command (5.7)", () => {
+  it.skipIf(!REAL)(`R1: each Python spelling runs the fixture suite under the real wrapper${REAL_SKIP}`, async () => {
+    expect(existsSync(CODEX), `STORYBLOQ_REAL_CODEX_BIN=${CODEX}`).toBe(true);
+    await pythonSpellings(realpathSync(CODEX));
+  }, 240_000);
   it.skipIf(!REAL)(`a command that writes outside the roots and connects out is denied both, and what it printed is still recorded${REAL_SKIP}`, async () => {
     expect(existsSync(CODEX), `STORYBLOQ_REAL_CODEX_BIN=${CODEX}`).toBe(true);
     const l = layout();

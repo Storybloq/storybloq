@@ -5,11 +5,15 @@
  *
  *   npx tsx scripts/onboarding-eval-run.ts --client claude|codex --fixture <name>
  *     [--variant none|reviewer-unavailable|degraded|approval-boundary] [--model <m>] --out <dir> --raw-out <dir>
- *     [--variant interrupted|interrupted-edited --fault <point[#n]>] [--variant milestone-demo|empty-idea-verify|restart]
+ *     [--variant interrupted|interrupted-edited --fault <point[#n]> | --fault-schedule <session>=<id>:<selector>[,...]]
+ *     [--variant milestone-demo|empty-idea-verify|restart]
  *
  * The session variants (T-538 S5a, onboarding-eval-sessions.ts) run the setup
  * as the `none` variant, then each later session as a fresh client. `--fault`
- * sets STORYBLOQ_EVAL_FAULT for the first session only.
+ * sets STORYBLOQ_EVAL_FAULT for the first session only. T-538 6.1:
+ * `--fault-schedule` arms one entry per session, sessions 1 to k, each with its
+ * own STORYBLOQ_EVAL_FAULT_ID; `--fault <sel>` is `1=f1:<sel>`. The attempt then
+ * has k + 1 sessions, the last unarmed.
  *
  * Run it only inside a box lease. The client works on a standalone copy of the
  * fixture in a scratch directory, with a fresh config that carries THIS
@@ -47,7 +51,7 @@
  * regrade/NNN/ beside the record (onboarding-eval-regrade.ts).
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,10 +86,14 @@ import { applySetupRunChecks, cs7FinalLedger, type Cs7FinalLedger, type FollowUp
 import type { InvocationMapping } from "./onboarding-eval-checkset7-events.js";
 import { buildEval, EVAL_DIST } from "./build-eval.mjs";
 import {
-  applySessionChecks, attemptBypassAsync, baseVariant, gatedTicket, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, OBSERVATIONS_RAW, ownerEdits, sessionScript,
+  applySessionChecks, type FaultSnapshots, attemptBypassAsync, baseVariant, gatedTicket, isDemoVariant, isFaultVariant, isSessionVariant, laterSessions, NO_FACTS, observationsText, OBSERVATIONS_RAW, ownerEdits, sessionScript,
   sessionSpans, SESSIONS_RAW, sessionsText, setupIdOf, storeRevisionCount, SESSION_VARIANTS, variantFixture, type HarnessFacts, type SessionVariant,
   demoFacts,
 } from "./onboarding-eval-sessions.js";
+import { armedIn, killSnapshot, scheduleFact, scheduleFor, type ScheduleEntry } from "./onboarding-eval-schedule.js";
+import { EDITED_RAW, END_RAW, killRaw, protectedPathsOf, provisionedLockfiles } from "./onboarding-eval-preserve.js";
+import { pinWrites, provisionClientHome } from "./onboarding-eval-client-home.js";
+import { copyStateParts, recomputeStates, stateDir, stateNames, stateRecord, STATES_RAW, statesText, parseStateRecords, type StateRecord } from "./onboarding-eval-states.js";
 import { cs7SnapshotLedger, type EvidenceObservation } from "./onboarding-eval-checkset7.js";
 import { readEventsLog } from "./onboarding-eval-checkset7-events.js";
 import { EVENTS_RAW, INVOCATIONS_RAW, runRegrade, SNAPSHOT_RAW, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
@@ -104,6 +112,8 @@ interface Options {
   readonly variant: Variant | SessionVariant;
   /** The session variants' fault selector for the first session, or null. */
   readonly fault: string | null;
+  /** T-538 6.1: the fault schedule, one entry per armed session (`--fault <sel>` is `1=f1:<sel>`), or null. */
+  readonly schedule: readonly ScheduleEntry[] | null;
   readonly model: string;
   readonly out: string;
   readonly rawOut: string;
@@ -146,7 +156,8 @@ function parseArgs(argv: readonly string[]): Options {
   if (!/^[a-z-]+$/.test(fixture) || !existsSync(join(FIXTURES, fixture, "rubric.json"))) throw new Error(`--fixture ${fixture} is not a fixture under ${FIXTURES}`);
   const variant = (get("variant", "none") ?? "none") as Variant | SessionVariant;
   if (!["none", "reviewer-unavailable", "degraded", "approval-boundary", ...SESSION_VARIANTS].includes(variant)) throw new Error(`--variant must be none, reviewer-unavailable, degraded, approval-boundary or ${SESSION_VARIANTS.join(", ")}`);
-  const fault = faultFor(variant, get("fault") ?? null);
+  const schedule = faultScheduleFor(variant, get("fault") ?? null, get("fault-schedule") ?? null);
+  const fault = schedule === null ? null : schedule[0]!.selector;
   const fixed = isSessionVariant(variant) ? variantFixture(variant) : null;
   if (fixed !== null && fixture !== fixed) throw new Error(`--variant ${variant} runs on fixture ${fixed}`);
   // Codex has no way to start a session with the MCP tools deferred, so the degraded condition cannot be produced there.
@@ -154,7 +165,7 @@ function parseArgs(argv: readonly string[]): Options {
   const out = get("out"); const rawOut = get("raw-out");
   if (!out || !rawOut) throw new Error("--out and --raw-out are required");
   return {
-    client, fixture, variant, fault,
+    client, fixture, variant, fault, schedule,
     model: get("model", client === "claude" ? "claude-opus-5-5" : "gpt-6-astra")!,
     out: resolve(out), rawOut: resolve(rawOut),
     timeoutMs: Number(get("timeout-ms", String(40 * 60_000))),
@@ -176,6 +187,16 @@ export function faultFor(variant: string, fault: string | null): string | null {
   if (fault === null && isFaultVariant(variant)) throw new Error(`--variant ${variant} needs --fault <point[#n]>`);
   if (fault !== null && !/^[a-z][a-z0-9:_.\/-]*(#[1-9][0-9]*)?$/i.test(fault)) throw new Error(`--fault ${fault} is not a point or point#n`);
   return fault;
+}
+
+/**
+ * T-538 6.1: the schedule a run takes. `--fault-schedule <session>=<id>:<selector>[,...]` and `--fault` are
+ * exclusive; both are refused for a variant that is not interrupted*, and those need one of them.
+ */
+export function faultScheduleFor(variant: string, fault: string | null, schedule: string | null): readonly ScheduleEntry[] | null {
+  if (schedule === null) return scheduleFor(faultFor(variant, fault), null);
+  if (!isFaultVariant(variant)) throw new Error(`--fault-schedule is refused for --variant ${variant}: only interrupted and interrupted-edited take one`);
+  return scheduleFor(fault, schedule);
 }
 
 /** Scripted owner turns, read from the fixture's owner-answers.md sections. */
@@ -304,6 +325,99 @@ export function materializeFixture(fixture: string, dest: string): string {
   return project;
 }
 
+/** One fixture folder's dependency install at provisioning (pen ruling R2 (a)). */
+export interface DependencyInstall {
+  /** The folder, project-relative (`.` for the root). */
+  readonly path: string;
+  /** True when the lockfile came from the fixture's `lockfiles/` folder and was copied in at provisioning. */
+  readonly copied: boolean;
+  readonly lockfileSha256: string;
+  readonly exit: number | null;
+  /** The lockfile's packages present on disk after the install (a platform's optional binaries for another platform are not). */
+  readonly packages: number;
+}
+
+/** The dependency fields of a package.json that an install would fetch. */
+const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies"] as const;
+
+/**
+ * T-538 commit 3, pen ruling R2 (a): before any turn and outside the sandbox, each `lockfiles/<folder>/package-lock.json`
+ * the fixture ships beside its project is copied into that folder of the project copy (the fixture's project stays
+ * byte for byte, so stored replays keep their packets), and each folder of the copy that then holds a
+ * package-lock.json gets `npm ci --ignore-scripts`, so a turn can run the fixture's own test and build
+ * without the network and nothing is installed during a turn. npm is the one beside the running node, with a
+ * scratch HOME and cache under `scratch`, never the owner's. A package.json that declares dependencies and ships
+ * no lockfile, a lockfile for a project folder that does not exist (or that already holds one), anything else under
+ * `lockfiles/`, or an install that fails, stops provisioning by cause ("dependencies: ..."); it is never retried
+ * inside the sandbox. `.git`, `.story` and `node_modules` are not searched.
+ */
+export function installFixtureDependencies(project: string, scratch: string, lockfiles: string | null, nodePath: string = process.execPath): DependencyInstall[] {
+  const copied = new Set<string>();
+  if (lockfiles !== null && existsSync(lockfiles)) {
+    const take = (rel: string): void => {
+      const abs = rel === "." ? lockfiles : join(lockfiles, rel);
+      for (const name of readdirSync(abs).sort()) {
+        const r = rel === "." ? name : `${rel}/${name}`;
+        const st = lstatSync(join(abs, name));
+        if (st.isDirectory()) { take(r); continue; }
+        if (!st.isFile() || name !== "package-lock.json") throw new Error(`onboarding-eval: provisioning: dependencies: lockfiles/${r} is not a package-lock.json`);
+        const folder = rel;
+        const target = folder === "." ? project : join(project, folder);
+        if (!(lstatSync(target, { throwIfNoEntry: false })?.isDirectory() ?? false)) throw new Error(`onboarding-eval: provisioning: dependencies: lockfiles/${r} is for the project folder ${folder}, which does not exist`);
+        // Codex round 1 P3: a lockfile's folder holds the package it locks, as a regular file, or nothing installs from it.
+        if (!(lstatSync(join(target, "package.json"), { throwIfNoEntry: false })?.isFile() ?? false)) throw new Error(`onboarding-eval: provisioning: dependencies: lockfiles/${r} is for the project folder ${folder}, which holds no package.json`);
+        if (existsSync(join(target, "package-lock.json"))) throw new Error(`onboarding-eval: provisioning: dependencies: lockfiles/${r} and the project's own ${folder}/package-lock.json both exist`);
+        copyFileSync(join(abs, name), join(target, "package-lock.json"), fsConstants.COPYFILE_EXCL);
+        copied.add(folder);
+      }
+    };
+    take(".");
+  }
+  const found: string[] = [];
+  const walk = (rel: string): void => {
+    const dir = rel === "." ? project : join(project, rel);
+    for (const name of readdirSync(dir).sort()) {
+      const st = lstatSync(join(dir, name));
+      if (st.isDirectory() && name !== ".git" && name !== ".story" && name !== "node_modules") walk(rel === "." ? name : `${rel}/${name}`);
+      else if (st.isFile() && name === "package.json") found.push(rel);
+    }
+  };
+  walk(".");
+  const out: DependencyInstall[] = [];
+  for (const rel of found) {
+    const dir = rel === "." ? project : join(project, rel);
+    const lockPath = join(dir, "package-lock.json");
+    if (!existsSync(lockPath)) {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")) as Record<string, unknown>;
+      const declared = DEPENDENCY_FIELDS.some((f) => pkg[f] !== null && typeof pkg[f] === "object" && Object.keys(pkg[f] as object).length > 0);
+      if (declared) throw new Error(`onboarding-eval: provisioning: dependencies: ${rel}/package.json declares dependencies and the fixture ships no package-lock.json`);
+      continue;
+    }
+    const npm = join(dirname(nodePath), "npm");
+    if (!existsSync(npm)) throw new Error(`onboarding-eval: provisioning: dependencies: no npm beside ${nodePath}`);
+    const npmHome = join(scratch, "npm-home");
+    mkdirSync(npmHome, { recursive: true });
+    const lockfileSha256 = sha256(readFileSync(lockPath));
+    const r = spawnSync(npm, ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+      cwd: dir, encoding: "utf-8", timeout: 10 * 60_000, maxBuffer: 16 << 20,
+      env: { PATH: `${dirname(nodePath)}${delimiter}/usr/bin${delimiter}/bin`, HOME: npmHome, TMPDIR: npmHome, npm_config_cache: join(scratch, "npm-cache"), npm_config_update_notifier: "false" },
+    });
+    if (r.status !== 0) {
+      const why = r.error !== undefined ? r.error.message : `exit ${r.status ?? r.signal}`;
+      const first = (r.stderr ?? "").split("\n").find((l) => l.trim() !== "") ?? "";
+      throw new Error(`onboarding-eval: provisioning: dependencies: npm ci in ${rel} failed (${why})${first !== "" ? `: ${first.trim()}` : ""}`);
+    }
+    const lock = JSON.parse(readFileSync(lockPath, "utf-8")) as { packages?: Record<string, unknown> };
+    const packages = Object.keys(lock.packages ?? {}).filter((k) => k !== "" && existsSync(join(dir, k))).length;
+    out.push({ path: rel, copied: copied.has(rel), lockfileSha256, exit: r.status, packages });
+  }
+  // P3: every copied lockfile produced a successful install; one the search never reached is a failure by cause.
+  for (const folder of [...copied].sort()) {
+    if (!out.some((i) => i.path === folder && i.copied && i.exit === 0)) throw new Error(`onboarding-eval: provisioning: dependencies: lockfiles/${folder === "." ? "" : `${folder}/`}package-lock.json was copied into ${folder} and nothing was installed from it`);
+  }
+  return out;
+}
+
 /** PATH with every `codex` executable removed: its directories are replaced by a scratch bin of links to their other executables. */
 export function pathWithoutCodex(path: string, scratchBin: string): string {
   return pathWithout(path, scratchBin, ["codex"]);
@@ -369,6 +483,30 @@ function installCliLauncher(binDir: string): string {
   const cli = storybloqEntry(CHECK_SET_VERSION, "cli");
   writeFileSync(launcher, launcherScript(process.execPath, cli.path, cli.args), { mode: 0o755 });
   return launcher;
+}
+
+/**
+ * T-538 commit 3, pen ruling R1: the three spellings a Python rubric uses (`pytest`, `python -m pytest`, `python3
+ * -m pytest`) all run the host's `python3`, so a fixture's tests resolve the same way whichever the client picks.
+ * `python` and `python3` run it and `pytest` runs `python3 -m pytest` (which puts the working folder on the import
+ * path, as the other spellings do). `python3` is shimmed too: a PATH whose first `python3` is another interpreter
+ * (the Xcode one, without pytest) would otherwise split the spellings. The folder lies outside every root, first
+ * on the client's PATH; each shim is read-only and its bytes are checked with the configuration before every
+ * turn. No `python3` on the PATH: no shims, and the
+ * fixture's own run names the cause.
+ */
+export function installPythonShims(binDir: string, path: string): string[] {
+  const python3 = resolveOnPath("python3", path);
+  if (python3 === null) return [];
+  mkdirSync(binDir, { recursive: true });
+  const shims: [string, string[]][] = [["python", []], ["python3", []], ["pytest", ["-m", "pytest"]]];
+  const out: string[] = [];
+  for (const [name, fixed] of shims) {
+    const file = join(binDir, name);
+    writeFileSync(file, `#!/bin/sh\nexec ${[python3, ...fixed].map(shellQuote).join(" ")} "$@"\n`, { mode: 0o555, flag: "wx" });
+    out.push(file);
+  }
+  return out;
 }
 
 /**
@@ -538,6 +676,17 @@ export class Collector {
       this.named.push(`evidence: ${at}: ${e.problem}`);
     }
     return dest;
+  }
+
+  /**
+   * Codex round 1 P4: the project as a tree snapshot in the kill snapshot's form, walked in a collector process.
+   * `.git` and every `node_modules` are left out before anything is charged to the bound, links are recorded by
+   * path, and every problem the walk met is in the snapshot, where it fails the preservation check.
+   */
+  async snapshot(root: string): Promise<string> {
+    const r = await this.call(["snapshot", root], root) as { text?: unknown };
+    if (typeof r.text !== "string") throw new Error(`onboarding-eval: evidence: ${root}: the collector's snapshot is not text`);
+    return r.text;
   }
 
   async digest(root: string): Promise<Record<string, string>> {
@@ -1028,6 +1177,8 @@ async function main(): Promise<void> {
   const ancestors = ancestorProblems(work);
   if (ancestors.length > 0) throw new Error(`onboarding-eval: the attempt tree's ancestors hold client configuration: ${ancestors.join("; ")}`);
   const project = materializeFixture(o.fixture, work);
+  // R2 (a): the fixture's declared dependencies, from its lockfile, before any turn and outside the sandbox.
+  const dependencyInstalls = installFixtureDependencies(project, join(work, "npm-provision"), join(FIXTURES, o.fixture, "lockfiles"));
   const rawDir = join(o.rawOut, runId);
   mkdirSync(rawDir, { recursive: true });
 
@@ -1087,6 +1238,9 @@ async function main(): Promise<void> {
   };
   const launcher = installCliLauncher(join(work, "cli-bin"));
   let clientPath = `${dirname(launcher)}${delimiter}${scrubClientEnv(process.env).PATH ?? ""}`;
+  // R1: the Python shims, first on the PATH, outside every root (checked below once the roots are named).
+  const pythonShims = installPythonShims(join(work, "python-bin"), clientPath);
+  if (pythonShims.length > 0) clientPath = `${join(work, "python-bin")}${delimiter}${clientPath}`;
   if (variant === "reviewer-unavailable") clientPath = pathWithout(clientPath, join(work, "bin"), hiddenReviewers(CHECK_SET_VERSION));
   // The roots the client's own tools may write (Claude's policy; Codex's workspace-write), and the server's: the same, with the project named.
   // Section 3 and 5.6: the same five roots for every client, its tools and the server; the client's home, its
@@ -1099,7 +1253,7 @@ async function main(): Promise<void> {
   let envInputs: EnvInputs = {
     client: o.client, path: clientPath, home, tmp: attemptTmp, lang: process.env.LANG || "en_US.UTF-8",
     ...(o.client === "codex" ? { clientCodexHome: join(home, ".codex") } : { claudeConfigDir: join(work, "claude-config"), oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }),
-    runnerHome, globalDir, events: eventsFile, fault: o.fault, reviewStore: setupReviewStore, outside: outsideProbe, tools: toolSetsFile, degraded: variant === "degraded",
+    runnerHome, globalDir, events: eventsFile, fault: armedIn(o.schedule, 1)?.selector ?? null, faultId: armedIn(o.schedule, 1)?.id ?? null, reviewStore: setupReviewStore, outside: outsideProbe, tools: toolSetsFile, degraded: variant === "degraded",
     reviewResponses,
   };
   let env: NodeJS.ProcessEnv = envFor("client", envInputs);
@@ -1112,7 +1266,8 @@ async function main(): Promise<void> {
   if (underAnyRoot(serverLauncher, serverRoots)) throw new Error(`onboarding-eval: ${serverLauncher} is under a writable root`);
   const launch = serverLaunch(codexBin, process.execPath, mcp.path, serverRoots, serverLauncher, Object.keys(serverEnv));
   let claudeLaunch: ClaudeLaunch | null = null;
-  const manifestEntries: ConfigEntry[] = [fileEntry(serverLauncher)];
+  for (const f of pythonShims) if (underAnyRoot(f, writableRoots)) throw new Error(`onboarding-eval: ${f} is under a writable root`);
+  const manifestEntries: ConfigEntry[] = [fileEntry(serverLauncher), ...pythonShims.map((f) => fileEntry(f))];
   if (o.client === "claude") {
     const claudeConfig = provisionClaude(work);
     if (claudeConfig.configDir !== envInputs.claudeConfigDir) throw new Error("onboarding-eval: the Claude config folder is not the provisioned one");
@@ -1138,8 +1293,25 @@ async function main(): Promise<void> {
     if (codex.codexHome !== envInputs.clientCodexHome) throw new Error("onboarding-eval: the Codex home is not the provisioned one");
     manifestEntries.push(...codex.entries);
   }
+  // Finding 4 (pen ruling, option A): the CLI's own housekeeping writes the client home on its first ordinary
+  // command (the storybloq hooks in settings.json, a stale skill copy). That write is provisioning: the harness's
+  // own CLI runs once here, with the client's environment, before the manifest pins the client home. Its fault
+  // variables are left out and its events go to a file of its own, so it is never a turn's invocation.
+  const homeFolders = o.client === "claude" ? [home, envInputs.claudeConfigDir!] : [home];
+  const provisionCwd = join(work, "cli-provision");
+  mkdirSync(provisionCwd);
+  const clientHomeProvisioning = provisionClientHome({
+    command: launcher, folders: homeFolders, provisionDir: provisionCwd, root: work,
+    version: (JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8")) as { version: string }).version, skillSource: join(PKG_ROOT, "src", "skill"),
+    markers: o.client === "claude" ? ["claude"] : ["codex"],
+    markerWriter: { command: process.execPath, args: [...process.execArgv, join(PKG_ROOT, "scripts", "onboarding-eval-skill-marker.ts")] },
+    env: { ...envFor("client", { ...envInputs, fault: null, faultId: null }), STORYBLOQ_EVAL_EVENTS: join(work, "provision-events.jsonl") },
+  });
+  manifestEntries.splice(0, manifestEntries.length, ...pinWrites(manifestEntries, clientHomeProvisioning, work));
   // 5.6: the configuration the client loads, checked before every turn; the project scanned before the first.
-  const manifest: Manifest = { folders: o.client === "claude" ? [home, envInputs.claudeConfigDir!] : [home], entries: manifestEntries };
+  // R1: the shim folder is listed in full, so anything else placed in it (it is first on the PATH) stops the run.
+  const shimFolders = pythonShims.length > 0 ? [join(work, "python-bin")] : [];
+  const manifest: Manifest = { folders: [...homeFolders, ...shimFolders], entries: manifestEntries };
   const configNow = configProblems(manifest);
   if (configNow.length > 0) throw new Error(`onboarding-eval: the provisioned configuration does not hold: ${configNow.join("; ")}`);
   const collector = new Collector(work);
@@ -1182,7 +1354,7 @@ async function main(): Promise<void> {
   // The owner's side of the conversation; each step spawns one turn and records its raw output.
   // T-538 S5a: the session variants' later sessions and what the harness does and sees around them.
   const session = isSessionVariant(o.variant) ? o.variant : null;
-  const facts: { -readonly [K in keyof HarnessFacts]: HarnessFacts[K] } = { ...NO_FACTS, fault: o.fault };
+  const facts: { -readonly [K in keyof HarnessFacts]: HarnessFacts[K] } = { ...NO_FACTS, fault: o.fault, schedule: o.schedule === null ? null : [] };
   const observations: EvidenceObservation[] = [];
   const snapshotFile = `${eventsFile}.setup-snapshot.json`;
   // 5.8: the setup snapshot as the collector last copied it, refreshed after every turn of the variant that reads it.
@@ -1193,8 +1365,8 @@ async function main(): Promise<void> {
     snapshotCopy = existsSync(copy) ? readFileSync(copy, "utf-8") : null;
   };
   const later = session === null ? undefined : () => {
-    if (session === "milestone-demo") facts.dependent = rubric.followUp === undefined ? null : gatedTicket(snapshotTickets(), rubric.followUp.checkpoint);
-    return laterSessions(session, o.client === "claude" ? "/story" : "$story", sessionScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8")), facts.dependent);
+    if (isDemoVariant(session)) facts.dependent = rubric.followUp === undefined ? null : gatedTicket(snapshotTickets(), rubric.followUp.checkpoint);
+    return laterSessions(session, o.client === "claude" ? "/story" : "$story", sessionScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8")), facts.dependent, o.schedule?.length ?? 1);
   };
   // The harness's own CLI calls log to their own file, never the run's events, and never carry a fault.
   // 5.7: every harness command on the project runs under the sandbox wrapper with the five roots, in its own group,
@@ -1217,16 +1389,33 @@ async function main(): Promise<void> {
     return r.stdout;
   };
   let current = 1;
+  // 6.1: interrupted-edited's baseline, the project as the collector copied it straight after the owner's edits.
+  let editedSnapshot: string | null = null;
+  // 6.2: milestone-states' boundary records, each computed from its own collector copy, and the copies' pins.
+  const states: StateRecord[] = [];
+  const stateInputs: ManifestEntry[] = [];
+  const captureState = async (at: string): Promise<void> => {
+    const n = states.length;
+    stateInputs.push(...copyStateParts(await collector.copy("ledger", join(project, ".story")), rawDir, n));
+    states.push(await stateRecord(join(rawDir, stateDir(n)), at, rubric.followUp?.checkpoint ?? null, facts.dependent));
+  };
   const beforeTurn = async (n: number, label: string): Promise<void> => {
     if (session === null) return;
     if (n !== current) {
       // A fresh client: no resume, a new session id.
       ctx.sessionId = o.client === "claude" ? randomUUID() : null;
       ctx.first = true;
-      if (current === 1) {
-        if (o.fault !== null) facts.fired = existsSync(`${eventsFile}.fired`);
-        // 5.3: the fault variables leave both columns after session 1; Claude's MCP file is rewritten and its sha256 updated before the next turn.
-        envInputs = { ...envInputs, fault: null, faultId: null };
+      // 6.1: the entry armed in the session that ended is recorded by its own marker; the next session's entry, if any, is armed.
+      const ended = armedIn(o.schedule, current);
+      if (ended !== null) {
+        const fact = scheduleFact(ended, eventsFile);
+        facts.schedule = [...(facts.schedule ?? []), fact];
+        if (current === 1) facts.fired = fact.fired;
+      }
+      if (ended !== null || armedIn(o.schedule, n) !== null) {
+        // 5.3: the fault variables follow the schedule into both columns; Claude's MCP file is rewritten and its sha256 updated before the next turn.
+        const next = armedIn(o.schedule, n);
+        envInputs = { ...envInputs, fault: next?.selector ?? null, faultId: next?.id ?? null };
         env = envFor("client", envInputs);
         serverEnv = envFor("server", envInputs);
         ctx.env = env;
@@ -1239,6 +1428,8 @@ async function main(): Promise<void> {
           const mcpFile = ctx.claude.mcpFile;
           if (ctx.manifest !== null) ctx.manifest = { ...ctx.manifest, entries: ctx.manifest.entries.map((e) => (e.kind === "file" && e.path === mcpFile ? fileEntry(mcpFile) : e)) };
         }
+      }
+      if (current === 1) {
         if (session === "interrupted-edited") {
           const edits = ownerEdits(cs7FinalLedger(diskReader(await collector.copy("ledger", join(project, ".story")))).tickets);
           if (edits !== null) {
@@ -1246,6 +1437,7 @@ async function main(): Promise<void> {
             await harnessCli(["ticket", "update", edits.describedTicket, "--description", edits.description]);
           }
           facts.edits = edits;
+          editedSnapshot = await collector.snapshot(project);
         }
         if (session === "restart") {
           const events = await collectedEvents(collector, eventsFile);
@@ -1255,14 +1447,15 @@ async function main(): Promise<void> {
       }
       current = n;
     }
-    if (session === "milestone-demo" && label === "demo-approval") {
+    if (isDemoVariant(session) && label === "demo-approval") {
       const demo = rubric.demo;
       if (demo !== undefined) {
         const r = await inSandbox(demo.command);
         facts.demo = demoFacts(demo.command, demo.stdout, { status: r.status, signal: r.signal, stdout: r.stdout, ...wrappedForm(r), ...(r.spawnError !== null ? { error: new Error(r.spawnError) } : {}), ...(r.timedOut ? { error: new Error(`timed out after ${HARNESS_DEADLINE_MS} ms`) } : {}) });
       }
     }
-    if (session === "milestone-demo" && n >= 2) observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
+    if (isDemoVariant(session) && n >= 2) observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
+    if (session === "milestone-states" && n >= 2) await captureState(label);
   };
   const flow = driveFlow({ variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion, ...(later !== undefined ? { later } : {}) }, state);
   for (let step = flow.next(); !step.done;) {
@@ -1281,14 +1474,15 @@ async function main(): Promise<void> {
     const changed = canaryProblems(canary);
     if (changed.length > 0) throw new Error(`onboarding-eval: ${changed.join("; ")} after turn ${turnNo}; the matrix stops`);
     const after = await collector.digest(project);
-    if (session === "milestone-demo") await refreshSnapshot();
+    if (isDemoVariant(session)) await refreshSnapshot();
     const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, after, exclusion) };
     step = flow.next(response);
   }
   // The evidence as the last session left it.
-  if (session === "milestone-demo") observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
+  if (isDemoVariant(session)) observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
+  if (session === "milestone-states") await captureState("after-last");
   // T-538 S5b: then the harness's own ordinary status update on the gated dependent, which the checkpoint must refuse.
-  if (session === "milestone-demo" && facts.dependent !== null) {
+  if (isDemoVariant(session) && facts.dependent !== null) {
     facts.bypass = await attemptBypassAsync(() => collector.ledgerState(join(project, ".story")), facts.dependent, async (args) => {
       const r = await inSandbox(shellWords([launcher, ...args]));
       return { status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr, ...wrappedForm(r), ...(r.spawnError !== null ? { error: new Error(r.spawnError) } : {}), ...(r.timedOut ? { error: new Error(`timed out after ${HARNESS_DEADLINE_MS} ms`) } : {}) };
@@ -1320,7 +1514,7 @@ async function main(): Promise<void> {
       approval: afterPackage.find((x) => x.label === "approve")?.prompt ?? "",
       projectRoot: project,
       contract: recipeContract(rubric.expectedRecipe),
-      observations: session === "milestone-demo" ? observations : null,
+      observations: isDemoVariant(session) ? observations : null,
       followUp: followUpOf(rubric),
     });
     const invocations = invocationsText(project, r.invocations);
@@ -1340,23 +1534,51 @@ async function main(): Promise<void> {
     writeFileSync(join(rawDir, SERVED_RAW), servedText);
     replayInputs.push({ path: SERVED_RAW, sha256: sha256(servedText) });
     if (session !== null) {
+      // 6.1: an entry whose session never ended (the attempt stopped inside it) is recorded here, after its session.
+      for (const e of o.schedule ?? []) {
+        if (facts.schedule?.some((f) => f.id === e.id)) continue;
+        const fact = scheduleFact(e, eventsFile);
+        facts.schedule = [...(facts.schedule ?? []), fact];
+        if (e.session === 1) facts.fired = fact.fired;
+      }
       const log = readEventsLog(events === null ? null : events.toString("utf-8")).log;
+      // 6.1: a fault run's tree snapshots, each a replay input: the kill snapshot per fired record (as the
+      // collector copied the events folder), the edited baseline, and the project at the end of the attempt.
+      let faults: FaultSnapshots | undefined;
+      if (session === "interrupted" || session === "interrupted-edited") {
+        const named = new Map<string, string>();
+        for (const f of log?.fired ?? []) if (existsSync(killSnapshot(eventsCopy, f.id))) named.set(killRaw(f.id), readFileSync(killSnapshot(eventsCopy, f.id), "utf-8"));
+        if (editedSnapshot !== null) named.set(EDITED_RAW, editedSnapshot);
+        named.set(END_RAW, await collector.snapshot(project));
+        for (const [name, text] of named) {
+          writeFileSync(join(rawDir, name), text);
+          replayInputs.push({ path: name, sha256: sha256(text) });
+        }
+        faults = { read: (name) => named.get(name) ?? null, protectedPaths: [...protectedPathsOf(fixtureEvidence(join(fixtureDir, "project")).hashes), ...provisionedLockfiles(dependencyInstalls)].sort() };
+      }
       const id = setupIdOf(log);
       if (session === "interrupted-edited") facts.storeRevisions = id === null ? 0 : storeRevisionCount(storeCopy, id);
       if (session === "empty-idea-verify") facts.testEnabled = existsSync(join(story, "config.json")) && (JSON.parse(readFileSync(join(story, "config.json"), "utf-8")) as { recipeOverrides?: { stages?: { TEST?: { enabled?: unknown } } } }).recipeOverrides?.stages?.TEST?.enabled === true;
       const sessionsFile = sessionsText({ sessions: sessionSpans(state.turns), harness: facts });
       writeFileSync(join(rawDir, SESSIONS_RAW), sessionsFile);
       replayInputs.push({ path: SESSIONS_RAW, sha256: sha256(sessionsFile) });
-      if (session === "milestone-demo") {
+      if (isDemoVariant(session)) {
         const observed = observationsText(observations);
         writeFileSync(join(rawDir, OBSERVATIONS_RAW), observed);
         replayInputs.push({ path: OBSERVATIONS_RAW, sha256: sha256(observed) });
+      }
+      if (session === "milestone-states") {
+        const text = statesText(states);
+        writeFileSync(join(rawDir, STATES_RAW), text);
+        replayInputs.push({ path: STATES_RAW, sha256: sha256(text) }, ...stateInputs);
       }
       applySessionChecks(state, {
         variant: session, harness: facts, log, mapping: r.invocations,
         tickets: existsSync(story) ? cs7FinalLedger(diskReader(story)).tickets : [],
         ticketsAtSetup: snapshot === null ? [] : cs7SnapshotLedger(snapshot.toString("utf-8")).tickets,
         present: (name) => existsSync(join(rawDir, name)),
+        ...(faults !== undefined ? { faults } : {}),
+        ...(session === "milestone-states" ? { states, followUpTitle: rubric.followUp?.titlePattern ?? null } : {}),
       });
     }
   }
@@ -1386,6 +1608,9 @@ async function main(): Promise<void> {
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model, checkSetVersion: CHECK_SET_VERSION,
     // T-538 commit 1 (plan 6.4): this route's record; the regrade re-runs each readback against claudeLaunch.
     route: "host-v2",
+    // R2 (a): each lockfile the fixture ships, installed at provisioning.
+    dependencyInstalls,
+    clientHomeProvisioning,
     ...(claudeLaunch !== null ? {
       claudeLaunch: {
         project: claudeLaunch.project, roots: claudeLaunch.roots, policy: claudePolicyObject(claudeLaunch.roots, allowedToolsOf(claudeLaunch.toolSets)), mcpLaunch: claudeLaunch.mcpLaunch,
@@ -1607,6 +1832,7 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
     packetBytes: readFileSync(join(recordDir, "grading-packet.json")),
     rawNames: readdirSync(rawDir),
     readRaw: (name) => readFileSync(join(rawDir, name)),
+    stateNames: stateNames(rawDir),
     story: existsSync(story) ? diskStoryBytes(story) : null,
     setupReviewStore: existsSync(storeCopy) ? storeCopy : null,
     fixture: {
@@ -1624,16 +1850,29 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
 }
 
 /**
+ * T-538 6.2: a milestone-states record's state records, recomputed from their copies with the product's loader
+ * (asynchronous, so before the synchronous regrade). The regrade checks the copies' pins and compares. A records
+ * file that cannot be read is left to the regrade, which refuses it by name.
+ */
+export async function withRecomputedStates(input: RegradeInput, rawDir: string): Promise<RegradeInput> {
+  const record = JSON.parse(input.recordBytes.toString("utf-8")) as Record<string, unknown>;
+  if (record.variant !== "milestone-states" || !input.rawNames.includes(STATES_RAW)) return input;
+  let recorded: StateRecord[];
+  try { recorded = parseStateRecords(input.readRaw(STATES_RAW).toString("utf-8")); } catch { return input; }
+  return { ...input, recomputedStates: await recomputeStates(rawDir, recorded, (input.fixture.rubric as { followUp?: { checkpoint: Parameters<typeof recomputeStates>[2] } }).followUp?.checkpoint ?? null) };
+}
+
+/**
  * `--regrade <recordDir> --raw <rawDir> [--judge <judge.json>]`: re-derives a finished run from its raw
  * transcripts and writes the next revision under `<recordDir>/regrade/`, never the original record. Exit 2
  * on a refusal, 1 on FAIL, 3 while the judge is still owed, 0 on PASS.
  */
-export function regradeCli(argv: readonly string[]): void {
+export async function regradeCli(argv: readonly string[]): Promise<void> {
   const at = (k: string): string | undefined => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : undefined; };
   const recordDir = at("regrade"); const rawDir = at("raw"); const judgePath = at("judge");
   if (!recordDir || !rawDir) throw new Error("--regrade <recordDir> --raw <rawDir> [--judge <judge.json>]");
   const judge = judgePath ? JSON.parse(readFileSync(judgePath, "utf-8")) as RegradeJudge : null;
-  const r = runRegrade(recordDir, regradeInputFrom(recordDir, rawDir), judge, () => new Date().toISOString());
+  const r = runRegrade(recordDir, await withRecomputedStates(regradeInputFrom(recordDir, rawDir), rawDir), judge, () => new Date().toISOString());
   if (!r.ok) {
     process.stderr.write(`onboarding-eval: regrade refused for ${recordDir}: ${r.reason}\n`);
     process.exitCode = 2;

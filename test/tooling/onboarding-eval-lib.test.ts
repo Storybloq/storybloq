@@ -407,8 +407,8 @@ describe("transcript normalisation", () => {
 describe("onboarding fixtures", () => {
   const names = readdirSync(FIXTURES).filter((n) => existsSync(join(FIXTURES, n, "rubric.json"))).sort();
 
-  it("has the seven stage-1 fixtures, the two check set 2 recipe fixtures and the check set 7 demo fixture", () => {
-    expect(names).toEqual(["brief-only", "checkpoint-demo", "conflicting-briefs", "custom-pytest-patterns", "django-explicit-pytest", "empty-idea", "empty-scaffold", "existing-partial", "mixed-stack", "non-npm-tests"]);
+  it("has the seven stage-1 fixtures, the two check set 2 recipe fixtures and the check set 7 demo fixtures", () => {
+    expect(names).toEqual(["brief-only", "checkpoint-demo", "checkpoint-states", "conflicting-briefs", "custom-pytest-patterns", "django-explicit-pytest", "empty-idea", "empty-scaffold", "existing-partial", "mixed-stack", "non-npm-tests"]);
   });
 
   it.each(names)("%s carries a rubric, an opening prompt and scripted owner turns", (name) => {

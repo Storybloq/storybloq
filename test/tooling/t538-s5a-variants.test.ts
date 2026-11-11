@@ -6,6 +6,8 @@
  * that drives the evaluation CLI, and must leave every artifact the variant's
  * contract requires.
  */
+import { EDITED_RAW, END_RAW, killRaw } from "../../scripts/onboarding-eval-preserve.js";
+import { parseStateRecords, STATE_BOUNDARIES, stateNames, STATES_RAW, statesFindings } from "../../scripts/onboarding-eval-states.js";
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
@@ -16,7 +18,7 @@ import { driveFlow, newDriveState, setupView, finishDrive, type DriveState, type
 import { archiveProject, ARCHIVE_OMITTED_FILE, ownerScript, packageTurns, faultFor, spawnedResult } from "../../scripts/onboarding-eval-run.js";
 import { readBounded, walkNoFollow } from "../../scripts/onboarding-eval-walk.js";
 import {
-  applySessionChecks, demoFacts, artifactFindings, attemptBypass, completionsOf, ledgerDigest, ledgerState, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
+  applySessionChecks, demoFacts, artifactFindings, isDemoVariant, attemptBypass, completionsOf, ledgerDigest, ledgerState, requiredArtifacts, laterSessions, NO_FACTS, parseSessionsFile, sessionScript, sessionSpans, sessionsText, SessionsError,
   type BypassAttempt, type HarnessFacts, type SessionCheckInputs, type SessionVariant,
 } from "../../scripts/onboarding-eval-sessions.js";
 import { rule9 } from "../../scripts/onboarding-eval-checkset7.js";
@@ -588,6 +590,27 @@ else if (prompt.startsWith("$story Set up") || prompt.startsWith("Inspect detail
 else if (prompt === "Approve setup.") text = run("storybloq setup-apply <<'STORYBLOQ_SETUP'\\n" + payload + "\\nSTORYBLOQ_SETUP");
 else if (prompt === "$story" && CFG.FAKE_RESUME === "1") text = run("storybloq setup-apply --resume --setup ${SID}");
 else if (prompt.startsWith("$story auto milestone")) { if (CFG.FAKE_KILL_BYPASS === "1") run("L=$(command -v storybloq); cp \\"$L\\" \\"$L.real\\"; printf '%s\\\\n' '#!/bin/sh' 'case \\"$*\\" in \\"ticket update \\"*\\"--status complete\\"*) echo \\"it waits on owner checkpoint T-2\\" >&2; kill -KILL $$;; esac' 'exec \\"$0.real\\" \\"$@\\"' > \\"$L\\""); writeFileSync("rota.js", "console.log('Today: Sam waters beds 1-4');\\n"); text = "Milestone 1 is built. The demo prints: " + run("${DEMO}"); }
+else if (CFG.FAKE_STATES === "1" && /^(I ran it|I approved too early|I looked again|Change what the demo checkpoint asks)/.test(prompt)) {
+  // T-538 6.2: the checkpoint's transitions through this checkout's CLI, each at the state the list names, in the
+  // client's own home: provisioning (finding 4) already ran the CLI's housekeeping there, so these calls write
+  // nothing the manifest does not hold.
+  const cli = (args) => run("storybloq " + args);
+  const listed = () => JSON.parse(spawnSync("/bin/sh", ["-c", "storybloq checkpoint list --format json --raw"], { encoding: "utf-8", env: process.env, cwd: process.cwd() }).stdout)[0];
+  const atOf = (cp) => cp.id + " --generation " + cp.expected.generation + " --revision " + cp.expected.revision + " --digest " + cp.expected.digest;
+  const cp = listed();
+  const at = atOf(cp);
+  // An immutable-evidence acceptance is answered against one of its evidence revisions: add the demo file (kept
+  // once; a second add names the same revision) and answer at the state that leaves.
+  const answer = () => {
+    if (cp.evidenceMode !== "immutable") return cli("checkpoint resolve " + at + " --response accepted --artifact-ref rota.js");
+    const added = cli("checkpoint evidence " + at + " --file rota.js");
+    const ref = /(?:Added evidence|Evidence) (\\S+) (?:to|is already on) /.exec(added);
+    return ref === null ? added : cli("checkpoint resolve " + atOf(listed()) + " --response accepted --artifact-ref " + ref[1]);
+  };
+  if (prompt.startsWith("I approved too early")) text = cli("checkpoint reopen " + at + " --reason 'looking again'");
+  else if (prompt.startsWith("Change what")) text = cli("checkpoint change " + at + " --kind acceptance --criteria 'prints the line with the tap'") + cli("ticket create --title 'Add tap to rota line' --type task");
+  else text = answer();
+}
 else text = "Noted.";
 const lines = [{ type: "thread.started", thread_id: "th-fake" }, ...items.map((item) => ({ type: "item.completed", item })), { type: "item.completed", item: { type: "agent_message", text } }, { type: "turn.completed" }];
 process.stdout.write(lines.map((l) => JSON.stringify(l)).join("\\n") + "\\n");
@@ -634,10 +657,11 @@ function fakePayload(owner: string, checkpointTitle: string): Record<string, unk
   };
 }
 
-const PLUMBING: readonly { variant: SessionVariant; fixture: string; fault?: string; resume?: true }[] = [
+const PLUMBING: readonly { variant: SessionVariant; fixture: string; fault?: string; resume?: true; states?: true }[] = [
   { variant: "interrupted", fixture: "empty-idea", fault: "step:handover", resume: true },
   { variant: "interrupted-edited", fixture: "empty-idea", fault: "step:handover", resume: true },
   { variant: "milestone-demo", fixture: "checkpoint-demo" },
+  { variant: "milestone-states", fixture: "checkpoint-states", states: true },
   { variant: "empty-idea-verify", fixture: "empty-idea" },
   { variant: "restart", fixture: "empty-idea" },
 ];
@@ -816,7 +840,7 @@ describe("the runner's plumbing per variant", () => {
         writeFileSync(payloadFile, JSON.stringify(fakePayload("Robin", "Watering rota demo")));
         const env: NodeJS.ProcessEnv = {
           PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, HOME: join(dir, "home"), TMPDIR: dir, CODEX_HOME: codexHome,
-          FAKE_ARGV_LOG: join(dir, "argv.log"), FAKE_PAYLOAD: payloadFile, FAKE_PACKAGE: PACKAGE, FAKE_RESUME: p.resume ? "1" : "0",
+          FAKE_ARGV_LOG: join(dir, "argv.log"), FAKE_PAYLOAD: payloadFile, FAKE_PACKAGE: PACKAGE, FAKE_RESUME: p.resume ? "1" : "0", FAKE_STATES: p.states ? "1" : "0",
           FAKE_ADJUST: ownerScript(readFileSync(join(PKG, "test", "fixtures", "onboarding", p.fixture, "owner-answers.md"), "utf-8")).adjustment,
         };
         mkdirSync(env.HOME!);
@@ -841,13 +865,85 @@ describe("the runner's plumbing per variant", () => {
         expect(record.replayInputs.map((e) => e.path)).toEqual(expect.arrayContaining(requiredArtifacts(p.variant, completed)));
         expect(record.failures.filter((f) => f.startsWith("artifact:"))).toEqual([]);
         const sessions = JSON.parse(readFileSync(join(raw, runId, "sessions.json"), "utf-8")) as { sessions: { session: number }[]; harness: HarnessFacts };
-        if (p.variant === "milestone-demo") expect(sessions.harness.demo).toHaveProperty("status");
+        if (isDemoVariant(p.variant)) expect(sessions.harness.demo).toHaveProperty("status");
         expect(sessions.sessions.length).toBeGreaterThanOrEqual(2);
         // T-538 S5b: the final project tree is archived beside the transcript, so a result cites inspected files.
         expect(names).toContain("project.after");
         if (p.fault) expect(sessions.harness.fired).toBe(true);
+        if (p.fault) {
+          // T-538 6.1: the kill snapshot, the end snapshot and (edited) the baseline after the owner's edits are kept
+          // and pinned, and the preservation rules on them find nothing.
+          const snaps = [killRaw("f1"), END_RAW, ...(p.variant === "interrupted-edited" ? [EDITED_RAW] : [])];
+          for (const name of snaps) expect(names, name).toContain(name);
+          expect(record.replayInputs.map((e) => e.path)).toEqual(expect.arrayContaining(snaps));
+          // The stand-in never resolves the edited run's reconciliation, so that setup never finishes: the rules
+          // name exactly the unarchived note and the missing archive, and nothing about the snapshots.
+          const preservation = record.failures.filter((f) => /snapshot|baseline|after the resume|not archived|published \d+ times|times, not once|lost a blockedBy/.test(f));
+          expect(preservation).toEqual(p.variant === "interrupted" ? [] : ["interrupted-edited: the progress note ends active, not archived", "interrupted-edited: the archive committed 0 times, not once"]);
+          // 6.4: the regrade reads the snapshots back against their pins and reaches the same findings; a pinned
+          // snapshot missing, or one whose bytes changed, is refused by name.
+          const regradeOnce = () => spawnSync(process.execPath, [TSX, RUNNER, "--regrade", join(out, runId), "--raw", join(raw, runId)], { cwd: PKG, env, encoding: "utf-8", timeout: 120_000 });
+          const verdict = (JSON.parse(readFileSync(join(out, runId, "record.json"), "utf-8")) as { verdict: string }).verdict;
+          const g = regradeOnce();
+          expect(g.status, `${g.stdout}\n${g.stderr}`).toBe(verdict === "FAIL" ? 1 : 3);
+          const rev = JSON.parse(readFileSync(join(out, runId, "regrade", "001", "regrade.json"), "utf-8")) as { verdict: string; reasons: string[] };
+          expect(rev.verdict).toBe(verdict);
+          expect(rev.reasons.filter((f) => preservation.includes(f) || /snapshot|baseline|after the resume/.test(f))).toEqual(preservation);
+          for (const name of snaps) {
+            const file = join(raw, runId, name);
+            const bytes = readFileSync(file);
+            rmSync(file);
+            const missing = regradeOnce();
+            expect([missing.status, missing.stderr], name).toEqual([2, expect.stringContaining(`replay input ${name} is missing`)]);
+            writeFileSync(file, Buffer.concat([bytes, Buffer.from(" ")]));
+            const edited = regradeOnce();
+            expect([edited.status, edited.stderr], name).toEqual([2, expect.stringContaining(`replay input ${name} does not match its recorded sha256`)]);
+            writeFileSync(file, bytes);
+          }
+          // A snapshot the record does not pin is refused too.
+          writeFileSync(join(raw, runId, killRaw("zz")), "{}");
+          const extra = regradeOnce();
+          expect([extra.status, extra.stderr]).toEqual([2, expect.stringContaining(`replay input ${killRaw("zz")} is not named in the record's replay inputs`)]);
+        }
         if (p.variant === "interrupted-edited") expect(sessions.harness.edits).not.toBeNull();
-        if (p.variant === "milestone-demo") {
+        if (p.states) {
+          // T-538 6.2: a capture before each later-session turn and after the last, each copy pinned, and every
+          // boundary's assertion holds on the stand-in's transitions.
+          const states = parseStateRecords(readFileSync(join(raw, runId, STATES_RAW), "utf-8"));
+          expect(states.map((x) => x.at), record.failures.join("\n")).toEqual(STATE_BOUNDARIES);
+          const said = names.filter((n) => /-(demo-approval|reopen|reapproval|change-request)\.jsonl$/.test(n)).map((n) => `${n}: ${readFileSync(join(raw, runId, n), "utf-8").slice(-1500)}`).join("\n");
+          expect(states.map((x) => x.checkpoint?.state), said).toEqual(["pending", "pending", "approved", "pending", "approved", "pending", "pending"]);
+          expect(statesFindings(states, "^Add tap to rota line")).toEqual([]);
+          expect(record.failures.filter((f) => f.startsWith("milestone-states: ") && /boundary|state capture/.test(f))).toEqual([]);
+          const copies = stateNames(join(raw, runId));
+          expect(copies.length).toBeGreaterThan(STATE_BOUNDARIES.length);
+          expect(record.replayInputs.map((e) => e.path)).toEqual(expect.arrayContaining([STATES_RAW, ...copies]));
+          // 6.4: the regrade recomputes every record from its copy and agrees; a copy removed or edited, or one the
+          // record does not pin, is refused by name.
+          const regradeOnce = () => spawnSync(process.execPath, [TSX, RUNNER, "--regrade", join(out, runId), "--raw", join(raw, runId)], { cwd: PKG, env, encoding: "utf-8", timeout: 120_000 });
+          const verdict = (JSON.parse(readFileSync(join(out, runId, "record.json"), "utf-8")) as { verdict: string }).verdict;
+          const g = regradeOnce();
+          expect(g.status, `${g.stdout}\n${g.stderr}`).toBe(verdict === "FAIL" ? 1 : verdict === "PASS" ? 0 : 3);
+          const rev = JSON.parse(readFileSync(join(out, runId, "regrade", "001", "regrade.json"), "utf-8")) as { verdict: string; reasons: string[] };
+          expect(rev.verdict).toBe(verdict);
+          const ticket = copies.find((c) => /\/tickets\/[^/]+$/.test(c) && c.startsWith("states/3/"))!;
+          for (const name of [ticket, STATES_RAW]) {
+            const file = join(raw, runId, name);
+            const bytes = readFileSync(file);
+            rmSync(file);
+            const missing = regradeOnce();
+            expect([missing.status, missing.stderr], name).toEqual([2, expect.stringContaining(`replay input ${name} is missing`)]);
+            writeFileSync(file, Buffer.concat([bytes, Buffer.from(" ")]));
+            const edited = regradeOnce();
+            expect([edited.status, edited.stderr], name).toEqual([2, expect.stringContaining(`replay input ${name} does not match its recorded sha256`)]);
+            writeFileSync(file, bytes);
+          }
+          writeFileSync(join(raw, runId, "states", "3", ".story", "tickets", "T-999.json"), "{}");
+          const extra = regradeOnce();
+          expect([extra.status, extra.stderr]).toEqual([2, expect.stringContaining("replay input states/3/.story/tickets/T-999.json is not named in the record's replay inputs")]);
+          rmSync(join(raw, runId, "states", "3", ".story", "tickets", "T-999.json"));
+        }
+        if (isDemoVariant(p.variant)) {
           expect(sessions.harness.demo?.stdout.trim()).toBe("Today: Sam waters beds 1-4");
           expect(sessions.harness.dependent).toMatch(/\S/);
           expect(sessions.harness.bypass, JSON.stringify(sessions.harness.bypass)).toMatchObject({ ticket: sessions.harness.dependent, ledgerChanged: false, output: expect.arrayContaining([expect.stringMatching(/waits on owner checkpoints? /)]) });

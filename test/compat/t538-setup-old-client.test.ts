@@ -46,7 +46,7 @@ const SID = "SS-0123abcd";
 const BARE_PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
 const FENCE = /exceeds max supported 3/;
 
-function payload(pointer: boolean): Record<string, unknown> {
+function payload(pointer: boolean, checkpoints = false): Record<string, unknown> {
   return {
     version: 1,
     setupId: SID,
@@ -65,10 +65,17 @@ function payload(pointer: boolean): Record<string, unknown> {
     },
     git: { init: false, gitignore: ["node_modules/"] },
     phases: [{ key: "K1", id: "build", name: "Build", label: "BUILD", description: "the first version" }],
-    tickets: [{ key: "K2", title: "Sign in", type: "feature", phase: "K1", description: "d", blockedBy: [] }],
-    checkpoints: [],
+    tickets: [
+      { key: "K2", title: "Sign in", type: "feature", phase: "K1", description: "d", blockedBy: [] },
+      ...(checkpoints ? [{ key: "K3", title: "Profile", type: "feature", phase: "K1", description: "d", blockedBy: [] }] : []),
+    ],
+    // T-538 6.3: the shape t538-s2-setup-apply.test.ts:78 uses; K4 gates K3.
+    checkpoints: checkpoints ? [{ key: "K4", title: "Accept sign in", kind: "acceptance", criteria: "works", evidenceRefs: [], description: "", phase: "K1", blockedBy: ["K2"], gates: ["K3"] }] : [],
     issues: [],
-    coverage: [{ requirement: "R1", text: "sign in", source: "brief", keys: ["K2"] }],
+    coverage: [
+      { requirement: "R1", text: "sign in", source: "brief", keys: ["K2"] },
+      ...(checkpoints ? [{ requirement: "R2", text: "profile", source: "brief", keys: ["K3"] }] : []),
+    ],
   };
 }
 
@@ -213,14 +220,14 @@ const oldClient = (args: string[], cwd = root) =>
   run(join(OLD_BIN, "storybloq"), args, cwd, { HOME: homes.old, PATH: `${OLD_BIN}:${BARE_PATH}`, ...quiet });
 
 /** A setup-apply child of the eval bundle at the fixed root, from an empty root and store. */
-async function build(o: { fault?: string; pointer?: boolean; agents?: boolean }): Promise<{ ran: Ran; events: string }> {
+async function build(o: { fault?: string; pointer?: boolean; agents?: boolean; checkpoints?: boolean }): Promise<{ ran: Ran; events: string }> {
   restore(root, new Map());
   rmSync(store, { recursive: true, force: true });
   if (o.agents) writeFileSync(join(root, "AGENTS.md"), "# agents\n");
   const events = join(scratch, `events-${Math.random().toString(36).slice(2)}.jsonl`);
   const env: Record<string, string> = { HOME: homes.build, PATH: process.env.PATH ?? BARE_PATH, STORYBLOQ_SETUP_REVIEW_DIR: store, STORYBLOQ_EVAL_EVENTS: events, ...quiet };
   if (o.fault) env.STORYBLOQ_EVAL_FAULT = o.fault;
-  const ran = await run(process.execPath, [EVAL_CLI, "--entry", "cli", "setup-apply"], root, env, JSON.stringify(payload(o.pointer === true)));
+  const ran = await run(process.execPath, [EVAL_CLI, "--entry", "cli", "setup-apply"], root, env, JSON.stringify(payload(o.pointer === true, o.checkpoints === true)));
   return { ran, events };
 }
 
@@ -358,6 +365,57 @@ describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${LATEST_P
     for (const r of o.old) expect([r.status, FENCE.test(r.out)], r.out).toEqual([1, true]);
     expect(diff(o.snap, o.afterOld)).toEqual([]);
     expect(diff(o.snap, withoutDerived(o.afterNew, false))).toEqual([]);
+  });
+
+  /** The id of the ticket titled `title` in the root's ledger. */
+  const idOf = (title: string): string => {
+    const dir = join(root, ".story", "tickets");
+    for (const name of readdirSync(dir)) {
+      const t = JSON.parse(readFileSync(join(dir, name), "utf-8")) as { id: string; title: string };
+      if (t.title === title) return t.id;
+    }
+    throw new Error(`no ticket titled ${title}`);
+  };
+  const schemaVersion = (): unknown => (JSON.parse(readFileSync(join(root, ".story", "config.json"), "utf-8")) as { schemaVersion?: unknown }).schemaVersion;
+  /** 6.3: the four commands an older client tries on a checkpoint project, each refused at the fence with nothing written. */
+  async function expectFenced(gated: string, checkpoint: string): Promise<void> {
+    const o = await oracle([["status"], ["ticket", "next"], ["ticket", "update", gated, "--status", "complete"], ["ticket", "update", checkpoint, "--status", "complete"]]);
+    for (const r of o.old) expect([r.status, FENCE.test(r.out)], r.out).toEqual([1, true]);
+    expect(diff(o.snap, o.afterOld)).toEqual([]);
+    expect(diff(o.snap, withoutDerived(o.afterNew, false))).toEqual([]);
+  }
+
+  it("(6.3) a finished setup with an owner checkpoint is at schema 5; 1.15.9's status, next and both status updates are fenced and write nothing", async () => {
+    const { ran } = await build({ checkpoints: true });
+    expect(ran.status, ran.out).toBe(0);
+    // setup's enable step stamps IMMUTABLE_EVIDENCE_SCHEMA_VERSION (errors.ts:32, setup-apply.ts:819).
+    expect(schemaVersion()).toBe(5);
+    const profile = idOf("Profile");
+    const checkpoint = idOf("Accept sign in");
+    expect((JSON.parse(readFileSync(join(root, ".story", "tickets", `${profile}.json`), "utf-8")) as { blockedBy: string[] }).blockedBy).toContain(checkpoint);
+    await expectFenced(profile, checkpoint);
+  });
+
+  it("(6.3) a schema 4 project (checkpoints without immutable evidence, built without setup) is fenced the same way", async () => {
+    restore(root, new Map());
+    const step = async (args: string[]): Promise<string> => { const r = await newClient(args); expect(r.status, `${args.join(" ")}: ${r.out}`).toBe(0); return r.out; };
+    await step(["init", "--name", "demo"]);
+    // A fresh project is below 4; if init ever stamps 4 or more this row fails and the fixture is re-ruled.
+    expect(schemaVersion()).toEqual(expect.any(Number));
+    expect(schemaVersion() as number).toBeLessThan(4);
+    await step(["ticket", "create", "--title", "Sign in", "--type", "feature"]);
+    await step(["ticket", "create", "--title", "Profile", "--type", "feature"]);
+    await step(["checkpoint", "enable"]);
+    expect(schemaVersion()).toBe(4);
+    const signIn = idOf("Sign in");
+    const profile = idOf("Profile");
+    await step(["checkpoint", "create", "--kind", "acceptance", "--criteria", "works", "--title", "Accept sign in", "--owner", "Sam", "--blocked-by", signIn]);
+    const checkpoint = idOf("Accept sign in");
+    // `checkpoint create` has no flag for what it gates: the gated ticket is made to wait on it by the ordinary update.
+    await step(["ticket", "update", profile, "--add-blocked-by", checkpoint]);
+    expect((JSON.parse(readFileSync(join(root, ".story", "tickets", `${profile}.json`), "utf-8")) as { blockedBy: string[] }).blockedBy).toContain(checkpoint);
+    expect(schemaVersion()).toBe(4);
+    await expectFenced(profile, checkpoint);
   });
 
   it("the outside-root check is live: an unwarmed HOME, where housekeeping installs hooks, fails the oracle", async () => {

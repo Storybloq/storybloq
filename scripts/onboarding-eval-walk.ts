@@ -2,10 +2,11 @@
 // note of 2026-11-07 on the ticket: the no-follow, descriptor-relative traversal and path-specific
 // error handling that the ledger digest got at commit 1 apply to every such read. The ledger digest
 // keeps its own copy until commit 8 moves the capture reads here.
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, writeSync, type Stats } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, opendirSync, openSync, readlinkSync, readSync, writeSync, type Dir, type Stats } from "node:fs";
 
 /** The points where the tree can change under the walk; a test acts at one to prove the walk holds. */
-export type WalkStep = "check" | "readlink" | "enter" | "verify" | "verify-back" | "list" | "open";
+/** `name`: one name taken from a folder listing (Codex round 2 Q1: the listing is read one name at a time). */
+export type WalkStep = "check" | "readlink" | "enter" | "verify" | "verify-back" | "list" | "name" | "open";
 export type WalkHook = (step: WalkStep, rel: string) => void;
 
 export interface WalkVisitor {
@@ -18,7 +19,15 @@ export interface WalkVisitor {
   readonly folder?: (rel: string, st: Stats) => void;
   /** Each problem as it is found, by its path and kind, besides the named finding the walk returns (commit 6a, ISS-1467). */
   readonly problem?: (rel: string, kind: WalkProblem) => void;
+  /**
+   * Codex round 2 Q1 (b): true once the visitor's own budget is spent. The walk then ends at once: no further
+   * listing, lstat, readlink or open. It is asked before each of them.
+   */
+  readonly spent?: () => boolean;
 }
+
+/** Why a walk ended early: its entry budget ran out, or the visitor said its budget was spent. */
+export type WalkStop = "entries" | "visitor";
 
 /** unreadable: a call on it failed; changed: it was swapped while being read; other: not a file, a folder or a link. */
 export type WalkProblem = "unreadable" | "changed" | "other";
@@ -83,8 +92,22 @@ export function copyBounded(from: number, to: number, budget: ByteBudget): null 
  * parent, stops the walk with a finding. Everything else that fails names its path and the walk
  * goes on. `label` names the root in findings. A missing root is reported unless `missingIsEmpty`.
  */
-export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: { readonly hook?: WalkHook; readonly missingIsEmpty?: boolean } = {}): { readonly problems: readonly string[] } {
+export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: {
+  readonly hook?: WalkHook; readonly missingIsEmpty?: boolean;
+  /**
+   * Codex round 2 Q1 (a): the most entries the walk lstats, across the whole walk. A folder's listing reads at
+   * most the entries left plus one, so a very wide folder costs no more than the budget, and an entry past it
+   * ends the walk (`stopped: "entries"`). Absent, there is no limit; the listing still streams.
+   */
+  readonly maxEntries?: number;
+} = {}): { readonly problems: readonly string[]; readonly stopped: WalkStop | null } {
   const problems: string[] = [];
+  const maxEntries = opts.maxEntries ?? Number.POSITIVE_INFINITY;
+  let used = 0;
+  let stoppedBy: WalkStop | null = null;
+  class Ended extends WalkStopped {}
+  const end = (why: WalkStop): never => { stoppedBy = why; throw new Ended(); };
+  const guard = (): void => { if (v.spent?.()) end("visitor"); };
   const step: WalkHook = opts.hook ?? (() => {});
   const name = (rel: string): string => (rel === "." ? label : `${label}/${rel}`);
   const report = (rel: string, kind: WalkProblem, text: string): void => { problems.push(text); v.problem?.(rel, kind); };
@@ -96,9 +119,23 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
   };
   const isSame = (a: Stats, b: Stats): boolean => a.dev === b.dev && a.ino === b.ino;
   const folder = (rel: string, self: Stats): void => {
+    guard();
     step("list", rel);
-    let names: string[];
-    try { names = readdirSync(".").sort(); } catch (e) { failed(rel, e); return; }
+    // One name at a time, never more than the entries left plus one: the one past the budget is what proves the
+    // folder holds more than the walk may visit. Only this bounded list is sorted.
+    const take = maxEntries - used + 1;
+    const names: string[] = [];
+    let dir: Dir;
+    try { dir = opendirSync("."); } catch (e) { failed(rel, e); return; }
+    try {
+      while (names.length < take) {
+        const d = dir.readSync();
+        if (d === null) break;
+        step("name", rel);
+        names.push(d.name);
+      }
+    } catch (e) { failed(rel, e); return; } finally { dir.closeSync(); }
+    names.sort();
     for (const n of names) entry(n, rel === "." ? n : `${rel}/${n}`, self);
   };
   const enter = (n: string, rel: string, seen: Stats): boolean => {
@@ -112,11 +149,15 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
     return true;
   };
   const entry = (n: string, rel: string, parent: Stats): void => {
+    guard();
+    if (used >= maxEntries) end("entries");
+    used++;
     step("check", rel);
     let st: Stats;
     try { st = lstatSync(n); } catch (e) { failed(rel, e); return; }
     if (v.include && !v.include(rel, st)) return;
     if (st.isSymbolicLink()) {
+      guard();
       step("readlink", rel);
       let target: string;
       try { target = readlinkSync(n); } catch (e) { failed(rel, e); return; }
@@ -128,6 +169,7 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
         if (!isSame(identity(rel), parent)) stopped(rel);
       }
     } else if (st.isFile()) {
+      guard();
       step("open", rel);
       let fd: number;
       try { fd = openSync(n, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch (e) { failed(rel, e); return; }
@@ -156,5 +198,5 @@ export function walkNoFollow(root: string, label: string, v: WalkVisitor, opts: 
   } finally {
     process.chdir(start);
   }
-  return { problems };
+  return { problems, stopped: stoppedBy };
 }

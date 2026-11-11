@@ -190,6 +190,7 @@ describe("no host run hands the client its bypass flag", () => {
     ["interrupted", "empty-idea", ["--fault", "step:handover"]],
     ["interrupted-edited", "empty-idea", ["--fault", "step:handover"]],
     ["milestone-demo", "checkpoint-demo", []],
+    ["milestone-states", "checkpoint-states", []],
     ["empty-idea-verify", "empty-idea", []],
     ["restart", "empty-idea", []],
   ] as const)("variant %s", (variant, fixture, more) => {
@@ -325,7 +326,7 @@ describe("T-538 2a: the runner's own turn checks, end to end", () => {
 });
 
 /** The server column's keys (5.3) for a Codex run with no fault armed. */
-const SERVER_KEYS = ["CODEX_HOME", "HOME", "LANG", "PATH", "STORYBLOQ_CLIENT", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_OUTSIDE", "STORYBLOQ_EVAL_REVIEW_RESPONSES", "STORYBLOQ_EVAL_TOOLS", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "TMPDIR"];
+const SERVER_KEYS = ["CODEX_HOME", "HOME", "LANG", "NO_UPDATE_NOTIFIER", "PATH", "STORYBLOQ_CLIENT", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_OUTSIDE", "STORYBLOQ_EVAL_REVIEW_RESPONSES", "STORYBLOQ_EVAL_TOOLS", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "TMPDIR"];
 
 // --- T-538 commit 1 (ISS-1463): the Claude route, against a stand-in that speaks the control protocol ------
 
@@ -412,6 +413,7 @@ describe("T-538 commit 1: no Claude turn carries a bypass", () => {
     ["degraded", "empty-idea", []],
     ["interrupted", "empty-idea", ["--fault", "step:handover"]],
     ["milestone-demo", "checkpoint-demo", []],
+    ["milestone-states", "checkpoint-states", []],
     ["restart", "empty-idea", []],
   ] as const)("variant %s: every argv is free of every bypass spelling and of --disallowedTools", async (variant, fixture, extra) => {
     await withClaude({ variant, fixture, extra }, (r) => {

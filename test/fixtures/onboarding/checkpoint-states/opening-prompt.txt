@@ -1,0 +1,1 @@
+Set up storybloq here. I want a tiny command-line tool for our community garden that prints today's watering rota, and I want to see it working before anything else is built on it.

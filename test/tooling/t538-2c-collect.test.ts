@@ -4,7 +4,7 @@
  * reads go through it.
  */
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, ftruncateSync, openSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { collectTree, digestTree, PURPOSE_BYTES, PURPOSES } from "../../scripts/onboarding-eval-collect.js";
 import { treeDigest } from "../../scripts/onboarding-eval-lib.js";
 import { Collector } from "../../scripts/onboarding-eval-run.js";
+import { parseTreeSnap, preservationFindings, treeSnapshot, type PreserveInputs } from "../../scripts/onboarding-eval-preserve.js";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dirs: string[] = [];
@@ -184,5 +185,63 @@ describe("no read of a root outside the collector (5.8)", () => {
   it("the collected copies live outside every root", () => {
     expect(readdirSync(join(PKG, "scripts")).includes("onboarding-eval-collect.ts")).toBe(true);
     expect(readFileSync(join(PKG, "scripts", "onboarding-eval-run.ts"), "utf-8")).toContain('join(this.work, "collected", String(++this.n), basename(src))');
+  });
+});
+
+describe("Codex round 1 P4: the edited and end snapshots come from the collector's own snapshot operation", () => {
+  const loader = (): string[] => ["--import", pathToFileURL(join(PKG, "node_modules", "tsx", "dist", "loader.mjs")).href];
+  const noLog = { events: [], attempts: [], fired: [] } as unknown as PreserveInputs["log"];
+  it("an unchanged link in the project compares equal to the kill snapshot, and the preservation check holds", async () => {
+    const d = scratch();
+    const project = join(d, "project");
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(join(project, "src", "app.ts"), "export {};\n");
+    mkdirSync(join(d, "outside"));
+    symlinkSync(join(d, "outside"), join(project, "docs"));
+    const kill = parseTreeSnap(treeSnapshot(project));
+    const end = parseTreeSnap(await new Collector(join(d, "work"), { execArgv: loader() }).snapshot(project));
+    expect(end).toEqual(kill);
+    expect(end.links).toEqual(["docs"]);
+    // This synthetic tree holds no setup state, so only the link and protected-content rules are asked about here.
+    const found = preservationFindings("v", { baseline: kill, end, protectedPaths: ["src/app.ts"], selector: "step:config", firedLine: Number.POSITIVE_INFINITY, log: noLog });
+    expect(found).not.toContain("v: the project's links changed after the baseline");
+    expect(found).not.toContain("v: src/app.ts changed after the baseline");
+    expect(found.filter((f) => f.includes("snapshot"))).toEqual([]);
+  }, 60_000);
+  it("a node_modules larger than the project copy's bound does not push the project's own files out of the snapshot", async () => {
+    const d = scratch();
+    const project = join(d, "project");
+    mkdirSync(join(project, "node_modules", "big"), { recursive: true });
+    // Sparse files: their bytes are zero and cost no disk, but a copy charges them all.
+    const n = Math.ceil(PURPOSE_BYTES.project / (8 * 1024 * 1024)) + 1;
+    for (let i = 0; i < n; i++) { const fd = openSync(join(project, "node_modules", "big", `f${i}.bin`), "w"); ftruncateSync(fd, 8 * 1024 * 1024); closeSync(fd); }
+    mkdirSync(join(project, "src"));
+    writeFileSync(join(project, "src", "app.ts"), "export {};\n");
+    const c = new Collector(join(d, "work"), { execArgv: loader() });
+    const end = parseTreeSnap(await c.snapshot(project));
+    expect(end.truncated).toBe(false);
+    expect(end.problems).toEqual([]);
+    expect(Object.keys(end.files)).toEqual(["src/app.ts"]);
+    expect(c.named).toEqual([]);
+  }, 120_000);
+  it("a problem the walk meets is carried in the snapshot, where the preservation check fails on it", async () => {
+    const d = scratch();
+    const project = join(d, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, "locked.txt"), "x");
+    chmodSync(join(project, "locked.txt"), 0o000);
+    try {
+      const end = parseTreeSnap(await new Collector(join(d, "work"), { execArgv: loader() }).snapshot(project));
+      expect(end.problems).toEqual(["project/locked.txt could not be read (EACCES)"]);
+      expect(preservationFindings("v", { baseline: end, end, protectedPaths: [], selector: "step:config", firedLine: Number.POSITIVE_INFINITY, log: noLog })).toContain("v: the end snapshot: project/locked.txt could not be read (EACCES)");
+    } finally {
+      chmodSync(join(project, "locked.txt"), 0o600);
+    }
+  }, 60_000);
+  it("the runner takes the edited and the end snapshot with the collector's snapshot operation, never a project copy", () => {
+    const src = readFileSync(join(PKG, "scripts", "onboarding-eval-run.ts"), "utf-8");
+    expect(src).toContain("editedSnapshot = await collector.snapshot(project);");
+    expect(src).toContain("named.set(END_RAW, await collector.snapshot(project));");
+    expect(src).not.toContain('treeSnapshot(await collector.copy("project"');
   });
 });

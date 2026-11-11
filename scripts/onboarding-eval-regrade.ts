@@ -25,11 +25,13 @@ import { parseStream, sha256 } from "./continuity-lib.js";
 import { applySetupReviewChecks, STORE_COPY, STORE_COPY_MISSING } from "./onboarding-eval-checkset6.js";
 import { applySetupRunChecks, cs7FinalLedger, cs7SnapshotLedger, type EvidenceObservation, type FollowUp } from "./onboarding-eval-checkset7.js";
 import {
-  applySessionChecks, baseVariant, gatedTicket, isSessionVariant, laterSessions, NO_FACTS, OBSERVATIONS_RAW, parseSessionsFile, sessionSpans, SESSIONS_RAW, SessionsError,
+  applySessionChecks, baseVariant, gatedTicket, isDemoVariant, isSessionVariant, laterSessions, NO_FACTS, OBSERVATIONS_RAW, parseSessionsFile, sessionSpans, SESSIONS_RAW, SessionsError,
   type HarnessFacts, type SessionScript, type SessionsFile,
 } from "./onboarding-eval-sessions.js";
 import { EventsLogError, parseEventsLog } from "./onboarding-eval-checkset7-events.js";
 import { parseServedLines, REVIEW_FAILURE_PREFIX, SERVED_RAW, type ServedLine } from "./onboarding-eval-review.js";
+import { FAULT_RAW, protectedPathsOf, provisionedLockfiles } from "./onboarding-eval-preserve.js";
+import { parseStateRecords, STATE_FILE, STATES_RAW, type StateRecord } from "./onboarding-eval-states.js";
 import { HOST_CHECKS_RAW, launchHeld, serverLaunchFailure, type ServerLaunchLine, type TurnHostChecks } from "./onboarding-eval-host.js";
 import { initEventConsulted, initEventProblems, readbackProblems, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 import {
@@ -109,6 +111,10 @@ export interface RegradeInput {
   /** Every entry name directly in the run's raw directory. */
   readonly rawNames: readonly string[];
   readonly readRaw: (name: string) => Buffer;
+  /** T-538 6.2: every entry under the raw directory's `states/` folder, by raw-relative name. */
+  readonly stateNames?: readonly string[];
+  /** T-538 6.2: milestone-states' records recomputed from their copies (withRecomputedStates); absent when not recomputed. */
+  readonly recomputedStates?: readonly StateRecord[];
   /** The raw copy of the project's `.story/` after the run, or null when it has none. */
   readonly story: StoryBytes | null;
   /** Check set 6: the run's copy of its setup review store, or null when the raw directory has none. */
@@ -201,6 +207,10 @@ interface Set7Inputs {
   readonly serverFailures: ReadonlyMap<string, string | null>;
   /** 5.5: the served commands of a host-v2 record; null for any other. */
   readonly served: readonly ServedLine[] | null;
+  /** T-538 6.1: a fault run's tree snapshots by raw name, each pinned; the session checks find a missing one. */
+  readonly faults: ReadonlyMap<string, string>;
+  /** T-538 6.2: milestone-states' recorded boundary records, equal to their recompute; null for any other variant. */
+  readonly states: readonly StateRecord[] | null;
 }
 
 /** A host-v2 record's claudeLaunch, refused unless every field has its shape. */
@@ -266,7 +276,7 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
   // T-538 S5a: the session variants' own inputs, required by the variant.
   const variant = String(record.variant);
   const sessionsBytes = isSessionVariant(variant) ? read(SESSIONS_RAW, true) : null;
-  const observationsBytes = variant === "milestone-demo" ? read(OBSERVATIONS_RAW, true) : null;
+  const observationsBytes = isDemoVariant(variant) ? read(OBSERVATIONS_RAW, true) : null;
   let observations: EvidenceObservation[] | null = null;
   if (observationsBytes !== null) {
     try { observations = JSON.parse(observationsBytes.toString("utf-8")) as EvidenceObservation[]; } catch { return refuse(`replay input ${OBSERVATIONS_RAW} is malformed`); }
@@ -341,8 +351,37 @@ function set7Inputs(input: RegradeInput, record: Record<string, unknown>): Set7I
     served = (parsed as { lines: ServedLine[] }).lines;
     entries.push({ path: SERVED_RAW, sha256: sha256(bytes) });
   }
+  // T-538 6.1: every fault snapshot the record pins or the raw directory holds is read against its pin (a pinned
+  // one missing, an unpinned one present, or edited bytes each refuse); which ones the run needs is the session checks'.
+  const faults = new Map<string, string>();
+  for (const name of [...new Set([...hashOf.keys(), ...input.rawNames])].filter((n) => FAULT_RAW.test(n)).sort()) {
+    const bytes = read(name, false)!;
+    faults.set(name, bytes.toString("utf-8"));
+    entries.push({ path: name, sha256: sha256(bytes) });
+  }
+  // T-538 6.2: milestone-states' records file and every capture copy, each read against its pin (nested names are
+  // read directly; a present one the record does not pin refuses), then the records against their recompute.
+  let states: StateRecord[] | null = null;
+  const statesBytes = read(STATES_RAW, variant === "milestone-states");
+  if (statesBytes !== null) {
+    try { states = parseStateRecords(statesBytes.toString("utf-8")); } catch (err) { return refuse(`replay input ${STATES_RAW} is malformed: ${err instanceof Error ? err.message : String(err)}`); }
+    entries.push({ path: STATES_RAW, sha256: sha256(statesBytes) });
+  }
+  for (const name of input.stateNames ?? []) if (!hashOf.has(name)) refuse(`replay input ${name} is not named in the record's replay inputs`);
+  for (const [name, recorded] of [...hashOf].filter(([n]) => STATE_FILE.test(n)).sort(([a], [b]) => a.localeCompare(b))) {
+    if (input.stateNames !== undefined && !input.stateNames.includes(name)) refuse(`replay input ${name} is missing`);
+    let bytes: Buffer;
+    try { bytes = input.readRaw(name); } catch { return refuse(`replay input ${name} is missing`); }
+    if (sha256(bytes) !== recorded) refuse(`replay input ${name} does not match its recorded sha256`);
+    entries.push({ path: name, sha256: recorded });
+  }
+  if (states !== null) {
+    if (input.recomputedStates === undefined) refuse(`the ${STATES_RAW} records were not recomputed from their copies`);
+    if (!same(states, input.recomputedStates)) refuse(`${STATES_RAW} differs from the records its copies give`);
+  }
   for (const name of hashOf.keys()) if (!entries.some((e) => e.path === name)) refuse(`the record names replay input ${name}, which check set 7 does not read`);
   return {
+    faults, states,
     events, snapshot: snapshotBytes === null ? null : snapshotBytes.toString("utf-8"), projectRoot: invocations.projectRoot as string, mapping: invocations.mapping, entries,
     sessions: sessionsBytes === null ? null : sessionsBytes.toString("utf-8"), observations, readbacks, hostChecks, serverFailures, served,
   };
@@ -491,6 +530,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   const manifest: ManifestEntry[] = [];
   const expected = new Set<string>(cs >= 6 ? ["project.after", STORE_COPY] : ["project.after"]);
   if (set7 !== null) for (const e of set7.entries) expected.add(e.path);
+  if (set7 !== null && set7.entries.some((e) => e.path.startsWith("states/"))) expected.add("states");
   recTurns.forEach((t, i) => {
     if (typeof t.label !== "string" || !/^[a-z0-9-]+$/.test(t.label)) refuse(`turn ${i} has no valid label`);
     const f = turnFile(i, t.label);
@@ -516,7 +556,10 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   };
   const later = session === null ? undefined : () => {
     if (input.fixture.sessionScript === undefined) refuse("a session variant needs the fixture's owner script for its later sessions");
-    return laterSessions(session, client === "claude" ? "/story" : "$story", input.fixture.sessionScript!, readSessions().harness.dependent);
+    const harness = readSessions().harness;
+    // 6.1: a scheduled run has one later session per armed one; a run before 6.1 has no schedule and one.
+    const armed = Array.isArray(harness.schedule) && harness.schedule.length > 0 ? harness.schedule.length : 1;
+    return laterSessions(session, client === "claude" ? "/story" : "$story", input.fixture.sessionScript!, harness.dependent, armed);
   };
   const flow = driveFlow({ variant, firstPrompt: input.fixture.firstPrompt, discoveryPrompt: input.fixture.discoveryPrompt, afterPackage: input.fixture.afterPackage, exclusion, ...(later !== undefined ? { later } : {}) }, state);
   let consumed = 0;
@@ -590,12 +633,20 @@ function regradeOrThrow(input: RegradeInput): Regraded {
       if (!same(parsed.sessions, sessionSpans(state.turns))) refuse(`${SESSIONS_RAW} differs from the sessions the replayed run produces`);
       const atSetup = set7.snapshot === null ? [] : cs7SnapshotLedger(set7.snapshot).tickets;
       const followUp = (fixture.rubric as { followUp?: FollowUp }).followUp;
-      if (session === "milestone-demo" && parsed.harness.dependent !== (followUp === undefined ? null : gatedTicket(atSetup, followUp.checkpoint))) refuse(`${SESSIONS_RAW} names a dependent the setup snapshot does not gate`);
+      if (isDemoVariant(session) && parsed.harness.dependent !== (followUp === undefined ? null : gatedTicket(atSetup, followUp.checkpoint))) refuse(`${SESSIONS_RAW} names a dependent the setup snapshot does not gate`);
       applySessionChecks(state, {
         variant: session, harness: parsed.harness, log: parseEventsLog(set7.events), mapping: r.invocations,
         tickets: input.story === null ? [] : cs7FinalLedger(recordingReader(input.story, seen7)).tickets, ticketsAtSetup: atSetup,
         present: (name) => input.rawNames.includes(name),
+        faults: { read: (name) => set7.faults.get(name) ?? null, protectedPaths: [...protectedPathsOf(input.fixture.files), ...provisionedLockfiles(record.dependencyInstalls)].sort() },
+        ...(session === "milestone-states" ? { states: set7.states, followUpTitle: followUp?.titlePattern ?? null } : {}),
       });
+      if (set7.states !== null) {
+        // 6.2: the records' boundaries and dependent are the replay's: one before each later-session turn, then after the last.
+        const at = [...state.turns.filter((t) => (t.session ?? 1) >= 2).map((t) => t.label), "after-last"];
+        if (!same(set7.states.map((x) => x.at), at)) refuse(`${STATES_RAW} names boundaries the replayed run does not have`);
+        if (set7.states.some((x) => (x.dependent?.id ?? null) !== parsed.harness.dependent)) refuse(`${STATES_RAW} names a dependent other than the sessions file's`);
+      }
     }
     manifest.push(...set7.entries);
     for (const [k, v] of [...seen7].sort(([a], [b]) => a.localeCompare(b))) manifest.push({ path: `project.after/.story#cs7:${k}`, sha256: v });

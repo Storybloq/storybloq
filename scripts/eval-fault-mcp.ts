@@ -7,7 +7,12 @@
  *   --entry mcp|cli                 which main to start (removed from argv)
  *   STORYBLOQ_EVAL_EVENTS=<file>    required: the fsynced events log
  *   STORYBLOQ_EVAL_FAULT=<selector> optional: `point` or `point#n`, the nth
- *                                   occurrence within one invocation
+ *                                   occurrence within one invocation; a point
+ *                                   ending in `:*` matches any point with that
+ *                                   prefix (T-538 6.1)
+ *   STORYBLOQ_EVAL_FAULT_ID=<id>    optional (6.1): the schedule entry's id; the
+ *                                   marker is then `<events>.fired.<id>`, and a
+ *                                   fired record and the kill snapshot are written
  *   STORYBLOQ_EVAL_OUTSIDE=<dir>    required for entry mcp (T-538 5.2): a harness folder outside
  *                                   every root; the entry tries to create a file
  *                                   there before it serves, and serves only when
@@ -21,14 +26,20 @@
  * copied to `<events>.setup-snapshot.json` (fsynced) before its event line;
  * `step:archive` repeats that snapshot's digest. At the selected point the
  * wrapper creates `<events>.fired` (O_EXCL) and SIGKILLs itself; a later
- * attempt finds the marker and never fires.
+ * attempt finds the marker and never fires. With a fault id (6.1) the marker is
+ * `<events>.fired.<id>`; before it, the project tree is written to
+ * `<events>.kill.<id>.json` (fsynced), and after it a fired record
+ * `{type: "fault-fired", id, selector, point, target, invocation, attempt}` is
+ * appended, both before the kill.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setAfterWriteFault, type FaultInfo } from "../src/core/setup-apply.js";
+import { parseSelector, pointMatches } from "./onboarding-eval-schedule.js";
+import { KILL_SNAPSHOT_MAX_BYTES, KILL_SNAPSHOT_MAX_FILES, treeSnapshot } from "./onboarding-eval-preserve.js";
 
 export type EvalEntry = "mcp" | "cli";
 
@@ -46,8 +57,8 @@ function appendDurable(file: string, text: string): void {
 }
 
 /** Writes a new file whole and fsyncs it. */
-function writeDurable(file: string, text: string): void {
-  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, 0o644);
+function writeDurable(file: string, text: string, exclusive = false): void {
+  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | (exclusive ? constants.O_EXCL : constants.O_TRUNC), 0o644);
   try {
     writeSync(fd, text);
     fsyncSync(fd);
@@ -72,14 +83,17 @@ export function ledgerSnapshot(root: string): string {
   return JSON.stringify({ files }, null, 2) + "\n";
 }
 
-export function parseSelector(selector: string): { readonly point: string; readonly nth: number } {
-  const m = /^(.*)#([1-9][0-9]*)$/.exec(selector);
-  return m ? { point: m[1]!, nth: Number(m[2]) } : { point: selector, nth: 1 };
-}
+// 6.1: one selector grammar for the runner and the collector.
+export { parseSelector, pointMatches };
+
+// 6.1: the kill snapshot's walk lives with the preservation rules that read it.
+export { KILL_SNAPSHOT_MAX_BYTES, KILL_SNAPSHOT_MAX_FILES, treeSnapshot };
 
 /** The collector behind both seams, for one attempt (one process). `kill` is the SIGKILL, replaceable in a test. */
-export function collector(events: string, selector: string | null, entry: EvalEntry, kill: () => void = () => process.kill(process.pid, "SIGKILL"), launch: Record<string, unknown> = {}) {
+export function collector(events: string, selector: string | null, entry: EvalEntry, kill: () => void = () => process.kill(process.pid, "SIGKILL"), launch: Record<string, unknown> = {}, faultId: string | null = null) {
   const attempt = randomUUID();
+  // 6.1: with an id, the entry's own marker; with none, the legacy marker, so stored runs and --fault keep their meaning.
+  const marker = faultId === null ? `${events}.fired` : `${events}.fired.${faultId}`;
   const target = selector === null ? null : parseSelector(selector);
   const seen = new Map<string, number>();
   const open = new Set<string>();
@@ -104,17 +118,27 @@ export function collector(events: string, selector: string | null, entry: EvalEn
     const { root, ...rest } = info;
     if (rest.target !== undefined && root !== null) extra.target = relative(root, rest.target).split(sep).join("/");
     line({ point, ...rest, ...extra });
-    if (target === null || point !== target.point) return;
-    const key = `${info.invocation ?? ""}\u0000${point}`;
+    if (target === null || !pointMatches(target.point, point)) return;
+    // A `:*` selector counts across every point it matches (6.1); a literal one counts its own point.
+    const key = `${info.invocation ?? ""}\u0000${target.point}`;
     const n = (seen.get(key) ?? 0) + 1;
     seen.set(key, n);
     if (n !== target.nth) return;
+    if (existsSync(marker)) return;
+    // P1: the marker is claimed exclusively first, so of two processes reaching the point only the winner goes on;
+    // the loser stops at EEXIST before it writes anything. The winner then writes the kill-time state with an
+    // exclusive create (never over another file) and fsyncs it before the fired event and the kill. A claim with no
+    // snapshot (this process died between the two) is refused by the grade as a missing kill snapshot.
     try {
-      closeSync(openSync(`${events}.fired`, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644));
+      closeSync(openSync(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") return;
       throw err;
     }
+    if (faultId !== null) {
+      writeDurable(`${events}.kill.${faultId}.json`, info.root === null ? JSON.stringify({ files: {}, links: [], truncated: false, problems: [], root: null }) + "\n" : treeSnapshot(info.root), true);
+    }
+    if (faultId !== null) line({ type: "fault-fired", id: faultId, selector, point, target: extra.target ?? null, invocation: info.invocation });
     kill();
   };
   /** One `{type: "tool-withheld", name}` line per name (5.4), on this attempt's sequence. */
@@ -126,6 +150,8 @@ export interface EvalArgs {
   readonly entry: EvalEntry;
   readonly events: string;
   readonly selector: string | null;
+  /** 6.1: the schedule entry's id, or null for the legacy single fault. */
+  readonly faultId: string | null;
   readonly outside: string | null;
   readonly tools: string | null;
 }
@@ -144,7 +170,10 @@ export function readEvalArgs(argv: string[], env: NodeJS.ProcessEnv): EvalArgs {
   if (entry === "mcp" && !env.STORYBLOQ_EVAL_TOOLS) throw new Error("eval-fault-mcp: STORYBLOQ_EVAL_TOOLS is required for entry mcp");
   const outside = entry === "mcp" ? env.STORYBLOQ_EVAL_OUTSIDE! : null;
   const tools = entry === "mcp" ? env.STORYBLOQ_EVAL_TOOLS! : null;
-  return { entry, events, selector: selector ? selector : null, outside, tools };
+  const faultId = env.STORYBLOQ_EVAL_FAULT_ID ? env.STORYBLOQ_EVAL_FAULT_ID : null;
+  if (faultId !== null && !/^[A-Za-z0-9_-]{1,32}$/.test(faultId)) throw new Error(`eval-fault-mcp: STORYBLOQ_EVAL_FAULT_ID ${faultId} is not an id`);
+  if (faultId !== null && !selector) throw new Error("eval-fault-mcp: STORYBLOQ_EVAL_FAULT_ID needs STORYBLOQ_EVAL_FAULT");
+  return { entry, events, selector: selector ? selector : null, outside, tools, faultId };
 }
 
 /**
@@ -255,7 +284,7 @@ function entryStdin(): Buffer {
 }
 
 async function start(): Promise<void> {
-  const { entry, events, selector, outside, tools } = readEvalArgs(process.argv, process.env);
+  const { entry, events, selector, outside, tools, faultId } = readEvalArgs(process.argv, process.env);
   const args = process.argv.slice(2);
   if (entry === "cli" && args[0] === "setup-review" && FORWARDED_VERBS.includes(args[1] ?? "")) {
     const shared = new Int32Array(new SharedArrayBuffer(4));
@@ -273,12 +302,12 @@ async function start(): Promise<void> {
   if (outside !== null) {
     launch.sandbox = outsideProbe(outside);
     if (launch.sandbox === "absent") {
-      collector(events, selector, entry, undefined, launch);
+      collector(events, selector, entry, undefined, launch, faultId);
       process.stderr.write("eval-fault-mcp: the server can write outside every root; it does not serve\n");
       process.exit(1);
     }
   }
-  const collect = collector(events, selector, entry, undefined, launch);
+  const collect = collector(events, selector, entry, undefined, launch, faultId);
   setAfterWriteFault(collect);
   if (permitted !== null) restrictTools(permitted.names, collect.withheld);
   // Imported after the seams are set: each main runs on import, in this bundle's module instance.

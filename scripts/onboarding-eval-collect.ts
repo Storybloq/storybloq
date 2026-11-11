@@ -314,7 +314,8 @@ if (main) {
     const chunks: Buffer[] = [];
     process.stdin.on("data", (c: Buffer) => chunks.push(c));
     process.stdin.on("end", () => process.stdout.write(`${JSON.stringify(scanFiles(rest, Buffer.concat(chunks).toString("utf-8").split("\n").filter((x) => x !== "")))}\n`));
-  } else if (mode === "ledger-state" && rest.length === 1) void import("./onboarding-eval-sessions.js").then((m) => process.stdout.write(`${JSON.stringify(m.ledgerState(rest[0]!))}\n`));
+  } else if (mode === "snapshot" && rest.length === 1) void import("./onboarding-eval-preserve.js").then((m) => process.stdout.write(`${JSON.stringify({ text: m.treeSnapshot(rest[0]!) })}\n`));
+  else if (mode === "ledger-state" && rest.length === 1) void import("./onboarding-eval-sessions.js").then((m) => process.stdout.write(`${JSON.stringify(m.ledgerState(rest[0]!))}\n`));
   else {
     process.stderr.write("usage: onboarding-eval-collect requests <folder> | collect <purpose> <source> <destination> | digest <folder>\n");
     process.exit(2);

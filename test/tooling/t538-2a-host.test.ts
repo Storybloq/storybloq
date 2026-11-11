@@ -317,14 +317,14 @@ const CLAUDE_INPUTS: EnvInputs = { ...INPUTS, client: "claude", clientCodexHome:
 describe("one environment table (5.3)", () => {
   it("the Codex client column", () => {
     expect(envFor("client", INPUTS)).toEqual({
-      PATH: INPUTS.path, HOME: "/w/home", TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", CODEX_HOME: "/w/home/.codex", STORYBLOQ_CLIENT: "codex", STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global",
+      PATH: INPUTS.path, HOME: "/w/home", TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", NO_UPDATE_NOTIFIER: "1", CODEX_HOME: "/w/home/.codex", STORYBLOQ_CLIENT: "codex", STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global",
       STORYBLOQ_EVAL_EVENTS: INPUTS.events, STORYBLOQ_SETUP_REVIEW_DIR: INPUTS.reviewStore,
     });
   });
 
   it("the Claude client column: config dir and token, no CODEX_HOME, ENABLE_TOOL_SEARCH only when degraded", () => {
     expect(envFor("client", CLAUDE_INPUTS)).toEqual({
-      PATH: INPUTS.path, HOME: "/w/home", TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", CLAUDE_CONFIG_DIR: "/w/claude-config", CLAUDE_CODE_OAUTH_TOKEN: "token-not-read", STORYBLOQ_CLIENT: "claude",
+      PATH: INPUTS.path, HOME: "/w/home", TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", NO_UPDATE_NOTIFIER: "1", CLAUDE_CONFIG_DIR: "/w/claude-config", CLAUDE_CODE_OAUTH_TOKEN: "token-not-read", STORYBLOQ_CLIENT: "claude",
       STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global", STORYBLOQ_EVAL_EVENTS: INPUTS.events, STORYBLOQ_SETUP_REVIEW_DIR: INPUTS.reviewStore, ENABLE_TOOL_SEARCH: "true",
     });
     expect(envFor("client", { ...CLAUDE_INPUTS, degraded: false }).ENABLE_TOOL_SEARCH).toBeUndefined();
@@ -332,7 +332,7 @@ describe("one environment table (5.3)", () => {
 
   it("the server column is the same for both clients but the client name: the runner home, the probe folder and the inventory, no client secrets", () => {
     const want = {
-      PATH: INPUTS.path, HOME: "/w/home", TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", CODEX_HOME: "/w/sandbox-runner-home", STORYBLOQ_CLIENT: "codex", STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global",
+      PATH: INPUTS.path, HOME: "/w/home", TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", NO_UPDATE_NOTIFIER: "1", CODEX_HOME: "/w/sandbox-runner-home", STORYBLOQ_CLIENT: "codex", STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global",
       STORYBLOQ_EVAL_EVENTS: INPUTS.events, STORYBLOQ_SETUP_REVIEW_DIR: INPUTS.reviewStore, STORYBLOQ_EVAL_OUTSIDE: "/w/outside-probe", STORYBLOQ_EVAL_TOOLS: INPUTS.tools,
     };
     expect(mcpEnvFor(INPUTS)).toEqual(want);

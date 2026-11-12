@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import { compareConfig, CONFIG_SNAPSHOT_BASENAME, PROBE_DIR_ENV, snapshotConfigAt, snapshotProductionConfig, type ConfigSnapshot } from "./helpers/git-config-tripwire.js";
 import { clearIsolationViolation, recordedIsolationViolation } from "./helpers/git-fixture.js";
 import { PROJECT_ROOT_ENV_VAR, LEGACY_PROJECT_ROOT_ENV_VAR } from "../src/core/project-root-shared.js";
+import { useTestSupervisorEntry } from "./helpers/test-supervisor-entry.js";
+
+// ISS-1497: setup reviews run the supervisor bundled from the current src, never dist's.
+useTestSupervisorEntry();
 
 const CLIENT_IDENTITY_ENV = [
   "STORYBLOQ_CLIENT",

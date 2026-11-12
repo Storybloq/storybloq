@@ -10,6 +10,10 @@
  */
 import { existsSync } from "node:fs";
 import { handleSetupReviewRun, handleSetupReviewStatus } from "../../../src/cli/commands/setup-review.js";
+import { useTestSupervisorEntry } from "../../helpers/test-supervisor-entry.js";
+
+// ISS-1497: a worker runs no setup file, so it points the supervisor seam at the suite's bundle itself.
+useTestSupervisorEntry();
 
 const [mode, project, store, setupId, path, packet, goFile] = process.argv.slice(2) as [string, string, string, string, string, string, string | undefined];
 const sleeper = new Int32Array(new SharedArrayBuffer(4));

@@ -10,6 +10,10 @@ import { join } from "node:path";
 import { handleSetupReviewGate, handleSetupReviewRun } from "../../../src/cli/commands/setup-review.js";
 import { probeBackend } from "../../../src/core/setup-review-backends.js";
 import { REVIEW_PACKET } from "../../helpers/setup-review-fakes.js";
+import { useTestSupervisorEntry } from "../../helpers/test-supervisor-entry.js";
+
+// ISS-1497: a worker runs no setup file, so it points the supervisor seam at the suite's bundle itself.
+useTestSupervisorEntry();
 
 const [mode, project, store, path, pidFile] = process.argv.slice(2) as [string, string, string, string, string];
 mkdirSync(join(store, "home"), { recursive: true, mode: 0o700 });

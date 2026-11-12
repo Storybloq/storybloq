@@ -9,12 +9,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { RELAY_CAP_BYTES, runSupervised, STDOUT_LIMIT_BYTES, supervisorEntry, supervisorSeams } from "../../src/core/setup-review-supervisor.js";
+import { RELAY_CAP_BYTES, runSupervised, STDOUT_LIMIT_BYTES, supervisorSeams } from "../../src/core/setup-review-supervisor.js";
 import { makeScratchDir, removeScratchDirs } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
-const ENTRY = supervisorEntry();
+// ISS-1497: the suite's bundle of the current src supervisor, not dist's.
+const ENTRY = supervisorSeams.entry();
 const HARNESS = join(import.meta.dirname, "fixtures", "setup-review-supervisor-cli.mjs");
 const realSeams = { ...supervisorSeams };
 const spawned: ChildProcess[] = [];

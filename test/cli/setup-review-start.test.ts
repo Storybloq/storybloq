@@ -6,7 +6,7 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { supervisorEntry, supervisorSeams } from "../../src/core/setup-review-supervisor.js";
+import { supervisorSeams } from "../../src/core/setup-review-supervisor.js";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
@@ -533,6 +533,7 @@ describe("gate, run and status agree (ISS-1456)", () => {
 
   it("a supervisor that cannot start is a failed record with its reason, and no reviewer runs (ISS-1457)", async () => {
     const id = setupIdOf(await handleSetupReviewGate(io(), {}));
+    const suiteEntry = supervisorSeams.entry;
     supervisorSeams.entry = () => join(home, "no-supervisor.js");
     try {
       const run = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
@@ -540,7 +541,7 @@ describe("gate, run and status agree (ISS-1456)", () => {
       expect(reviews()).toBe(0);
       expect(recordsOf(id)[0]).toMatchObject({ state: "failed", failure: "spawn", reasonCode: "supervisor-failed" });
     } finally {
-      supervisorSeams.entry = supervisorEntry;
+      supervisorSeams.entry = suiteEntry;
     }
   });
 

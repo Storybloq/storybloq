@@ -31,6 +31,21 @@ export interface ClaudeExpected {
   /** The MCP file's one server launch, which mcp_status must report. `env`, when given, is compared too (ISS-1486 D3). */
   readonly mcpLaunch: McpLaunch;
   readonly maxBudgetUsd: number;
+  /** T-525 Addendum E3: a signed-in launch's pinned provenance listings; absent on every other launch. */
+  readonly provenance?: SignedInProvenance;
+}
+
+/**
+ * T-525 Addendum E3: what a signed-in launch's provenance listings must be, bound to one client version. A
+ * required input of every signed-in launch with no production default; the empty sets are test fixtures only.
+ */
+export interface SignedInProvenance {
+  readonly clientVersion: string;
+  readonly agents: readonly string[];
+  readonly commands: readonly string[];
+  readonly skills: readonly string[];
+  readonly plugins: readonly string[];
+  readonly outputStyle: string;
 }
 
 /** The MCP file's one server launch. The onboarding runner gives no `env`; the continuity runner pins its project root. */

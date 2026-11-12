@@ -12,6 +12,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { SIGNED_IN_MISSING_GATES } from "./continuity-lib.js";
 import { ALTERNATE_AUTH_ENV_VARS } from "./headless-common.js";
+import type { SignedInProvenance } from "./headless-policy.js";
 
 export const SIGNED_IN_RULING = "r-hs5j319qkr3gjvtz";
 
@@ -78,6 +79,38 @@ export function writeStorybloqLauncher(p: LauncherSpec): { readonly path: string
   const path = join(p.bin, "storybloq");
   writeFileSync(path, text, { mode: 0o500, flag: "wx" });
   return { path, sha256: createHash("sha256").update(text).digest("hex") };
+}
+
+const PROVENANCE_LISTS = ["agents", "commands", "skills", "plugins"] as const;
+const PROVENANCE_KEYS: readonly string[] = ["clientVersion", ...PROVENANCE_LISTS, "outputStyle"];
+
+/**
+ * E3: the fields of a pinned provenance that are not what a signed-in launch needs: the client version and the
+ * output style as non-empty strings, each listing as an array of distinct non-empty strings, and no other key.
+ * Empty means it is well formed; whether the client then lists exactly these is checked per prompt.
+ */
+export function provenanceProblems(p: unknown): string[] {
+  if (p === null || typeof p !== "object" || Array.isArray(p)) return ["provenance"];
+  const v = p as Record<string, unknown>;
+  const out: string[] = [];
+  const text = (x: unknown): boolean => typeof x === "string" && x !== "";
+  if (!text(v.clientVersion)) out.push("clientVersion");
+  for (const k of PROVENANCE_LISTS) {
+    const l = v[k];
+    // Spread first: every() skips a hole, so a sparse listing would pass and serialise as null entries.
+    if (!Array.isArray(l) || ![...l].every(text) || new Set(l).size !== l.length) out.push(k);
+  }
+  if (!text(v.outputStyle)) out.push("outputStyle");
+  for (const k of Object.keys(v)) if (!PROVENANCE_KEYS.includes(k)) out.push(`unexpected ${k}`);
+  return out;
+}
+
+/** The pinned provenance, or a refusal naming every malformed field. */
+export function checkedProvenance(p: unknown): SignedInProvenance {
+  if (p === undefined) throw new Error("continuity-run: a signed-in launch needs its pinned provenance (Addendum E3); none was given; refusing");
+  const bad = provenanceProblems(p);
+  if (bad.length > 0) throw new Error(`continuity-run: the signed-in provenance is malformed: ${bad.join(", ")}; refusing`);
+  return p as SignedInProvenance;
 }
 
 /** The refusal a signed-in launch gets: without the ack it names the ack, with it the missing gates. Null never, for now. */

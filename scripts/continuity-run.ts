@@ -21,6 +21,7 @@ import { assertSubscriptionAuthOnly, assertValidTimerMs, writeAtomic, SessionKil
 import {
   CLAUDE_TOOLS, claudeArgvProblems, claudePolicySettings, claudeReadback, claudeTurnArgs, initEventConsulted, initEventProblems, policyFileProblems,
   READBACK_REQUESTS, READBACK_TIMEOUT_MS, readbackExpected, userMessage, type ClaudeExpected, type ClaudePolicyOptions, type ClaudeSession, type ReadbackIo, type ReadbackStep,
+  type SignedInProvenance,
 } from "./headless-policy.js";
 import { jsonShapePreserved,
   TASKS, type Task, REPEATS, ticketIdForTask, materialize, variantDiscoveryViolations, parseStream, summarizeStream,
@@ -36,7 +37,7 @@ import { groupHandle } from "../src/core/process-group.js";
 import { loadProject } from "../src/core/project-loader.js";
 import { handleValidate } from "../src/cli/commands/validate.js";
 import type { CommandContext } from "../src/cli/types.js";
-import { signedInEnvProblems, signedInSpawnRefusal } from "./continuity-signed-in.js";
+import { checkedProvenance, realHome, signedInClientEnv, signedInEnvProblems, signedInSpawnRefusal, writeStorybloqLauncher } from "./continuity-signed-in.js";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = resolve(SCRIPT_DIR, "..");
@@ -244,6 +245,8 @@ export function continuityTools(file = CONTINUITY_TOOLS_FILE, withheldFile = ONB
 
 /** G2: the evaluation bundle the tool server runs (scripts/build-eval.mjs builds it; preflight records its sha256). */
 export const EVAL_MCP_BUNDLE = join(PKG_ROOT, EVAL_DIST, "eval-mcp.js");
+/** T-525 Addendum E4: the evaluation CLI bundle the signed-in arm's pinned storybloq launcher runs. */
+export const EVAL_CLI_BUNDLE = join(PKG_ROOT, EVAL_DIST, "eval-cli.js");
 
 /**
  * G2: the tool server's column. The server runs through the shared launcher (T-538 F2) under `codex sandbox`, with
@@ -277,6 +280,8 @@ export function launchEnv(source: NodeJS.ProcessEnv, d: Pick<LaunchDirs, "work" 
 
 /** One launch: its files, what every check compares against, the argv and the environment. */
 export interface Launch {
+  /** T-525 G1: the isolation this launch was prepared for; the spawn boundary refuses signed-in whatever the run's options say. */
+  readonly isolation: "fresh" | "signed-in";
   readonly dirs: LaunchDirs;
   readonly roots: readonly string[];
   readonly options: ClaudePolicyOptions;
@@ -290,7 +295,15 @@ export interface Launch {
     /** J2: the codex the wrapper runs and its fingerprint from the build manifest, checked again before the spawn. */
     readonly codexBin: string; readonly codex: { readonly codexSha256: string; readonly codexVersion: string };
   };
+  /** T-525 Addendum E4: the signed-in arm's pinned storybloq launcher, first on the client's PATH; absent on a fresh launch. */
+  readonly storybloqLauncher?: { readonly path: string; readonly sha256: string };
 }
+
+/**
+ * T-525: the isolation a launch is prepared for. Signed-in names the operator's real HOME, which the client alone
+ * gets (from the password database unless a test passes a fake one); nothing under it is opened here.
+ */
+export type LaunchMode = { readonly isolation: "fresh" } | { readonly isolation: "signed-in"; readonly realHome?: string };
 
 /** A new folder, canonical: a temp folder reached through a link (/var against /private/var) would fail every exact comparison. */
 export const canonicalTemp = (prefix: string): string => realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -299,11 +312,20 @@ export const canonicalTemp = (prefix: string): string => realpathSync(mkdtempSyn
  * D2 and D5: the policy file (0400) and the MCP file (0600), each written once outside both roots, and the argv and
  * environment that use them. The MCP server entry pins the project root as well (D3).
  */
-export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; readonly effort: string; readonly maxBudgetUsd: number; readonly tools: readonly string[]; readonly codexBin: string; readonly bundleSha256: string; readonly codex: { readonly codexSha256: string; readonly codexVersion: string } }, source: NodeJS.ProcessEnv = process.env): Launch {
+export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; readonly effort: string; readonly maxBudgetUsd: number; readonly tools: readonly string[]; readonly codexBin: string; readonly bundleSha256: string; readonly codex: { readonly codexSha256: string; readonly codexVersion: string }; readonly provenance?: SignedInProvenance }, source: NodeJS.ProcessEnv = process.env, mode: LaunchMode = { isolation: "fresh" }): Launch {
+  const signedIn = mode.isolation === "signed-in";
+  // T-525 Addendum E1 and E3: a signed-in launch refuses on any token-shaped name in its source (names only) and
+  // needs its pinned provenance; a fresh launch never carries one. All of it before anything is written.
+  if (!signedIn && p.provenance !== undefined) throw new Error("continuity-run: provenance is a signed-in launch input only; refusing");
+  if (signedIn) {
+    const names = signedInEnvProblems(source);
+    if (names.length > 0) throw new Error(`continuity-run: signed-in isolation refuses these variables (names only): ${names.join(", ")}`);
+  }
+  const provenance = signedIn ? checkedProvenance(p.provenance) : undefined;
   const roots = [dirs.work, dirs.tmp];
   // G2: the server's roots are the client's, with the project's .git named as T-538's are.
   const serverRoots = [dirs.work, join(dirs.work, ".git"), dirs.tmp];
-  const options = continuityOptions(p.effort);
+  const options = signedIn ? signedInOptions(p.effort) : continuityOptions(p.effort);
   const policyFile = join(dirs.launch, "policy.json");
   const mcpFile = join(dirs.launch, "mcp.json");
   // G1: the server's inventory, both lists the permitted names, so restrictTools registers nothing else.
@@ -311,7 +333,9 @@ export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; rea
   // G2: the wrapper's own CODEX_HOME (empty) and the folder the server's self-probe must fail to write, both outside every root.
   const runnerHome = join(dirs.launch, "runner-home");
   const outside = join(dirs.launch, "outside-probe");
-  for (const f of [policyFile, mcpFile, toolsFile, runnerHome, outside]) if (serverRoots.some((r) => within(f, r))) throw new Error(`continuity-run: ${f} is under a writable root`);
+  // T-525 Addendum E4: the signed-in client's storybloq launcher folder, outside every writable root like the rest.
+  const cliBin = join(dirs.launch, "bin");
+  for (const f of [policyFile, mcpFile, toolsFile, runnerHome, outside, ...(signedIn ? [cliBin] : [])]) if (serverRoots.some((r) => within(f, r))) throw new Error(`continuity-run: ${f} is under a writable root`);
   const policyText = claudePolicySettings(roots, p.tools, options);
   writeFileSync(policyFile, policyText, { mode: 0o400, flag: "wx" });
   const toolsText = `${JSON.stringify({ degraded: [...p.tools], full: [...p.tools] }, null, 2)}\n`;
@@ -321,9 +345,18 @@ export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; rea
   const events = join(dirs.tmp, "eval-events", "events.jsonl");
   mkdirSync(dirname(events), { recursive: true });
   const launcher = writeServerLauncher(dirs.launch);
-  const env = launchEnv(source, dirs);
+  let storybloqLauncher: { readonly path: string; readonly sha256: string } | undefined;
+  if (signedIn) {
+    mkdirSync(cliBin);
+    storybloqLauncher = writeStorybloqLauncher({
+      bin: cliBin, node: process.execPath, cli: EVAL_CLI_BUNDLE, scratchHome: dirs.home, codexHome: runnerHome, tmp: dirs.tmp, work: dirs.work,
+      path: source.PATH ?? "/usr/bin:/bin", ...(source.LANG === undefined ? {} : { lang: source.LANG }),
+    });
+  }
+  // E1: only the client gets the real HOME; the server column below keeps the scratch home and the source PATH.
+  const env = mode.isolation === "signed-in" ? signedInClientEnv(source, { work: dirs.work, tmp: dirs.tmp, launcherBin: cliBin }, mode.realHome ?? realHome()) : launchEnv(source, dirs);
   const values: Record<(typeof CONTINUITY_SERVER_COLUMN)[number], string | undefined> = {
-    PATH: env.PATH, HOME: dirs.home, TMPDIR: dirs.tmp, LANG: env.LANG, CODEX_HOME: runnerHome, STORYBLOQ_PROJECT_ROOT: dirs.work, STORYBLOQ_GLOBAL_DIR: env.STORYBLOQ_GLOBAL_DIR,
+    PATH: source.PATH ?? "/usr/bin:/bin", HOME: dirs.home, TMPDIR: dirs.tmp, LANG: env.LANG, CODEX_HOME: runnerHome, STORYBLOQ_PROJECT_ROOT: dirs.work, STORYBLOQ_GLOBAL_DIR: env.STORYBLOQ_GLOBAL_DIR,
     STORYBLOQ_EVAL_EVENTS: events, STORYBLOQ_EVAL_OUTSIDE: outside, STORYBLOQ_EVAL_TOOLS: toolsFile,
   };
   const serverEnv: Record<string, string> = {};
@@ -334,11 +367,11 @@ export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; rea
   writeFileSync(mcpFile, mcpText, { mode: 0o600, flag: "wx" });
   const expected: ClaudeExpected = {
     model: p.model, policyFile, policySha256: sha256(policyText), mcpFile, mcpSha256: sha256(mcpText), project: dirs.work, roots,
-    allowedTools: [...p.tools], mcpTools: [...p.tools], mcpLaunch, maxBudgetUsd: p.maxBudgetUsd,
+    allowedTools: [...p.tools], mcpTools: [...p.tools], mcpLaunch, maxBudgetUsd: p.maxBudgetUsd, ...(provenance === undefined ? {} : { provenance }),
   };
   const session: ClaudeSession = { kind: "first", id: randomUUID() };
   const server = { launcher, launcherSha256: sha256(readFileSync(launcher)), toolsFile, toolsSha256: sha256(toolsText), bundle: EVAL_MCP_BUNDLE, bundleSha256: p.bundleSha256, roots: serverRoots, codexBin: p.codexBin, codex: { codexSha256: p.codex.codexSha256, codexVersion: p.codex.codexVersion } };
-  return { dirs, roots, options, expected, session, args: claudeTurnArgs(expected, session, options), env, server };
+  return { isolation: mode.isolation, dirs, roots, options, expected, session, args: claudeTurnArgs(expected, session, options), env, server, ...(storybloqLauncher === undefined ? {} : { storybloqLauncher }) };
 }
 
 /**
@@ -609,6 +642,19 @@ export function refuseSignedInLaunch(o: Pick<RunOptions, "isolation" | "liveAck"
   if (o.isolation === "signed-in") refuseSignedIn(o, env);
 }
 
+/**
+ * T-525 G1: the Launch's own isolation, independent of the options it is driven with. A signed-in Launch is
+ * refused (first for a missing pinned provenance, then as signed-in), and a Launch prepared for another isolation
+ * than the run's is a mismatch; all before any spawn.
+ */
+export function refuseLaunchIsolation(o: Pick<RunOptions, "isolation" | "liveAck">, launch: Pick<Launch, "isolation" | "expected">): void {
+  if (launch.isolation === "signed-in") {
+    if (launch.expected?.provenance === undefined) throw new Error("continuity-run: a signed-in launch with no pinned provenance is refused before any spawn");
+    throw new Error(`continuity-run: the launch is signed-in; ${signedInSpawnRefusal(o.liveAck)}`);
+  }
+  if (launch.isolation !== o.isolation) throw new Error(`continuity-run: launch isolation ${String(launch.isolation)} does not match the run's ${String(o.isolation)}; refusing before any spawn`);
+}
+
 export function preflight(o: RunOptions): Preflight {
   refuseShared(o);
   if (o.isolation === "signed-in") refuseSignedIn(o, process.env);
@@ -762,8 +808,10 @@ export interface LaunchRun {
  * Control responses never reach the transcript; stdin ends at the result event.
  */
 export async function driveClaude(o: RunOptions, launch: Launch, prompt: string, files: { readonly transcript: string; readonly stderr: string }, deps: AttemptDeps, onLine: (line: string) => void): Promise<LaunchRun> {
-  // T-525: the spawn boundary itself refuses a signed-in launch, whatever entry point reached it.
+  // T-525: the spawn boundary itself refuses a signed-in launch, whatever entry point reached it: by the run's
+  // options, and (G1) by the Launch's own isolation, so fresh options cannot carry a signed-in Launch through.
   refuseSignedInLaunch(o);
+  refuseLaunchIsolation(o, launch);
   const spawnFn = deps.spawnFn ?? (nodeSpawn as unknown as SpawnFn);
   const now = deps.now ?? Date.now;
   const signals: SignalSource = deps.signals ?? process;

@@ -32,7 +32,7 @@ import { jsonShapePreserved,
 } from "./continuity-lib.js";
 import { serverLaunch, writeServerLauncher } from "./onboarding-eval-host.js";
 import { identityOf, startOf } from "./onboarding-eval-groups.js";
-import { HomeJournalStop, journalAfter, journalBefore, journalGroup, recoverHomeJournal, type RecoveryProbe } from "./continuity-home.js";
+import { recoverHomeJournal, type RecoveryProbe } from "./continuity-home.js";
 import { EVAL_DIST } from "./build-eval.mjs";
 import { killSidecar } from "../src/autonomous/liveness.js";
 import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, groupHandle, processGroupSeams, type GroupHandle } from "../src/core/process-group.js";
@@ -42,11 +42,11 @@ import type { CommandContext } from "../src/cli/types.js";
 import { checkedProvenance, realHome, signedInClientEnv, signedInEnvProblems, signedInSpawnRefusal, writeStorybloqLauncher } from "./continuity-signed-in.js";
 // T-538 S1a: moved unchanged to signed-in-attempt.ts; every name is re-exported here.
 import {
-  INTENT_MAX_BYTES, PROVENANCE_INTENT_FILE, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, PROVENANCE_RECORD_SCHEMA, PROVENANCE_STOP_FILE, ProvenanceStopError, RECOVERY_DIAGNOSTIC_FILE, canonicalJson, cliListTranscripts, cliRecover, expectationSha256, listRunTranscripts, provenanceStops, recoverAttempt, refuseLaunchIsolation, refuseSignedIn, refuseSignedInLaunch, signedInOptions, transcriptBinding,
-  type IntentRecord, type ListingFs, type RecoveryFs, type StopScanFs, type TranscriptListing,
+  INTENT_MAX_BYTES, PROVENANCE_INTENT_FILE, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, PROVENANCE_RECORD_SCHEMA, PROVENANCE_STOP_FILE, ProvenanceStopError, RECOVERY_DIAGNOSTIC_FILE, canonicalJson, cliListTranscripts, cliRecover, expectationSha256, guardedSpawn, listRunTranscripts, provenanceStops, recoverAttempt, refuseLaunchIsolation, refuseSignedIn, refuseSignedInLaunch, signedInOptions, transcriptBinding,
+  type GuardedRun, type GuardedSpawnCtx, type GuardedSpawnHooks, type IntentRecord, type ListingFs, type RecoveryFs, type StopScanFs, type TranscriptListing,
 } from "./signed-in-attempt.js";
-export { INTENT_MAX_BYTES, PROVENANCE_INTENT_FILE, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, PROVENANCE_RECORD_SCHEMA, PROVENANCE_STOP_FILE, ProvenanceStopError, RECOVERY_DIAGNOSTIC_FILE, canonicalJson, cliListTranscripts, cliRecover, expectationSha256, listRunTranscripts, provenanceStops, recoverAttempt, refuseLaunchIsolation, refuseSignedIn, refuseSignedInLaunch, signedInOptions, transcriptBinding };
-export type { IntentRecord, ListingFs, RecoveryFs, StopScanFs, TranscriptListing };
+export { INTENT_MAX_BYTES, PROVENANCE_INTENT_FILE, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, PROVENANCE_RECORD_SCHEMA, PROVENANCE_STOP_FILE, ProvenanceStopError, RECOVERY_DIAGNOSTIC_FILE, canonicalJson, cliListTranscripts, cliRecover, expectationSha256, guardedSpawn, listRunTranscripts, provenanceStops, recoverAttempt, refuseLaunchIsolation, refuseSignedIn, refuseSignedInLaunch, signedInOptions, transcriptBinding };
+export type { GuardedRun, GuardedSpawnCtx, GuardedSpawnHooks, IntentRecord, ListingFs, RecoveryFs, StopScanFs, TranscriptListing };
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = resolve(SCRIPT_DIR, "..");
@@ -1351,50 +1351,14 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
     const envMask = envValueMask();
     const maskX = (x: ReadbackExpected): ReadbackExpected => (x.mcpLaunch.env === undefined ? x : { ...x, mcpLaunch: { ...x.mcpLaunch, env: maskEnv(x.mcpLaunch.env, envMask) as Record<string, string> } });
     const intentFields: IntentRecord = { schema: PROVENANCE_RECORD_SCHEMA, sessionId: launch.session.id, expectedSha256: expectationSha256(maskX(readbackExpected(launch.expected, launch.options, { signedIn: launch.isolation === "signed-in" }))) };
-    if (guarded && !rawOutReal) throw new Error(`continuity-run: a guarded run needs --raw-out to exist as a real directory (not a link) before the run; ${o.rawOut} was not one. Refusing before the spawn.`);
-    if (guarded) {
-      // B-F7: every entry of the raw chain (experiment, task, repeat, attempt) is recorded in its parent before the
-      // intent, so a crash cannot leave a durable intent inside a directory recovery never finds.
-      for (const d of rawChainParents(o.rawOut, rawDir)) await (deps.fsyncDir ?? fsyncDir)(d);
-      await durable(join(rawDir, PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "unresolved", ...intentFields })}\n`);
-    }
     // C1 (W1): the signed-in arm journals the real home; a test journals a fake one. The baseline precedes the spawn.
     const journalHome = launch.isolation === "signed-in" ? realHome() : deps.homeRoot;
-    const homeStop = async (code: string): Promise<never> => {
-      await durable(join(rawDir, PROVENANCE_STOP_FILE), `${JSON.stringify({ code, cleanup: null, retryable: false }, null, 2)}\n`);
-      throw new ProvenanceStopError(`continuity-run: ${task}#${repeat} stopped on the home journal: ${code}. The turn is discarded, not graded and not retried.`);
-    };
-    if (journalHome !== undefined) {
-      try { await journalBefore(rawDir, journalHome, { write: durable }); } catch (e) { if (e instanceof HomeJournalStop) await homeStop(e.code); throw e; }
-    }
-    const turnDeps: AttemptDeps = {
-      ...deps,
-      ...(journalHome === undefined ? {} : { onGroup: async (pgid: number) => journalGroup(rawDir, pgid, (deps.startOf ?? startOf)(pgid), { write: durable }) }),
-      ...(guarded ? { onReadback: async (r: { readonly expected: ReadbackExpected; readonly steps: readonly ReadbackStep[] }) => durable(join(rawDir, PROVENANCE_READBACK_FILE), `${JSON.stringify({ schema: PROVENANCE_RECORD_SCHEMA, expected: maskX(r.expected), steps: maskReadbackEnv(r.steps, envMask) })}\n`) } : {}),
-    };
-    const run = await driveClaude(o, launch, prompt, { transcript: transcriptPath, stderr: join(rawDir, "stderr.txt") }, turnDeps, feed);
-    // C1 to C3: the terminal inventory after the cleanup check, on success and failure, validated before any grading.
-    let journalStop: string | null = null;
-    if (journalHome !== undefined) {
-      // C-F5: the exception allowlist is the launch's session id alone; the transcript's init events are checked against it.
-      const binding = transcriptBinding(readFileSync(transcriptPath, "utf-8"), launch.session.id, false);
-      try {
-        const v = await journalAfter(rawDir, journalHome, run.cleanup === "confirmed" ? "confirmed" : "unconfirmed", [launch.session.id], { write: durable });
-        if (v.length > 0) journalStop = `home.violation: ${v.map((c) => `${c.kind} ${c.rel}`).join(", ")}`;
-      } catch (e) { if (e instanceof HomeJournalStop) journalStop = e.code; else throw e; }
-      if (binding !== null) journalStop ??= `home.session-binding: ${binding}`;
-    }
-    if (journalStop !== null && run.provenanceStop === null) await homeStop(journalStop);
-    if (guarded && run.provenanceStop === null && run.cleanup === "confirmed") {
-      // C-F3: the positive evidence first (after the terminal journal), then the resolution; a crash between them is recoverable.
-      await durable(join(rawDir, PROVENANCE_OUTCOME_FILE), `${JSON.stringify({ schema: PROVENANCE_RECORD_SCHEMA, sessionId: launch.session.id, nonce: run.readbackNonce, cleanup: "confirmed", transcriptSha256: sha256(readFileSync(transcriptPath)) })}\n`);
-      await durable(join(rawDir, PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "resolved", ...intentFields })}\n`);
-    }
-    if (run.provenanceStop !== null) {
-      // B4, K1: discarded before any grading, and persisted durably so no re-run resumes past it.
-      await durable(join(rawDir, PROVENANCE_STOP_FILE), `${JSON.stringify({ code: run.provenanceStop, cleanup: run.cleanup, retryable: false }, null, 2)}\n`);
-      throw new ProvenanceStopError(`continuity-run: ${task}#${repeat} stopped on provenance: ${run.provenanceStop}. The turn is discarded, not graded and not retried.`);
-    }
+    // S1c: the schema-1 lifecycle (intent, journalBefore, spawn, journalGroup, journalAfter, resolution) is guardedSpawn's.
+    const run = await guardedSpawn({
+      rawOut: o.rawOut, rawDir, rawOutReal, guarded, intentFields, journalHome, transcriptPath, label: `${task}#${repeat}`,
+      durable, fsyncDir: deps.fsyncDir ?? fsyncDir, chainParents: () => rawChainParents(o.rawOut, rawDir), startOf: deps.startOf ?? startOf,
+      readbackRecord: (r) => JSON.stringify({ schema: PROVENANCE_RECORD_SCHEMA, expected: maskX(r.expected), steps: maskReadbackEnv(r.steps, envMask) }),
+    }, (hooks) => driveClaude(o, launch, prompt, { transcript: transcriptPath, stderr: join(rawDir, "stderr.txt") }, { ...deps, ...hooks }, feed));
     const { exit, started, loadSamples, streamErrors, survivors } = run;
     const killKind = run.killKind;
     const inputFailure = inputFailureOf(run);

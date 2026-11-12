@@ -4,13 +4,13 @@
  * and their stop scan, recovery, and the transcript listing. SIGNED_IN_MISSING_GATES stays defined in
  * continuity-lib.ts (a helper-bundle input) and is re-exported here.
  */
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { readRegularFile, writeDurable } from "./headless-common.js";
 import { initContradicts, initProvenanceProblems, readbackProblems, type ClaudePolicyOptions, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 import { parseStream, sha256, TASKS, type Task, SIGNED_IN_MISSING_GATES, READ_BOUNDARY_UNPROVEN, KEYCHAIN_OPEN } from "./continuity-lib.js";
 import { identityOf } from "./onboarding-eval-groups.js";
-import { HomeJournalStop, recoverHomeJournal, type RecoveryProbe } from "./continuity-home.js";
+import { HomeJournalStop, journalAfter, journalBefore, journalGroup, recoverHomeJournal, type RecoveryProbe } from "./continuity-home.js";
 import { processGroupSeams } from "../src/core/process-group.js";
 import { realHome, signedInEnvProblems, signedInSpawnRefusal } from "./continuity-signed-in.js";
 import { continuityOptions, DEFAULT_RAW_OUT, parseArgs, refuseShared, type AttemptDeps, type Launch, type Preflight, type RunOptions } from "./continuity-run.js";
@@ -473,4 +473,90 @@ export function cliListTranscripts(argv: readonly string[], write: (s: string) =
   if (home === undefined || home === "" || home.startsWith("--")) throw new Error("continuity-run: --list-transcripts needs --home <dir>, named explicitly");
   for (const r of listRunTranscripts(val("--raw-out") ?? DEFAULT_RAW_OUT, val("--experiment") ?? "", home, fs)) write(`${JSON.stringify(r)}\n`);
   return true;
+}
+
+/** S1c: the hooks guardedSpawn hands the spawn; a key is present only when that record is kept. */
+export interface GuardedSpawnHooks {
+  readonly onGroup?: (pgid: number) => Promise<void>;
+  readonly onReadback?: (r: { readonly expected: ReadbackExpected; readonly steps: readonly ReadbackStep[] }) => Promise<void>;
+}
+/** S1c: what guardedSpawn needs from the spawn's result. */
+export interface GuardedRun {
+  readonly provenanceStop: string | null;
+  readonly cleanup: "confirmed" | "unconfirmed" | null;
+  readonly readbackNonce: string | null;
+}
+/** S1c: one attempt's place and records. Every writer and clock is the caller's, so a test can inject a fault at each. */
+export interface GuardedSpawnCtx {
+  readonly rawOut: string;
+  readonly rawDir: string;
+  /** Whether --raw-out was a real directory (not a link) when the run began. */
+  readonly rawOutReal: boolean;
+  /** A provenance-enabled or signed-in launch: the intent, readback, outcome and resolution are kept. */
+  readonly guarded: boolean;
+  readonly intentFields: IntentRecord;
+  /** The home the journal inventories; undefined keeps no journal. */
+  readonly journalHome: string | undefined;
+  readonly transcriptPath: string;
+  /** The attempt's name in a stop message, `<task>#<repeat>` for continuity. */
+  readonly label: string;
+  readonly durable: (path: string, text: string) => Promise<void>;
+  readonly fsyncDir: (dir: string) => Promise<void>;
+  /** B-F7: the raw chain's parent directories, outermost first; asked only for a guarded run. */
+  readonly chainParents: () => readonly string[];
+  readonly startOf: (pid: number) => string | null;
+  /** The persisted readback record's JSON text (the caller masks the env). */
+  readonly readbackRecord: (r: { readonly expected: ReadbackExpected; readonly steps: readonly ReadbackStep[] }) => string;
+}
+
+/**
+ * S1c: the schema-1 guarded lifecycle around one spawn, moved unchanged from continuity's runAttempt. In order:
+ * the raw chain and the unresolved intent (guarded), the journal baseline, the spawn with its group and readback
+ * hooks, the terminal journal, the outcome then the resolution (guarded, confirmed cleanup, no stop), and a durable
+ * stop on any provenance latch. A stop throws ProvenanceStopError; the run is returned only when it may be graded.
+ */
+export async function guardedSpawn<R extends GuardedRun>(ctx: GuardedSpawnCtx, spawn: (hooks: GuardedSpawnHooks) => Promise<R>): Promise<R> {
+  const { rawDir, durable, intentFields, journalHome, transcriptPath, guarded } = ctx;
+  if (guarded && !ctx.rawOutReal) throw new Error(`continuity-run: a guarded run needs --raw-out to exist as a real directory (not a link) before the run; ${ctx.rawOut} was not one. Refusing before the spawn.`);
+  if (guarded) {
+    // B-F7: every entry of the raw chain (experiment, task, repeat, attempt) is recorded in its parent before the
+    // intent, so a crash cannot leave a durable intent inside a directory recovery never finds.
+    for (const d of ctx.chainParents()) await ctx.fsyncDir(d);
+    await durable(join(rawDir, PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "unresolved", ...intentFields })}\n`);
+  }
+  const homeStop = async (code: string): Promise<never> => {
+    await durable(join(rawDir, PROVENANCE_STOP_FILE), `${JSON.stringify({ code, cleanup: null, retryable: false }, null, 2)}\n`);
+    throw new ProvenanceStopError(`continuity-run: ${ctx.label} stopped on the home journal: ${code}. The turn is discarded, not graded and not retried.`);
+  };
+  if (journalHome !== undefined) {
+    try { await journalBefore(rawDir, journalHome, { write: durable }); } catch (e) { if (e instanceof HomeJournalStop) await homeStop(e.code); throw e; }
+  }
+  const hooks: GuardedSpawnHooks = {
+    ...(journalHome === undefined ? {} : { onGroup: async (pgid: number) => journalGroup(rawDir, pgid, ctx.startOf(pgid), { write: durable }) }),
+    ...(guarded ? { onReadback: async (r: { readonly expected: ReadbackExpected; readonly steps: readonly ReadbackStep[] }) => durable(join(rawDir, PROVENANCE_READBACK_FILE), `${ctx.readbackRecord(r)}\n`) } : {}),
+  };
+  const run = await spawn(hooks);
+  // C1 to C3: the terminal inventory after the cleanup check, on success and failure, validated before any grading.
+  let journalStop: string | null = null;
+  if (journalHome !== undefined) {
+    // C-F5: the exception allowlist is the launch's session id alone; the transcript's init events are checked against it.
+    const binding = transcriptBinding(readFileSync(transcriptPath, "utf-8"), intentFields.sessionId, false);
+    try {
+      const v = await journalAfter(rawDir, journalHome, run.cleanup === "confirmed" ? "confirmed" : "unconfirmed", [intentFields.sessionId], { write: durable });
+      if (v.length > 0) journalStop = `home.violation: ${v.map((c) => `${c.kind} ${c.rel}`).join(", ")}`;
+    } catch (e) { if (e instanceof HomeJournalStop) journalStop = e.code; else throw e; }
+    if (binding !== null) journalStop ??= `home.session-binding: ${binding}`;
+  }
+  if (journalStop !== null && run.provenanceStop === null) await homeStop(journalStop);
+  if (guarded && run.provenanceStop === null && run.cleanup === "confirmed") {
+    // C-F3: the positive evidence first (after the terminal journal), then the resolution; a crash between them is recoverable.
+    await durable(join(rawDir, PROVENANCE_OUTCOME_FILE), `${JSON.stringify({ schema: PROVENANCE_RECORD_SCHEMA, sessionId: intentFields.sessionId, nonce: run.readbackNonce, cleanup: "confirmed", transcriptSha256: sha256(readFileSync(transcriptPath)) })}\n`);
+    await durable(join(rawDir, PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "resolved", ...intentFields })}\n`);
+  }
+  if (run.provenanceStop !== null) {
+    // B4, K1: discarded before any grading, and persisted durably so no re-run resumes past it.
+    await durable(join(rawDir, PROVENANCE_STOP_FILE), `${JSON.stringify({ code: run.provenanceStop, cleanup: run.cleanup, retryable: false }, null, 2)}\n`);
+    throw new ProvenanceStopError(`continuity-run: ${ctx.label} stopped on provenance: ${run.provenanceStop}. The turn is discarded, not graded and not retried.`);
+  }
+  return run;
 }

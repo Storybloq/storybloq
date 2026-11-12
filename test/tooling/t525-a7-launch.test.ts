@@ -80,6 +80,36 @@ const drive = async (o: RunOptions, l: Launch): Promise<{ error: string; spawned
 };
 
 describe("A1 prepareLaunch's signed-in branch (E1, E2, E4)", () => {
+  it("M1 gap (b), E1: the pilot's outside probe gets the scratch HOME (the server column), never the client's real HOME", () => {
+    const l = signedIn();
+    expect(l.env.HOME).toBe(fakeHome);
+    expect(l.probeEnv.HOME).toBe(dirs.home);
+    expect(l.probeEnv).toEqual(l.expected.mcpLaunch.env);
+    expect(Object.values(l.probeEnv).some((v) => v !== undefined && v.includes(fakeHome))).toBe(false);
+  });
+  it("the pilot hands the outside probe launch.probeEnv, never launch.env (the pilot refuses signed-in today, so this is pinned in source)", () => {
+    const src = readFileSync(join(PKG_ROOT, "scripts", "continuity-run.ts"), "utf-8");
+    const calls = [...src.matchAll(/await outsideProbe\(([^;]*)\);/g)].map((m) => m[1]!);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/, launch\.probeEnv, received$/);
+  });
+  it("a fresh launch's probe keeps the client's own environment (unchanged)", () => {
+    const l = fresh();
+    expect(l.probeEnv).toEqual(l.env);
+  });
+  it.each(["fresh", "signed-in"] as const)("single turn: a %s launch is a first turn", (kind) => {
+    const l = kind === "fresh" ? fresh() : signedIn();
+    expect(l.session.kind).toBe("first");
+    expect(l.args).toContain("--session-id");
+    expect(l.args).not.toContain("--resume");
+  });
+  it("single turn: nothing in continuity-run's production code builds a resume launch or drives a second turn", () => {
+    // The home journal brackets exactly one turn per attempt; a resume built anywhere in the runner would change that.
+    const src = readFileSync(join(PKG_ROOT, "scripts", "continuity-run.ts"), "utf-8");
+    expect(src.match(/kind:\s*"resume"/g)).toBeNull();
+    // The definition, the attempt's one turn and the pilot's one turn: no loop or second call drives a further turn.
+    expect(src.match(/driveClaude\(/g)?.length).toBe(3);
+  });
   it("the client gets the real HOME and no config dir or token, --setting-sources \"\" plus --settings, the launcher first on PATH", () => {
     const l = signedIn();
     expect(l.isolation).toBe("signed-in");

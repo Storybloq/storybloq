@@ -12,11 +12,30 @@ import { fileURLToPath } from "node:url";
 import {
   SIGNED_IN_MISSING_GATES, SIGNED_IN_RULING, signedInClientEnv, signedInEnvProblems, signedInSpawnRefusal, storybloqLauncherText, writeStorybloqLauncher,
 } from "../../scripts/continuity-signed-in.js";
+import { environmentSecrets, publicationCheck } from "../../scripts/continuity-lib.js";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(PKG, "dist", "cli.js");
 
 describe("E1 the environment contract", () => {
+  // M1 gap (a): with no token in a signed-in environment the exact-value scan has nothing to look for, so the shape
+  // (pattern) scans are what stands between a credential and a published artefact. They must still run.
+  it.each([
+    ["sk-ant", `sk-ant-oat01-${"a".repeat(40)}`],
+    ["sk-key", `sk-${"b".repeat(40)}`],
+    ["anthropic-env", `ANTHROPIC_AUTH_TOKEN=${"c".repeat(40)}`],
+    ["oauth", `oauth${"d".repeat(40)}`],
+    ["bearer", `Bearer ${"e".repeat(40)}`],
+    ["email", "someone@example.org"],
+  ])("a signed-in-clean environment drops the exact-token scan, and publication still blocks the %s pattern", (label, sample) => {
+    const env = { PATH: "/usr/bin", HOME: "/h", LANG: "C" };
+    expect(signedInEnvProblems(env)).toEqual([]);
+    const secrets = environmentSecrets(env);
+    expect(secrets).toEqual([]);
+    const v = publicationCheck(`published text ${sample} end`, [], { secrets });
+    expect(v.ok).toBe(false);
+    expect(v.blocked.map((b) => b.label)).toContain(label);
+  });
   it.each([
     ["CLAUDE_CODE_OAUTH_TOKEN"], ["ANTHROPIC_API_KEY"], ["ANTHROPIC_AUTH_TOKEN"], ["OPENAI_API_KEY"], ["SOME_OAUTH_THING"], ["CLAUDE_CONFIG_DIR"],
   ])("%s present refuses, by name only", (k) => {

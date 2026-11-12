@@ -291,6 +291,11 @@ export interface Launch {
   readonly session: ClaudeSession;
   readonly args: readonly string[];
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * T-525 Addendum E1: the environment of the pilot's outside network probe, which runs unsandboxed. Signed-in: the
+   * server column's values (the scratch HOME), never the client's real HOME. Fresh: the client's own environment.
+   */
+  readonly probeEnv: NodeJS.ProcessEnv;
   /** G1 and G2: the server's launcher, its tools file and the bundle, each checked before the spawn. */
   readonly server: {
     readonly launcher: string; readonly launcherSha256: string; readonly toolsFile: string; readonly toolsSha256: string; readonly bundle: string; readonly bundleSha256: string; readonly roots: readonly string[];
@@ -373,7 +378,7 @@ export function prepareLaunch(dirs: LaunchDirs, p: { readonly model: string; rea
   };
   const session: ClaudeSession = { kind: "first", id: randomUUID() };
   const server = { launcher, launcherSha256: sha256(readFileSync(launcher)), toolsFile, toolsSha256: sha256(toolsText), bundle: EVAL_MCP_BUNDLE, bundleSha256: p.bundleSha256, roots: serverRoots, codexBin: p.codexBin, codex: { codexSha256: p.codex.codexSha256, codexVersion: p.codex.codexVersion } };
-  return { isolation: mode.isolation, dirs, roots, options, expected, session, args: claudeTurnArgs(expected, session, options), env, server, ...(storybloqLauncher === undefined ? {} : { storybloqLauncher }) };
+  return { isolation: mode.isolation, dirs, roots, options, expected, session, args: claudeTurnArgs(expected, session, options), env, probeEnv: signedIn ? { ...serverEnv } : env, server, ...(storybloqLauncher === undefined ? {} : { storybloqLauncher }) };
 }
 
 /**
@@ -1739,7 +1744,7 @@ export async function runPilot(o: RunOptions, pf: Preflight, deps: AttemptDeps =
     // J1: the probe's exact command, a fresh token in place of the id, run by the runner outside the sandbox with the
     // client's own environment (so the same nc on the same PATH): the listener must see the token.
     let outsideOk = false;
-    if (listenerStarted && controlOk) outsideOk = await outsideProbe(pilotCommand(`outside-${randomBytes(8).toString("hex")}`, "network", port), workdir, launch.env, received);
+    if (listenerStarted && controlOk) outsideOk = await outsideProbe(pilotCommand(`outside-${randomBytes(8).toString("hex")}`, "network", port), workdir, launch.probeEnv, received);
     const contents = Object.fromEntries(Object.entries(paths).map(([k, p]) => [k, inspectTarget(p)])) as PilotFacts["contents"];
     const canaryText = inspectTarget(canary);
     const facts: PilotFacts = { id, paths, contents, canaryBefore, canaryAfter: typeof canaryText === "string" ? sha256(canaryText) : null, port, listener: { started: listenerStarted, received: before, controlOk, outsideOk } };

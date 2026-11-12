@@ -181,6 +181,8 @@ describe("reviewer processes always end (T-536)", () => {
       let pid = 0;
       try {
         const exited = await within(exit, 10_000);
+        // ISS-1497: a worker still running at the limit is named as hung, not reported as a missing pid file.
+        expect(exited, "the worker did not exit within 10 s").not.toBe("hung");
         pid = Number(readFileSync(pidFile, "utf-8"));
         const stillAlive = alive(pid);
         expect(exited).toBe(0);

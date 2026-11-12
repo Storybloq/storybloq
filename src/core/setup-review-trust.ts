@@ -5,7 +5,7 @@
  * isolation flags close those routes on the characterised version; this check
  * is the filesystem half, and it runs before any process starts.
  */
-import { existsSync, lstatSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { UnavailableReason } from "./setup-review-backends.js";
@@ -16,11 +16,11 @@ const STICKY = 0o1000;
 const CONFIG_ENTRIES = [".codex", ".git"];
 
 /** Test seam, not reachable through any CLI or MCP input: the uid the checks hold paths to. */
-export const trustSeams: { uid: () => number; stat: (path: string) => Stats; lstat: (path: string) => Stats; readdir: (path: string) => string[] } = {
+export const trustSeams: { uid: () => number; stat: (path: string) => Stats; lstat: (path: string) => Stats; access: (path: string) => void } = {
   uid: () => (typeof process.getuid === "function" ? process.getuid() : -1),
   stat: (path) => statSync(path),
   lstat: (path) => lstatSync(path),
-  readdir: (path) => readdirSync(path),
+  access: (path) => accessSync(path, constants.R_OK),
 };
 
 export type TrustVerdict = { readonly ok: true } | { readonly ok: false; readonly detail: string };
@@ -102,16 +102,32 @@ function checkOwned(dir: string, uid: number, what: string): TrustVerdict {
   return OK;
 }
 
-/** The config entry a directory holds, or null; a directory that cannot be listed is a refusal, never clean. */
+/**
+ * The config entry a directory holds, or null. ISS-1497: each name is checked
+ * with lstat, never by listing the directory, so a large shared folder (a temp
+ * root) costs two lookups. Any entry kind counts, a file or a dangling link
+ * included, and on a volume that folds case a variant such as .GIT is found
+ * too, as git and codex would find it. A directory this user cannot read was
+ * refused when the check listed it, and still is; a lookup error other than
+ * ENOENT is a refusal, never absence.
+ */
 function configEntryRefusal(dir: string, what: string): TrustVerdict | null {
-  let names: string[];
   try {
-    names = trustSeams.readdir(dir);
+    trustSeams.access(dir);
   } catch (e) {
-    return refuse(`${what}: ${dir} cannot be listed (${(e as NodeJS.ErrnoException).code ?? "error"}), so it cannot be shown free of .git and .codex`);
+    return refuse(`${what}: ${dir} cannot be read (${(e as NodeJS.ErrnoException).code ?? "error"}), so it cannot be shown free of .git and .codex`);
   }
-  const entry = CONFIG_ENTRIES.find((n) => names.includes(n));
-  return entry ? refuse(`${what}: ${dir} holds ${entry}, so codex could read configuration from it`) : null;
+  for (const entry of CONFIG_ENTRIES) {
+    try {
+      trustSeams.lstat(join(dir, entry));
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      return refuse(`${what}: ${dir} cannot be checked (${code ?? "error"}) for ${entry}, so it cannot be shown free of .git and .codex`);
+    }
+    return refuse(`${what}: ${dir} holds ${entry}, so codex could read configuration from it`);
+  }
+  return null;
 }
 
 /**

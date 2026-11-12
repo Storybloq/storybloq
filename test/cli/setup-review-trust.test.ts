@@ -4,7 +4,19 @@
  * nobody else could have planted. Real directories under the scratch root;
  * the uid seam stands in for another user.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// ISS-1497: every directory listing in the process goes through here, so a row can make all of them throw.
+const listing = vi.hoisted(() => ({ refuse: false, calls: [] as string[] }));
+vi.mock("node:fs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs")>();
+  const guard = <F extends (...a: never[]) => unknown>(op: string, f: F): F => ((...a: Parameters<F>) => {
+    if (listing.refuse) { listing.calls.push(`${op} ${String(a[0])}`); throw Object.assign(new Error(`${op} listed ${String(a[0])}`), { code: "EIO" }); }
+    return f(...a);
+  }) as F;
+  const over = { readdirSync: guard("readdirSync", real.readdirSync), opendirSync: guard("opendirSync", real.opendirSync), readdir: guard("readdir", real.readdir), opendir: guard("opendir", real.opendir) };
+  return { ...real, ...over, default: { ...real, ...over } };
+});
 import { chmodSync, lstatSync, mkdirSync, realpathSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { checkCodexHome, checkExecLocation, checkHome, isWithin, repositoryBoundary, trustSeams } from "../../src/core/setup-review-trust.js";
@@ -211,15 +223,15 @@ describe("ISS-1457 round 1: containment, listing, the repository and CODEX_HOME 
     expect(isWithin("/", "/p")).toBe(false);
   });
 
-  it.each(["EACCES", "EIO"])("a folder that cannot be listed (%s) is a refusal carrying the errno, never clean", (code) => {
+  it.each(["EACCES", "EIO"])("a folder whose entries cannot be checked (%s) is a refusal carrying the errno, never clean", (code) => {
     const home = dir("home");
     const store = dir("home", "state", "setup-review");
     const exec = dir("home", "state", "setup-review", "x");
-    trustSeams.readdir = (p) => {
-      if (p === store) throw Object.assign(new Error(code), { code });
-      return real.readdir(p);
+    trustSeams.lstat = (p) => {
+      if (p === join(store, ".codex")) throw Object.assign(new Error(code), { code });
+      return real.lstat(p);
     };
-    expect(checkExecLocation(exec, store, { HOME: home }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(new RegExp(`cannot be listed \\(${code}\\)`)) });
+    expect(checkExecLocation(exec, store, { HOME: home }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(new RegExp(`cannot be checked \\(${code}\\)`)) });
   });
 
   it("the repository boundary is the top-most folder holding .git above the working folder, or the folder itself", () => {
@@ -286,5 +298,91 @@ describe("ISS-1457 round 1: containment, listing, the repository and CODEX_HOME 
     expect(checkCodexHome(env, dir("project"))).toEqual({ ok: true, codexHome: join(dir("home"), "not-yet") });
     const deeper = { ...env, CODEX_HOME: join(dir("home"), "gone", "codex") };
     expect(checkCodexHome(deeper, dir("project"))).toMatchObject({ ok: false, reason: { detail: `CODEX_HOME ${deeper.CODEX_HOME}: ${join(dir("home"), "gone")} cannot be inspected (ENOENT)` } });
+  });
+});
+
+describe("ISS-1497: the config-entry check names .git and .codex, it never lists a folder", () => {
+  // Where the entry sits: an ancestor above an anchor outside home, the anchor itself, a folder below it.
+  const places = [
+    { at: "an ancestor above the anchor", entryDir: ["anc"], store: ["anc", "store"], exec: ["anc", "store", "x"] },
+    { at: "the anchor", entryDir: ["anc", "store"], store: ["anc", "store"], exec: ["anc", "store", "x"] },
+    { at: "a folder below the anchor", entryDir: ["anc", "store", "a"], store: ["anc", "store"], exec: ["anc", "store", "a", "b"] },
+  ];
+  const kinds: Array<[string, (p: string) => void]> = [
+    ["a folder", (p) => mkdirSync(p)],
+    ["a file", (p) => writeFileSync(p, "")],
+    ["a link to a folder", (p) => symlinkSync(dir("elsewhere"), p)],
+    ["a dangling link", (p) => symlinkSync(join(root, "nowhere"), p)],
+  ];
+  const rows = places.flatMap((pl) => [".git", ".codex"].flatMap((entry) => kinds.map(([kind, make]) => ({ ...pl, entry, kind, make }))));
+
+  it.each(rows)("$entry as $kind at $at is refused", ({ entryDir, store, exec, entry, make }) => {
+    const s = dir(...store);
+    const x = dir(...exec);
+    make(join(dir(...entryDir), entry));
+    expect(checkExecLocation(x, s, { HOME: dir("home") }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(new RegExp(`holds \\${entry}`)) });
+  });
+
+  it("makes no folder listing at all: with every listing made to throw, the verdict is unchanged", () => {
+    const store = dir("anc", "store");
+    const exec = dir("anc", "store", "x");
+    dir("anc", "store", "a");
+    listing.refuse = true;
+    listing.calls = [];
+    try {
+      expect(checkExecLocation(dir("anc", "store", "a"), store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: true });
+      expect(checkExecLocation(exec, store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: true });
+    } finally {
+      listing.refuse = false;
+    }
+    expect(listing.calls).toEqual([]);
+  });
+
+  it.each(["EACCES", "EIO", "ENOTDIR"])("an entry check that fails with %s is a refusal carrying the errno, never absence", (code) => {
+    const store = dir("anc", "store");
+    const exec = dir("anc", "store", "x");
+    const probe = join(store, ".git");
+    trustSeams.lstat = (p) => {
+      if (p === probe) throw Object.assign(new Error(code), { code });
+      return real.lstat(p);
+    };
+    expect(checkExecLocation(exec, store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(new RegExp(`${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot be checked \\(${code}\\)`)) });
+  });
+
+  it.each(["EACCES", "EIO"])("a folder that cannot be read (%s) is refused, as the listing refused it", (code) => {
+    const store = dir("anc", "store");
+    const exec = dir("anc", "store", "x");
+    trustSeams.access = (p) => {
+      if (p === store) throw Object.assign(new Error(code), { code });
+      real.access(p);
+    };
+    expect(checkExecLocation(exec, store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(new RegExp(`cannot be read \\(${code}\\)`)) });
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a real folder that can be searched but not read is refused", () => {
+    const store = dir("anc", "store");
+    const exec = dir("anc", "store", "x");
+    const mid = dir("anc", "store", "m");
+    const below = dir("anc", "store", "m", "x");
+    chmodSync(mid, 0o311);
+    try {
+      expect(checkExecLocation(below, store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(/m cannot be read \(EACCES\)/) });
+      expect(checkExecLocation(exec, store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: true });
+    } finally {
+      chmodSync(mid, 0o700);
+    }
+  });
+
+  const caseInsensitive = (): boolean => {
+    const probe = join(dir("caseprobe"), "CaseProbe");
+    writeFileSync(probe, "");
+    try { lstatSync(join(dir("caseprobe"), "caseprobe")); return true; } catch { return false; }
+  };
+
+  it("a case variant such as .GIT is refused where the volume folds case, since git and codex reach that same entry", (ctx) => {
+    if (!caseInsensitive()) ctx.skip("this volume is case-sensitive, so .GIT is a different entry from .git");
+    const store = dir("anc", "store");
+    mkdirSync(join(store, ".GIT"));
+    expect(checkExecLocation(dir("anc", "store", "x"), store, { HOME: dir("home") }, dir("project"))).toEqual({ ok: false, detail: expect.stringMatching(/holds \.git/) });
   });
 });

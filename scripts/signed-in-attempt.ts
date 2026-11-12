@@ -5,7 +5,7 @@
  * continuity-lib.ts (a helper-bundle input) and is re-exported here.
  */
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { readRegularFile, writeDurable } from "./headless-common.js";
 import { initContradicts, initProvenanceProblems, readbackProblems, type ClaudePolicyOptions, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 import { parseStream, sha256, TASKS, type Task, SIGNED_IN_MISSING_GATES, READ_BOUNDARY_UNPROVEN, KEYCHAIN_OPEN } from "./continuity-lib.js";
@@ -106,6 +106,46 @@ export function transcriptBinding(text: string, sessionId: string, complete: boo
 /** B-F6: the largest intent file the scan reads. */
 export const INTENT_MAX_BYTES = 4096;
 
+/**
+ * T-538 S1b: the attempt layout beneath an experiment's raw folder. `levels` are the folder levels, outermost first;
+ * the last level is the attempt folder that holds the provenance records. Each level names its folders by `pattern`
+ * (the lister and recovery use it; the stop scan treats every entry as part of the tree and refuses anything that is
+ * not a real directory). `skipTop` names top-level folders that belong to something else (continuity's pilot).
+ * `accepts` is a further check on a recovery path's parts. Continuity's layout is the default everywhere.
+ */
+export interface AttemptLayout {
+  readonly levels: readonly { readonly name: string; readonly pattern: RegExp }[];
+  readonly skipTop: readonly string[];
+  readonly accepts: (parts: readonly string[]) => boolean;
+  /** How a recovery path is written, for the refusal. */
+  readonly describe: string;
+}
+export const CONTINUITY_LAYOUT: AttemptLayout = {
+  levels: [{ name: "task", pattern: /^T-\d+$/ }, { name: "repeat", pattern: /^repeat-\d+$/ }, { name: "attempt", pattern: /^attempt-\d{3}$/ }],
+  skipTop: ["pilot"],
+  accepts: (parts) => TASKS.includes(parts[0] as Task),
+  describe: "<task>/repeat-<n>/attempt-<nnn>",
+};
+
+/**
+ * S1b fix (P2): a layout is usable only with at least one level and stateless patterns. A g or y flag makes test()
+ * depend on lastIndex, so an answer would depend on earlier calls. Null when usable.
+ */
+export function layoutProblem(layout: AttemptLayout): string | null {
+  if (!Array.isArray(layout.levels) || layout.levels.length === 0) return "it has no levels";
+  for (const l of layout.levels) {
+    if (!(l.pattern instanceof RegExp)) return `level ${JSON.stringify(l.name)} has no pattern`;
+    if (l.pattern.global || l.pattern.sticky) return `level ${JSON.stringify(l.name)}'s pattern carries the g or y flag, which makes matching stateful`;
+  }
+  return null;
+}
+function checkLayout(layout: AttemptLayout): void {
+  const p = layoutProblem(layout);
+  if (p !== null) throw new Error(`continuity-run: the attempt layout is refused: ${p}`);
+}
+/** S1b fix (P1): a path segment that is empty, "." or "..", or that holds a separator or NUL, whatever the layout says. */
+export const unsafeSegment = (seg: string): boolean => seg === "" || seg === "." || seg === ".." || /[/\\\0]/.test(seg);
+
 /** B-F3, B-F6: the reads the provenance-stop scan makes. lstat never follows a link; the intent is read by readIntent. */
 export interface StopScanFs {
   lstatSync(p: string): { isDirectory(): boolean; isFile(): boolean };
@@ -123,21 +163,23 @@ const STOP_SCAN_FS: StopScanFs = { lstatSync, readdirSync: (p) => readdirSync(p)
  * B-F6: an intent that is a link or a special file is a stop and is never opened; a regular one is read through
  * readRegularFile. The stop file is found by name only and never read.
  */
-export function provenanceStops(root: string, fs: StopScanFs = STOP_SCAN_FS): string[] {
+export function provenanceStops(root: string, fs: StopScanFs = STOP_SCAN_FS, layout: AttemptLayout = CONTINUITY_LAYOUT): string[] {
+  checkLayout(layout);
   try { if (!fs.lstatSync(root).isDirectory()) throw new Error(`continuity-run: the experiment's raw root is not a directory: ${root}`); } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw e;
   }
-  const dirs = (d: string): string[] => fs.readdirSync(d).map((n) => {
-    if (!fs.lstatSync(join(d, n)).isDirectory()) throw new Error(`continuity-run: an unexpected entry in the experiment's raw tree: ${join(d, n)}`);
-    return n;
-  });
   const out: string[] = [];
-  for (const task of fs.readdirSync(root).filter((n) => n !== "pilot")) {
-    if (!fs.lstatSync(join(root, task)).isDirectory()) throw new Error(`continuity-run: an unexpected entry in the experiment's raw tree: ${join(root, task)}`);
-    for (const repeat of dirs(join(root, task))) {
-      for (const attempt of dirs(join(root, task, repeat))) {
-        const d = join(root, task, repeat, attempt);
+  // S1b: one level per layout level, depth first in listing order; lstat never follows a link, so a linked folder is
+  // an unexpected entry and is never entered.
+  const walk = (dir: string, depth: number, rel: readonly string[]): void => {
+    for (const n of fs.readdirSync(dir).filter((x) => depth > 0 || !layout.skipTop.includes(x))) {
+      if (!fs.lstatSync(join(dir, n)).isDirectory()) throw new Error(`continuity-run: an unexpected entry in the experiment's raw tree: ${join(dir, n)}`);
+      if (depth + 1 < layout.levels.length) walk(join(dir, n), depth + 1, [...rel, n]);
+      else visit(join(dir, n), [...rel, n].join("/"));
+    }
+  };
+  const visit = (d: string, label: string): void => {
         const names = fs.readdirSync(d);
         let intentOpen = false;
         if (names.includes(PROVENANCE_INTENT_FILE)) {
@@ -148,10 +190,9 @@ export function provenanceStops(root: string, fs: StopScanFs = STOP_SCAN_FS): st
             intentOpen = state !== "resolved";
           }
         }
-        if (names.includes(PROVENANCE_STOP_FILE) || intentOpen) out.push(`${task}/${repeat}/${attempt}`);
-      }
-    }
-  }
+        if (names.includes(PROVENANCE_STOP_FILE) || intentOpen) out.push(label);
+  };
+  walk(root, 0, []);
   return out.sort();
 }
 
@@ -180,13 +221,21 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
  * (C-F5). C-F4: only ENOENT is absence. Every refusal leaves the intent unresolved; past the intent checks it also
  * writes a diagnostic.
  */
-export async function recoverAttempt(o: RunOptions, pf: Pick<Preflight, "experiment">, attemptPath: string, deps: Pick<AttemptDeps, "homeRoot" | "writeDurable"> & { readonly recoveryProbe?: RecoveryProbe; readonly recoveryFs?: RecoveryFs } = {}): Promise<void> {
+export async function recoverAttempt(o: RunOptions, pf: Pick<Preflight, "experiment">, attemptPath: string, deps: Pick<AttemptDeps, "homeRoot" | "writeDurable"> & { readonly recoveryProbe?: RecoveryProbe; readonly recoveryFs?: RecoveryFs; readonly layout?: AttemptLayout } = {}): Promise<void> {
   refuseShared(o);
   const refuse = (why: string): never => { throw new ProvenanceStopError(`continuity-run: --recover ${attemptPath} refused: ${why}`); };
   if (!/^[0-9a-f]{12,64}$/.test(pf.experiment)) refuse("the experiment must be its hex id (the 12-hex short id is enough)");
   const experiment = pf.experiment.slice(0, 12);
-  const m = /^(T-\d+)\/(repeat-\d+)\/(attempt-\d{3})$/.exec(attemptPath);
-  if (m === null || !TASKS.includes(m[1] as Task)) refuse("the attempt must be <task>/repeat-<n>/attempt-<nnn>");
+  const layout = deps.layout ?? CONTINUITY_LAYOUT;
+  const lp = layoutProblem(layout);
+  if (lp !== null) refuse(`the attempt layout is refused: ${lp}`);
+  // P1: the segments are checked before any layout pattern and before any file is touched, so a permissive pattern
+  // can never walk recovery out of the experiment folder.
+  const parts = attemptPath.split("/");
+  if (parts.some(unsafeSegment)) refuse("the attempt path has an empty, \".\" or \"..\" segment, or a separator or NUL inside one");
+  if (parts.length !== layout.levels.length || !parts.every((p, i) => layout.levels[i]!.pattern.test(p)) || !layout.accepts(parts)) refuse(`the attempt must be ${layout.describe}`);
+  const base = resolve(o.rawOut, experiment);
+  if (!resolve(base, ...parts).startsWith(`${base}${sep}`)) refuse("the attempt path does not stay beneath the experiment folder");
   const fsx = deps.recoveryFs ?? RECOVERY_FS;
   const stat = (p: string, what: string): ReturnType<typeof lstatSync> | null => {
     try { return fsx.lstat(p); } catch (e) {
@@ -206,7 +255,7 @@ export async function recoverAttempt(o: RunOptions, pf: Pick<Preflight, "experim
   const realDir = (p: string): boolean => { const st = stat(p, p); return st !== null && st.isDirectory(); };
   if (!realDir(o.rawOut)) refuse("--raw-out is not a real directory");
   let dir = join(o.rawOut, experiment);
-  for (const part of ["", ...m!.slice(1)]) { dir = part === "" ? dir : join(dir, part); if (!realDir(dir)) refuse(`${dir} is not a real directory`); }
+  for (const part of ["", ...parts]) { dir = part === "" ? dir : join(dir, part); if (!realDir(dir)) refuse(`${dir} is not a real directory`); }
   const intentPath = join(dir, PROVENANCE_INTENT_FILE);
   if (stat(intentPath, "the intent") === null) refuse("no unresolved intent: nothing to recover");
   const intent = readJson(intentPath, INTENT_MAX_BYTES, "the intent");
@@ -306,7 +355,8 @@ const LISTING_FS: ListingFs = { lstat: lstatSync, readdir: (p) => readdirSync(p)
  * folder's real path is checked after its lookups. Node has no openat, so this narrows the window in which a folder
  * can be swapped for a link but cannot close it; the tool is an operator step run after the matrix, with nothing live.
  */
-export function listRunTranscripts(rawOut: string, experiment: string, home: string, fs: ListingFs = LISTING_FS): TranscriptListing[] {
+export function listRunTranscripts(rawOut: string, experiment: string, home: string, fs: ListingFs = LISTING_FS, layout: AttemptLayout = CONTINUITY_LAYOUT): TranscriptListing[] {
+  checkLayout(layout);
   if (!/^[0-9a-f]{12,64}$/.test(experiment)) throw new Error("continuity-run: --list-transcripts needs the experiment's hex id (12 hex is enough)");
   const kind = (p: string): "dir" | "file" | "link" | "other" | "absent" | `error ${string}` => {
     try { const st = fs.lstat(p); return st.isSymbolicLink() ? "link" : st.isDirectory() ? "dir" : st.isFile() ? "file" : "other"; } catch (e) {
@@ -365,11 +415,15 @@ export function listRunTranscripts(rawOut: string, experiment: string, home: str
     }
     return ok;
   };
-  for (const task of level(expDir, /^T-\d+$/, "")) {
-    for (const repeat of level(join(expDir, task), /^repeat-\d+$/, task)) {
-      for (const attempt of level(join(expDir, task, repeat), /^attempt-\d{3}$/, `${task}/${repeat}`)) {
-        const label = `${task}/${repeat}/${attempt}`;
-        const dir = join(expDir, task, repeat, attempt);
+  // S1b: one level per layout level, each listed through `level`; the last level's folders are the attempts.
+  const walk = (parent: string, depth: number, label: string): void => {
+    for (const n of level(parent, layout.levels[depth]!.pattern, label).filter((x) => depth > 0 || !layout.skipTop.includes(x))) {
+      const next = label === "" ? n : `${label}/${n}`;
+      if (depth + 1 < layout.levels.length) walk(join(parent, n), depth + 1, next);
+      else visit(join(parent, n), next);
+    }
+  };
+  const visit = (dir: string, label: string): void => {
         const problems: string[] = [...homeProblems];
         const ip = join(dir, PROVENANCE_INTENT_FILE);
         const ik = kind(ip);
@@ -405,9 +459,8 @@ export function listRunTranscripts(rawOut: string, experiment: string, home: str
           }
         }
         out.push({ attempt: label, intent, sessionId, transcripts, runtimeDirectories, problems });
-      }
-    }
-  }
+  };
+  walk(expDir, 0, "");
   return out;
 }
 

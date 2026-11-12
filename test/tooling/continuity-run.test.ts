@@ -1541,7 +1541,11 @@ describe("attempt lifecycle (fake child process, no model)", () => {
   });
   it("W3: the attempt path must name task/repeat/attempt inside --raw-out, with no traversal and no link", async () => {
     const { o, pf, home } = await crashed();
-    for (const bad of ["../T-4/repeat-1/attempt-001", "T-4/repeat-1/../repeat-1/attempt-001", "/etc/passwd", "T-4/repeat-1", "T-999/repeat-1/attempt-001", "T-4/repeat-1/attempt-001/x"]) {
+    // S1b fix: traversal, an absolute path and empty segments are refused by the segment check, before the layout.
+    for (const bad of ["../T-4/repeat-1/attempt-001", "T-4/repeat-1/../repeat-1/attempt-001", "/etc/passwd"]) {
+      await expect(recoverAttempt(o, pf, bad, { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/an empty, "\." or "\.\." segment, or a separator or NUL inside one/);
+    }
+    for (const bad of ["T-4/repeat-1", "T-999/repeat-1/attempt-001", "T-4/repeat-1/attempt-001/x"]) {
       await expect(recoverAttempt(o, pf, bad, { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/must be <task>\/repeat-<n>\/attempt-<nnn>/);
     }
     const repeatDir = dirname(rawDirOf(o, pf)); const moved = `${repeatDir}-real`; execFileSync("mv", [repeatDir, moved]); symlinkSync(moved, repeatDir);

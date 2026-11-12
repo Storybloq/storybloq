@@ -2075,7 +2075,159 @@ export async function cliRecover(argv: readonly string[], deps: Parameters<typeo
   return true;
 }
 
+/** Addendum E5: one attempt's row in the transcript listing. Metadata only: existence and size by lstat, nothing opened. */
+export interface TranscriptListing {
+  readonly attempt: string;
+  readonly intent: "unresolved" | "resolved" | "missing" | "unreadable" | "malformed";
+  readonly sessionId: string | null;
+  readonly transcripts: readonly { readonly path: string; readonly size: number }[];
+  /** <project>/<session id> folders (a client's runtime directory): listed by path only, never opened or read. */
+  readonly runtimeDirectories: readonly string[];
+  readonly problems: readonly string[];
+}
+export interface ListingFs {
+  readonly lstat: (p: string) => { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; readonly size: number };
+  readonly readdir: (p: string) => string[];
+  readonly realpath: (p: string) => string;
+  readonly readIntent: (p: string, max: number) => string;
+}
+const LISTING_FS: ListingFs = { lstat: lstatSync, readdir: (p) => readdirSync(p), realpath: (p) => realpathSync(p), readIntent: readRegularFile };
+
+/**
+ * Addendum E5: after the matrix, the run's transcripts are listed for the owner; removal is the owner's, never this
+ * code's. Walks <rawOut>/<experiment>/<task>/<repeat>/<attempt>, reads each attempt's intent (a raw-dir record, bounded,
+ * no follow) for the session id the launch chose, and looks for <home>/.claude/projects/<any>/<id>.jsonl and the
+ * <id> folder beside it by lstat alone: a transcript is never opened, a folder is never entered, a link is never
+ * followed (it is named as a problem), nothing is deleted. The home is an argument, so a test lists a fake one. Only
+ * ENOENT is absence; any other error is named as a problem.
+ *
+ * Links on the way. The roots (the home, the raw folder, the experiment folder) must be real directories whose real
+ * path is the path given, so no component of them is a link; otherwise the whole listing is refused before anything
+ * beneath them is touched. <home>/.claude and its projects folder as a link are named and never entered. Every folder
+ * that is listed is checked, used, then checked again: lstat, readdir, then its real path must still be the expected
+ * one, or that level's entries are discarded and the change is named. The intent is opened no-follow and its
+ * descriptor checked as a regular file, and the attempt folder's real path is checked after the read; each project
+ * folder's real path is checked after its lookups. Node has no openat, so this narrows the window in which a folder
+ * can be swapped for a link but cannot close it; the tool is an operator step run after the matrix, with nothing live.
+ */
+export function listRunTranscripts(rawOut: string, experiment: string, home: string, fs: ListingFs = LISTING_FS): TranscriptListing[] {
+  if (!/^[0-9a-f]{12,64}$/.test(experiment)) throw new Error("continuity-run: --list-transcripts needs the experiment's hex id (12 hex is enough)");
+  const kind = (p: string): "dir" | "file" | "link" | "other" | "absent" | `error ${string}` => {
+    try { const st = fs.lstat(p); return st.isSymbolicLink() ? "link" : st.isDirectory() ? "dir" : st.isFile() ? "file" : "other"; } catch (e) {
+      const c = (e as NodeJS.ErrnoException).code; return c === "ENOENT" ? "absent" : `error ${c ?? (e as Error).message}`;
+    }
+  };
+  const said = (k: string): string => (k === "link" ? "a link, not followed" : k);
+  // null when the folder's real path is still `p`; otherwise what it is now.
+  const moved = (p: string): string | null => {
+    try { const r = fs.realpath(p); return r === p ? null : `its real path is now ${r}`; } catch (e) { return `its real path cannot be read (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`; }
+  };
+  const root = (label: string, p: string): string => {
+    const r = resolve(p);
+    const k = kind(r);
+    if (k !== "dir") throw new Error(`continuity-run: the ${label} ${r} is not a real directory (${said(k)}); nothing listed`);
+    const m = moved(r);
+    if (m !== null) throw new Error(`continuity-run: the ${label} ${r} is not its own real path (${m}; a component is a link); pass the real path; nothing listed`);
+    return r;
+  };
+  const homeDir = root("home", home);
+  const rawDir = root("raw folder", rawOut);
+  const expDir = root("experiment folder", join(rawDir, experiment.slice(0, 12)));
+  const names = (p: string, re: RegExp): string[] => fs.readdir(p).filter((n) => re.test(n)).sort();
+  // The projects folders, each by lstat: a link is never entered.
+  const claudeDir = join(homeDir, ".claude");
+  const projects = join(claudeDir, "projects");
+  const homeProblems: string[] = [];
+  let projectDirs: string[] = [];
+  const ck = kind(claudeDir);
+  const pk = ck === "dir" ? kind(projects) : "absent";
+  if (ck !== "dir" && ck !== "absent") homeProblems.push(`${claudeDir} is ${said(ck)}`);
+  else if (pk === "dir") {
+    for (const n of fs.readdir(projects).sort()) {
+      const d = join(projects, n); const k = kind(d);
+      if (k === "dir") projectDirs.push(d); else if (k === "link") homeProblems.push(`${d} is a link, not followed`); else if (k.startsWith("error")) homeProblems.push(`${d} cannot be checked (${k.slice(6)})`);
+    }
+    const m = moved(projects);
+    if (m !== null) { projectDirs = []; homeProblems.push(`${projects} changed while it was listed (${m}); its entries are discarded`); }
+  } else if (pk !== "absent") homeProblems.push(`${projects} is ${said(pk)}`);
+  const out: TranscriptListing[] = [];
+  const stray = (attempt: string, problem: string): void => { out.push({ attempt, intent: "missing", sessionId: null, transcripts: [], runtimeDirectories: [], problems: [...homeProblems, problem] }); };
+  // Each level: the parent is listed, then its real path is checked again; each child is checked by lstat before it is
+  // used. A linked task, repeat or attempt folder is named, never entered; a parent that changed loses its entries.
+  const level = (parent: string, re: RegExp, label: string): string[] => {
+    const listed = names(parent, re);
+    const m = moved(parent);
+    if (m !== null) {
+      if (label === "") throw new Error(`continuity-run: the experiment folder ${parent} changed while it was listed (${m}); nothing listed`);
+      stray(label, `${parent} changed while it was listed (${m}); its entries are discarded`);
+      return [];
+    }
+    const ok: string[] = [];
+    for (const n of listed) {
+      const k = kind(join(parent, n));
+      if (k === "dir") ok.push(n); else stray(label === "" ? n : `${label}/${n}`, `${join(parent, n)} is not a real directory (${said(k)})`);
+    }
+    return ok;
+  };
+  for (const task of level(expDir, /^T-\d+$/, "")) {
+    for (const repeat of level(join(expDir, task), /^repeat-\d+$/, task)) {
+      for (const attempt of level(join(expDir, task, repeat), /^attempt-\d{3}$/, `${task}/${repeat}`)) {
+        const label = `${task}/${repeat}/${attempt}`;
+        const dir = join(expDir, task, repeat, attempt);
+        const problems: string[] = [...homeProblems];
+        const ip = join(dir, PROVENANCE_INTENT_FILE);
+        const ik = kind(ip);
+        let intent: TranscriptListing["intent"] = "missing"; let sessionId: string | null = null;
+        if (ik === "file") {
+          try {
+            const text = fs.readIntent(ip, INTENT_MAX_BYTES);
+            const m = moved(dir);
+            if (m !== null) { intent = "unreadable"; problems.push(`${dir} changed while the intent was read (${m}); the content is discarded`); } else {
+              const v = JSON.parse(text) as Record<string, unknown>;
+              if ((v.state === "unresolved" || v.state === "resolved") && typeof v.sessionId === "string" && SESSION_ID.test(v.sessionId)) { intent = v.state; sessionId = v.sessionId; } else intent = "malformed";
+            }
+          } catch (e) { intent = "unreadable"; problems.push(`the intent is unreadable (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`); }
+        } else if (ik !== "absent") { intent = "unreadable"; problems.push(`the intent is ${said(ik)}`); }
+        const transcripts: { path: string; size: number }[] = [];
+        const runtimeDirectories: string[] = [];
+        if (sessionId !== null) {
+          for (const d of projectDirs) {
+            const found: { path: string; size: number }[] = []; const dirs: string[] = []; const named: string[] = [];
+            const t = join(d, `${sessionId}.jsonl`);
+            try {
+              const st = fs.lstat(t);
+              if (st.isSymbolicLink()) named.push(`${t} is a link, not followed`);
+              else if (st.isFile()) found.push({ path: t, size: st.size });
+              else named.push(`${t} is not a regular file`);
+            } catch (e) { const c = (e as NodeJS.ErrnoException).code; if (c !== "ENOENT") named.push(`${t} cannot be checked (${c ?? (e as Error).message})`); }
+            const rd = join(d, sessionId);
+            const rk = kind(rd);
+            if (rk === "dir") dirs.push(rd); else if (rk !== "absent") named.push(`${rd} is ${rk === "link" ? "a link, not followed" : rk.startsWith("error") ? `not checkable (${rk.slice(6)})` : "not a directory"}`);
+            const m = moved(d);
+            if (m !== null) problems.push(`${d} changed while it was checked (${m}); its results are discarded`);
+            else { transcripts.push(...found); runtimeDirectories.push(...dirs); problems.push(...named); }
+          }
+        }
+        out.push({ attempt: label, intent, sessionId, transcripts, runtimeDirectories, problems });
+      }
+    }
+  }
+  return out;
+}
+
+/** Addendum E5: `--list-transcripts --experiment <hex> --home <dir> [--raw-out <dir>]` alone; never with a run or a recovery. */
+export function cliListTranscripts(argv: readonly string[], write: (s: string) => void = (s) => { process.stdout.write(s); }, fs: ListingFs = LISTING_FS): boolean {
+  if (!argv.includes("--list-transcripts")) return false;
+  if (["--pilot", "--tasks", "--repeats", "--recover"].some((f) => argv.includes(f))) throw new Error("continuity-run: --list-transcripts is not combined with a run or a recovery");
+  const val = (f: string): string | undefined => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : undefined; };
+  const home = val("--home");
+  if (home === undefined || home === "" || home.startsWith("--")) throw new Error("continuity-run: --list-transcripts needs --home <dir>, named explicitly");
+  for (const r of listRunTranscripts(val("--raw-out") ?? DEFAULT_RAW_OUT, val("--experiment") ?? "", home, fs)) write(`${JSON.stringify(r)}\n`);
+  return true;
+}
+
 async function main(): Promise<void> {
+  if (cliListTranscripts(process.argv.slice(2))) process.exit(0);
   if (await cliRecover(process.argv.slice(2))) { process.stdout.write("recovered: the intent is resolved\n"); process.exit(0); }
   const o = parseArgs(process.argv.slice(2));
   const pf = preflight(o);

@@ -148,7 +148,8 @@ describe("7.3: the wrapper, for the stages only a live run reaches", () => {
     expect(at("provision")).toBeGreaterThan(src.indexOf("const runId = `"));
     expect(at("turns")).toBeLessThan(src.indexOf("for (let step = flow.next(); !step.done;)"));
     expect(at("scan")).toBeLessThan(src.indexOf("await scanAndClear(collector, recordDir"));
-    expect(src).toContain("void withRunnerResult(resultPath, mode, progress, () => (mode === \"regrade\" ? regradeCli(argv) : mode === \"finalize\" ? finalize(argv) : main()));");
+    expect(src).toContain("void withRunnerResult(resultPath, mode, progress, () => (mode === \"regrade\" ? regradeCli(argv) : mode === \"finalize\" ? finalize(argv) : main(argv, admission)));");
+    expect(src).toContain("if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) runnerCli(process.argv.slice(2));");
   });
 });
 

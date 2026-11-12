@@ -29,7 +29,7 @@ const COMMIT = "a".repeat(40);
 function manifest(cells: Partial<Manifest["cells"][number]>[] = [{}, {}, {}]): Manifest {
   return parseManifest(JSON.stringify({
     id: "t538-host-1", commit: COMMIT, evalBundleDigest: "e".repeat(64), toolListSha256: "f".repeat(64), probeSha256: PROBE_SHA256,
-    clients: { codex: { version: "0.153.4", model: "gpt-6-astra", judgeModel: "gpt-6-astra" }, claude: { version: "2.9.0", model: "opus", judgeModel: "gpt-6-astra" } },
+    clients: { codex: { version: "0.153.4", model: "gpt-6-astra", judgeModel: "gpt-6-astra", isolation: "fresh" }, claude: { version: "2.9.0", model: "opus", judgeModel: "gpt-6-astra", isolation: "signed-in" } },
     limits: { turnMs: 40 * MIN, attemptMs: 210 * MIN, armMs: 10 * HOUR },
     cells: cells.map((c, i) => ({ id: ["c1", "c2", "c3", "c4"][i], case: "x", fixture: "empty-idea", variant: "none", checkSet: 7, ...c })),
   }));
@@ -807,7 +807,7 @@ describe("7.2: preflight", () => {
   };
   it("passes with every check holding, and records the counts only", async () => {
     const root = tmp("t538pf-");
-    expect(await preflightProblems(manifest(), root, "claude", ok, 0)).toEqual([]);
+    expect(await preflightProblems(manifest(), root, "codex", ok, 0)).toEqual([]);
     expect(JSON.parse(readFileSync(join(root, "preflight.json"), "utf-8"))).toMatchObject({ counts: { vitest: 1, jest: 0 }, problems: [] });
   });
   it.each([
@@ -815,13 +815,12 @@ describe("7.2: preflight", () => {
     ["managed settings", { managedSettings: () => ["/Library/Application Support/ClaudeCode"] }, /managed settings/],
     ["free space", { freeBytes: () => 19 * 1024 ** 3 }, /under the 20 GiB floor/],
     ["credential", { codexCredential: () => false }, /no Codex credential/],
-    ["token", { claudeTokenLength: () => 0 }, /no Claude token/],
     ["bundle", { evalInputDigest: () => "0".repeat(64) }, /input digest/],
     ["tool list", { toolListSha256: () => "0".repeat(64) }, /tool list/],
     ["dist", { distProblems: () => ["dist/mcp.js differs"] }, /dist\/mcp\.js differs/],
     ["capability probe", { capabilityProbe: async () => ["probe: the outside write succeeded"] }, /outside write/],
   ] as const)("refuses on %s", async (_n, change, re) => {
-    expect((await preflightProblems(manifest(), tmp("t538pf-"), "claude", { ...ok, ...change } as PreflightProbe, 0)).join("\n")).toMatch(re);
+    expect((await preflightProblems(manifest(), tmp("t538pf-"), "codex", { ...ok, ...change } as PreflightProbe, 0)).join("\n")).toMatch(re);
   });
   it("refuses with an open quarantine, until it is closed", async () => {
     const r = rig({ script: { "c1:run": { cleanup: "unconfirmed" } } });
@@ -874,7 +873,7 @@ describe("7.1: the manifest generator", { timeout: 120_000 }, () => {
     expect(m.commit).toBe(code);
     expect(m.cells.map((c) => c.id)).toEqual(["1a", "6c", "1b", "2", "3", "4", "5", "7", "10", "89", "6a", "6b", "6d"]);
     expect(m.cells.filter((c) => c.gateAfter).map((c) => c.id)).toEqual(["1a", "6c"]);
-    expect(m.clients).toEqual({ codex: { version: "0.153.4", model: "gpt-6-astra", judgeModel: "gpt-6-astra" }, claude: { version: "2.9.0", model: "opus", judgeModel: "gpt-6-astra" } });
+    expect(m.clients).toEqual({ codex: { version: "0.153.4", model: "gpt-6-astra", judgeModel: "gpt-6-astra", isolation: "fresh" }, claude: { version: "2.9.0", model: "opus", judgeModel: "gpt-6-astra", isolation: "signed-in" } });
     expect(m.probeSha256).toBe(PROBE_SHA256);
     expect(m.toolListSha256).toBe(createHash("sha256").update(readFileSync(join(r.pkg, "scripts", "onboarding-eval-tools.json"))).digest("hex"));
     r.g("add", "."); r.g("commit", "-qm", "manifest only");

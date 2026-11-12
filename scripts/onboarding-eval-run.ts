@@ -59,7 +59,7 @@ import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 import { newProgress, resultPathOf, withRunnerResult } from "./onboarding-eval-runner-result.js";
-import { probeTurnArgs, runProbeTurn } from "./onboarding-eval-probe.js";
+import { admissionRefusal, isolationFlag, probeTurnArgs, runProbeTurn, type StandInAdmission } from "./onboarding-eval-probe.js";
 import { type GroupControl } from "../src/core/process-group.js";
 import { runInGroup } from "./onboarding-eval-groups.js";
 import {
@@ -150,7 +150,20 @@ export function claudeToolSets(given: string | null, pinned = TOOL_SETS_FILE): C
   return { degraded: names(v.degraded), full: names(v.full) };
 }
 
-function parseArgs(argv: readonly string[]): Options {
+/**
+ * T-538 signed-in note section 2: the run's admission, before anything is read, spawned or written. A claude
+ * run is refused whatever its isolation (omitted means fresh); codex runs fresh only.
+ */
+export function runAdmission(argv: readonly string[], admission?: StandInAdmission): "fresh" {
+  const isolation = isolationFlag(argv);
+  const c = argv.indexOf("--client");
+  const refused = admissionRefusal(c >= 0 ? argv[c + 1] ?? "" : "", isolation, "onboarding-eval", admission);
+  if (refused !== null) throw new Error(refused);
+  return "fresh";
+}
+
+function parseArgs(argv: readonly string[], admission?: StandInAdmission): Options {
+  runAdmission(argv, admission);
   const get = (k: string, d?: string): string | undefined => {
     const i = argv.indexOf(`--${k}`);
     return i >= 0 ? argv[i + 1] : d;
@@ -178,7 +191,7 @@ function parseArgs(argv: readonly string[]): Options {
     toolSets: get("tool-sets") === undefined ? null : resolve(get("tool-sets")!),
     readbackTimeoutMs: Number(get("readback-timeout-ms", String(READBACK_TIMEOUT_MS))),
     attemptBase: resolve(get("attempt-base") ?? attemptBase()),
-    probeTurn: argv.includes("--probe-turn") ? probeTurnArgs(argv, client, variant) : null,
+    probeTurn: argv.includes("--probe-turn") ? probeTurnArgs(argv, client, variant, admission) : null,
   };
 }
 
@@ -1169,9 +1182,9 @@ export function diskReader(story: string): StoryReader {
 /** T-538 commit 4 (7.3): where this process has got to, for its `--result` file. */
 const progress = newProgress("args");
 
-async function main(): Promise<void> {
+async function main(argv: readonly string[], admission?: StandInAdmission): Promise<void> {
   progress.stage = "args";
-  const o = parseArgs(process.argv.slice(2));
+  const o = parseArgs(argv, admission);
   progress.stage = "preflight";
   // T-538 5.4: every run needs the pinned tool inventory before anything is built or spawned.
   const toolSetsFile = o.toolSets ?? TOOL_SETS_FILE;
@@ -1947,13 +1960,18 @@ export async function regradeCli(argv: readonly string[]): Promise<void> {
   process.exitCode = v.verdict === "PASS" ? 0 : v.verdict === "FAIL" ? 1 : 3;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/**
+ * The runner's whole entry. The CLI below never passes `admission`, so a Claude run from the command line is
+ * always refused; only test/fixtures/t538-admitted-runner.ts passes a stand-in admission (T-538 S0, pen ruling G1).
+ */
+export function runnerCli(argv: readonly string[], admission?: StandInAdmission): void {
   // T-538 commit 4 (7.3): every terminal path, a thrown error included, ends in the `--result` file when one is asked for.
-  const argv = process.argv.slice(2);
   const mode = argv.includes("--regrade") ? "regrade" : argv.includes("--finalize") ? "finalize" : "run";
   let resultPath: string | null = null;
   try { resultPath = resultPathOf(argv); } catch (err) { process.stderr.write(`${(err as Error).message}\n`); process.exitCode = 2; }
   if (process.exitCode !== 2) {
-    void withRunnerResult(resultPath, mode, progress, () => (mode === "regrade" ? regradeCli(argv) : mode === "finalize" ? finalize(argv) : main()));
+    void withRunnerResult(resultPath, mode, progress, () => (mode === "regrade" ? regradeCli(argv) : mode === "finalize" ? finalize(argv) : main(argv, admission)));
   }
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) runnerCli(process.argv.slice(2));

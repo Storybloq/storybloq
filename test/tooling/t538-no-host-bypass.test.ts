@@ -19,6 +19,8 @@ import { claudeProbe, claudeProbeVerdict, PROBE_PROMPT_TEMPLATE, type ProbeTurnR
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TSX = join(PKG, "node_modules", "tsx", "dist", "cli.mjs");
 const RUNNER = join(PKG, "scripts", "onboarding-eval-run.ts");
+/** T-538 S0 (pen ruling G1): the runner's CLI refuses every Claude run; Claude rows drive this test-only wrapper, which passes a stand-in admission. */
+const ADMITTED_RUNNER = join(PKG, "test", "fixtures", "t538-admitted-runner.ts");
 const BYPASS = ["--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"] as const;
 
 const SERVER_START = join(PKG, "test", "fixtures", "t538-server-start.cjs");
@@ -383,7 +385,7 @@ async function withClaude<T>(opts: ClaudeOpts, then: (r: ClaudeRun) => T): Promi
     const setsFile = join(dir, `sets-${MARK}.json`);
     if (sets !== null) writeFileSync(setsFile, JSON.stringify(sets));
     const env: NodeJS.ProcessEnv = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, HOME: home, TMPDIR: dir, CODEX_HOME: codexHome, CLAUDE_CODE_OAUTH_TOKEN: "placeholder-not-a-token" };
-    const args = [TSX, RUNNER, "--client", "claude", "--fixture", opts.fixture ?? "empty-idea", "--variant", opts.variant ?? "none", "--out", join(dir, "out"), "--raw-out", join(dir, "raw"), "--attempt-base", join(dir, "att"),
+    const args = [TSX, ADMITTED_RUNNER, "--client", "claude", "--fixture", opts.fixture ?? "empty-idea", "--variant", opts.variant ?? "none", "--out", join(dir, "out"), "--raw-out", join(dir, "raw"), "--attempt-base", join(dir, "att"),
       ...(sets !== null ? ["--tool-sets", setsFile] : []), ...(opts.extra ?? []), ...(opts.probe ? ["--result", join(dir, "result.json")] : [])];
     // Asynchronous, so the test worker keeps answering vitest while the runner works.
     const r = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {

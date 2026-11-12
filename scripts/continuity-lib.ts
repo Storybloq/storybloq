@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, statSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
 import { basename, join, relative, sep, posix, resolve as resolvePath } from "node:path";
-import { readbackProblems, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
+import { MEMORY_UNPROVEN, readbackProblems, type ReadbackExpected, type ReadbackStep } from "./headless-policy.js";
 
 // --- hashing --------------------------------------------------------------
 
@@ -1298,9 +1298,16 @@ export function expectedCellKeys(): string[] {
  * qualifies; every refusal names them. Kept here, not in continuity-signed-in.ts, so the helper bundle's
  * inputs stay unchanged.
  */
+/** T-538 signed-in note section 1: no client-level canary has shown the model's tools kept out of the real home. */
+export const READ_BOUNDARY_UNPROVEN = "read-boundary.unproven: no client-level canary has shown the model's Read, Grep, Glob and Bash tools denied the real home's credential and settings files";
+/** T-538 signed-in note section 1: the Bash sandbox reaches the keychain service that holds the signed-in login. */
+export const KEYCHAIN_OPEN = "keychain.open: the client's Bash sandbox can reach the keychain service, so the model's tools are not shown isolated from the signed-in login";
 export const SIGNED_IN_MISSING_GATES = [
   "E3 per-prompt provenance checks (plugins, skills, agents, hooks and memory listed empty or the run's own)",
   "M2 to M6 evidence (setting-source behaviour, inventory method, real-home gate, fixture exclusions, live turns)",
+  READ_BOUNDARY_UNPROVEN,
+  KEYCHAIN_OPEN,
+  MEMORY_UNPROVEN,
 ] as const;
 
 export function qualifies(i: QualificationInputs): { readonly qualifying: boolean; readonly shortCells: string[]; readonly unpublishedCells: string[]; readonly reason: string } {

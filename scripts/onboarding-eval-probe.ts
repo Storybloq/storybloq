@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { REQUEST_MAX_BYTES } from "./onboarding-eval-review.js";
 import { runInGroup } from "./onboarding-eval-groups.js";
 import { sandboxedRun, type SandboxedRun } from "./onboarding-eval-host.js";
+import { unconditionalSignedInRefusal } from "./continuity-signed-in.js";
 
 const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).digest("hex");
 
@@ -225,9 +226,41 @@ export function claudeProbePrompt(command: string, insideFile: string, outsideFi
   return PROBE_PROMPT_TEMPLATE.replace("{{command}}", command).replace("{{inside}}", insideFile).replace("{{outside}}", outsideFile);
 }
 
+/** T-538 signed-in note section 2: why a fresh Claude run is refused at every T-538 entry. */
+export const FRESH_CLAUDE_NOT_ADMITTED = "a fresh claude run is not admitted: it needs a separate owner ruling and a reviewed manifest change";
+
+/** The one `--isolation` value on a command line, or null when absent; a repeated flag or an unknown value is refused. */
+export function isolationFlag(argv: readonly string[]): "fresh" | "signed-in" | null {
+  if (argv.some((a) => a.startsWith("--isolation="))) throw new Error("--isolation takes its value as the next argument, not --isolation=<value>; refusing");
+  const at = argv.flatMap((a, i) => (a === "--isolation" ? [i] : []));
+  if (at.length > 1) throw new Error("--isolation is given more than once; refusing");
+  if (at.length === 0) return null;
+  const v = argv[at[0]! + 1];
+  if (v !== "fresh" && v !== "signed-in") throw new Error(`--isolation must be fresh or signed-in, not ${JSON.stringify(v ?? null)}`);
+  return v;
+}
+
+/**
+ * The one admission a fresh Claude run can carry: a test stand-in's. No CLI entry passes it, and nothing under
+ * scripts/ or src/ constructs it (a test row greps for the value); only the wrapper under test/ does. It never
+ * admits signed-in.
+ */
+export interface StandInAdmission { readonly kind: "fresh-claude-stand-in" }
+
+/** The admission rule: a claude run is refused whatever its isolation; codex runs fresh only. Null admits. */
+export function admissionRefusal(client: string, isolation: "fresh" | "signed-in" | null, who: string, admission?: StandInAdmission): string | null {
+  if (client === "claude" && isolation !== "signed-in" && admission?.kind === "fresh-claude-stand-in") return null;
+  if (client === "claude") return isolation === "signed-in" ? unconditionalSignedInRefusal(who) : `${who}: ${FRESH_CLAUDE_NOT_ADMITTED}`;
+  if (isolation === "signed-in") return `${who}: signed-in isolation is the claude arm's; codex runs fresh only`;
+  return null;
+}
+
 /** `--probe-turn --ack <file> --prompt-file <file>`: refused unless the owner's ack exists and the prompt is the pinned template. */
-export function probeTurnArgs(argv: readonly string[], client: string, variant: string): { readonly ack: string; readonly promptFile: string } {
+export function probeTurnArgs(argv: readonly string[], client: string, variant: string, admission?: StandInAdmission): { readonly ack: string; readonly promptFile: string } {
   const get = (k: string): string | undefined => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : undefined; };
+  // T-538 signed-in note section 2: the probe turn applies the admission rule on its own, before any other check.
+  const refused = admissionRefusal(client, isolationFlag(argv), "--probe-turn", admission);
+  if (refused !== null) throw new Error(refused);
   if (client !== "claude") throw new Error("--probe-turn is the Claude arm's probe turn; --client must be claude");
   if (variant !== "none") throw new Error("--probe-turn takes no --variant");
   const ack = get("ack");

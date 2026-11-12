@@ -119,6 +119,14 @@ export function checkedProvenance(p: unknown): SignedInProvenance {
   return p as SignedInProvenance;
 }
 
+/**
+ * T-538 signed-in note section 2: the refusal every T-538 entry point gives a signed-in request. It names no ack,
+ * because none admits one; it is unconditional until every gate in the shared list is cleared by a reviewed change.
+ */
+export function unconditionalSignedInRefusal(who: string): string {
+  return `${who}: signed-in isolation refuses to spawn any process: missing gates: ${SIGNED_IN_MISSING_GATES.join("; ")}`;
+}
+
 /** The refusal a signed-in launch gets: without the ack it names the ack, with it the missing gates. Null never, for now. */
 export function signedInSpawnRefusal(liveAck: string | undefined): string {
   if (liveAck === undefined || liveAck === "") return `continuity-run: signed-in isolation needs --live-ack <ruling id> (${SIGNED_IN_RULING}) before any live launch; refusing`;

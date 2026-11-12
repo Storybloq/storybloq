@@ -43,6 +43,9 @@ const verdict = (r: Buffer | null, o: { exists?: (p: string) => boolean; seen?: 
   return probeVerdict({ report: r, nonce: NONCE, plan: p, exists: o.exists ?? insideOnly(p), listenerConnections: o.seen ?? 0 });
 };
 
+/** T-538 S0 (pen ruling G1): the probe turn admits a fresh Claude run only with a stand-in admission, which only test code passes. */
+const STAND_IN = { kind: "fresh-claude-stand-in" } as const;
+
 describe("8 step 3: the pass rule", () => {
   it("a full correct report passes", () => {
     expect(verdict(report(goodOps(plan())))).toEqual([]);
@@ -159,11 +162,11 @@ describe("8 step 3: the two arms with sentinel clients", () => {
     writeFileSync(join(d, "prompt.txt"), PROBE_PROMPT_TEMPLATE);
     writeFileSync(join(d, "other.txt"), `${PROBE_PROMPT_TEMPLATE}Also list the home folder.\n`);
     const argv = (ack: string, prompt: string) => ["--probe-turn", "--ack", join(d, ack), "--prompt-file", join(d, prompt)];
-    expect(probeTurnArgs(argv("ack", "prompt.txt"), "claude", "none")).toEqual({ ack: join(d, "ack"), promptFile: join(d, "prompt.txt") });
-    expect(() => probeTurnArgs(argv("no-ack", "prompt.txt"), "claude", "none")).toThrow(/owner's recorded ack/);
-    expect(() => probeTurnArgs(argv("ack", "other.txt"), "claude", "none")).toThrow(/not the pinned probe prompt/);
-    expect(() => probeTurnArgs(argv("ack", "prompt.txt"), "codex", "none")).toThrow(/--client must be claude/);
-    expect(() => probeTurnArgs(argv("ack", "prompt.txt"), "claude", "restart")).toThrow(/takes no --variant/);
+    expect(probeTurnArgs(argv("ack", "prompt.txt"), "claude", "none", STAND_IN)).toEqual({ ack: join(d, "ack"), promptFile: join(d, "prompt.txt") });
+    expect(() => probeTurnArgs(argv("no-ack", "prompt.txt"), "claude", "none", STAND_IN)).toThrow(/owner's recorded ack/);
+    expect(() => probeTurnArgs(argv("ack", "other.txt"), "claude", "none", STAND_IN)).toThrow(/not the pinned probe prompt/);
+    expect(() => probeTurnArgs(argv("ack", "prompt.txt"), "codex", "none", STAND_IN)).toThrow(/--client must be claude/);
+    expect(() => probeTurnArgs(argv("ack", "prompt.txt"), "claude", "restart", STAND_IN)).toThrow(/takes no --variant/);
     const p = claudeProbePrompt("'/n' '/p/probe.mjs' abc", "/r/in.txt", "/o/out.txt");
     expect(p).toContain("Run exactly this command with the Bash tool: '/n' '/p/probe.mjs' abc\n");
     expect(p).not.toContain("{{");

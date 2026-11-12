@@ -30,6 +30,7 @@ import { scanForCredentials } from "./onboarding-eval-review.js";
 import { evalInputDigest } from "./build-eval.mjs";
 import type { RunnerResult } from "./onboarding-eval-runner-result.js";
 import { claudeProbe, codexProbe, PROBE_PROMPT_TEMPLATE, PROBE_SHA256, type ProbeTargets, type ProbeTurnResult } from "./onboarding-eval-probe.js";
+import { unconditionalSignedInRefusal } from "./continuity-signed-in.js";
 
 const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).digest("hex");
 
@@ -39,7 +40,9 @@ const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).di
 export type Arm = "codex" | "claude";
 export const ARMS: readonly Arm[] = ["codex", "claude"];
 export interface Cell { readonly id: string; readonly case: string; readonly fixture: string; readonly variant: string; readonly checkSet: number; readonly schedule?: string; readonly gateAfter?: boolean }
-export interface ClientPin { readonly version: string; readonly model: string; readonly judgeModel: string }
+/** T-538 signed-in note section 2: the codex arm runs fresh; the claude arm is pinned signed-in, and both of its forms are refused for now. */
+export type Isolation = "fresh" | "signed-in";
+export interface ClientPin { readonly version: string; readonly model: string; readonly judgeModel: string; readonly isolation: Isolation }
 export interface Manifest {
   readonly id: string; readonly commit: string; readonly evalBundleDigest: string; readonly toolListSha256: string; readonly probeSha256: string;
   readonly clients: Readonly<Record<Arm, ClientPin>>;
@@ -54,7 +57,7 @@ const isStr = (v: unknown): v is string => typeof v === "string" && v.length > 0
 const isPosInt = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0;
 
 /** Parses and checks the manifest's shape; throws naming the first problem. */
-export function parseManifest(bytes: Buffer | string): Manifest {
+export function parseManifest(bytes: Buffer | string, o: { readonly requireIsolation?: boolean } = {}): Manifest {
   let m: Record<string, unknown>;
   try { m = JSON.parse(bytes.toString()) as Record<string, unknown>; } catch (e) { throw new Error(`the manifest is not JSON: ${(e as Error).message}`); }
   const bad = (what: string): never => { throw new Error(`the manifest ${what}`); };
@@ -65,6 +68,12 @@ export function parseManifest(bytes: Buffer | string): Manifest {
   for (const a of ARMS) {
     const c = clients?.[a];
     if (!c || !isStr(c.version) || !isStr(c.model) || !isStr(c.judgeModel)) bad(`clients.${a} needs version, model and judgeModel`);
+  }
+  // Section 2: a manifest from before the isolation pin is historical fresh; its bytes and digest are not touched.
+  for (const a of ARMS) {
+    const iso = clients![a]!.isolation;
+    if (iso === undefined && o.requireIsolation === true) bad(`clients.${a}.isolation is missing; a new manifest pins it`);
+    if (iso !== undefined && iso !== "fresh" && !(a === "claude" && iso === "signed-in")) bad(`clients.${a}.isolation is ${JSON.stringify(iso)}, not ${a === "codex" ? "fresh" : "fresh or signed-in"}`);
   }
   const l = m.limits as Record<string, unknown> | undefined;
   if (!l || !isPosInt(l.turnMs) || !isPosInt(l.attemptMs) || !isPosInt(l.armMs)) bad("limits need turnMs, attemptMs and armMs");
@@ -78,7 +87,8 @@ export function parseManifest(bytes: Buffer | string): Manifest {
     if (c.schedule !== undefined && !isStr(c.schedule)) bad(`cell ${c.id} schedule is not text`);
     if (c.gateAfter !== undefined && typeof c.gateAfter !== "boolean") bad(`cell ${c.id} gateAfter is not true or false`);
   }
-  return m as unknown as Manifest;
+  const pinned = Object.fromEntries(ARMS.map((a) => [a, { ...clients![a]!, isolation: clients![a]!.isolation ?? "fresh" }]));
+  return { ...(m as unknown as Manifest), clients: pinned as unknown as Manifest["clients"] };
 }
 
 /** What preflight needs from git, run in the package folder. */
@@ -154,10 +164,10 @@ export const MATRIX_CELLS: readonly Cell[] = [
 export function generateManifest(o: { readonly id: string; readonly commit: string; readonly evalBundleDigest: string; readonly toolListSha256: string; readonly probeSha256: string; readonly codexVersion: string; readonly claudeVersion: string }): Manifest {
   return parseManifest(JSON.stringify({
     id: o.id, commit: o.commit, evalBundleDigest: o.evalBundleDigest, toolListSha256: o.toolListSha256, probeSha256: o.probeSha256,
-    clients: { codex: { version: o.codexVersion, model: "gpt-6-astra", judgeModel: "gpt-6-astra" }, claude: { version: o.claudeVersion, model: "opus", judgeModel: "gpt-6-astra" } },
+    clients: { codex: { version: o.codexVersion, model: "gpt-6-astra", judgeModel: "gpt-6-astra", isolation: "fresh" }, claude: { version: o.claudeVersion, model: "opus", judgeModel: "gpt-6-astra", isolation: "signed-in" } },
     limits: { turnMs: 40 * 60_000, attemptMs: 210 * 60_000, armMs: 10 * 3_600_000 },
     cells: MATRIX_CELLS,
-  }));
+  }), { requireIsolation: true });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -711,6 +721,10 @@ export async function cli(argv: readonly string[], deps: { pkg: string; now: () 
   const root = flagValue(argv, "root");
   const arm = flagValue(argv, "arm") as Arm | undefined;
   if (!root) throw new Error("--root <driver dir> is required");
+  // T-538 signed-in note section 2: a claude arm run is refused before the root is created, git, preflight or any
+  // spawn. Its pinned isolation is signed-in, refused on the shared gates, and a fresh claude arm is not admitted.
+  const bookkeeping = ["--unlock", "--close", "--results", "--replace", "--ack"].some((f) => argv.includes(f));
+  if (!bookkeeping && arm === "claude") throw new Error(`preflight refused: ${CLAUDE_ARM_REFUSAL}`);
   mkdirDurable(root);
   if (argv.includes("--unlock")) { unlock(root, need("reason"), deps.alive, deps.now()); deps.out("unlocked\n"); return 0; }
   if (argv.includes("--close")) { closeAttempt(root, need("close"), need("ruling"), deps.now()); deps.out("closed\n"); return 0; }
@@ -981,8 +995,25 @@ export interface PreflightProbe {
   readonly capabilityProbe?: (arm: Arm) => Promise<readonly string[]>;
 }
 
+/** T-538 signed-in note section 2: why every claude arm run is refused, whichever isolation its manifest pins. */
+export const CLAUDE_ARM_REFUSAL = `the claude arm is refused: ${unconditionalSignedInRefusal("its pinned signed-in isolation")}; a fresh claude arm is not admitted without a separate owner ruling and a reviewed manifest change`;
+
+/** The manifest's isolation for one arm, checked before anything is probed or spawned. */
+export function armIsolationProblems(m: Manifest, arm: Arm): string[] {
+  const iso = m.clients[arm].isolation;
+  if (arm === "codex") return iso === "fresh" ? [] : [`the codex arm runs fresh only; the manifest pins ${JSON.stringify(iso)}`];
+  if (iso === "signed-in") return [unconditionalSignedInRefusal("the claude arm's pinned signed-in isolation")];
+  return ["the claude arm's fresh isolation is not admitted: it needs a separate owner ruling and a reviewed manifest change"];
+}
+
 /** Every 7.2 check after the checkout's; returns the problems, and records the counts in `<root>/preflight.json`. */
 export async function preflightProblems(m: Manifest, root: string, arm: Arm, p: PreflightProbe, now: number): Promise<string[]> {
+  // Section 2: the isolation refusal comes first, and returns before any probe can spawn a process.
+  const refused = armIsolationProblems(m, arm);
+  if (refused.length > 0) {
+    writeJournal(root, "preflight.json", { at: now, arm, counts: null, problems: refused });
+    return refused;
+  }
   const out: string[] = [];
   for (const a of ARMS) {
     const v = p.version(a);

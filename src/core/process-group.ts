@@ -294,6 +294,24 @@ function probeGroup(pgid: number): "gone" | "alive" | string {
   }
 }
 
+/**
+ * T-538 commit 4: a group known only by its recorded id, with no child handle (the eval driver's sweep of the
+ * groups a runner recorded, and its recovery after a restart). `signal` 0 is the probe; any other signal is the
+ * raw group send. Both go through processGroupSeams. Throws what kill throws (ESRCH: the group is gone). The id
+ * must be a real group id: 0, 1 and anything not an integer above 1 are refused, never sent.
+ */
+export function signalRecordedGroup(pgid: number, signal: NodeJS.Signals | 0): void {
+  if (!Number.isInteger(pgid) || pgid <= 1) throw new Error(`not a recorded process group id: ${pgid}`);
+  if (signal === 0) processGroupSeams.probe(pgid);
+  else processGroupSeams.send(pgid, signal);
+}
+
+/** T-538 commit 4: whether a recorded group may still exist: false only on ESRCH; EPERM and any other answer count as alive. */
+export function recordedGroupAlive(pgid: number): boolean {
+  if (!Number.isInteger(pgid) || pgid <= 1) throw new Error(`not a recorded process group id: ${pgid}`);
+  return probeGroup(pgid) !== "gone";
+}
+
 export interface GroupRunOptions {
   readonly command: string;
   readonly args: readonly string[];

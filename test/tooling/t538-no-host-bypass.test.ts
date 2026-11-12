@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { CLAUDE_BYPASS, claudeTurnArgs, type ClaudeExpected } from "../../scripts/headless-policy.js";
 import { claudeToolSets, TOOL_SETS_FILE, turnInfraFailure, type TurnFailureFacts } from "../../scripts/onboarding-eval-run.js";
 import { envFor, NO_SANDBOXED_SERVER, processOutcome } from "../../scripts/onboarding-eval-host.js";
+import { claudeProbe, claudeProbeVerdict, PROBE_PROMPT_TEMPLATE, type ProbeTurnResult } from "../../scripts/onboarding-eval-probe.js";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TSX = join(PKG, "node_modules", "tsx", "dist", "cli.mjs");
@@ -359,6 +360,8 @@ interface ClaudeOpts {
   readonly server?: boolean;
   /** F2: where the wrapper stand-in appends its environment's names for each server launch. */
   readonly envNames?: string;
+  /** T-538 commit 4: the stand-in plays the probe turn, with this fault ("good" for none); the runner writes <dir>/result.json. */
+  readonly probe?: string;
 }
 
 /** Runs the runner's real entry for --client claude with the stand-in on PATH; `then` reads the results before cleanup. */
@@ -368,7 +371,7 @@ async function withClaude<T>(opts: ClaudeOpts, then: (r: ClaudeRun) => T): Promi
     const bin = join(dir, "bin");
     mkdirSync(bin);
     const sets = opts.sets === undefined ? { degraded: DEGRADED, full: FULL } : opts.sets;
-    const config = { log: join(dir, "sentinel.log"), sets: opts.answerSets ?? sets ?? { degraded: DEGRADED, full: FULL }, text: PACKAGE, mark: MARK, mutate: opts.mutate ?? null, tamper: opts.tamper ?? null, split: opts.split ?? null, early: opts.early ?? false, noInit: opts.noInit ?? false, server: opts.server ?? true };
+    const config = { log: join(dir, "sentinel.log"), sets: opts.answerSets ?? sets ?? { degraded: DEGRADED, full: FULL }, text: PACKAGE, mark: MARK, mutate: opts.mutate ?? null, tamper: opts.tamper ?? null, split: opts.split ?? null, early: opts.early ?? false, noInit: opts.noInit ?? false, server: opts.server ?? true, probe: opts.probe ?? null };
     writeFileSync(join(bin, "claude"), `#!${process.execPath}\nrequire(${JSON.stringify(CLAUDE_SENTINEL)}).main(${JSON.stringify(config)});\n`, { mode: 0o755 });
     // The tool server's wrapper (5.2): the stand-in, so these rows need no real codex.
     writeFileSync(join(bin, "codex"), `#!${process.execPath}\n${sentinel({ log: join(dir, "codex.log"), text: "", ...(opts.envNames ? { envNames: opts.envNames } : {}) })}`, { mode: 0o755 });
@@ -381,7 +384,7 @@ async function withClaude<T>(opts: ClaudeOpts, then: (r: ClaudeRun) => T): Promi
     if (sets !== null) writeFileSync(setsFile, JSON.stringify(sets));
     const env: NodeJS.ProcessEnv = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, HOME: home, TMPDIR: dir, CODEX_HOME: codexHome, CLAUDE_CODE_OAUTH_TOKEN: "placeholder-not-a-token" };
     const args = [TSX, RUNNER, "--client", "claude", "--fixture", opts.fixture ?? "empty-idea", "--variant", opts.variant ?? "none", "--out", join(dir, "out"), "--raw-out", join(dir, "raw"), "--attempt-base", join(dir, "att"),
-      ...(sets !== null ? ["--tool-sets", setsFile] : []), ...(opts.extra ?? [])];
+      ...(sets !== null ? ["--tool-sets", setsFile] : []), ...(opts.extra ?? []), ...(opts.probe ? ["--result", join(dir, "result.json")] : [])];
     // Asynchronous, so the test worker keeps answering vitest while the runner works.
     const r = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
       const child = spawn(process.execPath, args, { cwd: PKG, env, stdio: ["ignore", "pipe", "pipe"], timeout: 280_000 });
@@ -753,5 +756,78 @@ describe("F2: the tool server gets exactly the server column", () => {
         for (const n of [...CLIENT_ONLY, "STORYBLOQ_EVAL_FAULT"]) expect(names).not.toContain(n);
       }
     } finally { rmSync(side, { recursive: true, force: true }); }
+  }, 300_000);
+});
+
+describe("T-538 commit 4 (section 8 step 3): the Claude arm's probe turn through the runner", () => {
+  const files = (): string => {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), "t538pt-")));
+    writeFileSync(join(d, "ack"), "owner ack");
+    writeFileSync(join(d, "prompt.txt"), PROBE_PROMPT_TEMPLATE);
+    writeFileSync(join(d, "other.txt"), `${PROBE_PROMPT_TEMPLATE}Also list the home folder.\n`);
+    return d;
+  };
+  const probeArgs = (d: string, o: { ack?: boolean; prompt?: string } = {}): string[] => ["--probe-turn", "--ack", join(d, o.ack === false ? "no-ack" : "ack"), "--prompt-file", join(d, o.prompt ?? "prompt.txt")];
+  const resultOf = (r: ClaudeRun): ProbeTurnResult & { stage?: string } | null => (existsSync(join(r.dir, "result.json")) ? JSON.parse(readFileSync(join(r.dir, "result.json"), "utf-8")) as ProbeTurnResult & { stage?: string } : null);
+
+  it.each([
+    ["without the owner's ack", { ack: false }, /needs the owner's recorded ack/],
+    ["with a prompt that is not the pinned one", { prompt: "other.txt" }, /not the pinned probe prompt/],
+  ] as const)("the mode refuses %s, before any client starts", async (_n, o, re) => {
+    const d = files();
+    try {
+      await withClaude({ probe: "good", extra: probeArgs(d, o) }, (r) => {
+        const res = resultOf(r);
+        expect(res, r.output).toMatchObject({ ok: false, stage: "args" });
+        expect((res as { message: string }).message).toMatch(re);
+        expect(argvsOf(r)).toHaveLength(0);
+      });
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }, 300_000);
+
+  it("a correct stream passes: one turn, its facts in the runner result, the rule empty", async () => {
+    const d = files();
+    try {
+      await withClaude({ probe: "good", extra: probeArgs(d) }, async (r) => {
+        const res = resultOf(r);
+        expect(res, r.output).toMatchObject({ ok: true });
+        expect(argvsOf(r)).toHaveLength(1);
+        expect(usersOf(r)).toHaveLength(1);
+        const facts = (res as { probe: Parameters<typeof claudeProbeVerdict>[0] }).probe;
+        expect(facts.toolCalls).toEqual([{ name: "Bash", target: facts.command }, { name: "Write", target: facts.insideFile }, { name: "Write", target: facts.outsideFile }]);
+        expect(claudeProbeVerdict(facts)).toEqual([]);
+        expect(await claudeProbe({ ackPath: join(d, "ack"), runTurn: async () => res })).toEqual([]);
+      });
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }, 300_000);
+
+  it.each([
+    ["two-bash", /1 other tool call\(s\): Bash "ls"/],
+    ["extra-write", /1 other tool call\(s\): Write ".*probe-[0-9a-f]{24}\.json"/],
+    ["no-denial", /do not name the outside Write/],
+    ["no-inside", /inside Write file is not on the host/],
+    ["outside-written", /outside Write file is on the host/],
+    ["no-report", /no report/],
+    ["inside-program", /write:root:0 reported ok but its file is not on the host/],
+  ] as const)("the stand-in's %s on its own fails the probe", async (fault, re) => {
+    const d = files();
+    try {
+      await withClaude({ probe: fault, extra: probeArgs(d) }, async (r) => {
+        const res = resultOf(r);
+        expect(res, r.output).toMatchObject({ ok: true });
+        expect((await claudeProbe({ ackPath: join(d, "ack"), runTurn: async () => res })).join("\n")).toMatch(re);
+      });
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  }, 300_000);
+
+  it("a turn failing an ordinary turn check fails the probe", async () => {
+    const d = files();
+    try {
+      await withClaude({ probe: "good", mutate: { sub: "get_sandbox_dialog", how: "error" }, extra: probeArgs(d) }, async (r) => {
+        const res = resultOf(r);
+        expect(res, r.output).not.toBeNull();
+        expect((await claudeProbe({ ackPath: join(d, "ack"), runTurn: async () => res })).join("\n")).toMatch(/ordinary turn check: launch/);
+      });
+    } finally { rmSync(d, { recursive: true, force: true }); }
   }, 300_000);
 });

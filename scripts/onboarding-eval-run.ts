@@ -58,7 +58,10 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
-import { runInGroup, type GroupControl } from "../src/core/process-group.js";
+import { newProgress, resultPathOf, withRunnerResult } from "./onboarding-eval-runner-result.js";
+import { probeTurnArgs, runProbeTurn } from "./onboarding-eval-probe.js";
+import { type GroupControl } from "../src/core/process-group.js";
+import { runInGroup } from "./onboarding-eval-groups.js";
 import {
   codexApprovalProblems, codexApprovalTables, envFor, envKeyProblems, HOST_CHECKS_RAW, hostChecksText, launchHeld, leftoverCheck, processOutcome, serverLaunchFailure, serverLaunchLines,
   sandboxedRun, serverLaunch, TURN_LIMITS, writeServerLauncher, type SandboxedRun, TurnCapture, type AttemptCapture, type EnvInputs, type LeftoverCheck, type ProcessOutcome, type TurnHostChecks,
@@ -125,6 +128,8 @@ interface Options {
   readonly readbackTimeoutMs: number;
   /** 5.6: the folder each attempt tree is made in; the per-user temp folder unless a test names another. */
   readonly attemptBase: string;
+  /** T-538 commit 4 (section 8 step 3): the Claude arm's probe turn, behind the owner's ack and the pinned prompt; null for a cell run. */
+  readonly probeTurn: { readonly ack: string; readonly promptFile: string } | null;
 }
 
 /** Plan 5.4's pinned inventory: the degraded and full lists, and the withheld names with their reasons. */
@@ -173,6 +178,7 @@ function parseArgs(argv: readonly string[]): Options {
     toolSets: get("tool-sets") === undefined ? null : resolve(get("tool-sets")!),
     readbackTimeoutMs: Number(get("readback-timeout-ms", String(READBACK_TIMEOUT_MS))),
     attemptBase: resolve(get("attempt-base") ?? attemptBase()),
+    probeTurn: argv.includes("--probe-turn") ? probeTurnArgs(argv, client, variant) : null,
   };
 }
 
@@ -811,6 +817,8 @@ interface TurnResult {
   readonly readback: { readonly steps: readonly ReadbackStep[]; readonly mcpTools: readonly string[]; readonly permissionDenials: unknown } | null;
   /** 5.1 and 5.2: what the host saw around the turn, a replay input once the main loop names its file. */
   readonly host: Omit<TurnHostChecks, "file">;
+  /** Whether the turn's process group (and its review worker's) was confirmed gone; the probe reads nothing otherwise. */
+  readonly cleanup: "confirmed" | "unconfirmed";
 }
 
 /** A Claude run's launch files and the expectations each turn is checked against. */
@@ -1046,7 +1054,13 @@ async function runClientTurn(o: Options, ctx: TurnCtx, prompt: string): Promise<
   }
   ctx.first = false;
   const infraFailure = turnInfraFailure(facts(turn, launch));
-  return { turn, raw, stderr, exitCode: r.exitCode, infraFailure, readback, host: { launches, servers, leftover: { status: leftover.status, reason: leftover.reason }, limit: capture.exceeded, review: reviewEnd?.failure ?? null } };
+  const ended = facts(turn, launch);
+  // T-538 commit 4 (7.3): every turn's findings reach the runner result, whatever the run does after it.
+  // T-538 commit 4 round 2 (T5): the cleanup finding is the group's end AND the leftover check. A leftover or a
+  // failed leftover check is an unconfirmed cleanup with its reason, whatever else ended the turn.
+  const { cleanup, cleanupDetail } = turnCleanup(ended, leftover);
+  progress.turns.push({ turn: progress.turns.length + 1, infraFailure, cleanup, cleanupDetail });
+  return { turn, raw, stderr, exitCode: r.exitCode, infraFailure, readback, cleanup, host: { launches, servers, leftover: { status: leftover.status, reason: leftover.reason }, limit: capture.exceeded, review: reviewEnd?.failure ?? null } };
 }
 
 /** The collector's copy of the events log's folder, and the log's path in it (5.8). */
@@ -1068,6 +1082,17 @@ function readFrom(file: string, offset: number): string {
   const fd = openSync(file, "r");
   try { readSync(fd, buf, 0, buf.length, offset); } finally { closeSync(fd); }
   return buf.toString("utf-8");
+}
+
+/**
+ * T-538 commit 4 round 2 (T5): a turn's cleanup finding. Confirmed only when the group's end is confirmed AND the
+ * leftover check is clean; a leftover or a failed leftover check is unconfirmed with its reason, whatever else
+ * (a timeout, an exit) ended the turn.
+ */
+export function turnCleanup(ended: { readonly cleanup: "confirmed" | "unconfirmed"; readonly cleanupDetail?: string | null }, leftover: { readonly status: string; readonly reason: string | null }): { readonly cleanup: "confirmed" | "unconfirmed"; readonly cleanupDetail: string | null } {
+  const dirty = leftover.status !== "clean";
+  const parts = [ended.cleanup === "confirmed" ? null : ended.cleanupDetail ?? "the turn's process group was not confirmed gone", dirty ? `leftover check ${leftover.status}: ${leftover.reason}` : null].filter((x): x is string => x !== null);
+  return { cleanup: ended.cleanup === "confirmed" && !dirty ? "confirmed" : "unconfirmed", cleanupDetail: parts.length === 0 ? null : parts.join("; ") };
 }
 
 /** What decides a turn's infrastructure failure: the group's result, the launch check, the limits, the parsed terminal and the leftover check. */
@@ -1141,8 +1166,13 @@ export function diskReader(story: string): StoryReader {
   };
 }
 
+/** T-538 commit 4 (7.3): where this process has got to, for its `--result` file. */
+const progress = newProgress("args");
+
 async function main(): Promise<void> {
+  progress.stage = "args";
   const o = parseArgs(process.argv.slice(2));
+  progress.stage = "preflight";
   // T-538 5.4: every run needs the pinned tool inventory before anything is built or spawned.
   const toolSetsFile = o.toolSets ?? TOOL_SETS_FILE;
   const toolSets = claudeToolSets(o.toolSets);
@@ -1171,6 +1201,8 @@ async function main(): Promise<void> {
   const firstPrompt = firstPromptFor(o.client, readFileSync(join(fixtureDir, "opening-prompt.txt"), "utf-8"));
 
   const runId = `${o.client}-${o.fixture}-${o.variant}-${new Date().toISOString().replace(/[:.]/g, "")}`;
+  progress.stage = "provision";
+  progress.runId = runId;
   // 5.6: the attempt tree lives under the per-user temp folder, by its canonical path, with no ancestor a client loads from.
   mkdirSync(o.attemptBase, { recursive: true, mode: 0o700 });
   const work = realpathSync(mkdtempSync(join(o.attemptBase, "a-")));
@@ -1181,6 +1213,7 @@ async function main(): Promise<void> {
   const dependencyInstalls = installFixtureDependencies(project, join(work, "npm-provision"), join(FIXTURES, o.fixture, "lockfiles"));
   const rawDir = join(o.rawOut, runId);
   mkdirSync(rawDir, { recursive: true });
+  progress.rawDir = rawDir;
 
   // The real Codex auth is located before anything else; nothing else of the real homes is used.
   const realCodexAuth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
@@ -1351,6 +1384,7 @@ async function main(): Promise<void> {
   const readbacks: { readonly path: string; readonly sha256: string; readonly mcpTools: readonly string[] }[] = [];
   const state = newDriveState(CHECK_SET_VERSION);
   let turnNo = 0;
+  progress.stage = "turns";
   // The owner's side of the conversation; each step spawns one turn and records its raw output.
   // T-538 S5a: the session variants' later sessions and what the harness does and sees around them.
   const session = isSessionVariant(o.variant) ? o.variant : null;
@@ -1457,6 +1491,23 @@ async function main(): Promise<void> {
     if (isDemoVariant(session) && n >= 2) observations.push(...await collector.observe(project, { kind: "turn", index: state.turns.length }));
     if (session === "milestone-states" && n >= 2) await captureState(label);
   };
+  // T-538 commit 4 (section 8 step 3): the Claude arm's probe turn. One fixed prompt under the policy and readback
+  // of any turn, in this provisioned attempt; its facts go to the runner result and the driver applies the rule.
+  if (o.probeTurn !== null) {
+    const facts = await runProbeTurn({
+      node: process.execPath,
+      targets: { roots: claudeRoots, outsideProbe, home, tmp: "/tmp", canary: join(work, "canary"), reportDir: dirname(eventsFile), probeDir: join(work, "probe"), insideDir: project },
+      turn: async (prompt) => {
+        const r = await runClientTurn(o, ctx, prompt);
+        writeFileSync(join(rawDir, "turn-01-probe.jsonl"), r.raw);
+        writeFileSync(join(rawDir, "turn-01-probe.stderr.txt"), r.stderr);
+        return { raw: r.raw, infraFailure: r.infraFailure, permissionDenials: r.readback?.permissionDenials ?? null, cleanup: r.cleanup };
+      },
+    });
+    progress.probe = { ...facts, turnProblems: [...facts.turnProblems, ...canaryProblems(canary)] };
+    process.exitCode = 0;
+    return;
+  }
   const flow = driveFlow({ variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion, ...(later !== undefined ? { later } : {}) }, state);
   for (let step = flow.next(); !step.done;) {
     const request = step.value;
@@ -1489,6 +1540,7 @@ async function main(): Promise<void> {
     });
   }
   // 5.8: the evidence as the collector copied it after the last turn and the harness's own steps.
+  progress.stage = "collect";
   const storeCopy = await collector.copy("store", setupReviewStore);
   const eventsCopy = await collectedEvents(collector, eventsFile);
   const storyCopy = await collector.copy("ledger", join(project, ".story"));
@@ -1601,9 +1653,11 @@ async function main(): Promise<void> {
   });
   const verdict = runVerdict(failures, packetText, null, semanticLines, bound);
   const recordDir = join(o.out, runId);
+  progress.recordDir = recordDir;
   mkdirSync(recordDir, { recursive: true });
   // F13: the judge refuses this record while the marker stands; only a clean scan below removes it.
   writeFileSync(join(recordDir, SCAN_PENDING_FILE), `${JSON.stringify({ pending: "the 5.9 scan has not cleared this record" })}\n`, { flag: "wx" });
+  progress.stage = "record";
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify({
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model, checkSetVersion: CHECK_SET_VERSION,
     // T-538 commit 1 (plan 6.4): this route's record; the regrade re-runs each readback against claudeLaunch.
@@ -1636,8 +1690,10 @@ async function main(): Promise<void> {
   for (const p of archived.problems) process.stderr.write(`archive: ${p}\n`);
   // 5.9: nothing reaches a model unscanned. The record, the packet and every raw input are scanned before the
   // judge can be handed the packet; a hit, an unreadable file or an oversize packet makes the attempt invalid.
+  progress.stage = "scan";
   await scanAndClear(collector, recordDir, rawDir, Buffer.byteLength(packetText, "utf-8"), envInputs.oauthToken !== undefined ? [envInputs.oauthToken] : []);
   process.stdout.write(`${runId} ${verdict.verdict}\n${verdict.reasons.map((f) => `  - ${f}`).join("\n")}\n`);
+  progress.verdict = verdict.verdict;
   // 0 only for a full PASS, which needs --finalize with a judge result; mechanical success alone is 3 (pending).
   process.exitCode = verdict.verdict === "FAIL" ? 1 : verdict.verdict === "PENDING_SEMANTIC" ? 3 : 0;
 }
@@ -1789,6 +1845,7 @@ export function finalizeRecord(
 
 /** `--finalize <recordDir> --judge <judge.json>`. Throws, writing nothing, when the record and packet do not belong together. */
 export async function finalize(argv: readonly string[]): Promise<void> {
+  progress.stage = "finalize";
   const at = (k: string): string | undefined => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : undefined; };
   const recordDir = at("finalize"); const judgePath = at("judge");
   if (!recordDir || !judgePath) throw new Error("--finalize <recordDir> --judge <judge.json>");
@@ -1798,6 +1855,9 @@ export async function finalize(argv: readonly string[]): Promise<void> {
   const r = finalizeRecord(record, packetText, judge);
   if (!r.ok) throw new Error(`onboarding-eval: finalize refused for ${recordDir}: ${r.reason}`);
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify(r.record, null, 2));
+  progress.recordDir = recordDir;
+  progress.runId = String(record.runId);
+  progress.verdict = r.verdict.verdict;
   process.stdout.write(`${String(record.runId)} ${r.verdict.verdict}\n${r.verdict.reasons.map((f) => `  - ${f}`).join("\n")}\n`);
   process.exitCode = r.verdict.verdict === "PASS" ? 0 : r.verdict.verdict === "FAIL" ? 1 : 3;
 }
@@ -1868,6 +1928,7 @@ export async function withRecomputedStates(input: RegradeInput, rawDir: string):
  * on a refusal, 1 on FAIL, 3 while the judge is still owed, 0 on PASS.
  */
 export async function regradeCli(argv: readonly string[]): Promise<void> {
+  progress.stage = "regrade";
   const at = (k: string): string | undefined => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : undefined; };
   const recordDir = at("regrade"); const rawDir = at("raw"); const judgePath = at("judge");
   if (!recordDir || !rawDir) throw new Error("--regrade <recordDir> --raw <rawDir> [--judge <judge.json>]");
@@ -1876,13 +1937,23 @@ export async function regradeCli(argv: readonly string[]): Promise<void> {
   if (!r.ok) {
     process.stderr.write(`onboarding-eval: regrade refused for ${recordDir}: ${r.reason}\n`);
     process.exitCode = 2;
+    progress.refusal = `regrade refused for ${recordDir}: ${r.reason}`;
     return;
   }
   const v = r.run.revision;
+  progress.recordDir = recordDir;
+  progress.verdict = v.verdict;
   process.stdout.write(`${r.run.written} revision ${v.revision} ${v.status} ${v.verdict}\n  guarantee: ${v.guarantee}\n  limitation: ${v.limitation}\n${v.reasons.map((f) => `  - ${f}`).join("\n")}\n${v.candidates.map((c) => `  ? ${JSON.stringify(c)}`).join("\n")}\n`);
   process.exitCode = v.verdict === "PASS" ? 0 : v.verdict === "FAIL" ? 1 : 3;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  (process.argv.includes("--regrade") ? Promise.resolve().then(() => regradeCli(process.argv.slice(2))) : process.argv.includes("--finalize") ? finalize(process.argv.slice(2)) : main()).catch((err: unknown) => { process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`); process.exitCode = 2; });
+  // T-538 commit 4 (7.3): every terminal path, a thrown error included, ends in the `--result` file when one is asked for.
+  const argv = process.argv.slice(2);
+  const mode = argv.includes("--regrade") ? "regrade" : argv.includes("--finalize") ? "finalize" : "run";
+  let resultPath: string | null = null;
+  try { resultPath = resultPathOf(argv); } catch (err) { process.stderr.write(`${(err as Error).message}\n`); process.exitCode = 2; }
+  if (process.exitCode !== 2) {
+    void withRunnerResult(resultPath, mode, progress, () => (mode === "regrade" ? regradeCli(argv) : mode === "finalize" ? finalize(argv) : main()));
+  }
 }

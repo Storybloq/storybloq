@@ -13,6 +13,10 @@
  * `archive <project> <destination>`, `observe <project> <at as JSON>` and `ledger-state <.story>`: the runner's
  * own no-follow readers (archiveProject, observeEvidence, ledgerState) run here instead, each printing its result.
  *
+ * `probe-report <report folder> <name>`: the capability probe's report (T-538 commit 4 round 2): the folder must be
+ * given by its canonical path (no link anywhere in it) and is anchored by device and inode around the read; the
+ * leaf is read with readRequest. Prints `{"report": <base64> | null, "problem": <text> | null}`.
+ *
  * `requests`: one worker lives for the turn. Each line on stdin is a poll, `{"claimed": [<id>...]}`; each answer
  * is one line on stdout: `{"entries": [{id, bytes} | {id, problem}], "ignored": [<name>...]}` or
  * `{"failure": "review requests: <cause>"}`. It lists names only, keeps final names, drops claimed ids, and
@@ -21,7 +25,7 @@
  *   node onboarding-eval-collect.js requests <request folder>
  */
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, rmSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { CredentialStream, REQUEST_MAX_BYTES, REQUEST_NAME, type CredentialHit } from "./onboarding-eval-review.js";
@@ -34,6 +38,9 @@ export const UNCLAIMED_LIMIT = 64;
 
 export type RequestEntry = { readonly id: string; readonly bytes: string } | { readonly id: string; readonly problem: string };
 export type RequestPoll = { readonly entries: readonly RequestEntry[]; readonly ignored: readonly string[] } | { readonly failure: string };
+
+/** Test seam, not reachable from any input: runs between the first fstat and the read. */
+export const requestReadSeams: { afterFirstStat: (path: string) => void } = { afterFirstStat: () => {} };
 
 /** One request file, opened without following links and without blocking, read bounded. */
 export function readRequest(path: string): { readonly bytes: Buffer } | { readonly problem: string } {
@@ -48,6 +55,7 @@ export function readRequest(path: string): { readonly bytes: Buffer } | { readon
     const before = fstatSync(fd);
     if (!before.isFile()) return { problem: "the request is not a regular file" };
     if (before.size > REQUEST_MAX_BYTES) return { problem: `the request is over ${REQUEST_MAX_BYTES} bytes` };
+    requestReadSeams.afterFirstStat(path);
     const buf = Buffer.alloc(before.size + 1);
     let n = 0;
     for (;;) {
@@ -141,6 +149,53 @@ function byRequestOrder(a: string, b: string): number {
   const [pa, ca] = a.slice(0, -5).split("-").map(Number) as [number, number];
   const [pb, cb] = b.slice(0, -5).split("-").map(Number) as [number, number];
   return pa - pb || ca - cb;
+}
+
+/** Test seam, not reachable from any input: runs after the report folder is anchored, before the leaf is read. */
+export const probeReportSeams: { afterAnchor: () => void } = { afterAnchor: () => {} };
+
+/**
+ * The probe report, read in the collector process. Node has no openat, so the folder is anchored the way the
+ * request poll is: it must be named by its canonical path (realpath equal to it, so no link anywhere in it, the
+ * leaf folder included), it is entered with chdir and checked by device and inode, the leaf is read relative to
+ * it with readRequest (no-follow, nonblocking, regular file only, bounded, fstat before and after), and the
+ * folder's path and identity are checked again after the read. Any change is a problem, never a followed read.
+ * An absent report is `report: null` with no problem.
+ */
+export function probeReport(dir: string, name: string): { readonly report: Buffer | null; readonly problem: string | null } {
+  const changed = { report: null, problem: "probe: the report folder changed while read" };
+  if (name.includes("/") || name === "" || name === "." || name === "..") return { report: null, problem: "probe: the report name is not a file name" };
+  let anchor: ReturnType<typeof lstatSync>;
+  try {
+    anchor = lstatSync(dir);
+    if (anchor.isSymbolicLink() || !anchor.isDirectory()) return { report: null, problem: "probe: the report folder is not a directory" };
+    if (realpathSync(dir) !== dir) return { report: null, problem: "probe: the report folder's path goes through a link" };
+  } catch (err) {
+    return { report: null, problem: `probe: the report folder is unreadable: ${(err as NodeJS.ErrnoException).code ?? String(err)}` };
+  }
+  const home = process.cwd();
+  try {
+    process.chdir(dir);
+  } catch (err) {
+    return { report: null, problem: `probe: the report folder is unreadable: ${(err as NodeJS.ErrnoException).code ?? String(err)}` };
+  }
+  try {
+    const here = statSync(".");
+    if (here.dev !== anchor.dev || here.ino !== anchor.ino) return changed;
+    probeReportSeams.afterAnchor();
+    let r: { readonly report: Buffer | null; readonly problem: string | null };
+    if (lstatSync(name, { throwIfNoEntry: false }) === undefined) r = { report: null, problem: null };
+    else {
+      const got = readRequest(name);
+      r = "bytes" in got ? { report: got.bytes, problem: null } : { report: null, problem: `probe: the report ${got.problem.replace(/^the request /, "")}` };
+    }
+    let now: ReturnType<typeof lstatSync> | null = null;
+    try { now = realpathSync(dir) === dir ? lstatSync(dir) : null; } catch { /* gone: changed */ }
+    if (now === null || !now.isDirectory() || now.dev !== anchor.dev || now.ino !== anchor.ino) return changed;
+    return r;
+  } finally {
+    process.chdir(home);
+  }
 }
 
 /** The worker: answers each poll line with one result line. */
@@ -304,6 +359,10 @@ const main = process.argv[1] !== undefined && /onboarding-eval-collect\.[jt]s$/.
 if (main) {
   const [mode, ...rest] = process.argv.slice(2);
   if (mode === "requests" && rest.length === 1) void requestsWorker(rest[0]!, process.stdin, process.stdout);
+  else if (mode === "probe-report" && rest.length === 2) {
+    const r = probeReport(rest[0]!, rest[1]!);
+    process.stdout.write(`${JSON.stringify({ report: r.report === null ? null : r.report.toString("base64"), problem: r.problem })}\n`);
+  }
   else if (mode === "collect" && rest.length === 3 && (PURPOSES as string[]).includes(rest[0]!)) process.stdout.write(`${JSON.stringify(collectTree(rest[0] as Purpose, rest[1]!, rest[2]!))}\n`);
   else if (mode === "project-scan" && rest.length === 1) void import("./onboarding-eval-config.js").then((m) => process.stdout.write(`${JSON.stringify(m.projectScanProblems(rest[0]!))}\n`));
   else if (mode === "digest" && rest.length === 1) process.stdout.write(`${JSON.stringify(digestTree(rest[0]!))}\n`);

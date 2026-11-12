@@ -86,6 +86,33 @@ function tamper(kind, file) {
   else if (kind === "same") { fs.copyFileSync(file, path.join(dir, "policy-next.json")); fs.chmodSync(path.join(dir, "policy-next.json"), 0o400); fs.renameSync(path.join(dir, "policy-next.json"), file); }
 }
 
+/**
+ * config.probe: the Claude arm's probe turn (T-538 commit 4). The stand-in plays a sandbox that holds: the
+ * program's inside writes land and its report records every outside operation denied; it writes the inside
+ * Write file and reports the outside Write denied. A named fault changes exactly one of those.
+ */
+function probeTurn(fault, content, sessionId, model, out) {
+  const text = typeof content === "string" ? content : content.map((c) => c.text || "").join("");
+  const command = /Run exactly this command with the Bash tool: (.*)$/m.exec(text)[1];
+  const [inside, outside] = [...text.matchAll(/to (\/\S+) with the Write tool/g)].map((m) => m[1]);
+  const program = /^'[^']*' '([^']*)'/.exec(command)[1];
+  const nonce = command.split(" ").at(-1);
+  const plan = JSON.parse(fs.readFileSync(path.join(path.dirname(program), "probe-plan.json"), "utf-8"));
+  for (const w of plan.writes) if (w.kind === "inside" && fault !== "inside-program") fs.writeFileSync(w.path, nonce);
+  const ops = [...plan.writes.map((w) => ({ op: w.op, attempted: true, ok: w.kind === "inside", errno: w.kind === "inside" ? null : "EPERM" })),
+    { op: "connect", attempted: true, ok: false, errno: "EPERM" }, { op: "listen", attempted: true, ok: false, errno: "EPERM" }];
+  if (fault !== "no-report") fs.writeFileSync(path.join(plan.reportDir, `probe-${nonce}.json`), JSON.stringify({ ops, complete: true, nonce }));
+  if (fault !== "no-inside") fs.writeFileSync(inside, "probe");
+  if (fault === "outside-written") fs.writeFileSync(outside, "probe");
+  const bash = (id, cmd) => ({ type: "tool_use", id, name: "Bash", input: { command: cmd } });
+  const uses = [bash("tu-1", command), ...(fault === "two-bash" ? [bash("tu-2", "ls")] : []), { type: "tool_use", id: "tu-3", name: "Write", input: { file_path: inside, content: "probe" } }, { type: "tool_use", id: "tu-4", name: "Write", input: { file_path: outside, content: "probe" } },
+    // Codex's case: an extra Write that would rewrite the report to show a successful listen.
+    ...(fault === "extra-write" ? [{ type: "tool_use", id: "tu-5", name: "Write", input: { file_path: path.join(plan.reportDir, `probe-${nonce}.json`), content: "{}" } }] : [])];
+  out({ type: "assistant", parent_tool_use_id: null, session_id: sessionId, message: { id: "msg-probe", model, role: "assistant", content: uses, usage: { input_tokens: 1, output_tokens: 1 } } });
+  const denials = fault === "no-denial" ? [] : [{ tool_name: "Write", tool_use_id: "tu-4", tool_input: { file_path: outside, content: "probe" } }];
+  out({ type: "result", subtype: "success", is_error: false, result: "done", session_id: sessionId, permission_denials: denials, usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0 });
+}
+
 function main(config) {
   const argv = process.argv.slice(2);
   const log = (o) => fs.appendFileSync(config.log, `${JSON.stringify(o)}\n`);
@@ -143,6 +170,7 @@ function main(config) {
     if (msg.type === "user") {
       log({ kind: "user", answered, content: msg.message.content });
       out(initEvent());
+      if (config.probe) { probeTurn(config.probe, msg.message.content, sessionId, opt("--model"), out); return; }
       const split = first && typeof config.split === "string" ? config.split : null;
       const assistant = { type: "assistant", parent_tool_use_id: null, session_id: sessionId, message: { id: `msg-sentinel${split ?? ""}`, model: opt("--model"), role: "assistant", content: [{ type: "text", text: config.text }], usage: { input_tokens: 1, output_tokens: 1 } } };
       const rest = () => {

@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 const raw = process.argv.slice(2);
 const root = raw[1];
@@ -88,6 +89,12 @@ if (scenario.readStdin !== false) {
 const n = existsSync(join(root, "log.jsonl")) ? readFileSync(join(root, "log.jsonl"), "utf-8").split("\n").filter(Boolean).length : 0;
 writeFileSync(join(root, `stdin-${n}.txt`), stdinText);
 log({ kind: "exec", stdinSha256: scenario.readStdin === false ? null : hash.digest("hex"), stdinBytes });
+// T-538 commit 4: a member of the judge's process group left behind when the leader exits; its pid is written down.
+if (scenario.grandchildPidFile) {
+  const g = spawn("/bin/sleep", ["60"], { stdio: "ignore" });
+  g.unref();
+  writeFileSync(scenario.grandchildPidFile, String(g.pid));
+}
 if (scenario.readStdin === false) process.exit(scenario.exitCode ?? 0);
 
 const thread = scenario.threadId ?? "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001";

@@ -14,7 +14,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { sha256 } from "../../scripts/continuity-lib.js";
 import { judgeFromResponse, type JudgeRuling } from "../../scripts/onboarding-eval-lib.js";
 import { pathToFileURL } from "node:url";
-import { JUDGE_CODEX_VERSION, JUDGE_CONFIG, capture, childPathFor, childPathProblem, firstStderrLine, publish, snapshotOf, writeFailure, type Snapshot } from "../../scripts/onboarding-eval-judge.js";
+import { runInGroup, type GroupControl } from "../../src/core/process-group.js";
+import { JUDGE_CODEX_VERSION, JUDGE_CONFIG, boundedFeed, capture, childPathFor, childPathProblem, firstStderrLine, publish, snapshotOf, writeFailure, type Snapshot } from "../../scripts/onboarding-eval-judge.js";
 
 const PKG = resolve(__dirname, "..", "..");
 const TSX = join(PKG, "node_modules", "tsx", "dist", "cli.mjs");
@@ -877,4 +878,81 @@ describe("ISS-1349 the codex the runner runs: real path, child PATH, version pin
     expect(table.filter((l) => l.startsWith("tool_search_always_defer_mcp_tools"))).toEqual([]);
     expect(table.filter((l) => keyOf(l) === "unified_exec")).toEqual(["unified_exec = false"]);
   });
+});
+
+describe("T-538 commit 4 (7.4): the judge runs in a process group of its own", () => {
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  it("7.4: a member the judge leaves in its group is stopped with it, and the cleanup is confirmed on the record", () => {
+    const r = rig();
+    const pidFile = join(r.root, "grandchild.pid");
+    scenario(r, { grandchildPidFile: pidFile });
+    const res = run(r);
+    const pid = Number(readFileSync(pidFile, "utf-8"));
+    try {
+      expect(res.code, res.stderr).toBe(0);
+      expect(alive(pid)).toBe(false);
+      const m = meta(r) as unknown as { cleanup: string; pgid: number; outcome: string };
+      expect(m).toMatchObject({ cleanup: "confirmed", outcome: "published" });
+      expect(m.pgid).toBeGreaterThan(0);
+    } finally {
+      if (alive(pid)) process.kill(pid, "SIGKILL");
+    }
+  });
+
+  it("7.4: a stop whose group is never seen gone is the outcome cleanup-unconfirmed: nothing published, exit 3", () => {
+    const r = rig();
+    const seam = join(r.root, "seam.mts");
+    writeFileSync(seam, `import { processGroupSeams } from ${JSON.stringify(join(PKG, "src", "core", "process-group.ts"))};
+processGroupSeams.probe = () => { const e = new Error("EPERM"); e.code = "EPERM"; throw e; };
+const { main } = await import(${JSON.stringify(SCRIPT)});
+process.exitCode = await main(process.argv.slice(2));
+`);
+    const p = spawnSync(process.execPath, [TSX, seam, "--record", r.record], { env: envFor(r), encoding: "utf-8", timeout: 120_000 });
+    expectFailedAfterSpawn(r, { code: p.status }, "cleanup-unconfirmed");
+    expect(existsSync(join(r.record, "judge.json"))).toBe(false);
+    expect(meta(r)).toMatchObject({ cleanup: "unconfirmed" });
+  });
+});
+
+describe("T-538 commit 4 (7.4): the judge's output is bounded in the group's data callback", () => {
+  /** A child that writes 64 KiB chunks as fast as its pipe drains, forever. */
+  const PRODUCER = ["-e", "const b = Buffer.alloc(65536, 120); (function w() { while (process.stdout.write(b)); process.stdout.once('drain', w); })();"];
+
+  async function produce(limit: number, pendingMax: number) {
+    const into = new PassThrough(); // its reader never reads: the stalled destination
+    let queued = 0;
+    const write = into.write.bind(into);
+    into.write = ((c: Buffer) => { queued += c.length; return write(c); }) as typeof into.write;
+    let maxPending = 0;
+    let fed = 0;
+    const events: string[] = [];
+    let control: GroupControl | null = null;
+    const feed = boundedFeed(into, limit, pendingMax, () => { events.push("limit"); control?.stop(); }, (n) => { events.push(`stall ${n}`); control?.stop(); });
+    const r = await runInGroup({
+      command: process.execPath, args: PRODUCER, cwd: tmpdir(), env: { PATH: "/usr/bin:/bin" }, timeoutMs: 60_000, killGraceMs: 2_000,
+      onStdout: (c) => { fed += c.length; feed(c); maxPending = Math.max(maxPending, into.writableLength + into.readableLength); },
+      onStderr: () => {},
+      control: (c) => { control = c; },
+    });
+    return { r, events, maxPending, fed, queued };
+  }
+
+  it("a fast producer with a stalled destination stays within the bound and is stopped", async () => {
+    const { r, events, maxPending, fed } = await produce(1024 ** 3, 1024 * 1024);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatch(/^stall \d+$/);
+    expect(maxPending).toBeLessThanOrEqual(1024 * 1024);
+    expect(fed).toBeGreaterThan(1024 * 1024);
+    expect(r.timedOut).toBe(false);
+    expect(r.cleanup).toBe("confirmed");
+  }, 90_000);
+
+  it("past the byte ceiling nothing more is queued and the group is stopped", async () => {
+    const { r, events, queued, fed } = await produce(256 * 1024, 1024 ** 3);
+    expect(events).toEqual(["limit"]);
+    expect(queued).toBe(256 * 1024);
+    expect(fed).toBeGreaterThan(256 * 1024);
+    expect(r.timedOut).toBe(false);
+    expect(r.cleanup).toBe("confirmed");
+  }, 90_000);
 });

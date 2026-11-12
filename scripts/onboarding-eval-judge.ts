@@ -65,7 +65,10 @@
  * Recovery after a failed attempt: move `<recordDir>/judge-attempt/` to `judge-attempt-<UTC stamp>/` by hand, then
  * run again. The runner never deletes or overwrites an attempt, and refuses while any `judge.json` exists.
  */
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { PassThrough } from "node:stream";
+import { type GroupControl } from "../src/core/process-group.js";
+import { runInGroup } from "./onboarding-eval-groups.js";
 import { createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
@@ -153,13 +156,15 @@ const envNumber = (name: string, fallback: number): number => {
 const TIMEOUT_MS = (): number => envNumber("ONBOARDING_EVAL_JUDGE_TIMEOUT_MS", 20 * 60 * 1000);
 const STDOUT_LIMIT = (): number => envNumber("ONBOARDING_EVAL_JUDGE_STDOUT_LIMIT", 32 * 1024 * 1024);
 const STDERR_LIMIT = (): number => envNumber("ONBOARDING_EVAL_JUDGE_STDERR_LIMIT", 4 * 1024 * 1024);
+/** Bytes a stream may hold queued between the group's data callback and its destination before the group is stopped. */
+const PENDING_LIMIT = (): number => envNumber("ONBOARDING_EVAL_JUDGE_PENDING_LIMIT", 8 * 1024 * 1024);
 const KILL_GRACE_MS = 10_000;
 const STDIN_CHUNK = 64 * 1024;
 
 type Outcome =
   | "published" | "spawn-failed" | "stdin-incomplete" | "output-limit" | "timed-out" | "exit-status" | "signal"
   | "capture-failed" | "stream-malformed" | "publish-failed" | "withdraw-failed" | "no-terminal-event" | "turn-failed" | "tool-used" | "final-message-not-json" | "schema-invalid" | "schema-mapping" | "credential-in-output"
-  | "observed-model-none" | "observed-model-many" | "observed-model-mismatch" | "record-changed";
+  | "observed-model-none" | "observed-model-many" | "observed-model-mismatch" | "record-changed" | "cleanup-unconfirmed";
 
 interface StdinResult { readonly bytesTotal: number; readonly bytesAccepted: number; readonly ended: boolean; readonly error: string | null }
 
@@ -415,36 +420,54 @@ function probeBinary(bin: string, env: NodeJS.ProcessEnv, cwd: string): { readon
   return { features: parseFeatures(features.stdout), codexVersion, probes };
 }
 
-async function feedStdin(child: ChildProcessWithoutNullStreams, prompt: Buffer): Promise<StdinResult> {
-  const stdin = child.stdin;
-  let accepted = 0;
-  let error: string | null = null;
-  let ended = false;
-  let wake: (() => void) | null = null;
-  const poke = (): void => { const w = wake; wake = null; w?.(); };
-  stdin.on("error", (e: NodeJS.ErrnoException) => { error ??= e.code ?? e.message; poke(); });
-  stdin.on("drain", poke);
-  stdin.on("close", poke);
-  const waitFor = (done: () => boolean): Promise<void> => new Promise((res) => { if (done()) res(); else wake = res; });
-  for (let at = 0; at < prompt.length && error === null && !stdin.destroyed; at += STDIN_CHUNK) {
+interface StdinFeed { readonly written: number; readonly ended: boolean }
+
+/**
+ * T-538 commit 4: the prompt through the group's control handle, a chunk at a time. Past the handle's soft queue
+ * bound the feed waits, probing with an empty write (which queues nothing), until the queue drains or the run
+ * settles; the handle reports any input problem on the run's result.
+ */
+async function feedControl(c: GroupControl, prompt: Buffer, settled: () => boolean): Promise<StdinFeed> {
+  const EMPTY = Buffer.alloc(0);
+  let written = 0;
+  for (let at = 0; at < prompt.length; at += STDIN_CHUNK) {
+    if (settled()) return { written, ended: false };
     const chunk = prompt.subarray(at, at + STDIN_CHUNK);
-    const flushed = stdin.write(chunk, (e) => { if (!e) accepted += chunk.length; });
-    if (!flushed) await waitFor(() => error !== null || stdin.destroyed || !stdin.writableNeedDrain);
+    const room = c.write(chunk);
+    written += chunk.length;
+    if (!room) {
+      while (!settled() && !c.write(EMPTY)) await new Promise((r) => setTimeout(r, 10));
+    }
   }
-  if (error === null && !stdin.destroyed) {
-    await new Promise<void>((res) => {
-      stdin.end(() => { if (error === null) ended = true; res(); });
-      stdin.once("error", () => res());
-      stdin.once("close", () => res());
-    });
-  }
-  return { bytesTotal: prompt.length, bytesAccepted: accepted, ended: ended && error === null, error };
+  if (settled()) return { written, ended: false };
+  c.endInput();
+  return { written, ended: true };
 }
 
 /**
  * Pipes a child stream to a file, stopping at `limit` bytes; resolves once the file is closed or has failed. A read
  * error on the source or a write error on the destination is reported through `onError` and never thrown.
  */
+/**
+ * The group's data callback for one stream. The byte ceiling is enforced here, before anything is queued: past
+ * `limit` nothing more is queued and `onLimit` stops the group. The queue towards a stalled destination is bounded:
+ * a chunk that would take it past `pendingMax` is dropped and `onStall` stops the group.
+ */
+export function boundedFeed(into: PassThrough, limit: number, pendingMax: number, onLimit: () => void, onStall: (pending: number) => void): (chunk: Buffer) => void {
+  let seen = 0;
+  let stopped = false;
+  return (chunk) => {
+    if (stopped) return;
+    const room = limit - seen;
+    seen += chunk.length;
+    const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
+    const pending = into.writableLength + into.readableLength;
+    if (pending + part.length > pendingMax) { stopped = true; onStall(pending); return; }
+    if (part.length > 0) into.write(part);
+    if (chunk.length > room) { stopped = true; onLimit(); }
+  };
+}
+
 export function capture(from: NodeJS.ReadableStream, to: Writable, limit: number, onLimit: () => void, onError: (what: string) => void): Promise<void> {
   let written = 0;
   let over = false;
@@ -609,35 +632,49 @@ export async function main(argv: readonly string[]): Promise<number> {
     let outputLimit = false;
     let captureError: string | null = null;
     const onCaptureError = (what: string): void => { captureError ??= what; stop(); };
-    let timedOut = false;
-    const child = spawn(bin, args, { cwd, env: { HOME: home, CODEX_HOME: codexHome, PATH: childPath }, stdio: ["pipe", "pipe", "pipe"] });
-    let killTimer: NodeJS.Timeout | null = null;
-    const stop = (): void => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      child.kill("SIGTERM");
-      killTimer ??= setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, KILL_GRACE_MS);
-    };
-    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
-      child.once("error", (e: NodeJS.ErrnoException) => { spawnError ??= e.code ?? e.message; if (child.pid === undefined) res({ code: null, signal: null }); });
-      child.once("close", (code, signal) => res({ code, signal }));
-    });
-    const outDone = capture(child.stdout, rawOut, STDOUT_LIMIT(), () => { outputLimit = true; stop(); }, (what) => onCaptureError(`stdout ${what}`));
-    const errDone = capture(child.stderr, errOut, STDERR_LIMIT(), () => { outputLimit = true; stop(); }, (what) => onCaptureError(`stderr ${what}`));
-    const timer = setTimeout(() => { timedOut = true; stop(); }, TIMEOUT_MS());
-    const stdinResult = child.pid === undefined ? { bytesTotal: prompt.length, bytesAccepted: 0, ended: false, error: "not-spawned" } : await feedStdin(child, prompt);
-    const exit = await closed;
-    clearTimeout(timer);
-    if (killTimer) clearTimeout(killTimer);
-    if (child.pid === undefined) { child.stdout.destroy(); child.stderr.destroy(); }
+    // T-538 commit 4 (7.4, Addendum D ruling 3): the judge runs in a process group of its own like every other
+    // subprocess. A stop (the deadline, the output ceiling, a capture failure) stops the whole group, and the run
+    // settles only once the group is confirmed gone; an unconfirmed stop is its own outcome, which the driver
+    // quarantines.
+    const out = new PassThrough();
+    const err = new PassThrough();
+    const outDone = capture(out, rawOut, STDOUT_LIMIT(), () => { outputLimit = true; stop(); }, (what) => onCaptureError(`stdout ${what}`));
+    const errDone = capture(err, errOut, STDERR_LIMIT(), () => { outputLimit = true; stop(); }, (what) => onCaptureError(`stderr ${what}`));
+    let control: GroupControl | null = null;
+    let settled = false;
+    let pgid: number | null = null;
+    const stopAsked = { value: false };
+    function stop(): void { stopAsked.value = true; control?.stop(); }
+    let fed: Promise<StdinFeed> = Promise.resolve({ written: 0, ended: false });
+    const run = runInGroup({
+      command: bin, args, cwd, env: { HOME: home, CODEX_HOME: codexHome, PATH: childPath },
+      timeoutMs: TIMEOUT_MS(), killGraceMs: KILL_GRACE_MS,
+      onStdout: boundedFeed(out, STDOUT_LIMIT(), PENDING_LIMIT(), () => { outputLimit = true; stop(); }, (n) => onCaptureError(`stdout destination stalled: ${n} bytes queued`)),
+      onStderr: boundedFeed(err, STDERR_LIMIT(), PENDING_LIMIT(), () => { outputLimit = true; stop(); }, (n) => onCaptureError(`stderr destination stalled: ${n} bytes queued`)),
+      onSpawn: (id) => { pgid = id; },
+      control: (c) => { control = c; if (stopAsked.value) c.stop(); fed = feedControl(c, prompt, () => settled); },
+    }).then((r) => { settled = true; return r; });
+    const group = await run;
+    const feed = await fed;
+    out.end();
+    err.end();
     await Promise.all([outDone, errDone]);
+    const timedOut = group.timedOut;
+    // The group reports a spawn failure as the error's message; the record keeps its code, as before.
+    if (group.spawnError !== null) spawnError = /\b(E[A-Z0-9]+)\b/.exec(group.spawnError)?.[1] ?? group.spawnError;
+    const spawned = pgid !== null;
+    const exit = { code: group.exitCode, signal: group.signal };
+    const stdinResult: StdinResult = !spawned
+      ? { bytesTotal: prompt.length, bytesAccepted: 0, ended: false, error: "not-spawned" }
+      : { bytesTotal: prompt.length, bytesAccepted: group.inputError === undefined ? feed.written : Math.min(feed.written, prompt.length - 1), ended: feed.ended && group.inputError === undefined, error: group.inputError ?? null };
 
     let raw: Buffer;
     try { raw = readFileSync(rawPath); } catch { raw = Buffer.alloc(0); captureError ??= "stdout destination: raw.jsonl could not be read back"; }
     const events = readEvents(raw);
     const models = events.threadId === null ? [] : rolloutModels(codexHome, events.threadId);
-    const stdin = spawnError !== null && child.pid === undefined ? { ...stdinResult, error: stdinResult.error ?? "not-spawned" } : stdinResult;
+    const stdin = stdinResult;
     const base = {
-      exitStatus: exit.code, signal: exit.signal, timedOut, stdin, rawSha256: sha256(raw), rawBytes: raw.length,
+      exitStatus: exit.code, signal: exit.signal, timedOut, stdin, pgid, cleanup: group.cleanup, cleanupDetail: group.cleanupDetail, rawSha256: sha256(raw), rawBytes: raw.length,
       terminalEvent: events.terminalEvent, threadId: events.threadId, observedModels: models, toolItems: events.toolItems,
       effectiveFeatures: features, codexPath: bin, codexVersion, probes, spawnError, endedAt: "",
     };
@@ -650,7 +687,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       return 3;
     };
 
-    if (spawnError !== null && child.pid === undefined) return fail("spawn-failed");
+    if (spawnError !== null && !spawned) return fail("spawn-failed");
+    if (group.cleanup !== "confirmed") return fail("cleanup-unconfirmed", { reason: group.cleanupDetail ?? "the judge's process group was not seen gone" });
     if (captureError !== null) return fail("capture-failed", { reason: captureError });
     if (!(stdin.ended && stdin.error === null && stdin.bytesAccepted === stdin.bytesTotal)) return fail("stdin-incomplete");
     if (outputLimit) return fail("output-limit");

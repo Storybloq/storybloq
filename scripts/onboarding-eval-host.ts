@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join } from "node:path";
-import { runInGroup } from "../src/core/process-group.js";
+import { runInGroup } from "./onboarding-eval-groups.js";
 
 // --- how a process result reads (Addendum B, ruling 1) --------------------------------------------------
 

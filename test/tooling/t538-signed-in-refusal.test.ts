@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const seam = vi.hoisted(() => ({ calls: [] as string[] }));
@@ -456,6 +456,34 @@ describe("S0: the direct runner's real entry, as a child", { timeout: 180_000 },
   it("the test-only wrapper still refuses signed-in", async () => {
     expectRefused(await runChild({ entry: ADMITTED_RUNNER, extra: ["--isolation", "signed-in"] }), unconditionalSignedInRefusal("onboarding-eval"));
     expectRefused(await runChild({ entry: ADMITTED_RUNNER, extra: [...probeFixtures().argv, "--isolation", "signed-in"] }), unconditionalSignedInRefusal("onboarding-eval"));
+  });
+
+  it("the child's real-home resolver answers the fake home, and a credential read through it is recorded and refused (the spy's control)", async () => {
+    const dir = tmp("t538s0-spy-");
+    const home = fakeRealHome();
+    homeSeam.home = null;
+    const before = treeHash(home);
+    const readLog = join(dir, "reads.log");
+    const probe = join(dir, "probe.mts");
+    const signedIn = pathToFileURL(join(PKG, "scripts", "continuity-signed-in.ts")).href;
+    writeFileSync(probe, [
+      'import { readFileSync } from "node:fs";',
+      'import { homedir, userInfo } from "node:os";',
+      'import { join } from "node:path";',
+      `const { realHome } = await import(${JSON.stringify(signedIn)});`,
+      'let read = "none";',
+      // Never the real home: the read is attempted only when the resolver answers the fake home this row planted.
+      `if (realHome() !== ${JSON.stringify(home)}) read = "not redirected; no read attempted";`,
+      'else try { read = readFileSync(join(realHome(), ".claude", ".credentials.json"), "utf-8"); } catch (e) { read = `refused: ${(e as Error).message}`; }',
+      'process.stdout.write(JSON.stringify({ realHome: realHome(), homedir: homedir(), userInfo: userInfo().homedir, read }));',
+    ].join("\n"));
+    const env = { PATH: "/usr/bin:/bin", HOME: dir, TMPDIR: dir, NODE_OPTIONS: `--import ${READ_SPY}`, T538_SPY_HOME: home, T538_SPY_LOG: readLog };
+    const r = realCp.spawnSync(process.execPath, [TSX, probe], { cwd: PKG, env, encoding: "utf-8", timeout: 60_000 });
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout) as Record<string, string>;
+    expect(out).toEqual({ realHome: home, homedir: home, userInfo: home, read: "refused: read spy: readFileSync under the fake real home refused" });
+    expect(readFileSync(readLog, "utf-8")).toBe(`readFileSync ${join(home, ".claude", ".credentials.json")}\n`);
+    expect(treeHash(home)).toBe(before);
   });
 
   it("the seam sees a spawn: a codex fresh run reaches the codex stand-in (the control)", async () => {

@@ -1,9 +1,12 @@
 /**
  * T-538 S0 (pen ruling G5), test only: preloaded into the runner child by NODE_OPTIONS. Every content read under
  * T538_SPY_HOME (the child's fake real home) is appended to T538_SPY_LOG and refused. Metadata calls (lstat, exists)
- * pass. The named ESM exports of node:fs are re-synced so modules that import them see the wrapped functions.
+ * pass. The real-home resolver (node:os homedir() and userInfo().homedir, which realHome() reads) answers the fake
+ * home, so a read through it lands under the spy. The named ESM exports of node:fs and node:os are re-synced so
+ * modules that import them see the wrapped functions.
  */
 import fs from "node:fs";
+import os from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +14,9 @@ import { fileURLToPath } from "node:url";
 const home = process.env.T538_SPY_HOME;
 const log = process.env.T538_SPY_LOG;
 if (home && log) {
+  const realUserInfo = os.userInfo;
+  os.homedir = () => home;
+  os.userInfo = function userInfo(...a) { return { ...realUserInfo.apply(this, a), homedir: home }; };
   const append = fs.appendFileSync;
   const under = (p) => {
     if (typeof p !== "string" && !(p instanceof URL)) return null;

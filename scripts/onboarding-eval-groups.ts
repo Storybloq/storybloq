@@ -110,7 +110,7 @@ export const runInGroup: typeof runInGroupCore = async (o) => {
   if (file === undefined || file === "") return runInGroupCore(o);
   const id = recordIntent(file);
   let spawned = false;
-  const g = await runInGroupCore({ ...o, onSpawn: (pgid, signal) => { spawned = true; groupsSeams.afterSpawn(pgid); recordLaunch(file, id, pgid); o.onSpawn?.(pgid, signal); } });
+  const g = await runInGroupCore({ ...o, onSpawn: (pgid, signal, probe) => { spawned = true; groupsSeams.afterSpawn(pgid); recordLaunch(file, id, pgid); o.onSpawn?.(pgid, signal, probe); } });
   if (g.cleanup === "confirmed" || !spawned) recordDone(file, id);
   return g;
 };

@@ -60,6 +60,7 @@ import { StringDecoder } from "node:string_decoder";
 import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 import { newProgress, resultPathOf, withRunnerResult } from "./onboarding-eval-runner-result.js";
 import { admissionRefusal, isolationFlag, probeTurnArgs, runProbeTurn, type StandInAdmission } from "./onboarding-eval-probe.js";
+import { signedInEnvProblems } from "./continuity-signed-in.js";
 import { type GroupControl } from "../src/core/process-group.js";
 import { runInGroup } from "./onboarding-eval-groups.js";
 import {
@@ -548,7 +549,8 @@ export function scrubClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * runner set. Given the client column (T-538 5.3), the key set must be exactly that column's. Returns the
  * problems; empty means isolated.
  */
-export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: Client, column?: Record<string, string>): string[] {
+export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: Client, column?: Record<string, string>, signedIn?: { readonly realHome: string }): string[] {
+  if (signedIn !== undefined) return signedInIsolationProblems(env, work, client, signedIn.realHome, column);
   const problems: string[] = [];
   const under = (k: string): void => {
     const v = env[k];
@@ -564,6 +566,45 @@ export function isolationProblems(env: NodeJS.ProcessEnv, work: string, client: 
   const allowed = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "STORYBLOQ_CLIENT", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT", "STORYBLOQ_EVAL_FAULT_ID", "STORYBLOQ_EVAL_REVIEW_RESPONSES"]);
   for (const k of Object.keys(env)) if (INHERITED_CLIENT_ENV.test(k) && !allowed.has(k)) problems.push(`${k} is inherited`);
   if (column !== undefined) problems.push(...envKeyProblems(env, column, "client"));
+  return problems;
+}
+
+/**
+ * T-538 S2 (note v5 section 9): the signed-in client's isolation. HOME is the real home exactly, CLAUDE_CONFIG_DIR
+ * and every token or API-key name are absent (named, never valued), TMPDIR and any CODEX_HOME stay under the scratch
+ * directory, and nothing inherited beyond the runner's own names. Given the column, the key set must be exactly it.
+ */
+function signedInIsolationProblems(env: NodeJS.ProcessEnv, work: string, client: Client, home: string, column?: Record<string, string>): string[] {
+  const problems: string[] = [];
+  if (client !== "claude") problems.push("signed-in isolation is the Claude client's only");
+  if (env.HOME === undefined || env.HOME === "") problems.push("HOME is not set");
+  else if (env.HOME !== home) problems.push(`HOME=${env.HOME} is not the real home`);
+  for (const k of signedInEnvProblems(env)) problems.push(`${k} is set`);
+  const under = (k: string): void => {
+    const v = env[k];
+    if (!v) problems.push(`${k} is not set`);
+    else if (!resolve(v).startsWith(`${resolve(work)}/`)) problems.push(`${k}=${v} is outside the scratch directory`);
+  };
+  under("TMPDIR");
+  if (env.CODEX_HOME !== undefined) under("CODEX_HOME");
+  const allowed = new Set(["CODEX_HOME", "STORYBLOQ_CLIENT", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT", "STORYBLOQ_EVAL_FAULT_ID", "STORYBLOQ_EVAL_REVIEW_RESPONSES"]);
+  for (const k of Object.keys(env)) if (INHERITED_CLIENT_ENV.test(k) && k !== "CLAUDE_CONFIG_DIR" && !allowed.has(k)) problems.push(`${k} is inherited`);
+  if (column !== undefined) problems.push(...envKeyProblems(env, column, "client"));
+  return problems;
+}
+
+/** What a shell under the client's environment resolved for HOME, CODEX_HOME and CLAUDE_CONFIG_DIR ("" when unset). */
+export interface EffectivePaths { readonly home: string; readonly codexHome: string; readonly claudeConfigDir: string }
+/**
+ * T-538 S2: the effective paths must be the provisioned ones. Fresh: HOME, CODEX_HOME and CLAUDE_CONFIG_DIR as the
+ * environment sets them. Signed-in: HOME the real home and no config dir at all. Empty means they hold.
+ */
+export function effectivePathProblems(effective: EffectivePaths, env: NodeJS.ProcessEnv, signedIn?: { readonly realHome: string }): string[] {
+  const problems: string[] = [];
+  if (effective.home !== env.HOME) problems.push("HOME");
+  if (signedIn !== undefined && effective.home !== signedIn.realHome) problems.push("HOME is not the real home");
+  if (effective.codexHome !== (env.CODEX_HOME ?? "")) problems.push("CODEX_HOME");
+  if (effective.claudeConfigDir !== (signedIn === undefined ? env.CLAUDE_CONFIG_DIR ?? "" : "")) problems.push("CLAUDE_CONFIG_DIR");
   return problems;
 }
 
@@ -1368,7 +1409,7 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   // What a shell under this environment actually resolves, recorded with the run.
   const effective = spawnSync("/bin/sh", ["-c", 'printf "%s\\n%s\\n%s\\n" "$HOME" "${CODEX_HOME-}" "${CLAUDE_CONFIG_DIR-}"'], { env, encoding: "utf-8" }).stdout.split("\n");
   const effectivePaths = { home: effective[0] ?? "", codexHome: effective[1] ?? "", claudeConfigDir: effective[2] ?? "" };
-  if (effectivePaths.home !== env.HOME || effectivePaths.codexHome !== (env.CODEX_HOME ?? "")) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
+  if (effectivePathProblems(effectivePaths, env).length > 0) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
   if (variant === "reviewer-unavailable") {
     // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin and the server's wrapper from codexBin.
     for (const name of hiddenReviewers(CHECK_SET_VERSION)) {

@@ -257,6 +257,10 @@ export interface EnvInputs {
   readonly claudeConfigDir?: string;
   /** Passed through, never read, logged or hashed. */
   readonly oauthToken?: string;
+  /** T-538 S2: the client column's isolation; omitted means fresh. Signed-in is the Claude client only. */
+  readonly isolation?: "fresh" | "signed-in";
+  /** T-538 S2: under signed-in, the client's HOME: the password-database home (realHome()), never an env value. */
+  readonly realHome?: string;
   readonly runnerHome: string;
   readonly globalDir: string;
   readonly events: string;
@@ -288,8 +292,16 @@ export function envFor(role: EnvRole, i: EnvInputs): Record<string, string> {
   // write under HOME) off in both columns; turns have no network, so that path could not be measured anyway.
   env.NO_UPDATE_NOTIFIER = "1";
   if (role === "client") {
-    if (i.client === "codex") need("CODEX_HOME", i.clientCodexHome);
-    else {
+    if (i.client === "codex") {
+      if (i.isolation === "signed-in") throw new Error("onboarding-eval: a signed-in client column is the Claude client's only; the Codex client runs fresh");
+      need("CODEX_HOME", i.clientCodexHome);
+    } else if (i.isolation === "signed-in") {
+      // S2 (note v5 section 9): the real home from the password database, no config dir, no token. A given value is
+      // refused by its name alone; nothing reads, logs or hashes it.
+      const given = [...(i.claudeConfigDir === undefined ? [] : ["CLAUDE_CONFIG_DIR"]), ...(i.oauthToken === undefined ? [] : ["CLAUDE_CODE_OAUTH_TOKEN"])];
+      if (given.length > 0) throw new Error(`onboarding-eval: the signed-in client column refuses ${given.join(" and ")}`);
+      need("HOME", i.realHome);
+    } else {
       need("CLAUDE_CONFIG_DIR", i.claudeConfigDir);
       need("CLAUDE_CODE_OAUTH_TOKEN", i.oauthToken);
     }

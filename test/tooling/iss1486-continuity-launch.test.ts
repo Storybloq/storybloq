@@ -3,11 +3,11 @@
  * stand-in test/fixtures/continuity-claude-sentinel.cjs (a real child process speaking the control protocol) or an
  * in-process fake for the rows that need exact timing. Nothing here starts a model or reads a credential.
  */
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { connect as netConnect } from "node:net";
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { spawn as nodeSpawn, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync, chmodSync, realpathSync, copyFileSync, cpSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,18 +19,27 @@ import {
   INPUT_PATHS, MAX_INVALID_RETRIES, configInventoryDrift, type PilotFacts, type StreamEvent,
 } from "../../scripts/continuity-lib.js";
 import {
-  continuityTools, continuityOptions, effectiveConfigHash, launchEnv, prepareLaunch, provisionFreshConfig, runAttempt, runMatrix, runPilot, LaunchPolicyStopError,
+  continuityTools, continuityOptions, effectiveConfigHash, launchEnv, prepareLaunch, provisionFreshConfig, runAttempt, runMatrix, runPilot, LaunchPolicyStopError, RETAINED_WORKDIR_FILE, type Launch,
   withheldTools, bundleProblems, launchProblems, EVAL_MCP_BUNDLE, CONTINUITY_SERVER_COLUMN, ONBOARDING_TOOLS_FILE, codexFingerprint, codexProblems, buildManifestHash,
   type Preflight, type RunOptions, type SpawnFn,
 } from "../../scripts/continuity-run.js";
 import { CLAUDE_TOOLS, ONBOARDING_OPTIONS, readbackProblems, type ReadbackExpected, type ReadbackStep } from "../../scripts/headless-policy.js";
 
 import { writeVerifiedPilot, PILOT_TEMPLATE, PILOT_TEMPLATE_ID } from "./continuity-pilot-fixture.js";
+import { removeKeptWorkdirs } from "../helpers/kept-workdirs.js";
 
 const PKG = resolve(__dirname, "../..");
 const FIXTURE = resolve(__dirname, "../fixtures/continuity");
 const SENTINEL = join(PKG, "test", "fixtures", "continuity-claude-sentinel.cjs");
-const tmp = (p: string): string => realpathSync(mkdtempSync(join(tmpdir(), p)));
+const tmp = (p: string): string => { const d = realpathSync(mkdtempSync(join(tmpdir(), p))); made.push(d); return d; };
+// ISS-1497: every directory this file makes is tracked and removed when the file ends, pass or fail.
+const made: string[] = [];
+afterAll(() => {
+  // A work folder a row kept is named under one of these roots; it goes first, then the roots.
+  removeKeptWorkdirs(made);
+  for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
 const TOOLS = continuityTools();
 /** G2: the server runs the evaluation bundle; preflight records its sha256, and so does every row's preflight. */
 const BUNDLE_SHA = existsSync(EVAL_MCP_BUNDLE) ? sha256(readFileSync(EVAL_MCP_BUNDLE)) : "bundle-missing";
@@ -459,6 +468,32 @@ describe("ISS-1486 D9: the pilot", () => {
     const published = readdirSync(expDir).map((f) => readFileSync(join(expDir, f), "utf-8")).join("\n");
     expect(published).not.toContain(seen[0]!.cwd);
     expect(logOf(seen[0]!).find((e) => e.kind === "user")!.content).toContain(`pilot id ${r.id}`);
+    // ISS-1497: a clean pilot (its two inside targets are held by pilot.facts.json) removes its work folder.
+    expect(r.retainedWorkdir).toBeUndefined();
+    expect(existsSync(seen[0]!.cwd)).toBe(false);
+  }, 30_000);
+  // ISS-1497: the pilot archives no ledger and no diff, so a .story edit or a commit made after its start keeps the folder.
+  const pilotChanging = async (change: (work: string) => void) => {
+    const o = options({}, false); const pf = preflight(); const seen: Launched[] = [];
+    const r = await runPilot(o, pf, deps(sentinelSpawn(() => ({ pilot: {} }), seen), { beforeSpawnCheck: (l: Launch): void => change(l.dirs.work) }));
+    return { r, cwd: seen[0]!.cwd, kept: join(o.rawOut, EXP.slice(0, 12), "pilot", r.id, RETAINED_WORKDIR_FILE) };
+  };
+  it("ISS-1497: a pilot whose work folder gains a .story edit keeps the folder, reason dirty", async () => {
+    const { r, cwd, kept } = await pilotChanging((w) => writeFileSync(join(w, ".story", "pilot-ledger-edit.md"), "not archived\n"));
+    expect(r.retainedWorkdir).toEqual({ path: cwd, reason: "dirty" });
+    expect(existsSync(cwd)).toBe(true);
+    expect(JSON.parse(readFileSync(kept, "utf-8"))).toEqual({ path: cwd, reason: "dirty" });
+  }, 30_000);
+  it("ISS-1497: a pilot whose work folder gains a committed source edit keeps the folder, reason dirty", async () => {
+    const { r, cwd, kept } = await pilotChanging((w) => {
+      writeFileSync(join(w, "src", "http", "router.ts"), `${readFileSync(join(w, "src", "http", "router.ts"), "utf-8")}\n// committed during the pilot\n`);
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+      execFileSync("git", ["add", "-A"], { cwd: w, stdio: "ignore", env });
+      execFileSync("git", ["commit", "-q", "-m", "a commit during the pilot"], { cwd: w, stdio: "ignore", env });
+    });
+    expect(r.retainedWorkdir).toEqual({ path: cwd, reason: "dirty" });
+    expect(existsSync(cwd)).toBe(true);
+    expect(JSON.parse(readFileSync(kept, "utf-8"))).toEqual({ path: cwd, reason: "dirty" });
   }, 30_000);
   const failing: [string, Record<string, unknown>, string, string?][] = [
     ["a skipped probe", { skip: "edit-inside" }, "edit-inside"],
@@ -488,7 +523,7 @@ describe("ISS-1486 D9: the pilot", () => {
   }
   it("J1: with no nc on the client's PATH, the pilot fails because the probe command does not work outside the sandbox", async () => {
     // Every /usr/bin and /bin tool but nc, so git and the rest still resolve and only the probe's nc is missing.
-    const bin = mkdtempSync(join(tmpdir(), "j1-path-"));
+    const bin = tmp("j1-path-");
     for (const dir of ["/usr/bin", "/bin"]) for (const name of readdirSync(dir)) if (name !== "nc" && !existsSync(join(bin, name))) symlinkSync(join(dir, name), join(bin, name));
     const old = process.env.PATH;
     process.env.PATH = bin;
@@ -504,7 +539,7 @@ describe("ISS-1486 D9: the pilot", () => {
   // process outside it ("escaped"). The pilot must still end within a bound, nothing it started stays alive in
   // its group, and its listener is closed.
   const holdingNc = (mode: "held" | "escaped"): { bin: string; pids: string } => {
-    const dir = mkdtempSync(join(tmpdir(), `k1-${mode}-`));
+    const dir = tmp(`k1-${mode}-`);
     const bin = join(dir, "bin"); mkdirSync(bin);
     const pids = join(dir, "pids");
     const holder = join(dir, "holder.cjs");

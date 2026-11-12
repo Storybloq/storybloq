@@ -1,13 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync, chmodSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { basename, join, resolve, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import type { ChildProcess } from "node:child_process";
 import { writeVerifiedPilot } from "./continuity-pilot-fixture.js";
+import { removeKeptWorkdirs } from "../helpers/kept-workdirs.js";
 import {
   parseStream, summarizeStream, usageContext, validity, rateLimitStop, machineLoadStop, parseSwapFree, LOAD_RULE, completion, sanitize, publicationCheck, jsonShapePreserved, fixtureCredentialAllowlist, environmentSecrets, ambiguousEnvironmentSecrets,
   diffLedger, decideCell, qualifies, expectedCellKeys, experimentHash, materialize, variantDiscoveryViolations, skillPayloadDiff, hashInputs, hashTree, sha256,
@@ -16,7 +17,7 @@ import {
 } from "../../scripts/continuity-lib.js";
 import {
   parseArgs, buildManifestHash, readAttempts, INPUT_PATHS, checkOutputPaths, effectiveConfigHash, commandTokens, SHARED_REFUSAL, refuseShared, continuityTools, continuityOptions,
-  provisionFreshConfig, runAttempt, runMatrix, recoverAttempt, cliRecover, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, RECOVERY_DIAGNOSTIC_FILE, expectationSha256, runPilot, driveClaude, type Launch, RateLimitStopError, ProvenanceStopError, PROVENANCE_STOP_FILE, PROVENANCE_INTENT_FILE, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
+  provisionFreshConfig, runAttempt, runMatrix, recoverAttempt, cliRecover, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, RECOVERY_DIAGNOSTIC_FILE, expectationSha256, runPilot, driveClaude, type Launch, RateLimitStopError, ProvenanceStopError, PROVENANCE_STOP_FILE, PROVENANCE_INTENT_FILE, RETAINED_WORKDIR_FILE, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
 } from "../../scripts/continuity-run.js";
 import { aggregate, COMPARISON_CHECKPOINT, scoringRequest, validateScore, mechanicalFailureScore, selectObservations, renderReport, loadScore, publishText, type AttemptRecord, type Observation,
   taskMaterialOf, experimentTaskMaterial, compareTaskMaterial, type TaskMaterialResult } from "../../scripts/continuity-score.js";
@@ -26,7 +27,15 @@ import { processGroupSeams } from "../../src/core/process-group.js";
 
 const PKG = resolve(__dirname, "../..");
 const FIXTURE = resolve(__dirname, "../fixtures/continuity");
-const tmp = (p: string): string => mkdtempSync(join(tmpdir(), p));
+const tmp = (p: string): string => { const d = mkdtempSync(join(tmpdir(), p)); made.push(d); return d; };
+// ISS-1497: every directory this file makes is tracked and removed when the file ends, pass or fail.
+const made: string[] = [];
+afterAll(() => {
+  // A work folder a row kept is named under one of these roots; it goes first, then the roots.
+  removeKeptWorkdirs(made);
+  for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
 
 /** A record in the verified schema; tests override what they care about. */
 function baseRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -969,6 +978,8 @@ interface FakeBehaviour {
   readonly provenanceInit?: boolean;
   /** C-F5: extra stream lines before the result (a second init). */
   readonly before?: readonly string[];
+  /** ISS-1497: after any commit, a tracked file is edited and an untracked file created, neither committed ("ledger": one untracked file under .story/ only; "ignored": build output an ignore rule hides). */
+  readonly dirty?: boolean | "ledger" | "ignored";
 }
 /** C-F5: the client's init carries the session the launch chose (--session-id or --resume), as the real client's does. */
 const initFor = (args: readonly string[], override?: string, provenance = false): string => {
@@ -1039,6 +1050,16 @@ function fakeSpawn(behaviour: FakeBehaviour, seen: { cwd: string; env: NodeJS.Pr
         const g = (a: string[]): void => { execFileSync("git", a, { cwd, stdio: "ignore", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }); };
         g(["add", "-A"]); g(["commit", "-q", "-m", `${ticketId}: done`]);
       }
+      if (behaviour.dirty === "ledger") writeFileSync(join(cwd, ".story", "uncommitted-ledger-note.md"), "held by ledger.after\n");
+      else if (behaviour.dirty === "ignored") {
+        writeFileSync(join(cwd, ".git", "info", "exclude"), "build/\n", { flag: "a" });
+        mkdirSync(join(cwd, "build"), { recursive: true });
+        writeFileSync(join(cwd, "build", "out.js"), "// ignored output\n");
+      }
+      else if (behaviour.dirty) {
+        writeFileSync(join(cwd, "src", "http", "router.ts"), `${readFileSync(join(cwd, "src", "http", "router.ts"), "utf-8")}\n// an edit never committed\n`);
+        writeFileSync(join(cwd, "notes-never-committed.txt"), "untracked\n");
+      }
       writeFileSync(join(sessionDir, "state.json"), JSON.stringify(state));
       const lines = [
         initFor(args, behaviour.initSession, behaviour.provenanceInit),
@@ -1063,7 +1084,7 @@ function fakeSpawn(behaviour: FakeBehaviour, seen: { cwd: string; env: NodeJS.Pr
 
 /** J2: a codex that only answers --version: the fake client never starts the server, so nothing else runs it. */
 const CODEX_VERSION_ONLY = ((): string => {
-  const f = join(mkdtempSync(join(tmpdir(), "cont-codex-")), "codex");
+  const f = join(tmp("cont-codex-"), "codex");
   writeFileSync(f, "#!/bin/sh\necho codex-cli 0.0.0-version-only\n", { mode: 0o755 });
   return f;
 })();
@@ -1100,6 +1121,79 @@ const pubDirOf = (o: RunOptions, pf: Preflight, task = "T-4", repeat = 1, attemp
 const rawDirOf = (o: RunOptions, pf: Preflight, task = "T-4", repeat = 1, attempt = "attempt-001"): string => join(o.rawOut, pf.experiment.slice(0, 12), task, `repeat-${repeat}`, attempt);
 
 describe("attempt lifecycle (fake child process, no model)", () => {
+  it("ISS-1497: a completed, clean attempt leaves no workdir behind; its ledger and diff are already in the raw dir", async () => {
+    const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const r = await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn: fakeSpawn({ complete: true }, seen) }));
+    expect(r).toMatchObject({ validity: "valid", completion: "completed" });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(basename(seen[0]!.cwd)).toMatch(/^continuity-work-/);
+    expect(existsSync(seen[0]!.cwd)).toBe(false);
+    expect(existsSync(join(rawDirOf(o, pf), "ledger.after"))).toBe(true);
+    expect(r.retainedWorkdir).toBeUndefined();
+    expect(existsSync(join(rawDirOf(o, pf), RETAINED_WORKDIR_FILE))).toBe(false);
+  });
+
+  it("ISS-1497: an uncommitted change under .story/ alone is held by ledger.after, so the workdir still goes", async () => {
+    const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const r = await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn: fakeSpawn({ complete: true, dirty: "ledger" }, seen) }));
+    expect(existsSync(join(rawDirOf(o, pf), "ledger.after", "uncommitted-ledger-note.md"))).toBe(true);
+    expect(r.retainedWorkdir).toBeUndefined();
+    expect(existsSync(seen[0]!.cwd)).toBe(false);
+  });
+
+  // ISS-1497: every ending but a clean, fully archived one keeps the workdir and names it with the reason.
+  const keptOf = (o: RunOptions, pf: Preflight): unknown => JSON.parse(readFileSync(join(rawDirOf(o, pf), RETAINED_WORKDIR_FILE), "utf-8"));
+  it("ISS-1497: a provenance stop after the prompt keeps the workdir and names it in the raw dir and in the stop", async () => {
+    const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const prov = { clientVersion: "2.1.322", agents: [], commands: [], skills: ["story"], plugins: [], outputStyle: "default" };
+    const d = { ...deps({ spawnFn: fakeSpawn({ complete: true, ignoreTerm: true }, seen) }), beforeSpawnCheck: (l: Launch): void => { (l.expected as { provenance?: unknown }).provenance = prov; } };
+    const err = await runAttempt(o, pf, "T-4", 1, 1, d).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ProvenanceStopError);
+    expect(existsSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE))).toBe(true);
+    const workdir = seen[0]!.cwd;
+    expect(existsSync(workdir)).toBe(true);
+    expect(keptOf(o, pf)).toEqual({ path: workdir, reason: "stopped" });
+    expect((err as Error).message).toContain(`The work folder is kept (stopped): ${workdir}`);
+  });
+
+  it("ISS-1497: a failed copy of the ledger into the raw dir keeps the workdir", async () => {
+    const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const archiveCopy = (_src: string, dest: string): void => { if (basename(dest) === "ledger.after") throw Object.assign(new Error("EIO copying the ledger"), { code: "EIO" }); };
+    await expect(runAttempt(o, pf, "T-4", 1, 1, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen) }), archiveCopy })).rejects.toThrow(/EIO copying the ledger/);
+    const workdir = seen[0]!.cwd;
+    expect(existsSync(workdir)).toBe(true);
+    expect(keptOf(o, pf)).toEqual({ path: workdir, reason: "archive-failed" });
+  });
+
+  it("ISS-1497: an attempt that leaves a tracked edit and an untracked file uncommitted keeps the workdir, named on the progress and summary lines", async () => {
+    const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const lines: string[] = [];
+    const m = await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true, dirty: true }, seen), log: (l) => lines.push(l) }));
+    const workdir = seen[0]!.cwd;
+    expect(existsSync(join(workdir, "notes-never-committed.txt"))).toBe(true);
+    expect(keptOf(o, pf)).toEqual({ path: workdir, reason: "dirty" });
+    expect(lines.some((l) => l.endsWith(`workdir kept (dirty): ${workdir}`))).toBe(true);
+    expect(m.summary.some((l) => l.includes("WORKDIR KEPT (dirty)"))).toBe(true);
+    expect(m.summary.join("\n")).not.toContain(workdir);
+  });
+
+  it("ISS-1497: ignored output outside .story keeps the workdir, reason dirty, and names it", async () => {
+    const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const lines: string[] = [];
+    await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true, dirty: "ignored" }, seen), log: (l) => lines.push(l) }));
+    const workdir = seen[0]!.cwd;
+    expect(existsSync(join(workdir, "build", "out.js"))).toBe(true);
+    expect(keptOf(o, pf)).toEqual({ path: workdir, reason: "dirty" });
+    expect(lines.some((l) => l.endsWith(`workdir kept (dirty): ${workdir}`))).toBe(true);
+  });
+
+  it("ISS-1497: a timed-out attempt keeps the workdir", async () => {
+    const o = options({ timeoutMs: 80, sigkillGraceMs: 40 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const r = await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn: fakeSpawn({ hang: true, ignoreTerm: true }, seen) }));
+    const workdir = seen[0]!.cwd;
+    expect(r.retainedWorkdir).toEqual({ path: workdir, reason: "killed" });
+    expect(existsSync(workdir)).toBe(true);
+    expect(keptOf(o, pf)).toEqual({ path: workdir, reason: "killed" });
+  });
+
   it("a completed session is valid, completed, evidence-complete, and every published byte is sanitised", async () => {
     const o = options(); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
     const r = await runAttempt(o, pf, "T-4", 1, 1, deps({ spawnFn: fakeSpawn({ complete: true }, seen) }));
@@ -1675,7 +1769,8 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(seen).toHaveLength(0);
     const record = JSON.parse(readFileSync(join(pubDirOf(o, pf), "record.json"), "utf-8")) as Record<string, unknown>;
     expect(record).toMatchObject({ validity: "invalid", invalidReasons: ["config-drift"], completion: "not-started", configDrift: ["CLAUDE.md", "plugins/known_marketplaces.json"], wallMs: 0 });
-    expect(lines).toEqual(["attempt T-4#1.1 invalid [config-drift] wall=0 exit=none"]);
+    // ISS-1497: a refusal is not a clean, archived ending, so its (untouched) work folder is kept and named.
+    expect(lines).toEqual([expect.stringMatching(/^attempt T-4#1\.1 invalid \[config-drift\] wall=0 exit=none workdir kept \(stopped\): .*\/continuity-work-[^/]+$/)]);
     const expDir = join(o.out, pf.experiment.slice(0, 12));
     expect(readAttempts(join(expDir, "T-4", "repeat-1"))[0]!.record).toMatchObject({ completion: "not-started", invalidReasons: ["config-drift"] });
     expect(existsSync(join(expDir, "T-3"))).toBe(false);

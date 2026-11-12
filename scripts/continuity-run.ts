@@ -743,6 +743,8 @@ export interface AttemptDeps {
   readonly readbackTimeoutMs?: number;
   /** ISS-1486 D5: called after the launch files are written and before they are checked; a test tampers here. */
   readonly beforeSpawnCheck?: (launch: Launch) => void;
+  /** ISS-1497, test seam: the copy of the ledger and the session into the raw dir (cpSync by default). */
+  readonly archiveCopy?: (src: string, dest: string, opts: { recursive: true }) => void;
   /** B-F2: the durable writer for the provenance intent and stop (writeDurable by default); a test injects a failure. */
   readonly writeDurable?: (path: string, text: string) => Promise<void>;
   /** B-F3: the directory reads of the provenance-stop scan; a test injects EACCES or EIO. */
@@ -796,6 +798,8 @@ export interface AttemptOutcome {
   readonly invalidReasons: readonly string[];
   readonly wallMs: number;
   readonly exitCode: number | null;
+  /** ISS-1497: present when the work folder was kept (a stop, a kill, a failed archive copy or unarchived changes). */
+  readonly retainedWorkdir?: RetainedWorkdir;
 }
 
 async function validateClean(root: string): Promise<void> {
@@ -1133,6 +1137,41 @@ export function launchEvidence(launch: Launch, run: LaunchRun | null, pre: reado
 }
 
 /** The fixture copy for one launch: materialised, a git repository with one commit, validated. */
+/** ISS-1497: why a run kept its work folder instead of removing it. */
+export type WorkdirKeepReason = "stopped" | "killed" | "archive-failed" | "dirty";
+export interface RetainedWorkdir { readonly path: string; readonly reason: WorkdirKeepReason }
+/** ISS-1497: the file in the raw dir that names a kept work folder and why it was kept. */
+export const RETAINED_WORKDIR_FILE = "workdir.retained.json";
+
+/** ISS-1497: what a caller's archive already holds: the commit its diff starts from, and the paths it copied. */
+export interface ArchiveHolds {
+  /** Tracked changes are compared with this commit: HEAD when the commits since the start are in an archived diff, else the start. */
+  readonly base: string;
+  /** Folder prefixes (ending in "/") copied whole into the archive. */
+  readonly dirs: readonly string[];
+  /** Single files whose contents the archive records. */
+  readonly files: readonly string[];
+}
+
+/**
+ * ISS-1497: the worktree changes the archive does not hold: tracked changes against holds.base (committed, staged or
+ * not) and every untracked file, ignored ones included, minus only what the caller says it archived. null when git
+ * cannot say, which the caller treats as dirty.
+ */
+export function unarchivedChanges(workdir: string, holds: ArchiveHolds): string[] | null {
+  try {
+    const tracked = gitLocal(workdir, ["diff", "--name-only", "-z", holds.base]).split("\0");
+    const untracked = gitLocal(workdir, ["ls-files", "--others", "-z"]).split("\0");
+    return [...tracked, ...untracked].filter((f) => f !== "" && !holds.dirs.some((d) => f.startsWith(d)) && !holds.files.includes(f));
+  } catch { return null; }
+}
+
+/** ISS-1497: the kept work folder named in the raw dir, and on a thrown stop in its message; best effort, never masks the stop. */
+function recordKept(rawDir: string, kept: RetainedWorkdir, err?: unknown): void {
+  try { writeFileSync(join(rawDir, RETAINED_WORKDIR_FILE), `${JSON.stringify(kept, null, 2)}\n`); } catch { /* the raw dir itself may be the failure */ }
+  if (err instanceof Error) err.message += ` The work folder is kept (${kept.reason}): ${kept.path}`;
+}
+
 function prepareWork(arm: 1 | 2 | 3, task: Task, workdir: string): { readonly mat: ReturnType<typeof materialize>; readonly initialHead: string } {
   const mat = materialize(FIXTURE_ROOT, arm, task, workdir);
   if (mat.variant) {
@@ -1207,9 +1246,13 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
   const failure = (stage: string, err: unknown): void => {
     try { writeFileSync(join(rawDir, "failure.json"), JSON.stringify({ stage, error: err instanceof Error ? (err.stack ?? err.message) : String(err), at: new Date().toISOString() }, null, 2)); } catch { /* the raw dir itself may be the failure */ }
   };
+  // ISS-1497: the work folder goes only when the attempt reached the end of extraction, every copy into rawDir held and
+  // the worktree holds nothing the archive lacks. Every other ending keeps it, named in the raw dir and the result.
+  const keep: { path: string | null; reason: WorkdirKeepReason | null } = { path: null, reason: "stopped" };
 
   try {
     const workdir = canonicalTemp("continuity-work-");
+    keep.path = workdir;
     const { mat, initialHead } = prepareWork(o.arm, task, workdir);
     await validateClean(workdir);
     cpSync(join(workdir, ".story"), join(rawDir, "ledger.before"), { recursive: true });
@@ -1239,7 +1282,7 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
     };
     const notStarted = (reasons: string[], extra: Partial<AttemptOutcome>): AttemptOutcome => ({
       validity: "invalid", completion: "not-started", interrupted: false, rateLimited: false, machineLoad: false, evidenceComplete: false, inputDrift: { invalidating: [], disclosed: [], errors: {} },
-      configDrift: null, launchPolicy: null, inputFailure: null, invalidReasons: reasons, wallMs: 0, exitCode: null, ...extra,
+      configDrift: null, launchPolicy: null, inputFailure: null, invalidReasons: reasons, wallMs: 0, exitCode: null, ...extra, retainedWorkdir: { path: workdir, reason: "stopped" },
     });
     // ISS-1315: a config that has moved since preflight moved for every attempt after it too. Spawn nothing,
     // record the refusal (not counted toward the retry budget), and let the matrix stop for repair. The record
@@ -1433,11 +1476,16 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
     const newHandovers = existsSync(handoversDir) ? readdirSync(handoversDir).filter((f) => !existsSync(join(rawDir, "ledger.before", "handovers", f))) : [];
     const comp = completion({ stateJson: stateJson as never, ticketId, ticketStatusOnDisk: ticketStatus, handoverWritten: newHandovers.length > 0, headMoved: headAfter !== initialHead });
 
-    cpSync(join(workdir, ".story"), join(rawDir, "ledger.after"), { recursive: true });
-    if (sessionDir && existsSync(sessionDir)) cpSync(sessionDir, join(rawDir, "session"), { recursive: true });
+    const archiveCopy = deps.archiveCopy ?? cpSync;
+    let ledgerCopied = false;
+    try {
+      archiveCopy(join(workdir, ".story"), join(rawDir, "ledger.after"), { recursive: true });
+      if (sessionDir && existsSync(sessionDir)) archiveCopy(sessionDir, join(rawDir, "session"), { recursive: true });
+      ledgerCopied = true;
+    } catch (e) { keep.reason = "archive-failed"; throw e; }
     const ledgerChanges = diffLedger(join(rawDir, "ledger.before"), join(rawDir, "ledger.after"));
-    let sourceDiff = ""; let worktreeStatus = "";
-    try { sourceDiff = gitLocal(workdir, ["diff", `${initialHead}..HEAD`]); } catch { /* none */ }
+    let sourceDiff = ""; let worktreeStatus = ""; let diffHeld = true;
+    try { sourceDiff = gitLocal(workdir, ["diff", `${initialHead}..HEAD`]); } catch { diffHeld = false; }
     try { worktreeStatus = gitLocal(workdir, ["status", "--porcelain"]); } catch { /* none */ }
 
     // Sanitised publication: one checked writer for every byte that lands under pubDir.
@@ -1530,11 +1578,18 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
     await writeAtomic(join(pubDir, "artefacts.sha256.json"), JSON.stringify(hashes, null, 2));
     for (const [name, h] of Object.entries(hashes)) if (sha256(readFileSync(join(pubDir, name))) !== h) throw new Error(`artefact ${name} changed under the writer`);
     await writeAtomic(join(pubDir, "completed"), `${new Date().toISOString()}\n`);
-    return { validity: record.validity as "valid" | "invalid", completion: comp.status, interrupted, rateLimited: limitStop !== null, machineLoad: loadStop !== null, evidenceComplete, inputDrift: drift, configDrift: null, launchPolicy: launchFailure, inputFailure, invalidReasons: v.reasons, wallMs, exitCode: exit.code };
+    // The commits since initialHead are in source.diff, so tracked changes compare with HEAD; .story/ only once ledger.after holds it.
+    const unheld = diffHeld ? unarchivedChanges(workdir, { base: "HEAD", dirs: ledgerCopied ? [".story/"] : [], files: [] }) : null;
+    keep.reason = killKind !== null ? "killed" : !diffHeld ? "archive-failed" : unheld === null || unheld.length > 0 ? "dirty" : null;
+    const kept = keep.reason === null ? {} : { retainedWorkdir: { path: workdir, reason: keep.reason } };
+    return { validity: record.validity as "valid" | "invalid", completion: comp.status, interrupted, rateLimited: limitStop !== null, machineLoad: loadStop !== null, evidenceComplete, inputDrift: drift, configDrift: null, launchPolicy: launchFailure, inputFailure, invalidReasons: v.reasons, wallMs, exitCode: exit.code, ...kept };
   } catch (err) {
     failure("attempt", err);
+    if (keep.path !== null && keep.reason !== null) { recordKept(rawDir, { path: keep.path, reason: keep.reason }, err); keep.path = null; }
     throw err;
   } finally {
+    if (keep.path !== null && keep.reason === null) { const w = keep.path; cleanup.push(() => rmSync(w, { recursive: true, force: true })); }
+    else if (keep.path !== null && keep.reason !== null) recordKept(rawDir, { path: keep.path, reason: keep.reason });
     for (const fn of cleanup.reverse()) { try { fn(); } catch { /* best effort */ } }
   }
 }
@@ -1641,6 +1696,8 @@ export interface PilotOutcome {
   readonly id: string;
   readonly probes: ReturnType<typeof judgePilot>["probes"];
   readonly problems: readonly string[];
+  /** ISS-1497: present when the pilot's work folder was kept. */
+  readonly retainedWorkdir?: RetainedWorkdir;
 }
 
 
@@ -1666,9 +1723,12 @@ export async function runPilot(o: RunOptions, pf: Preflight, deps: AttemptDeps =
   const sockets = new Set<import("node:net").Socket>();
   const server = createServer((sock) => { sockets.add(sock); sock.on("close", () => sockets.delete(sock)); sock.on("data", (d: Buffer) => received.push(d)); sock.on("error", () => { /* the probe's own end */ }); });
   const received: Buffer[] = [];
+  // ISS-1497: the attempt's rule; only the two inside targets are held (pilot.facts.json records their contents).
+  const keep: { path: string | null; reason: WorkdirKeepReason | null } = { path: null, reason: "stopped" };
   try {
     const workdir = canonicalTemp("continuity-pilot-work-");
-    prepareWork(o.arm, o.tasks[0] ?? TASKS[0], workdir);
+    keep.path = workdir;
+    const { initialHead } = prepareWork(o.arm, o.tasks[0] ?? TASKS[0], workdir);
     const configDir = canonicalTemp("continuity-config-");
     (deps.provision ?? provisionFreshConfig)(configDir);
     const outside = canonicalTemp("continuity-pilot-outside-");
@@ -1778,8 +1838,16 @@ export async function runPilot(o: RunOptions, pf: Preflight, deps: AttemptDeps =
     const m = map(JSON.stringify(record, null, 2));
     if (!m.ok) throw new Error(`${PILOT_FILE} would publish blocked content (${m.labels.join(", ")}); runner bug`);
     await writeAtomic(join(expDir, PILOT_FILE), m.text);
-    return { pass, id, probes: judged.probes, problems };
+    // The pilot archives no diff and no ledger: everything since its initial commit counts but the two captured probe files.
+    const unheld = unarchivedChanges(workdir, { base: initialHead, dirs: [], files: [basename(paths["bash-inside"]), basename(paths["edit-inside"])] });
+    keep.reason = run !== null && run.killKind !== null ? "killed" : unheld === null || unheld.length > 0 ? "dirty" : null;
+    return { pass, id, probes: judged.probes, problems, ...(keep.reason === null ? {} : { retainedWorkdir: { path: workdir, reason: keep.reason } }) };
+  } catch (err) {
+    if (keep.path !== null && keep.reason !== null) { recordKept(rawDir, { path: keep.path, reason: keep.reason }, err); keep.path = null; }
+    throw err;
   } finally {
+    if (keep.path !== null && keep.reason === null) { const w = keep.path; cleanup.push(() => rmSync(w, { recursive: true, force: true })); }
+    else if (keep.path !== null && keep.reason !== null) recordKept(rawDir, { path: keep.path, reason: keep.reason });
     for (const s of sockets) s.destroy();
     await new Promise<void>((r) => server.close(() => r()));
     for (const fn of cleanup.reverse()) { try { fn(); } catch { /* best effort */ } }
@@ -1916,9 +1984,10 @@ export async function runMatrix(o: RunOptions, pf: Preflight, deps: AttemptDeps 
         }
         if (decision.kind === "exhausted") { cells.push({ task, repeat, satisfied: false, evidenceComplete: false, attempt: null }); summary.push(`${task}#${repeat}: EXHAUSTED (only invalid attempts)`); break; }
         const r = await runAttempt(o, pf, task, repeat, decision.nextAttempt, deps);
-        (deps.log ?? ((line: string) => process.stdout.write(`${line}\n`)))(`attempt ${task}#${repeat}.${decision.nextAttempt} ${r.validity} [${r.invalidReasons.join(", ")}] wall=${Math.round(r.wallMs / 1000)} exit=${r.exitCode ?? "none"}`);
+        // ISS-1497: a kept work folder is named on the progress line; the summary (published in experiment.json) carries only the reason.
+        (deps.log ?? ((line: string) => process.stdout.write(`${line}\n`)))(`attempt ${task}#${repeat}.${decision.nextAttempt} ${r.validity} [${r.invalidReasons.join(", ")}] wall=${Math.round(r.wallMs / 1000)} exit=${r.exitCode ?? "none"}${r.retainedWorkdir ? ` workdir kept (${r.retainedWorkdir.reason}): ${r.retainedWorkdir.path}` : ""}`);
         const driftNote = `${r.inputDrift.invalidating.length ? ` INPUT DRIFT (${r.inputDrift.invalidating.join(", ")})` : ""}${r.inputDrift.disclosed.length ? ` input drift disclosed (${r.inputDrift.disclosed.join(", ")})` : ""}`;
-        summary.push(`${task}#${repeat} ${attemptDirName(decision.nextAttempt)}: ${r.validity} ${r.completion}${r.interrupted ? " INTERRUPTED" : ""}${r.rateLimited ? " RATE-LIMITED" : ""}${r.machineLoad ? " MACHINE-LOAD" : ""}${driftNote}`);
+        summary.push(`${task}#${repeat} ${attemptDirName(decision.nextAttempt)}: ${r.validity} ${r.completion}${r.interrupted ? " INTERRUPTED" : ""}${r.rateLimited ? " RATE-LIMITED" : ""}${r.machineLoad ? " MACHINE-LOAD" : ""}${driftNote}${r.retainedWorkdir ? ` WORKDIR KEPT (${r.retainedWorkdir.reason})` : ""}`);
         if (r.configDrift !== null) {
           writeExperiment(o, pf, cells, summary, "the client config drifted since preflight; restore it (or rerun preflight) and re-run the same command");
           throw new ConfigDriftStopError(`continuity-run: ${task}#${repeat} refused before its spawn: config drifted since preflight (${r.configDrift.join(", ") || "inventory hash"}). No attempt was spent; no further attempts started.`);
@@ -2234,7 +2303,7 @@ async function main(): Promise<void> {
   process.stdout.write(`experiment ${pf.experiment}\nisolation ${o.isolation}; model ${o.model}; effort ${o.effort}; tasks ${o.tasks.join(",")} x ${o.repeats}\n`);
   if (o.pilot) {
     const p = await runPilot(o, pf);
-    process.stdout.write(`${p.probes.map((v) => `${v.probe}: ${v.pass ? "pass" : "FAIL"} (${v.detail})`).join("\n")}\n${p.problems.map((x) => `problem: ${x}`).join("\n")}\npilot: ${p.pass ? "PASS" : "FAIL"}\n`);
+    process.stdout.write(`${p.probes.map((v) => `${v.probe}: ${v.pass ? "pass" : "FAIL"} (${v.detail})`).join("\n")}\n${p.problems.map((x) => `problem: ${x}`).join("\n")}\npilot: ${p.pass ? "PASS" : "FAIL"}${p.retainedWorkdir ? ` workdir kept (${p.retainedWorkdir.reason}): ${p.retainedWorkdir.path}` : ""}\n`);
     process.exit(p.pass ? 0 : 7);
   }
   const r = await runMatrix(o, pf);

@@ -306,21 +306,48 @@ export function envFor(role: EnvRole, i: EnvInputs): Record<string, string> {
       need("CLAUDE_CODE_OAUTH_TOKEN", i.oauthToken);
     }
   } else need("CODEX_HOME", i.runnerHome);
-  need("STORYBLOQ_CLIENT", i.client);
+  // S3 (note v5 C4): under signed-in the eval names live in the CLI launcher's table (launcherExtraFor), never
+  // in the client column.
+  const evalNames = !(role === "client" && i.isolation === "signed-in");
+  if (evalNames) need("STORYBLOQ_CLIENT", i.client);
   need("STORYBLOQ_GLOBAL_DIR", i.globalDir);
-  need("STORYBLOQ_EVAL_EVENTS", i.events);
-  if (i.fault) {
-    env.STORYBLOQ_EVAL_FAULT = i.fault;
-    if (i.faultId) env.STORYBLOQ_EVAL_FAULT_ID = i.faultId;
+  if (evalNames) {
+    need("STORYBLOQ_EVAL_EVENTS", i.events);
+    if (i.fault) {
+      env.STORYBLOQ_EVAL_FAULT = i.fault;
+      if (i.faultId) env.STORYBLOQ_EVAL_FAULT_ID = i.faultId;
+    }
+    if (i.reviewResponses) env.STORYBLOQ_EVAL_REVIEW_RESPONSES = i.reviewResponses;
+    need("STORYBLOQ_SETUP_REVIEW_DIR", i.reviewStore);
   }
-  if (i.reviewResponses) env.STORYBLOQ_EVAL_REVIEW_RESPONSES = i.reviewResponses;
-  need("STORYBLOQ_SETUP_REVIEW_DIR", i.reviewStore);
   if (role === "server") {
     need("STORYBLOQ_EVAL_OUTSIDE", i.outside);
     need("STORYBLOQ_EVAL_TOOLS", i.tools);
   }
   if (role === "client" && i.degraded) env.ENABLE_TOOL_SEARCH = "true";
   return env;
+}
+
+/**
+ * T-538 S3 (note v5 C4): the signed-in CLI launcher's extra table, the eval names the fresh client column carries,
+ * with the same values and the same rules: events and the review store required, the fault pair and the review
+ * responses only when set.
+ */
+export function launcherExtraFor(i: EnvInputs): Record<string, string> {
+  const extra: Record<string, string> = {};
+  const need = (k: string, v: string | undefined): void => {
+    if (v === undefined || v === "") throw new Error(`onboarding-eval: ${k} has no value for the CLI launcher`);
+    extra[k] = v;
+  };
+  need("STORYBLOQ_CLIENT", i.client);
+  need("STORYBLOQ_EVAL_EVENTS", i.events);
+  if (i.fault) {
+    extra.STORYBLOQ_EVAL_FAULT = i.fault;
+    if (i.faultId) extra.STORYBLOQ_EVAL_FAULT_ID = i.faultId;
+  }
+  if (i.reviewResponses) extra.STORYBLOQ_EVAL_REVIEW_RESPONSES = i.reviewResponses;
+  need("STORYBLOQ_SETUP_REVIEW_DIR", i.reviewStore);
+  return extra;
 }
 
 export const mcpEnvFor = (i: EnvInputs): Record<string, string> => envFor("server", i);

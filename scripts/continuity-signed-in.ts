@@ -74,27 +74,57 @@ export function signedInClientEnv(source: NodeJS.ProcessEnv, d: SignedInDirs, ho
   return env;
 }
 
+/**
+ * T-538 S3 (note v5 C4): the only names a launcher's extra table may carry, the eval names the fresh client
+ * column holds. Any other name, a base-table name included, is refused before anything is written.
+ */
+export const LAUNCHER_EXTRA_NAMES = [
+  "STORYBLOQ_CLIENT", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_FAULT", "STORYBLOQ_EVAL_FAULT_ID", "STORYBLOQ_EVAL_REVIEW_RESPONSES",
+] as const;
+export type LauncherExtraName = (typeof LAUNCHER_EXTRA_NAMES)[number];
+
 export interface LauncherSpec {
   readonly bin: string;
   readonly node: string;
   readonly cli: string;
+  /** T-538 S3: fixed arguments after the bundle (the evaluation bundle's `--entry cli`); none for continuity. */
+  readonly args?: readonly string[];
   readonly scratchHome: string;
   readonly codexHome: string;
   readonly tmp: string;
-  readonly work: string;
+  /** STORYBLOQ_PROJECT_ROOT; omitted (T-538), the CLI finds its project from its working folder. */
+  readonly work?: string;
+  /** T-538 S3: STORYBLOQ_GLOBAL_DIR; omitted, <tmp>/storybloq-global as before. */
+  readonly globalDir?: string;
   readonly path: string;
   readonly lang?: string;
+  /** T-538 S3: the allowlisted extra table (LAUNCHER_EXTRA_NAMES); none for continuity. */
+  readonly extra?: Readonly<Partial<Record<LauncherExtraName, string>>>;
 }
 
 const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/**
+ * The launcher's whole environment, in order: the base table, then the extra table. An extra name outside the
+ * allowlist, or an empty extra value, throws. It is also the environment provisioning runs under (C3).
+ */
+export function storybloqLauncherEnv(p: LauncherSpec): Record<string, string> {
+  const env: Record<string, string> = {
+    HOME: p.scratchHome, PATH: p.path, TMPDIR: p.tmp, STORYBLOQ_GLOBAL_DIR: p.globalDir ?? join(p.tmp, "storybloq-global"),
+    ...(p.work === undefined ? {} : { STORYBLOQ_PROJECT_ROOT: p.work }), NO_UPDATE_NOTIFIER: "1", CODEX_HOME: p.codexHome, ...(p.lang ? { LANG: p.lang } : {}),
+  };
+  for (const [k, v] of Object.entries(p.extra ?? {})) {
+    if (!(LAUNCHER_EXTRA_NAMES as readonly string[]).includes(k)) throw new Error(`storybloq launcher: ${k} is not an allowed extra variable`);
+    if (v === undefined || v === "") throw new Error(`storybloq launcher: the extra variable ${k} has no value`);
+    env[k] = v;
+  }
+  return env;
+}
+
 /** The launcher script text: an empty environment plus the explicit table, then the pinned node and bundle. */
 export function storybloqLauncherText(p: LauncherSpec): string {
-  const env = [
-    ["HOME", p.scratchHome], ["PATH", p.path], ["TMPDIR", p.tmp], ["STORYBLOQ_GLOBAL_DIR", join(p.tmp, "storybloq-global")],
-    ["STORYBLOQ_PROJECT_ROOT", p.work], ["NO_UPDATE_NOTIFIER", "1"], ["CODEX_HOME", p.codexHome], ...(p.lang ? [["LANG", p.lang]] : []),
-  ].map(([k, v]) => `${k}=${shQuote(v!)}`);
-  return `#!/bin/sh\nexec /usr/bin/env -i ${env.join(" ")} ${shQuote(p.node)} ${shQuote(p.cli)} "$@"\n`;
+  const env = Object.entries(storybloqLauncherEnv(p)).map(([k, v]) => `${k}=${shQuote(v)}`);
+  return `#!/bin/sh\nexec /usr/bin/env -i ${env.join(" ")} ${[p.node, p.cli, ...(p.args ?? [])].map(shQuote).join(" ")} "$@"\n`;
 }
 
 /**

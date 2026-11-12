@@ -176,7 +176,7 @@ describe("finding 4: the CLI's housekeeping is client-home provisioning", () => 
     expect(call).toBeGreaterThan(src.indexOf("const codex = provisionCodexHome(home, realCodexAuth, \"client\""));
     expect(src.indexOf("manifestEntries.splice(0, manifestEntries.length, ...pinWrites(manifestEntries, clientHomeProvisioning, work));")).toBeGreaterThan(call);
     expect(src.indexOf("const manifest: Manifest = { folders: [...homeFolders, ...shimFolders], entries: manifestEntries };")).toBeGreaterThan(call);
-    expect(src).toContain("command: launcher, folders: homeFolders, provisionDir: provisionCwd, root: work,");
+    expect(src).toContain("command: signedInLaunchers?.provision.path ?? launcher, folders: homeFolders, provisionDir: provisionCwd, root: work,");
     expect(src).toContain("    clientHomeProvisioning,\n");
   });
 });

@@ -18,7 +18,8 @@
  * Run it only inside a box lease. The client works on a standalone copy of the
  * fixture in a scratch directory, with a fresh config that carries THIS
  * checkout's skill and MCP server (dist/ must be built), never the installed
- * ones. Claude Code needs CLAUDE_CODE_OAUTH_TOKEN; Codex uses the existing
+ * ones. A fresh Claude Code needs CLAUDE_CODE_OAUTH_TOKEN (a signed-in one reads
+ * no token and refuses a runner environment carrying one); Codex uses the existing
  * CODEX_HOME auth by symlink. No API keys: subscription auth only. Inherited
  * client variables (CODEX_*, STORYBLOQ_*, XDG_*, Claude's config and session
  * ids) are dropped; both clients, and a Codex reviewer Claude launches from its
@@ -60,11 +61,11 @@ import { StringDecoder } from "node:string_decoder";
 import { byteBudget, copyBounded, walkNoFollow, type WalkHook } from "./onboarding-eval-walk.js";
 import { newProgress, resultPathOf, withRunnerResult } from "./onboarding-eval-runner-result.js";
 import { admissionRefusal, isolationFlag, probeTurnArgs, runProbeTurn, type StandInAdmission } from "./onboarding-eval-probe.js";
-import { signedInEnvProblems } from "./continuity-signed-in.js";
+import { realHome, signedInEnvProblems, storybloqLauncherEnv, writeStorybloqLauncher, type LauncherSpec } from "./continuity-signed-in.js";
 import { type GroupControl } from "../src/core/process-group.js";
 import { runInGroup } from "./onboarding-eval-groups.js";
 import {
-  codexApprovalProblems, codexApprovalTables, envFor, envKeyProblems, HOST_CHECKS_RAW, hostChecksText, launchHeld, leftoverCheck, processOutcome, serverLaunchFailure, serverLaunchLines,
+  codexApprovalProblems, codexApprovalTables, envFor, envKeyProblems, HOST_CHECKS_RAW, launcherExtraFor, hostChecksText, launchHeld, leftoverCheck, processOutcome, serverLaunchFailure, serverLaunchLines,
   sandboxedRun, serverLaunch, TURN_LIMITS, writeServerLauncher, type SandboxedRun, TurnCapture, type AttemptCapture, type EnvInputs, type LeftoverCheck, type ProcessOutcome, type TurnHostChecks,
 } from "./onboarding-eval-host.js";
 import {
@@ -112,6 +113,8 @@ export { approvalProbeFinding } from "./onboarding-eval-drive.js";
 
 interface Options {
   readonly client: Client;
+  /** T-538 S3: the admission's isolation. Signed-in never reaches the run while section 2's refusal stands. */
+  readonly isolation: "fresh" | "signed-in";
   readonly fixture: string;
   readonly variant: Variant | SessionVariant;
   /** The session variants' fault selector for the first session, or null. */
@@ -164,7 +167,7 @@ export function runAdmission(argv: readonly string[], admission?: StandInAdmissi
 }
 
 function parseArgs(argv: readonly string[], admission?: StandInAdmission): Options {
-  runAdmission(argv, admission);
+  const isolation: Options["isolation"] = runAdmission(argv, admission);
   const get = (k: string, d?: string): string | undefined => {
     const i = argv.indexOf(`--${k}`);
     return i >= 0 ? argv[i + 1] : d;
@@ -184,7 +187,7 @@ function parseArgs(argv: readonly string[], admission?: StandInAdmission): Optio
   const out = get("out"); const rawOut = get("raw-out");
   if (!out || !rawOut) throw new Error("--out and --raw-out are required");
   return {
-    client, fixture, variant, fault, schedule,
+    client, isolation, fixture, variant, fault, schedule,
     model: get("model", client === "claude" ? "claude-opus-5-5" : "gpt-6-astra")!,
     out: resolve(out), rawOut: resolve(rawOut),
     timeoutMs: Number(get("timeout-ms", String(40 * 60_000))),
@@ -493,6 +496,43 @@ export function storybloqEntry(checkSet: number, entry: "mcp" | "cli"): { readon
 }
 
 /**
+ * T-538 S3 (deviation 2 of S2): the client-specific EnvInputs. Codex: its scratch CODEX_HOME, fresh only. Claude
+ * fresh: the scratch config folder and the token, passed through. Claude signed-in: the password-database home and
+ * neither of those; the token thunk is never called, so no token is read.
+ */
+export function clientEnvInputs(client: Client, isolation: "fresh" | "signed-in", p: { readonly work: string; readonly home: string; readonly token: () => string | undefined; readonly realHome: () => string }): Pick<EnvInputs, "clientCodexHome" | "claudeConfigDir" | "oauthToken" | "isolation" | "realHome"> {
+  if (client === "codex") {
+    if (isolation === "signed-in") throw new Error("onboarding-eval: signed-in isolation is the Claude client's only; the Codex client runs fresh");
+    return { clientCodexHome: join(p.home, ".codex") };
+  }
+  if (isolation === "signed-in") return { isolation: "signed-in", realHome: p.realHome() };
+  return { claudeConfigDir: join(p.work, "claude-config"), oauthToken: p.token() };
+}
+
+/**
+ * T-538 S3 (note v5 C3, C4): under signed-in the CLI the client's shell finds first is the E4 launcher: `env -i`,
+ * the scratch home, the scratch CODEX_HOME and this run's folders, plus the eval names (launcherExtraFor) as its
+ * allowlisted extra table. Provisioning gets its own launcher (its events file, no fault) and runs the marker
+ * writer under that launcher's environment, never the client column, which carries the real home.
+ */
+export function signedInCliLaunchers(i: EnvInputs, d: { readonly cliBin: string; readonly provisionBin: string; readonly provisionEvents: string }): {
+  readonly client: { readonly path: string; readonly sha256: string };
+  readonly provision: { readonly path: string; readonly sha256: string };
+  readonly provisionEnv: Record<string, string>;
+} {
+  if (i.isolation !== "signed-in") throw new Error("onboarding-eval: the signed-in CLI launchers are for a signed-in run only");
+  const cli = storybloqEntry(CHECK_SET_VERSION, "cli");
+  const base = (bin: string, extra: Record<string, string>): LauncherSpec => ({
+    bin, node: process.execPath, cli: cli.path, args: cli.args, scratchHome: i.home, codexHome: join(i.home, ".codex"), tmp: i.tmp, globalDir: i.globalDir, path: i.path, lang: i.lang, extra,
+  });
+  const clientSpec = base(d.cliBin, launcherExtraFor(i));
+  const provisionSpec = base(d.provisionBin, launcherExtraFor({ ...i, fault: null, faultId: null, events: d.provisionEvents }));
+  mkdirSync(d.cliBin, { recursive: true });
+  mkdirSync(d.provisionBin, { recursive: true });
+  return { client: writeStorybloqLauncher(clientSpec), provision: writeStorybloqLauncher(provisionSpec), provisionEnv: storybloqLauncherEnv(provisionSpec) };
+}
+
+/**
  * A scratch `storybloq` that runs THIS checkout's built CLI, placed first on
  * the eval PATH, so `config set-overrides`, the CLI fallback and any skill
  * refresh are this build and never the installed release.
@@ -587,7 +627,8 @@ function signedInIsolationProblems(env: NodeJS.ProcessEnv, work: string, client:
   };
   under("TMPDIR");
   if (env.CODEX_HOME !== undefined) under("CODEX_HOME");
-  const allowed = new Set(["CODEX_HOME", "STORYBLOQ_CLIENT", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_SETUP_REVIEW_DIR", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_EVAL_FAULT", "STORYBLOQ_EVAL_FAULT_ID", "STORYBLOQ_EVAL_REVIEW_RESPONSES"]);
+  // S3 (C4): the eval names live in the CLI launcher's table, so in the signed-in client column they are inherited.
+  const allowed = new Set(["CODEX_HOME", "STORYBLOQ_GLOBAL_DIR"]);
   for (const k of Object.keys(env)) if (INHERITED_CLIENT_ENV.test(k) && k !== "CLAUDE_CONFIG_DIR" && !allowed.has(k)) problems.push(`${k} is inherited`);
   if (column !== undefined) problems.push(...envKeyProblems(env, column, "client"));
   return problems;
@@ -1243,7 +1284,13 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   if (!existsSync(join(PKG_ROOT, "dist", "cli.js"))) throw new Error("onboarding-eval: dist/cli.js is missing; build this checkout first");
   // Check set 7: the evaluation bundle, rebuilt whenever its inputs changed.
   const evalBuild = CHECK_SET_VERSION >= 7 ? await buildEval(PKG_ROOT) : null;
-  if (o.client === "claude" && !process.env.CLAUDE_CODE_OAUTH_TOKEN) throw new Error("onboarding-eval: CLAUDE_CODE_OAUTH_TOKEN is required for a fresh Claude config");
+  const signedIn = o.isolation === "signed-in";
+  if (signedIn) {
+    // Note v5 section 9: names only; no value is read. Per-version fault launchers are S6 (section 6).
+    const carried = signedInEnvProblems(process.env);
+    if (carried.length > 0) throw new Error(`onboarding-eval: a signed-in run refuses a runner environment carrying ${carried.join(", ")}`);
+    if (o.schedule !== null) throw new Error("onboarding-eval: a signed-in run takes no fault schedule until its per-version launchers exist (note v5 section 6)");
+  } else if (o.client === "claude" && !process.env.CLAUDE_CODE_OAUTH_TOKEN) throw new Error("onboarding-eval: CLAUDE_CODE_OAUTH_TOKEN is required for a fresh Claude config");
 
   const fixtureDir = join(FIXTURES, o.fixture);
   const rubric = rubricFor(JSON.parse(readFileSync(join(fixtureDir, "rubric.json"), "utf-8")) as Record<string, unknown>, CHECK_SET_VERSION) as unknown as FixtureRubric;
@@ -1306,7 +1353,7 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   const reviewServer = new ReviewServer({
     requests: reviewRequests, responses: reviewResponses, project, store: setupReviewStore, budget: new ReviewBudget(),
     // Compared in memory by the scan, never stored or logged.
-    secrets: [process.env.CLAUDE_CODE_OAUTH_TOKEN ?? ""].filter((x) => x.length >= 16),
+    secrets: signedIn ? [] : [process.env.CLAUDE_CODE_OAUTH_TOKEN ?? ""].filter((x) => x.length >= 16),
     deadlineMs: () => Math.max(0, Math.min(SERVED_DEADLINE_MS, turnEndsAt - Date.now() - TURN_LIMITS.graceMs)),
     serve: serveReviewCommand(join(PKG_ROOT, "dist", "cli.js"), project, reviewerEnv),
     log: (l) => servedLines.push(l),
@@ -1323,7 +1370,11 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
       },
     });
   };
-  const launcher = installCliLauncher(join(work, "cli-bin"));
+  // S3: under signed-in the client's launcher is written once the env table is known (below); harness commands keep
+  // a plain launcher of their own, outside the client's PATH, so their own environment table still reaches the CLI.
+  const cliBin = join(work, "cli-bin");
+  const launcher = signedIn ? join(cliBin, "storybloq") : installCliLauncher(cliBin);
+  const harnessLauncher = signedIn ? installCliLauncher(join(work, "harness-cli-bin")) : launcher;
   let clientPath = `${dirname(launcher)}${delimiter}${scrubClientEnv(process.env).PATH ?? ""}`;
   // R1: the Python shims, first on the PATH, outside every root (checked below once the roots are named).
   const pythonShims = installPythonShims(join(work, "python-bin"), clientPath);
@@ -1339,12 +1390,14 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   // 5.3: one environment table. The token is passed through and never read, logged or hashed.
   let envInputs: EnvInputs = {
     client: o.client, path: clientPath, home, tmp: attemptTmp, lang: process.env.LANG || "en_US.UTF-8",
-    ...(o.client === "codex" ? { clientCodexHome: join(home, ".codex") } : { claudeConfigDir: join(work, "claude-config"), oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }),
+    ...clientEnvInputs(o.client, o.isolation, { work, home, token: () => process.env.CLAUDE_CODE_OAUTH_TOKEN, realHome }),
     runnerHome, globalDir, events: eventsFile, fault: armedIn(o.schedule, 1)?.selector ?? null, faultId: armedIn(o.schedule, 1)?.id ?? null, reviewStore: setupReviewStore, outside: outsideProbe, tools: toolSetsFile, degraded: variant === "degraded",
     reviewResponses,
   };
   let env: NodeJS.ProcessEnv = envFor("client", envInputs);
   let serverEnv = envFor("server", envInputs);
+  const signedInLaunchers = signedIn ? signedInCliLaunchers(envInputs, { cliBin, provisionBin: join(work, "provision-bin"), provisionEvents: join(work, "provision-events.jsonl") }) : null;
+  if (signedInLaunchers !== null && signedInLaunchers.client.path !== launcher) throw new Error("onboarding-eval: the signed-in launcher is not the one on the client PATH");
   // F2: every client starts the server through a launcher that keeps exactly the server column's variables; the
   // client's own environment never reaches the wrapper or the server. It lies outside every root, read-only, and
   // its bytes are checked with the configuration before every turn. The names are fixed here; a variable the
@@ -1356,9 +1409,12 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   for (const f of pythonShims) if (underAnyRoot(f, writableRoots)) throw new Error(`onboarding-eval: ${f} is under a writable root`);
   const manifestEntries: ConfigEntry[] = [fileEntry(serverLauncher), ...pythonShims.map((f) => fileEntry(f))];
   if (o.client === "claude") {
-    const claudeConfig = provisionClaude(work);
-    if (claudeConfig.configDir !== envInputs.claudeConfigDir) throw new Error("onboarding-eval: the Claude config folder is not the provisioned one");
-    manifestEntries.push(...claudeConfig.entries);
+    // S3: a signed-in client has no config folder of the run's; its configuration is section 3's (S5).
+    if (!signedIn) {
+      const claudeConfig = provisionClaude(work);
+      if (claudeConfig.configDir !== envInputs.claudeConfigDir) throw new Error("onboarding-eval: the Claude config folder is not the provisioned one");
+      manifestEntries.push(...claudeConfig.entries);
+    } else if (envInputs.claudeConfigDir !== undefined) throw new Error("onboarding-eval: a signed-in run has no Claude config folder");
     // ISS-1463: no bypass. The policy file (4.1) and the MCP file are written once, outside every root, and
     // checked byte for byte before every turn; Agent and Task are denied by the policy in every variant.
     const policyFile = join(work, "claude-policy.json");
@@ -1384,15 +1440,16 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   // command (the storybloq hooks in settings.json, a stale skill copy). That write is provisioning: the harness's
   // own CLI runs once here, with the client's environment, before the manifest pins the client home. Its fault
   // variables are left out and its events go to a file of its own, so it is never a turn's invocation.
-  const homeFolders = o.client === "claude" ? [home, envInputs.claudeConfigDir!] : [home];
+  const homeFolders = o.client === "claude" && !signedIn ? [home, envInputs.claudeConfigDir!] : [home];
   const provisionCwd = join(work, "cli-provision");
   mkdirSync(provisionCwd);
   const clientHomeProvisioning = provisionClientHome({
-    command: launcher, folders: homeFolders, provisionDir: provisionCwd, root: work,
+    command: signedInLaunchers?.provision.path ?? launcher, folders: homeFolders, provisionDir: provisionCwd, root: work,
     version: (JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8")) as { version: string }).version, skillSource: join(PKG_ROOT, "src", "skill"),
     markers: o.client === "claude" ? ["claude"] : ["codex"],
     markerWriter: { command: process.execPath, args: [...process.execArgv, join(PKG_ROOT, "scripts", "onboarding-eval-skill-marker.ts")] },
-    env: { ...envFor("client", { ...envInputs, fault: null, faultId: null }), STORYBLOQ_EVAL_EVENTS: join(work, "provision-events.jsonl") },
+    // C3: under signed-in, the provisioning launcher's own scratch environment, never the client column.
+    env: signedInLaunchers?.provisionEnv ?? { ...envFor("client", { ...envInputs, fault: null, faultId: null }), STORYBLOQ_EVAL_EVENTS: join(work, "provision-events.jsonl") },
   });
   manifestEntries.splice(0, manifestEntries.length, ...pinWrites(manifestEntries, clientHomeProvisioning, work));
   // 5.6: the configuration the client loads, checked before every turn; the project scanned before the first.
@@ -1404,12 +1461,13 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   const collector = new Collector(work);
   const scanned = await collector.projectScan(project);
   if (scanned.length > 0) throw new Error(`onboarding-eval: the project holds what a client would load: ${scanned.join("; ")}`);
-  const isolation = isolationProblems(env, work, o.client, envFor("client", envInputs));
+  const signedInHome = signedIn ? { realHome: envInputs.realHome! } : undefined;
+  const isolation = isolationProblems(env, work, o.client, envFor("client", envInputs), signedInHome);
   if (isolation.length > 0) throw new Error(`onboarding-eval: client environment is not isolated: ${isolation.join("; ")}`);
   // What a shell under this environment actually resolves, recorded with the run.
   const effective = spawnSync("/bin/sh", ["-c", 'printf "%s\\n%s\\n%s\\n" "$HOME" "${CODEX_HOME-}" "${CLAUDE_CONFIG_DIR-}"'], { env, encoding: "utf-8" }).stdout.split("\n");
   const effectivePaths = { home: effective[0] ?? "", codexHome: effective[1] ?? "", claudeConfigDir: effective[2] ?? "" };
-  if (effectivePathProblems(effectivePaths, env).length > 0) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
+  if (effectivePathProblems(effectivePaths, env, signedInHome).length > 0) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
   if (variant === "reviewer-unavailable") {
     // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin and the server's wrapper from codexBin.
     for (const name of hiddenReviewers(CHECK_SET_VERSION)) {
@@ -1472,7 +1530,7 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   };
   const inSandbox = async (command: string): Promise<SandboxedRun> => stopUnconfirmed(await sandboxedRun({ codexBin, roots: writableRoots, cwd: project, command, deadlineMs: HARNESS_DEADLINE_MS, env: sandboxEnv() }), command);
   const harnessCli = async (args: readonly string[]): Promise<string> => {
-    const r = await inSandbox(shellWords([launcher, ...args]));
+    const r = await inSandbox(shellWords([harnessLauncher, ...args]));
     if (r.status !== 0) throw new Error(`onboarding-eval: harness step storybloq ${args.join(" ")} failed (${r.status ?? r.signal}): ${r.stderr.trim()}`);
     return r.stdout;
   };
@@ -1589,7 +1647,7 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   // T-538 S5b: then the harness's own ordinary status update on the gated dependent, which the checkpoint must refuse.
   if (isDemoVariant(session) && facts.dependent !== null) {
     facts.bypass = await attemptBypassAsync(() => collector.ledgerState(join(project, ".story")), facts.dependent, async (args) => {
-      const r = await inSandbox(shellWords([launcher, ...args]));
+      const r = await inSandbox(shellWords([harnessLauncher, ...args]));
       return { status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr, ...wrappedForm(r), ...(r.spawnError !== null ? { error: new Error(r.spawnError) } : {}), ...(r.timedOut ? { error: new Error(`timed out after ${HARNESS_DEADLINE_MS} ms`) } : {}) };
     });
   }

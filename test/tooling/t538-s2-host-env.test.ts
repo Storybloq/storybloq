@@ -23,12 +23,12 @@ const SIGNED: EnvInputs = { ...BASE, isolation: "signed-in", realHome: REAL };
 const FRESH: EnvInputs = { ...BASE, claudeConfigDir: "/w/claude-config", oauthToken: SECRET };
 
 describe("S2: the signed-in client column", () => {
-  it("is exactly the fresh column's keys without CLAUDE_CONFIG_DIR and the token, with HOME the real home", () => {
+  it("is exactly the fresh column's keys without CLAUDE_CONFIG_DIR, the token and (S3) the launcher's eval names, with HOME the real home", () => {
     expect(envFor("client", SIGNED)).toEqual({
-      PATH: BASE.path, HOME: REAL, TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", NO_UPDATE_NOTIFIER: "1", STORYBLOQ_CLIENT: "claude",
-      STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global", STORYBLOQ_EVAL_EVENTS: BASE.events, STORYBLOQ_SETUP_REVIEW_DIR: BASE.reviewStore,
+      PATH: BASE.path, HOME: REAL, TMPDIR: "/w/tmp", LANG: "en_US.UTF-8", NO_UPDATE_NOTIFIER: "1", STORYBLOQ_GLOBAL_DIR: "/w/storybloq-global",
     });
-    const fresh = Object.keys(envFor("client", FRESH)).filter((k) => k !== "CLAUDE_CONFIG_DIR" && k !== "CLAUDE_CODE_OAUTH_TOKEN").sort();
+    const moved = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "STORYBLOQ_CLIENT", "STORYBLOQ_EVAL_EVENTS", "STORYBLOQ_SETUP_REVIEW_DIR"];
+    const fresh = Object.keys(envFor("client", FRESH)).filter((k) => !moved.includes(k)).sort();
     expect(Object.keys(envFor("client", SIGNED)).sort()).toEqual(fresh);
     expect(envFor("client", { ...SIGNED, degraded: true }).ENABLE_TOOL_SEARCH).toBe("true");
   });
@@ -146,6 +146,6 @@ describe("S2: the effective paths", () => {
 
   it("the run checks its effective paths with effectivePathProblems", () => {
     const src = readFileSync(join(PKG, "scripts", "onboarding-eval-run.ts"), "utf-8");
-    expect(src).toContain("if (effectivePathProblems(effectivePaths, env).length > 0) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones");
+    expect(src).toContain("if (effectivePathProblems(effectivePaths, env, signedInHome).length > 0) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones");
   });
 });

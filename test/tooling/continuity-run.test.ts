@@ -16,11 +16,12 @@ import {
 } from "../../scripts/continuity-lib.js";
 import {
   parseArgs, buildManifestHash, readAttempts, INPUT_PATHS, checkOutputPaths, effectiveConfigHash, commandTokens, SHARED_REFUSAL, refuseShared, continuityTools, continuityOptions,
-  provisionFreshConfig, runAttempt, runMatrix, runPilot, driveClaude, type Launch, RateLimitStopError, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
+  provisionFreshConfig, runAttempt, runMatrix, runPilot, driveClaude, type Launch, RateLimitStopError, ProvenanceStopError, PROVENANCE_STOP_FILE, PROVENANCE_INTENT_FILE, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
 } from "../../scripts/continuity-run.js";
 import { aggregate, COMPARISON_CHECKPOINT, scoringRequest, validateScore, mechanicalFailureScore, selectObservations, renderReport, loadScore, publishText, type AttemptRecord, type Observation,
   taskMaterialOf, experimentTaskMaterial, compareTaskMaterial, type TaskMaterialResult } from "../../scripts/continuity-score.js";
 import { SessionKilledError } from "../../scripts/headless-common.js";
+import { claudeTurnArgs } from "../../scripts/headless-policy.js";
 import { processGroupSeams } from "../../src/core/process-group.js";
 
 const PKG = resolve(__dirname, "../..");
@@ -1167,6 +1168,167 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(record.killKind).toBe("timeout");
     expect(record.invalidReasons).toEqual(["rate-limited"]);
     expect(record.rateLimitStop).toBe("rate_limit_event rejected (five_hour)");
+  });
+
+  it("T-525 E3 (B4, K1): a provenance stop is discarded before grading, persisted, and the matrix never resumes past it", async () => {
+    const o = options({ tasks: ["T-4", "T-3"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    // A test-only provenance on the fresh Launch (B3-Q): the fake client's init event carries no agents listing, so the init latch
+    // fires. The fake ignores SIGTERM so it finishes writing its stream; the stop still stands.
+    const prov = { clientVersion: "2.1.322", agents: [], commands: [], skills: ["story"], plugins: [], outputStyle: "default" };
+    const tamper = { beforeSpawnCheck: (l: Launch): void => { (l.expected as { provenance?: unknown }).provenance = prov; } };
+    const d = (): ReturnType<typeof deps> => ({ ...deps({ spawnFn: fakeSpawn({ complete: true, ignoreTerm: true }, seen), log: () => {} }), ...tamper });
+    await expect(runMatrix(o, pf, d())).rejects.toBeInstanceOf(ProvenanceStopError);
+    expect(seen).toHaveLength(1);
+    expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
+    expect(existsSync(join(pubDirOf(o, pf), "completed"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE), "utf-8"))).toEqual({ code: "init.provenance:agents", cleanup: "confirmed", retryable: false });
+    await expect(runMatrix(o, pf, d())).rejects.toThrow(/a provenance stop is recorded \(T-4\/repeat-1\/attempt-001\); the matrix does not resume past it/);
+    expect(seen).toHaveLength(1);
+  });
+
+  // B-F1: a provenance problem found by the readback (here the client version) latches the stop on the first and the resumed turn.
+  const pinned = { clientVersion: "2.1.322", agents: [], commands: [], skills: ["story"], plugins: [], outputStyle: "default" };
+  const pin = (prov: Record<string, unknown>, kind: "first" | "resume" = "first") => ({ beforeSpawnCheck: (l: Launch): void => {
+    const m = l as { -readonly [K in keyof Launch]: Launch[K] };
+    m.expected = { ...l.expected, provenance: prov as never };
+    if (kind === "resume") m.session = { kind: "resume", id: l.session.id };
+    m.args = claudeTurnArgs(m.expected, m.session, l.options);
+  } });
+  it.each(["first", "resume"] as const)("B-F1 (%s): a readback provenance failure stops with its own code, ungraded, persisted, and the re-run refuses", async (kind) => {
+    const o = options({ tasks: ["T-4", "T-3"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const d = (): ReturnType<typeof deps> => ({ ...deps({ spawnFn: fakeSpawn({ complete: true, ignoreTerm: true }, seen), log: () => {} }), ...pin({ ...pinned, clientVersion: "9.9.9" }, kind) });
+    await expect(runMatrix(o, pf, d())).rejects.toThrow(/stopped on provenance: provenance\.version: not the pinned version/);
+    expect(seen).toHaveLength(1);
+    expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE), "utf-8"))).toMatchObject({ code: "provenance.version: not the pinned version", retryable: false });
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE), "utf-8"))).toEqual({ state: "unresolved" });
+    await expect(runMatrix(o, pf, d())).rejects.toThrow(/a provenance stop is recorded \(T-4\/repeat-1\/attempt-001\)/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("B-F2: a failed stop write leaves the unresolved intent, and the re-run starts nothing", async () => {
+    const o = options({ tasks: ["T-4", "T-3"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const real = (await import("../../scripts/headless-common.js")).writeDurable;
+    const failStop = async (path: string, text: string): Promise<void> => { if (path.endsWith(PROVENANCE_STOP_FILE)) throw Object.assign(new Error("EIO on the stop"), { code: "EIO" }); await real(path, text); };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, ignoreTerm: true }, seen), log: () => {} }), ...pin({ ...pinned, clientVersion: "9.9.9" }), writeDurable: failStop })).rejects.toThrow("EIO on the stop");
+    expect(seen).toHaveLength(1);
+    expect(existsSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE))).toBe(false);
+    await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).rejects.toThrow(/a provenance stop is recorded \(T-4\/repeat-1\/attempt-001\)/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("B-F2: a crash between the latch and the stop write (only the unresolved intent on disk) refuses with zero attempt starts", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    mkdirSync(rawDirOf(o, pf), { recursive: true });
+    writeFileSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "unresolved" })}\n`);
+    await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).rejects.toBeInstanceOf(ProvenanceStopError);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("B-F2: a failed intent write before a provenance-enabled spawn starts nothing", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const failIntent = async (): Promise<void> => { throw Object.assign(new Error("ENOSPC on the intent"), { code: "ENOSPC" }); };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), ...pin(pinned), writeDurable: failIntent })).rejects.toThrow("ENOSPC on the intent");
+    expect(seen).toHaveLength(0);
+  });
+
+  it.each(["EACCES", "EIO"])("B-F3: %s from the experiment root's lstat refuses the matrix with zero attempt starts", async (code) => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const at = join(o.rawOut, pf.experiment.slice(0, 12));
+    const fs = (await import("node:fs"));
+    const stopScanFs = { lstatSync: (q: string) => { if (q === at) throw Object.assign(new Error(code), { code }); return fs.lstatSync(q); }, readIntent: (q: string): string => fs.readFileSync(q, "utf-8"), readdirSync: (q: string): string[] => fs.readdirSync(q) };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), stopScanFs })).rejects.toThrow(code);
+    expect(seen).toHaveLength(0);
+  });
+
+  it.each([["EACCES", "root"], ["EIO", "root"], ["EACCES", "attempt"], ["EIO", "attempt"]])("B-F3: %s at the %s level of the stop scan refuses the matrix with zero attempt starts", async (code, level) => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    mkdirSync(rawDirOf(o, pf), { recursive: true });
+    const at = level === "root" ? join(o.rawOut, pf.experiment.slice(0, 12)) : rawDirOf(o, pf);
+    const fs = (await import("node:fs"));
+    const stopScanFs = { lstatSync: fs.lstatSync, readIntent: (q: string): string => fs.readFileSync(q, "utf-8"), readdirSync: (q: string): string[] => { if (q === at) throw Object.assign(new Error(code), { code }); return fs.readdirSync(q); } };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), stopScanFs })).rejects.toThrow(code);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("B-F6: a link in the intent's place refuses the matrix with zero attempt starts", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    mkdirSync(rawDirOf(o, pf), { recursive: true });
+    const resolved = join(tmp("cont-other-"), "intent.json"); writeFileSync(resolved, JSON.stringify({ state: "resolved" }));
+    symlinkSync(resolved, join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE));
+    await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).rejects.toBeInstanceOf(ProvenanceStopError);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("B-F7: before a guarded spawn every parent in the raw chain is fsynced, then the intent is written, then the spawn", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const log: string[] = []; const exp = join(o.rawOut, pf.experiment.slice(0, 12));
+    const real = (await import("../../scripts/headless-common.js"));
+    const inner = fakeSpawn({ complete: true, ignoreTerm: true }, seen);
+    const spawnFn: SpawnFn = (c, a, op) => { log.push("spawn"); return inner(c, a, op); };
+    const fsyncDir = async (d: string): Promise<void> => { log.push(`fsync ${d}`); await real.fsyncDir(d); };
+    const writeDurable = async (path: string, text: string): Promise<void> => { log.push(`write ${path.slice(path.lastIndexOf("/") + 1)}`); await real.writeDurable(path, text); };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn, log: () => {} }), ...pin(pinned), fsyncDir, writeDurable })).rejects.toBeInstanceOf(ProvenanceStopError);
+    expect(log.slice(0, 6)).toEqual([`fsync ${o.rawOut}`, `fsync ${exp}`, `fsync ${join(exp, "T-4")}`, `fsync ${join(exp, "T-4", "repeat-1")}`, `write ${PROVENANCE_INTENT_FILE}`, "spawn"]);
+  });
+
+  it("B-F7: a failed parent fsync starts nothing and writes no intent", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const task = join(o.rawOut, pf.experiment.slice(0, 12), "T-4");
+    const fsyncDir = async (d: string): Promise<void> => { if (d === task) throw Object.assign(new Error("EIO on the task dir"), { code: "EIO" }); };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), ...pin(pinned), fsyncDir })).rejects.toThrow("EIO on the task dir");
+    expect(seen).toHaveLength(0);
+    expect(existsSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE))).toBe(false);
+  });
+
+  it("B-F7: the fresh path, with no provenance, fsyncs no chain and writes no intent", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const synced: string[] = [];
+    await runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), fsyncDir: async (d: string) => { synced.push(d); } });
+    expect(seen).toHaveLength(1);
+    expect(synced).toEqual([]);
+    expect(existsSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE))).toBe(false);
+  });
+
+  it("B-F8: a guarded run with a nonexistent --raw-out is refused before anything is created, with zero spawns", async () => {
+    const o = { ...options({ tasks: ["T-4"], repeats: 1 }), rawOut: join(tmp("cont-raw-parent-"), "absent") }; const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), provenance: pinned as never })).rejects.toThrow(/a guarded run needs --raw-out to exist as a real directory/);
+    expect(seen).toHaveLength(0);
+    expect(existsSync(o.rawOut)).toBe(false);
+    // runAttempt called directly refuses the same way, before its own directories.
+    await expect(runAttempt(o, pf, "T-4", 1, 1, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), provenance: pinned as never })).rejects.toThrow(/a guarded run needs --raw-out/);
+    expect(seen).toHaveLength(0);
+    expect(existsSync(o.rawOut)).toBe(false);
+  });
+
+  it("B-F8: a guarded run whose --raw-out is a link to a directory is refused, and nothing is created behind the link", async () => {
+    const target = tmp("cont-raw-target-"); const link = join(tmp("cont-raw-parent-"), "link"); symlinkSync(target, link);
+    const o = { ...options({ tasks: ["T-4"], repeats: 1 }), rawOut: link }; const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), provenance: pinned as never })).rejects.toThrow(/a guarded run needs --raw-out to exist as a real directory/);
+    expect(seen).toHaveLength(0);
+    expect(readdirSync(target)).toEqual([]);
+  });
+
+  it("B-F8: a guarded run with an existing real --raw-out proceeds to the intent and the spawn", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, ignoreTerm: true }, seen), log: () => {} }), provenance: pinned as never })).rejects.toBeInstanceOf(ProvenanceStopError);
+    expect(seen).toHaveLength(1);
+    expect(existsSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE))).toBe(true);
+  });
+
+  it("B-F8: a provenance attached only by the late test hook still meets the check before the spawn", async () => {
+    const o = { ...options({ tasks: ["T-4"], repeats: 1 }), rawOut: join(tmp("cont-raw-parent-"), "absent") }; const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), ...pin(pinned) })).rejects.toThrow(/was not one\. Refusing before the spawn/);
+    expect(seen).toHaveLength(0);
+    expect(existsSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE))).toBe(false);
+  });
+
+  it("B-F8: the fresh path still creates a nonexistent --raw-out, as today", async () => {
+    const o = { ...options({ tasks: ["T-4"], repeats: 1 }), rawOut: join(tmp("cont-raw-parent-"), "absent") }; const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const r = await runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }));
+    expect(seen).toHaveLength(1);
+    expect(existsSync(rawDirOf(o, pf))).toBe(true);
+    expect(r.summary).toContain("T-4#1: satisfied by attempt-001");
   });
 
   it("B2: a rate-limit stop stops the matrix before any further spawn; the re-run resumes the cell without counting it", async () => {

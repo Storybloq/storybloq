@@ -281,13 +281,24 @@ export interface ReadbackExpected {
   readonly mcpLaunch: McpLaunch;
   /** E2: present only as "none"; absent keeps the user-plus-flag source contract. */
   readonly settingSources?: "none";
+  /** E3 (B1): the pinned client version and listings; present, every readback must match them. Absent on fresh. */
+  readonly provenance?: SignedInProvenance;
+  /** E3 (B2): the per-turn request id namespace `t<nonce>-`; present exactly when provenance is. */
+  readonly nonce?: string;
+  /** E3 (B3): the launch is signed-in, so the memory refusal runs. Keyed on isolation, never on provenance. */
+  readonly signedIn?: true;
 }
 
-export const readbackExpected = (e: ClaudeExpected, o: ClaudePolicyOptions = ONBOARDING_OPTIONS): ReadbackExpected => ({
+export const readbackExpected = (e: ClaudeExpected, o: ClaudePolicyOptions = ONBOARDING_OPTIONS, turn: { readonly nonce?: string; readonly signedIn?: boolean } = {}): ReadbackExpected => ({
   project: e.project, roots: [...e.roots], policy: claudePolicyObject(e.roots, e.allowedTools, o), mcpTools: [...e.mcpTools],
   mcpLaunch: { command: e.mcpLaunch.command, args: [...e.mcpLaunch.args], ...(e.mcpLaunch.env === undefined ? {} : { env: { ...e.mcpLaunch.env } }) },
   ...(o.settingSources === "none" ? { settingSources: "none" as const } : {}),
+  ...(e.provenance === undefined ? {} : { provenance: e.provenance, ...(turn.nonce === undefined ? {} : { nonce: turn.nonce }) }),
+  ...(turn.signedIn === true ? { signedIn: true as const } : {}),
 });
+
+/** E3 (B2): the request id namespace for one turn's readback; empty (r1..r6) with no nonce. */
+export const readbackNamespace = (nonce: string | undefined): string => (nonce === undefined ? "" : `t${nonce}-`);
 
 /** JSON with object keys sorted, so equal values have equal text. */
 function canon(v: unknown): string {
@@ -316,6 +327,101 @@ export function expectedRestrictions(roots: readonly string[]): Record<string, u
 
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((t) => typeof t === "string");
 
+/** A listing of typed names: every entry an object with a non-empty string name (spread, so a hole is an entry). */
+function typedNames(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const names = [...v].map((t) => obj(t)?.name);
+  return names.every((n): n is string => typeof n === "string" && n !== "") ? names : null;
+}
+/** A listing the init event carries: plain names, or typed names (plugins come as objects). */
+function initNames(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const items = [...v];
+  if (items.every((t) => typeof t === "string" && t !== "")) return items as string[];
+  return typedNames(items);
+}
+const exactNames = (got: readonly string[], want: readonly string[]): boolean => new Set(got).size === got.length && sameSet(got, want);
+
+/**
+ * E3 (B1): the readback's initialize listings against the pin: the client version, and the agents and commands
+ * exactly the run's own. Codes: provenance.version, provenance.listing-missing:<f>, provenance.malformed:<f>,
+ * provenance.mismatch:<f>. Pure, so the regrade re-runs it.
+ */
+export function listingProblems(init: Record<string, unknown>, p: SignedInProvenance): string[] {
+  const out: string[] = [];
+  const version = init.claude_code_version;
+  if (typeof version !== "string") out.push("provenance.version: missing");
+  else if (version !== p.clientVersion) out.push("provenance.version: not the pinned version");
+  for (const [f, want] of [["agents", p.agents], ["commands", p.commands]] as const) {
+    if (init[f] === undefined) { out.push(`provenance.listing-missing:${f}`); continue; }
+    const names = typedNames(init[f]);
+    if (names === null) out.push(`provenance.malformed:${f}`);
+    else if (!exactNames(names, want)) out.push(`provenance.mismatch:${f}`);
+  }
+  return out;
+}
+
+/** The init event's provenance fields, as the pin names them. */
+const INIT_FIELDS = [["skills", "skills"], ["plugins", "plugins"], ["agents", "agents"], ["slash_commands", "commands"]] as const;
+
+/**
+ * E3 (B4): one system init event against the pin: skills, plugins, agents and slash commands exactly the run's own,
+ * the output style and the client version equal. Codes: init.provenance:<field>. Pure.
+ */
+export function initProvenanceProblems(init: Record<string, unknown>, p: SignedInProvenance): string[] {
+  const out: string[] = [];
+  for (const [f, k] of INIT_FIELDS) {
+    const names = initNames(init[f]);
+    if (names === null || !exactNames(names, p[k])) out.push(`init.provenance:${f}`);
+  }
+  if (init.output_style !== p.outputStyle) out.push("init.provenance:output_style");
+  if (init.claude_code_version !== p.clientVersion) out.push("init.provenance:claude_code_version");
+  return out;
+}
+
+/**
+ * E3 (B4): an init event that disagrees with the same turn's readback (its version, or its agents' names) is a
+ * contradiction, whatever the pin says. False when the readback gave nothing to compare.
+ */
+export function initContradicts(init: Record<string, unknown>, readbackInit: Record<string, unknown> | null): boolean {
+  if (readbackInit === null) return false;
+  // Only a present, well-formed field can contradict; a missing or malformed one is the pin check's to name.
+  if (typeof init.claude_code_version === "string" && init.claude_code_version !== readbackInit.claude_code_version) return true;
+  const a = initNames(init.agents);
+  const b = typedNames(readbackInit.agents);
+  return a !== null && b !== null && !sameSet(a, b);
+}
+
+/** B-F1: a readback, init or cleanup problem that belongs to provenance, and so latches the non-retryable stop. */
+export const isProvenanceProblem = (p: string): boolean => /^(provenance\.|memory\.|readback\.(stale|unsolicited)|init\.(provenance|missing|duplicate|contradiction)|cleanup\.unconfirmed)/.test(p);
+
+/** The text of the memory refusal: the pinned client exposes no listing of the memory files it loaded. */
+export const MEMORY_UNPROVEN = "memory.unproven: the pinned client lists no loaded memory files, so their exclusion is unproven";
+
+const PROVENANCE_LISTS = ["agents", "commands", "skills", "plugins"] as const;
+const PROVENANCE_KEYS: readonly string[] = ["clientVersion", ...PROVENANCE_LISTS, "outputStyle"];
+
+/**
+ * E3: the fields of a pinned provenance that are not what a signed-in launch needs: the client version and the
+ * output style as non-empty strings, each listing as an array of distinct non-empty strings, and no other key.
+ * Empty means it is well formed. B-F4: the one validator, for preparation and for a stored record's pin alike.
+ */
+export function provenanceProblems(p: unknown): string[] {
+  if (p === null || typeof p !== "object" || Array.isArray(p)) return ["provenance"];
+  const v = p as Record<string, unknown>;
+  const out: string[] = [];
+  const text = (x: unknown): boolean => typeof x === "string" && x !== "";
+  if (!text(v.clientVersion)) out.push("clientVersion");
+  for (const k of PROVENANCE_LISTS) {
+    const l = v[k];
+    // Spread first: every() skips a hole, so a sparse listing would pass and serialise as null entries.
+    if (!Array.isArray(l) || ![...l].every(text) || new Set(l).size !== l.length) out.push(k);
+  }
+  if (!text(v.outputStyle)) out.push("outputStyle");
+  for (const k of Object.keys(v)) if (!PROVENANCE_KEYS.includes(k)) out.push(`unexpected ${k}`);
+  return out;
+}
+
 /** What makes the stored exchange or the expected values unusable, before any comparison reads them. */
 function readbackShapeProblems(steps: unknown, x: unknown): string[] {
   const problems: string[] = [];
@@ -339,6 +445,9 @@ function readbackShapeProblems(steps: unknown, x: unknown): string[] {
     const launch = obj(e.mcpLaunch);
     const env = launch?.env === undefined ? {} : obj(launch.env);
     if (launch === null || typeof launch.command !== "string" || !isStrings(launch.args) || env === null || !Object.values(env).every((v) => typeof v === "string")) problems.push("readback.expected.mcpLaunch is malformed");
+    if (e.provenance !== undefined && provenanceProblems(e.provenance).length > 0) problems.push("readback.expected.provenance is malformed");
+    if (e.nonce !== undefined && (typeof e.nonce !== "string" || !/^[0-9a-f]{12}$/.test(e.nonce))) problems.push("readback.expected.nonce is malformed");
+    if (e.signedIn !== undefined && e.signedIn !== true) problems.push("readback.expected.signedIn is malformed");
   }
   return problems;
 }
@@ -348,11 +457,16 @@ function readbackShapeProblems(steps: unknown, x: unknown): string[] {
  * entry names the field of the infrastructure failure `launch: <field>`. Pure, so the regrade re-runs it on
  * the stored exchange against the record's expected values.
  */
-export function readbackProblems(steps: readonly ReadbackStep[], x: ReadbackExpected): string[] {
+export function readbackProblems(steps: readonly ReadbackStep[], x: ReadbackExpected, memoryEvidence?: () => readonly string[]): string[] {
   // The regrade feeds stored JSON here, so the shapes are checked first: a malformed input is a named refusal, never a throw.
   const shape = readbackShapeProblems(steps, x);
   if (shape.length > 0) return shape;
   const problems: string[] = [];
+  // E3 (B2): with provenance, every stored id carries this record's own nonce; anything else is another turn's exchange.
+  if (x.provenance !== undefined) {
+    const ns = readbackNamespace(x.nonce);
+    if (x.nonce === undefined || steps.some((s, i) => s.requestId !== `${ns}r${i + 1}`)) problems.push("readback.stale: the exchange does not carry this turn's nonce");
+  }
   const at = new Map(steps.map((s) => [s.subtype, s]));
   const body = (sub: ReadbackSubtype): Record<string, unknown> | null => {
     const s = at.get(sub);
@@ -373,6 +487,7 @@ export function readbackProblems(steps: readonly ReadbackStep[], x: ReadbackExpe
     // Addendum A: until the probe turn pins the live value, any source naming an API key is refused.
     if (typeof source !== "string" || (source !== "none" && API_KEY_SOURCE.test(source))) problems.push("initialize.account.tokenSource");
     if (account?.apiProvider !== "firstParty") problems.push("initialize.account.apiProvider");
+    if (x.provenance !== undefined) problems.push(...listingProblems(init, x.provenance));
   }
 
   const settings = body("get_settings");
@@ -437,6 +552,11 @@ export function readbackProblems(steps: readonly ReadbackStep[], x: ReadbackExpe
     if (hp?.disabledByPolicy !== false) problems.push("get_hooks_listing.policy.disabledByPolicy");
     if (hp?.managedOnly !== false) problems.push("get_hooks_listing.policy.managedOnly");
   }
+  // E3 (B0 ii, B3): signed-in, memory is always unproven on the pinned client; the evidence only adds to the text.
+  if (x.signedIn === true) {
+    const evidence = memoryEvidence?.() ?? [];
+    problems.push(evidence.length === 0 ? MEMORY_UNPROVEN : `${MEMORY_UNPROVEN} (${evidence.join("; ")})`);
+  }
   return problems;
 }
 
@@ -458,8 +578,9 @@ export const userMessage = (prompt: string): string => `${JSON.stringify({ type:
  */
 export async function claudeReadback(io: ReadbackIo, x: ReadbackExpected, timeoutMs = READBACK_TIMEOUT_MS): Promise<{ readonly steps: readonly ReadbackStep[]; readonly problems: readonly string[] }> {
   const steps: ReadbackStep[] = [];
+  const ns = x.provenance === undefined ? "" : readbackNamespace(x.nonce);
   for (const [i, subtype] of READBACK_REQUESTS.entries()) {
-    const requestId = `r${i + 1}`;
+    const requestId = `${ns}r${i + 1}`;
     io.write(controlRequest(requestId, subtype));
     const r = await io.response(requestId, timeoutMs);
     if (r === null) { steps.push({ requestId, subtype, outcome: "timeout" }); break; }

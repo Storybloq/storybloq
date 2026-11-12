@@ -64,6 +64,50 @@ export class SessionKilledError extends Error {
 
 export class RecordPersistenceError extends Error {}
 
+/** The file operations writeDurable uses; a test injects a failing one. */
+export interface DurableIo {
+  open: typeof open;
+  rename: typeof rename;
+}
+export const DURABLE_IO: DurableIo = { open, rename };
+
+/**
+ * T-525 B-F2 / K3: writeAtomic without the best-effort step. A temp file is written and fsynced, renamed in, and
+ * the directory is fsynced; any failure (file fsync, rename, directory open or fsync) propagates, so a caller
+ * never takes an unrecorded write for a durable one. The directory must already exist.
+ */
+export async function writeDurable(path: string, contents: string | Buffer, io: DurableIo = DURABLE_IO): Promise<void> {
+  const dir = dirname(path);
+  const tmpPath = join(dir, `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const handle = await io.open(tmpPath, "wx");
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await io.rename(tmpPath, path);
+  const dirHandle = await io.open(dir, "r");
+  try {
+    await dirHandle.sync();
+  } finally {
+    await dirHandle.close();
+  }
+}
+
+/**
+ * T-525 B-F7: fsync each of the given directories in order, so the entry each one holds for the next is on disk.
+ * Any failure (open or fsync) propagates.
+ */
+export async function fsyncDir(dir: string, io: Pick<DurableIo, "open"> = DURABLE_IO): Promise<void> {
+  const h = await io.open(dir, "r");
+  try {
+    await h.sync();
+  } finally {
+    await h.close();
+  }
+}
+
 /** Temp file, fsync, rename into place, best-effort directory fsync. */
 export async function writeAtomic(path: string, contents: string | Buffer): Promise<void> {
   const dir = dirname(path);

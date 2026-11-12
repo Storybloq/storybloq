@@ -11,15 +11,15 @@
  */
 import { spawn as nodeSpawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, copyFileSync, readdirSync, createWriteStream, cpSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, constants as FS, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, mkdtempSync, readFileSync, writeFileSync, copyFileSync, readdirSync, createWriteStream, cpSync, realpathSync, rmSync } from "node:fs";
 import { createServer, connect as netConnect, type AddressInfo } from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import { tmpdir, homedir, userInfo, loadavg } from "node:os";
 import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertSubscriptionAuthOnly, assertValidTimerMs, writeAtomic, SessionKilledError } from "./headless-common.js";
+import { assertSubscriptionAuthOnly, assertValidTimerMs, writeAtomic, writeDurable, fsyncDir, SessionKilledError } from "./headless-common.js";
 import {
-  CLAUDE_TOOLS, claudeArgvProblems, claudePolicySettings, claudeReadback, claudeTurnArgs, initEventConsulted, initEventProblems, policyFileProblems,
+  CLAUDE_TOOLS, claudeArgvProblems, claudePolicySettings, claudeReadback, claudeTurnArgs, initContradicts, initEventConsulted, isProvenanceProblem, initEventProblems, initProvenanceProblems, policyFileProblems,
   READBACK_REQUESTS, READBACK_TIMEOUT_MS, readbackExpected, userMessage, type ClaudeExpected, type ClaudePolicyOptions, type ClaudeSession, type ReadbackIo, type ReadbackStep,
   type SignedInProvenance,
 } from "./headless-policy.js";
@@ -33,7 +33,7 @@ import { jsonShapePreserved,
 import { serverLaunch, writeServerLauncher } from "./onboarding-eval-host.js";
 import { EVAL_DIST } from "./build-eval.mjs";
 import { killSidecar } from "../src/autonomous/liveness.js";
-import { groupHandle } from "../src/core/process-group.js";
+import { CONFIRM_BOUND_MS, CONFIRM_POLL_MS, groupHandle, type GroupHandle } from "../src/core/process-group.js";
 import { loadProject } from "../src/core/project-loader.js";
 import { handleValidate } from "../src/cli/commands/validate.js";
 import type { CommandContext } from "../src/cli/types.js";
@@ -736,6 +736,19 @@ export interface AttemptDeps {
   readonly readbackTimeoutMs?: number;
   /** ISS-1486 D5: called after the launch files are written and before they are checked; a test tampers here. */
   readonly beforeSpawnCheck?: (launch: Launch) => void;
+  /** B-F2: the durable writer for the provenance intent and stop (writeDurable by default); a test injects a failure. */
+  readonly writeDurable?: (path: string, text: string) => Promise<void>;
+  /** B-F3: the directory reads of the provenance-stop scan; a test injects EACCES or EIO. */
+  readonly stopScanFs?: StopScanFs;
+  /** B-F7: the directory fsync for the raw chain before a guarded spawn (fsyncDir by default); a test records or fails it. */
+  readonly fsyncDir?: (dir: string) => Promise<void>;
+  /**
+   * B-F8, test only (B3-Q): a provenance pinned onto the fresh Launch right after preparation. It is known before any
+   * directory is made, so the guarded-run refusals see it at the run's start.
+   */
+  readonly provenance?: SignedInProvenance;
+  /** E3 (B4): the cleanup confirmation's bound (CONFIRM_BOUND_MS by default); a test shortens it. */
+  readonly cleanupBoundMs?: number;
 }
 
 /** One reading of this Mac: load1 from the kernel, free swap from vm.swapusage; an unreadable figure is null. */
@@ -800,6 +813,25 @@ export interface LaunchRun {
   readonly inputError: string | null;
   readonly resultSeen: boolean;
   readonly survivors: string;
+  /** E3: the first provenance latch of the turn (B1 to B4, K1); null when none latched or the launch carries no provenance. */
+  readonly provenanceStop: string | null;
+  /** E3 (H3): whether the group was confirmed gone after the run; null when no provenance asked for it. */
+  readonly cleanup: "confirmed" | "unconfirmed" | null;
+  /** E3 (B2): this turn's readback nonce; null without provenance. */
+  readonly readbackNonce: string | null;
+}
+
+/**
+ * E3 (H3): polls the group's handle every CONFIRM_POLL_MS until it answers "gone", for at most `boundMs`. Any other
+ * answer at the bound (alive, EPERM, an error code) is "unconfirmed".
+ */
+export async function confirmGroupGone(handle: Pick<GroupHandle, "probe">, boundMs: number = CONFIRM_BOUND_MS): Promise<"confirmed" | "unconfirmed"> {
+  const end = Date.now() + boundMs;
+  for (;;) {
+    if (handle.probe() === "gone") return "confirmed";
+    if (Date.now() >= end) return "unconfirmed";
+    await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
+  }
 }
 
 /**
@@ -865,22 +897,54 @@ export async function driveClaude(o: RunOptions, launch: Launch, prompt: string,
     let resultSeen = false;
     const answers = new Map<string, { subtype: string; response?: unknown; error?: unknown }>();
     const waiters = new Map<string, (r: { subtype: string; response?: unknown; error?: unknown } | null) => void>();
+    // E3: with a pinned provenance, a fresh nonce per turn names this turn's readback ids (B2), and the first
+    // provenance problem latches a stop that no later cause outranks (B4, K1).
+    const provenance = launch.expected.provenance;
+    const nonce = provenance === undefined ? null : randomBytes(6).toString("hex");
+    let provenanceStop: string | null = null;
+    let promptWritten = false;
+    let initCount = 0;
+    let readbackInit: Record<string, unknown> | null = null;
+    /** B2: the ids this turn's readback has written and not yet seen answered. */
+    const issued = new Set<string>();
+    const latch = (code: string): void => {
+      if (provenanceStop !== null) return;
+      provenanceStop = code;
+      if (!settled) escalate("policy-stop");
+    };
     const line = (text: string, complete: boolean): void => {
       let v: unknown = null;
       try { v = JSON.parse(text); } catch { /* not JSON: kept as it came */ }
-      const ev = v as { type?: unknown; response?: { request_id?: unknown; subtype?: unknown; response?: unknown; error?: unknown } } | null;
+      const ev = v as { type?: unknown; subtype?: unknown; response?: { request_id?: unknown; subtype?: unknown; response?: unknown; error?: unknown } } | null;
       if (complete && ev !== null && typeof ev === "object" && ev.type === "control_response") {
         const r = ev.response;
         const id = typeof r?.request_id === "string" ? r.request_id : null;
-        if (id === null || answers.has(id)) return;
         const answer = { subtype: String(r?.subtype), response: r?.response, error: r?.error };
+        if (nonce !== null) {
+          // B2, K1: only an id issued and still awaited is an answer; a replay, a future id, a duplicate or an unknown
+          // id, before or after the prompt, latches the stop and the turn is discarded.
+          if (id === null || !issued.delete(id)) { latch(`readback.unsolicited: ${id === null ? "no request id" : JSON.stringify(id.slice(0, 64))}`); return; }
+          answers.set(id, answer);
+          waiters.get(id)?.(answer);
+          return;
+        }
+        if (id === null || answers.has(id)) return;
         answers.set(id, answer);
         waiters.get(id)?.(answer);
         return;
       }
       outStream.write(complete ? `${text}\n` : text);
       onLine(text);
+      if (provenance !== undefined && complete && ev !== null && typeof ev === "object" && ev.type === "system" && ev.subtype === "init") {
+        // B4: each init is checked on arrival: a second one, one that contradicts this turn's readback, then the pin.
+        initCount++;
+        const init = ev as unknown as Record<string, unknown>;
+        if (initCount > 1) latch("init.duplicate");
+        else if (initContradicts(init, readbackInit)) latch("init.contradiction");
+        else { const bad = initProvenanceProblems(init, provenance); if (bad.length > 0) latch(bad[0]!); }
+      }
       if (ev !== null && typeof ev === "object" && ev.type === "result" && !resultSeen) {
+        if (provenance !== undefined && promptWritten && initCount === 0) latch("init.missing");
         deliveredAtResult = promptAck === "ok" && inputError === null;
         resultSeen = true; endInput();
       }
@@ -901,12 +965,14 @@ export async function driveClaude(o: RunOptions, launch: Launch, prompt: string,
 
     let launchFailure: string | null = null;
     let readbackIncomplete = false;
-    let promptWritten = false;
     let rb: { readonly steps: readonly ReadbackStep[]; readonly problems: readonly string[] } = { steps: [], problems: [] };
     let exit: { code: number | null; signal: NodeJS.Signals | null; error?: Error };
     try {
       const io: ReadbackIo = {
-        write: (l) => { writeIn(l); },
+        write: (l) => {
+          if (nonce !== null) { const id = (JSON.parse(l) as { request_id?: unknown }).request_id; if (typeof id === "string") issued.add(id); }
+          writeIn(l);
+        },
         response: (id, ms) => new Promise((done) => {
           const got = answers.get(id);
           if (got !== undefined) { done(got); return; }
@@ -915,7 +981,11 @@ export async function driveClaude(o: RunOptions, launch: Launch, prompt: string,
           waiters.set(id, (r) => { clearTimeout(t); waiters.delete(id); done(r); });
         }),
       };
-      rb = await claudeReadback(io, readbackExpected(launch.expected, launch.options), deps.readbackTimeoutMs ?? READBACK_TIMEOUT_MS);
+      rb = await claudeReadback(io, readbackExpected(launch.expected, launch.options, { ...(nonce === null ? {} : { nonce }), signedIn: launch.isolation === "signed-in" }), deps.readbackTimeoutMs ?? READBACK_TIMEOUT_MS);
+      const first = rb.steps[0];
+      readbackInit = first?.subtype === "initialize" && first.outcome === "success" && first.response !== null && typeof first.response === "object" ? first.response as Record<string, unknown> : null;
+      // B-F1: a provenance problem in the readback (listing, version, memory, freshness) latches the stop first.
+      if (provenance !== undefined || launch.isolation === "signed-in") { const p = rb.problems.find(isProvenanceProblem); if (p !== undefined) latch(p); }
       const complete = rb.steps.length === READBACK_REQUESTS.length && rb.steps.every((s) => s.outcome === "success");
       if (rb.problems.length > 0) {
         // A wrong answer is the policy's; a missing one is the policy's only while the child was still running and
@@ -926,7 +996,7 @@ export async function driveClaude(o: RunOptions, launch: Launch, prompt: string,
         } else {
           readbackIncomplete = true;
         }
-      } else if (!settled && !resultSeen && inputError === null && kill.kind === null) {
+      } else if (!settled && !resultSeen && inputError === null && kill.kind === null && provenanceStop === null) {
         promptWritten = writeIn(userMessage(prompt), (err) => {
           if (err) { promptAck = "error"; inputError ??= (err as NodeJS.ErrnoException).code ?? err.message; } else if (promptAck === "pending") promptAck = "ok";
         });
@@ -944,12 +1014,17 @@ export async function driveClaude(o: RunOptions, launch: Launch, prompt: string,
     await new Promise<void>((r) => outStream.end(r));
     await new Promise<void>((r) => errStream.end(r));
     if (exit.signal === "SIGKILL" && kill.kind === null) kill.kind = "external-kill";
+    // B4: a prompt written with no init by the exit is init.missing; the group is already gone, so nothing is signalled.
+    if (provenance !== undefined && promptWritten && initCount === 0 && provenanceStop === null) provenanceStop = "init.missing";
     const survivors = child.pid ? pgrep(["-g", String(child.pid)], launch.dirs.work) : "";
     if (survivors) killGroup("SIGKILL");
+    // H3: with provenance, the group must be confirmed gone; an unconfirmed cleanup latches its own stop.
+    const cleanup = provenance === undefined ? null : await confirmGroupGone(handle, deps.cleanupBoundMs ?? CONFIRM_BOUND_MS);
+    if (cleanup === "unconfirmed" && provenanceStop === null) provenanceStop = "cleanup.unconfirmed";
     // G6: delivered when the prompt's write completed cleanly before the first result (or, with no result, at all); an
     // input error that only follows the result (ending the input) changes nothing, and a result never excuses an earlier one.
     const promptDelivered = promptWritten && (deliveredAtResult ?? (promptAck === "ok" && inputError === null));
-    return { exit, killKind: kill.kind, started, loadSamples, streamErrors, readback: rb, readbackIncomplete, launchFailure, promptWritten, promptDelivered, inputError, resultSeen, survivors };
+    return { exit, killKind: kill.kind, started, loadSamples, streamErrors, readback: rb, readbackIncomplete, launchFailure, promptWritten, promptDelivered, inputError, resultSeen, survivors, provenanceStop, cleanup, readbackNonce: nonce };
   } finally {
     handle.settle();
   }
@@ -970,7 +1045,7 @@ export function inputFailureOf(r: Pick<LaunchRun, "exit" | "killKind" | "launchF
  * reason is never judged by it) and the result's permission denials, classified by tool. The first problem found
  * is the launch-policy failure; every denial is kept verbatim with its class.
  */
-export function postRunPolicy(events: readonly StreamEvent[], launch: Launch, run: Pick<LaunchRun, "exit" | "killKind" | "launchFailure" | "promptDelivered">, inputFailure: string | null, pilot = false): {
+export function postRunPolicy(events: readonly StreamEvent[], launch: Launch, run: Pick<LaunchRun, "exit" | "killKind" | "launchFailure" | "promptDelivered"> & { readonly provenanceStop?: string | null }, inputFailure: string | null, pilot = false): {
   readonly launchFailure: string | null; readonly init: readonly string[]; readonly denials: readonly { readonly denial: unknown; readonly class: "blocked" | "expected" }[];
 } {
   const failure = run.exit.error ? `spawn failed: ${run.exit.error.message}` : run.launchFailure !== null ? `launch: ${run.launchFailure}` : inputFailure !== null ? `input: ${inputFailure}`
@@ -981,7 +1056,8 @@ export function postRunPolicy(events: readonly StreamEvent[], launch: Launch, ru
   const denials = raw.map((d) => ({ denial: d, class: classifyDenial((d ?? {}) as PermissionDenial, launch.roots, pilot) }));
   const blocked = denials.find((d) => d.class === "blocked");
   const blockedName = blocked ? `denied: ${String((blocked.denial as { tool_name?: unknown } | null)?.tool_name ?? "unknown tool")}` : null;
-  return { launchFailure: run.launchFailure ?? init[0] ?? blockedName, init, denials };
+  // B4: a provenance latch outranks every other cause (timeout, signal, exit, input), and no init predicate gates it.
+  return { launchFailure: run.provenanceStop ?? run.launchFailure ?? init[0] ?? blockedName, init, denials };
 }
 
 /**
@@ -1018,7 +1094,7 @@ export function maskReadbackEnv(steps: readonly ReadbackStep[], mask: (v: string
  * J3: the expected and the observed env values go through one per-run mask, so neither file carries a raw value.
  */
 export function launchEvidence(launch: Launch, run: LaunchRun | null, pre: readonly string[], post: ReturnType<typeof postRunPolicy> | null, mask: (v: string) => string = envValueMask()): { readonly readback: string; readonly launch: string } {
-  const expected = readbackExpected(launch.expected, launch.options);
+  const expected = readbackExpected(launch.expected, launch.options, { ...(run?.readbackNonce == null ? {} : { nonce: run.readbackNonce }), signedIn: launch.isolation === "signed-in" });
   const readback = {
     steps: maskReadbackEnv(run?.readback.steps ?? [], mask), problems: run?.readback.problems ?? [], incomplete: run?.readbackIncomplete ?? false,
     permissionDenials: post?.denials.map((d) => d.denial) ?? [], denialClasses: post?.denials.map((d) => d.class) ?? [],
@@ -1071,8 +1147,28 @@ function mappedPublisher(dirs: LaunchDirs, allowlist: readonly string[]): (text:
   };
 }
 
+/** B-F8: whether a path is, by lstat, a real directory: present, not a link, a directory. */
+export function isRealDirectory(p: string): boolean {
+  try { return lstatSync(p).isDirectory(); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
+}
+
+/**
+ * B-F8: a guarded run (signed-in, or a pinned provenance) needs --raw-out to exist as a real directory before the
+ * run creates anything, so the intent never sits under an ancestor this run made and a crash could lose. Refused
+ * before any directory is created and before any spawn. The fresh path still creates --raw-out.
+ */
+export function refuseGuardedRawOut(o: RunOptions, guarded: boolean): void {
+  if (guarded && !isRealDirectory(o.rawOut)) throw new Error(`continuity-run: a guarded run needs --raw-out to exist as a real directory (not a link) before the run; ${o.rawOut} is not one. Refusing; nothing is created.`);
+}
+
 export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repeat: number, attemptNo: number, deps: AttemptDeps = {}): Promise<AttemptOutcome> {
   refuseShared(o);
+  // B-F8: before any directory is made. The late check before the spawn covers a provenance attached any other way.
+  const rawOutReal = isRealDirectory(o.rawOut);
+  refuseGuardedRawOut(o, o.isolation === "signed-in" || deps.provenance !== undefined);
   refuseSignedInLaunch(o);
   requirePilot(o, pf);
   const now = deps.now ?? Date.now;
@@ -1145,7 +1241,8 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
     const home = canonicalTemp("continuity-home-");
     const launchDir = canonicalTemp("continuity-launch-");
     for (const d of [attemptTmp, home, launchDir]) cleanup.push(() => rmSync(d, { recursive: true, force: true }));
-    const launch = prepareLaunch({ work: workdir, tmp: attemptTmp, home, config: configDir, launch: launchDir }, { model: o.model, effort: o.effort, maxBudgetUsd: o.maxBudgetUsd, tools: pf.tools, codexBin: pf.codexBin, bundleSha256: pf.build.evalMcpSha256, codex: pf.build });
+    const prepared = prepareLaunch({ work: workdir, tmp: attemptTmp, home, config: configDir, launch: launchDir }, { model: o.model, effort: o.effort, maxBudgetUsd: o.maxBudgetUsd, tools: pf.tools, codexBin: pf.codexBin, bundleSha256: pf.build.evalMcpSha256, codex: pf.build });
+    const launch = deps.provenance === undefined ? prepared : withTestProvenance(prepared, deps.provenance);
     const mapped = mappedPublisher(launch.dirs, pf.allowlist);
     deps.beforeSpawnCheck?.(launch);
     const pre = launchProblems(launch);
@@ -1208,7 +1305,23 @@ export async function runAttempt(o: RunOptions, pf: Preflight, task: Task, repea
       }
     };
     const feed = (line: string): void => { try { watchLine(line); } catch (e) { watcherErrors.push(e instanceof Error ? e.message : String(e)); } };
+    // B-F2: an unresolved intent is on disk before any provenance-enabled spawn, so a crash at any later point refuses recovery.
+    const durable = deps.writeDurable ?? writeDurable;
+    const guarded = launch.expected.provenance !== undefined || launch.isolation === "signed-in";
+    if (guarded && !rawOutReal) throw new Error(`continuity-run: a guarded run needs --raw-out to exist as a real directory (not a link) before the run; ${o.rawOut} was not one. Refusing before the spawn.`);
+    if (guarded) {
+      // B-F7: every entry of the raw chain (experiment, task, repeat, attempt) is recorded in its parent before the
+      // intent, so a crash cannot leave a durable intent inside a directory recovery never finds.
+      for (const d of rawChainParents(o.rawOut, rawDir)) await (deps.fsyncDir ?? fsyncDir)(d);
+      await durable(join(rawDir, PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "unresolved" })}\n`);
+    }
     const run = await driveClaude(o, launch, prompt, { transcript: transcriptPath, stderr: join(rawDir, "stderr.txt") }, deps, feed);
+    if (guarded && run.provenanceStop === null && run.cleanup === "confirmed") await durable(join(rawDir, PROVENANCE_INTENT_FILE), `${JSON.stringify({ state: "resolved" })}\n`);
+    if (run.provenanceStop !== null) {
+      // B4, K1: discarded before any grading, and persisted durably so no re-run resumes past it.
+      await durable(join(rawDir, PROVENANCE_STOP_FILE), `${JSON.stringify({ code: run.provenanceStop, cleanup: run.cleanup, retryable: false }, null, 2)}\n`);
+      throw new ProvenanceStopError(`continuity-run: ${task}#${repeat} stopped on provenance: ${run.provenanceStop}. The turn is discarded, not graded and not retried.`);
+    }
     const { exit, started, loadSamples, streamErrors, survivors } = run;
     const killKind = run.killKind;
     const inputFailure = inputFailureOf(run);
@@ -1387,6 +1500,19 @@ export class ConfigDriftStopError extends Error {
 export class LaunchPolicyStopError extends Error {
   constructor(message: string) { super(message); this.name = "LaunchPolicyStopError"; }
 }
+
+/**
+ * E3 (B4, K1): a provenance latch. The turn is discarded before any grading, the refusal is persisted beside the
+ * attempt, and the matrix never resumes past it: a re-run refuses while that refusal is on disk.
+ */
+export class ProvenanceStopError extends Error {
+  constructor(message: string) { super(message); this.name = "ProvenanceStopError"; }
+}
+
+/** E3: the file a provenance stop leaves in the attempt's raw dir. */
+export const PROVENANCE_STOP_FILE = "provenance.stop.json";
+/** B-F2: written unresolved before a provenance-enabled spawn, resolved only after a clean, confirmed outcome. */
+export const PROVENANCE_INTENT_FILE = "provenance.intent.json";
 
 /** Raised when a cell publishes without its evidence: the experiment cannot qualify, so the matrix stops. */
 export class EvidenceIncompleteError extends Error {
@@ -1591,12 +1717,106 @@ export interface MatrixResult {
 
 type CellRow = { task: string; repeat: number; satisfied: boolean; evidenceComplete: boolean; attempt: string | null };
 
+/**
+ * B-F7: the directories whose entries hold the raw chain from rawOut down to the attempt directory: rawOut,
+ * experiment, task and repeat, in that order. The attempt directory itself is fsynced by writeDurable.
+ */
+export function rawChainParents(rawOut: string, rawDir: string): string[] {
+  const parts = rawDir.slice(rawOut.length).split("/").filter((x) => x !== "");
+  if (!rawDir.startsWith(`${rawOut}/`) || parts.length !== 4) throw new Error(`continuity-run: the attempt's raw directory is not rawOut/<experiment>/<task>/<repeat>/<attempt>: ${rawDir}`);
+  return parts.slice(0, 3).reduce((acc, p) => [...acc, join(acc[acc.length - 1]!, p)], [rawOut]);
+}
+
+/** B-F6: the largest intent file the scan reads. */
+export const INTENT_MAX_BYTES = 4096;
+
+/**
+ * B-F6: a regular file's text, read without following a link and without blocking on a special file: the open is
+ * O_NOFOLLOW | O_NONBLOCK, the opened descriptor must be a regular file no larger than `max`, and the read is
+ * bounded. Anything else is thrown.
+ */
+export function readRegularFile(p: string, max: number): string {
+  const fd = openSync(p, FS.O_RDONLY | FS.O_NOFOLLOW | FS.O_NONBLOCK);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error(`continuity-run: not a regular file: ${p}`);
+    if (st.size > max) throw new Error(`continuity-run: larger than ${max} bytes: ${p}`);
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (let r; n <= max && (r = readSync(fd, buf, n, max + 1 - n, null)) > 0;) n += r;
+    if (n > max) throw new Error(`continuity-run: larger than ${max} bytes: ${p}`);
+    return buf.subarray(0, n).toString("utf-8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** B-F3, B-F6: the reads the provenance-stop scan makes. lstat never follows a link; the intent is read by readIntent. */
+export interface StopScanFs {
+  lstatSync(p: string): { isDirectory(): boolean; isFile(): boolean };
+  readdirSync(p: string): string[];
+  readIntent(p: string): string;
+}
+const STOP_SCAN_FS: StopScanFs = { lstatSync, readdirSync: (p) => readdirSync(p), readIntent: (p) => readRegularFile(p, INTENT_MAX_BYTES) };
+
+/**
+ * E3, B-F3: every attempt of this experiment that left a provenance stop or an unresolved intent, as
+ * task/repeat/attempt paths. The scan is bounded to the experiment's own tree (rawOut/<experiment>/<task>/
+ * <repeat>/<attempt>, three fixed levels, no link followed; the pilot's own subtree is skipped), so another
+ * experiment never blocks this one. Only an absent experiment root means "no stops"; any other read error, a
+ * non-directory where a directory belongs, or an unreadable intent is thrown, never taken as empty.
+ * B-F6: an intent that is a link or a special file is a stop and is never opened; a regular one is read through
+ * readRegularFile. The stop file is found by name only and never read.
+ */
+export function provenanceStops(root: string, fs: StopScanFs = STOP_SCAN_FS): string[] {
+  try { if (!fs.lstatSync(root).isDirectory()) throw new Error(`continuity-run: the experiment's raw root is not a directory: ${root}`); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const dirs = (d: string): string[] => fs.readdirSync(d).map((n) => {
+    if (!fs.lstatSync(join(d, n)).isDirectory()) throw new Error(`continuity-run: an unexpected entry in the experiment's raw tree: ${join(d, n)}`);
+    return n;
+  });
+  const out: string[] = [];
+  for (const task of fs.readdirSync(root).filter((n) => n !== "pilot")) {
+    if (!fs.lstatSync(join(root, task)).isDirectory()) throw new Error(`continuity-run: an unexpected entry in the experiment's raw tree: ${join(root, task)}`);
+    for (const repeat of dirs(join(root, task))) {
+      for (const attempt of dirs(join(root, task, repeat))) {
+        const d = join(root, task, repeat, attempt);
+        const names = fs.readdirSync(d);
+        let intentOpen = false;
+        if (names.includes(PROVENANCE_INTENT_FILE)) {
+          // B-F6: a link or a special file in the intent's place is a stop, never followed or opened.
+          if (!fs.lstatSync(join(d, PROVENANCE_INTENT_FILE)).isFile()) intentOpen = true;
+          else {
+            const state = (JSON.parse(fs.readIntent(join(d, PROVENANCE_INTENT_FILE))) as { state?: unknown }).state;
+            intentOpen = state !== "resolved";
+          }
+        }
+        if (names.includes(PROVENANCE_STOP_FILE) || intentOpen) out.push(`${task}/${repeat}/${attempt}`);
+      }
+    }
+  }
+  return out.sort();
+}
+
+/** B-F8, test only: the fresh Launch with a pinned provenance, its argv rebuilt from the changed expectation. */
+function withTestProvenance(l: Launch, provenance: SignedInProvenance): Launch {
+  const expected = { ...l.expected, provenance };
+  return { ...l, expected, args: claudeTurnArgs(expected, l.session, l.options) };
+}
+
 export async function runMatrix(o: RunOptions, pf: Preflight, deps: AttemptDeps = {}): Promise<MatrixResult> {
   refuseShared(o);
   refuseSignedInLaunch(o);
+  // B-F8: the earliest point; nothing has been created yet.
+  refuseGuardedRawOut(o, o.isolation === "signed-in" || deps.provenance !== undefined);
   // D9: the pilot is checked before anything is spent; a missing, failed or foreign one starts nothing.
   requirePilot(o, pf);
   const shortExp = pf.experiment.slice(0, 12);
+  // E3 (B4, K1): a provenance stop on disk is never resumed past; it needs the operator, not a re-run.
+  const stopped = provenanceStops(join(o.rawOut, shortExp), deps.stopScanFs);
+  if (stopped.length > 0) throw new ProvenanceStopError(`continuity-run: a provenance stop is recorded (${stopped.join(", ")}); the matrix does not resume past it`);
   const cells: CellRow[] = [];
   const summary: string[] = [];
   for (const task of o.tasks) {

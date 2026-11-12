@@ -7,16 +7,43 @@
  * claude for real, even with --live-ack, and no signed-in record qualifies.
  */
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { lstatSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { SIGNED_IN_MISSING_GATES } from "./continuity-lib.js";
 import { ALTERNATE_AUTH_ENV_VARS } from "./headless-common.js";
-import type { SignedInProvenance } from "./headless-policy.js";
+import { provenanceProblems, type SignedInProvenance } from "./headless-policy.js";
 
 export const SIGNED_IN_RULING = "r-hs5j319qkr3gjvtz";
 
 export { SIGNED_IN_MISSING_GATES };
+// E3 (B1, B4): the pure listing and init checks live beside readbackProblems, which the regrade re-runs.
+export { initProvenanceProblems, listingProblems, MEMORY_UNPROVEN } from "./headless-policy.js";
+
+/**
+ * E3 (B3): what lstat says about the memory files a signed-in client could load for `cwd`. The pinned client
+ * exposes no listing of loaded memory, so the status is always "unproven" and refuses on its own; the evidence
+ * (each read by lstat only, never opened) only adds to the refusal's text. The slug is a guess at the client's
+ * folder name, so it is named as one whenever cwd holds a character whose encoding is not pinned.
+ */
+export function memoryProvenance(cwd: string, home: string, fs: { readonly lstatSync: (p: string) => { isSymbolicLink(): boolean } } = { lstatSync }): { readonly status: "unproven"; readonly evidence: readonly string[] } {
+  const evidence: string[] = [];
+  const look = (label: string, p: string): void => {
+    try { fs.lstatSync(p); evidence.push(`${label} present`); } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      evidence.push(code === "ENOENT" || code === "ENOTDIR" ? `${label} absent` : `${label} lstat ${code ?? "error"}`);
+    }
+  };
+  look("user CLAUDE.md", join(home, ".claude", "CLAUDE.md"));
+  const abs = resolve(cwd);
+  look("guessed memory folder", join(home, ".claude", "projects", abs.replace(/[^A-Za-z0-9]/g, "-")));
+  if (/[^A-Za-z0-9/_-]/.test(abs)) evidence.push("the guessed slug is unreliable: cwd holds a character whose encoding is not pinned");
+  for (let d = abs; ; d = dirname(d)) {
+    try { if (fs.lstatSync(d).isSymbolicLink()) evidence.push(`symlinked ancestor ${d}`); } catch (e) { evidence.push(`ancestor ${d} lstat ${(e as NodeJS.ErrnoException).code ?? "error"}`); }
+    if (dirname(d) === d) break;
+  }
+  return { status: "unproven", evidence };
+}
 
 const TOKEN_NAME = /(?:_API_KEY|_AUTH_TOKEN|OAUTH)/;
 
@@ -81,29 +108,8 @@ export function writeStorybloqLauncher(p: LauncherSpec): { readonly path: string
   return { path, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
-const PROVENANCE_LISTS = ["agents", "commands", "skills", "plugins"] as const;
-const PROVENANCE_KEYS: readonly string[] = ["clientVersion", ...PROVENANCE_LISTS, "outputStyle"];
-
-/**
- * E3: the fields of a pinned provenance that are not what a signed-in launch needs: the client version and the
- * output style as non-empty strings, each listing as an array of distinct non-empty strings, and no other key.
- * Empty means it is well formed; whether the client then lists exactly these is checked per prompt.
- */
-export function provenanceProblems(p: unknown): string[] {
-  if (p === null || typeof p !== "object" || Array.isArray(p)) return ["provenance"];
-  const v = p as Record<string, unknown>;
-  const out: string[] = [];
-  const text = (x: unknown): boolean => typeof x === "string" && x !== "";
-  if (!text(v.clientVersion)) out.push("clientVersion");
-  for (const k of PROVENANCE_LISTS) {
-    const l = v[k];
-    // Spread first: every() skips a hole, so a sparse listing would pass and serialise as null entries.
-    if (!Array.isArray(l) || ![...l].every(text) || new Set(l).size !== l.length) out.push(k);
-  }
-  if (!text(v.outputStyle)) out.push("outputStyle");
-  for (const k of Object.keys(v)) if (!PROVENANCE_KEYS.includes(k)) out.push(`unexpected ${k}`);
-  return out;
-}
+// B-F4: one strict validator for preparation and for stored evidence, beside readbackProblems (no import cycle).
+export { provenanceProblems } from "./headless-policy.js";
 
 /** The pinned provenance, or a refusal naming every malformed field. */
 export function checkedProvenance(p: unknown): SignedInProvenance {

@@ -5,6 +5,7 @@
  * vars divert billing away from the subscription, how a killed session is
  * classified, and how a record reaches disk.
  */
+import { closeSync, constants as FS, fstatSync, openSync, readSync } from "node:fs";
 import { mkdir, open, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -105,6 +106,27 @@ export async function fsyncDir(dir: string, io: Pick<DurableIo, "open"> = DURABL
     await h.sync();
   } finally {
     await h.close();
+  }
+}
+
+/**
+ * B-F6: a regular file's text, read without following a link and without blocking on a special file: the open is
+ * O_NOFOLLOW | O_NONBLOCK, the opened descriptor must be a regular file no larger than `max`, and the read is
+ * bounded. Anything else is thrown.
+ */
+export function readRegularFile(p: string, max: number): string {
+  const fd = openSync(p, FS.O_RDONLY | FS.O_NOFOLLOW | FS.O_NONBLOCK);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error(`not a regular file: ${p}`);
+    if (st.size > max) throw new Error(`larger than ${max} bytes: ${p}`);
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (let r; n <= max && (r = readSync(fd, buf, n, max + 1 - n, null)) > 0;) n += r;
+    if (n > max) throw new Error(`larger than ${max} bytes: ${p}`);
+    return buf.subarray(0, n).toString("utf-8");
+  } finally {
+    closeSync(fd);
   }
 }
 

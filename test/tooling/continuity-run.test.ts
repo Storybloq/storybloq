@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync, chmodSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -16,7 +16,7 @@ import {
 } from "../../scripts/continuity-lib.js";
 import {
   parseArgs, buildManifestHash, readAttempts, INPUT_PATHS, checkOutputPaths, effectiveConfigHash, commandTokens, SHARED_REFUSAL, refuseShared, continuityTools, continuityOptions,
-  provisionFreshConfig, runAttempt, runMatrix, runPilot, driveClaude, type Launch, RateLimitStopError, ProvenanceStopError, PROVENANCE_STOP_FILE, PROVENANCE_INTENT_FILE, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
+  provisionFreshConfig, runAttempt, runMatrix, recoverAttempt, cliRecover, PROVENANCE_OUTCOME_FILE, PROVENANCE_READBACK_FILE, RECOVERY_DIAGNOSTIC_FILE, expectationSha256, runPilot, driveClaude, type Launch, RateLimitStopError, ProvenanceStopError, PROVENANCE_STOP_FILE, PROVENANCE_INTENT_FILE, MachineLoadStopError, ConfigDriftStopError, pluginInventoryHash, bracketedInputs, EVAL_MCP_BUNDLE, codexFingerprint, type Preflight, type RunOptions, type SpawnFn,
 } from "../../scripts/continuity-run.js";
 import { aggregate, COMPARISON_CHECKPOINT, scoringRequest, validateScore, mechanicalFailureScore, selectObservations, renderReport, loadScore, publishText, type AttemptRecord, type Observation,
   taskMaterialOf, experimentTaskMaterial, compareTaskMaterial, type TaskMaterialResult } from "../../scripts/continuity-score.js";
@@ -963,7 +963,18 @@ interface FakeBehaviour {
   readonly tail?: readonly string[];
   /** ISS-1486: one readback answer changed before it is sent. */
   readonly mutate?: (answers: Record<string, Record<string, unknown>>) => void;
+  /** C-F5: the init's session id, when it is not the one the launch chose. */
+  readonly initSession?: string;
+  /** C-F3: the init carries the pinned listing fields, so a correctly pinned turn ends clean. */
+  readonly provenanceInit?: boolean;
+  /** C-F5: extra stream lines before the result (a second init). */
+  readonly before?: readonly string[];
 }
+/** C-F5: the client's init carries the session the launch chose (--session-id or --resume), as the real client's does. */
+const initFor = (args: readonly string[], override?: string, provenance = false): string => {
+  const i = Math.max(args.indexOf("--session-id"), args.indexOf("--resume"));
+  return JSON.stringify({ ...JSON.parse(POLICY_INIT), session_id: override ?? (i >= 0 ? args[i + 1] : "s"), ...(provenance ? { agents: [], slash_commands: [], output_style: "default" } : {}) });
+};
 
 /** Deterministic dist hashes: the lifecycle tests never need a build. */
 const FAKE_DIST: Record<string, string> = { "dist/mcp.js": "1".repeat(64), "dist/cli.js": "2".repeat(64), "dist/index.js": "3".repeat(64), "dist/presence.js": "4".repeat(64) };
@@ -1030,7 +1041,7 @@ function fakeSpawn(behaviour: FakeBehaviour, seen: { cwd: string; env: NodeJS.Pr
       }
       writeFileSync(join(sessionDir, "state.json"), JSON.stringify(state));
       const lines = [
-        POLICY_INIT,
+        initFor(args, behaviour.initSession, behaviour.provenanceInit),
         assistant("r1", [{ type: "tool_use", id: "t1", name: guide, input: { sessionId: null, action: "start", targetWork: [ticketId] } }], u(10, 0, 100)),
         toolResult("t1", stateLine("PLAN")),
         assistant("r2", [{ type: "tool_use", id: "t2", name: "Read", input: { file_path: `${cwd}/src/http/router.ts` } }], u(10, 0, 200)),
@@ -1038,6 +1049,7 @@ function fakeSpawn(behaviour: FakeBehaviour, seen: { cwd: string; env: NodeJS.Pr
         assistant("r3", [{ type: "tool_use", id: "t3", name: guide, input: { sessionId: SID, action: "report", report: { completedAction: "plan_written" } } }], u(10, 0, 300)),
         toolResult("t3", stateLine("PLAN_REVIEW")),
       ];
+      lines.push(...(behaviour.before ?? []));
       if (behaviour.complete) lines.push(ev("result", { subtype: "success", total_cost_usd: 0.5, num_turns: 4, usage: {}, permission_denials: [] }));
       lines.push(...(behaviour.tail ?? []));
       setTimeout(() => {
@@ -1201,7 +1213,7 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(seen).toHaveLength(1);
     expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
     expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE), "utf-8"))).toMatchObject({ code: "provenance.version: not the pinned version", retryable: false });
-    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE), "utf-8"))).toEqual({ state: "unresolved" });
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE), "utf-8"))).toEqual({ state: "unresolved", schema: 1, sessionId: expect.stringMatching(/^[0-9a-f-]{36}$/), expectedSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(runMatrix(o, pf, d())).rejects.toThrow(/a provenance stop is recorded \(T-4\/repeat-1\/attempt-001\)/);
     expect(seen).toHaveLength(1);
   });
@@ -1329,6 +1341,301 @@ describe("attempt lifecycle (fake child process, no model)", () => {
     expect(seen).toHaveLength(1);
     expect(existsSync(rawDirOf(o, pf))).toBe(true);
     expect(r.summary).toContain("T-4#1: satisfied by attempt-001");
+  });
+
+  // C1 (W1, W2): the journal through runMatrix with a fake home (deps.homeRoot); the real home is never touched.
+  const fakeHome = (): string => { const h = tmp("cont-home-"); mkdirSync(join(h, ".claude", "agents"), { recursive: true }); writeFileSync(join(h, ".claude.json"), "{}"); return h; };
+  it("C1: a journalled turn writes the baseline before the spawn, the group before the prompt, and the terminal inventory after, then grades", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const home = fakeHome(); const order: string[] = [];
+    const inner = fakeSpawn({ complete: true }, seen);
+    const spawnFn: SpawnFn = (c, a, op) => { order.push(`spawn before=${existsSync(join(rawDirOf(o, pf), "home.before.json"))}`); return inner(c, a, op); };
+    const r = await runMatrix(o, pf, { ...deps({ spawnFn, log: () => {} }), homeRoot: home, startOf: () => { order.push("group"); return "Thu Nov 12 10:00:00 2026"; } });
+    expect(order).toEqual(["spawn before=true", "group"]);
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), "client.group.json"), "utf-8"))).toMatchObject({ schema: 1, start: "Thu Nov 12 10:00:00 2026" });
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), "home.after.json"), "utf-8"))).toMatchObject({ cleanup: "confirmed" });
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), "home.violations.json"), "utf-8"))).toEqual({ schema: 1, violations: [] });
+    expect(r.summary).toContain("T-4#1: satisfied by attempt-001");
+  });
+  it("K3: a failed group record stops the turn before the prompt, ungraded, and the re-run refuses", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const prompts: string[] = [];
+    const real = (await import("../../scripts/headless-common.js")).writeDurable;
+    const writeDurable = async (path: string, text: string): Promise<void> => { if (path.endsWith("client.group.json")) throw Object.assign(new Error("EIO on the group record"), { code: "EIO" }); await real(path, text); };
+    const inner = fakeSpawn({ complete: true, ignoreTerm: true }, seen);
+    const spawnFn: SpawnFn = (c, a, op) => { const ch = inner(c, a, op); (ch as unknown as FakeChild).stdin.on("data", (b: Buffer) => { if (b.toString().includes("\"type\":\"user\"")) prompts.push("prompt"); }); return ch; };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn, log: () => {} }), homeRoot: fakeHome(), startOf: () => "S", writeDurable })).rejects.toThrow(/stopped on provenance: home\.group-record: EIO on the group record/);
+    expect(seen).toHaveLength(1); expect(prompts).toEqual([]);
+    expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
+    await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).rejects.toBeInstanceOf(ProvenanceStopError);
+    expect(seen).toHaveLength(1);
+  });
+  it("M-C5: a baseline the inventory cannot read stops before the spawn", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const home = fakeHome(); chmodSync(join(home, ".claude", "agents"), 0o000);
+    try {
+      await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), homeRoot: home })).rejects.toThrow(/home journal: home\.baseline/);
+      expect(seen).toHaveLength(0);
+    } finally { chmodSync(join(home, ".claude", "agents"), 0o755); }
+  });
+  it("E5: a home change during the turn stops it after the terminal inventory, ungraded", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    const home = fakeHome();
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }), homeRoot: home, startOf: () => { writeFileSync(join(home, ".claude", "agents", "planted.md"), "x"); return "S"; } })).rejects.toThrow(/home\.violation: changed \.claude\/agents, added \.claude\/agents\/planted\.md\./);
+    expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), "home.violations.json"), "utf-8")).violations).toHaveLength(2);
+  });
+
+  // W3: recovery of a crashed guarded attempt (recoverAttempt and the thin --recover CLI). The crash is made from a
+  // clean journalled run: its terminal journal is removed, its intent put back to unresolved, its record removed.
+  const GONE = { group: () => "gone", identity: () => ({ kind: "absent" as const }) };
+  const crashed = async (keepGroup = true): Promise<{ o: RunOptions; pf: Preflight; home: string; seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] }> => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const home = fakeHome();
+    await runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, provenanceInit: true }, seen), log: () => {} }), ...pin(pinned), homeRoot: home, startOf: () => "S" });
+    const raw = rawDirOf(o, pf);
+    expect(existsSync(join(raw, PROVENANCE_OUTCOME_FILE))).toBe(true);
+    for (const f of ["home.after.json", "home.violations.json", ...(keepGroup ? [] : ["client.group.json"])]) rmSync(join(raw, f));
+    rmSync(join(pubDirOf(o, pf), "record.json"));
+    writeFileSync(join(raw, PROVENANCE_INTENT_FILE), `${JSON.stringify({ ...JSON.parse(readFileSync(join(raw, PROVENANCE_INTENT_FILE), "utf-8")), state: "unresolved" })}\n`);
+    await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).rejects.toBeInstanceOf(ProvenanceStopError);
+    return { o, pf, home, seen };
+  };
+  const intentState = (o: RunOptions, pf: Preflight): unknown => JSON.parse(readFileSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE), "utf-8")).state;
+  it("W3: a clean recovery takes the terminal inventory, resolves the intent, and a following run no longer stops on it", async () => {
+    const { o, pf, home, seen } = await crashed();
+    const probed: number[] = [];
+    await recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: { ...GONE, group: (g: number) => { probed.push(g); return "gone"; } } });
+    expect(probed).toHaveLength(1);
+    expect(intentState(o, pf)).toBe("resolved");
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), "home.after.json"), "utf-8"))).toMatchObject({ cleanup: "confirmed" });
+    expect(JSON.parse(readFileSync(join(rawDirOf(o, pf), "home.violations.json"), "utf-8"))).toEqual({ schema: 1, violations: [] });
+    const before = seen.length;
+    await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).resolves.toBeDefined();
+    expect(seen.length).toBe(before + 1);
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/already resolved; recovery is not repeated/);
+  });
+  const k2: [string, (raw: string) => void, Partial<typeof GONE> & { group?: (g: number) => string }, RegExp][] = [
+    ["a missing group record", (raw) => rmSync(join(raw, "client.group.json")), {}, /no group record/],
+    ["a corrupt group record", (raw) => writeFileSync(join(raw, "client.group.json"), "{"), {}, /group record is corrupt/],
+    ["an invalid pgid", (raw) => writeFileSync(join(raw, "client.group.json"), JSON.stringify({ schema: 1, pgid: 1, start: "S" })), {}, /names no valid group/],
+    ["no recorded start identity", (raw) => writeFileSync(join(raw, "client.group.json"), JSON.stringify({ schema: 1, pgid: 4242, start: null })), {}, /no recorded start identity/],
+    ["a surviving group", () => {}, { group: () => "present" }, /home\.cleanup\.unconfirmed/],
+    ["EPERM on the group probe", () => {}, { group: () => "EPERM" }, /home\.cleanup\.unconfirmed/],
+  ];
+  for (const [name, damage, probe, why] of k2) {
+    it(`W3 (K2): ${name} refuses the recovery, writes the diagnostic, signals nothing, and the stop stays`, async () => {
+      const { o, pf, home, seen } = await crashed(); const raw = rawDirOf(o, pf); damage(raw);
+      const sent: unknown[] = []; const send = processGroupSeams.send; processGroupSeams.send = (...a) => { sent.push(a); };
+      try { await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: { ...GONE, ...probe } })).rejects.toThrow(why); } finally { processGroupSeams.send = send; }
+      expect(sent).toEqual([]);
+      expect(intentState(o, pf)).toBe("unresolved");
+      expect(existsSync(join(raw, "home.diagnostic.json"))).toBe(true);
+      expect(existsSync(join(raw, "home.after.json"))).toBe(false);
+      const before = seen.length;
+      await expect(runMatrix(o, pf, deps({ spawnFn: fakeSpawn({ complete: true }, seen), log: () => {} }))).rejects.toBeInstanceOf(ProvenanceStopError);
+      expect(seen.length).toBe(before);
+    });
+  }
+  it("W3: a before-only journal (no baseline) is refused, not assumed clean", async () => {
+    const { o, pf, home } = await crashed(); rmSync(join(rawDirOf(o, pf), "home.before.json"));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/home\.unjournalled/);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  it("W3: a home change found by the recovery is refused and the intent stays unresolved", async () => {
+    const { o, pf, home } = await crashed(); writeFileSync(join(home, ".claude", "agents", "planted.md"), "x");
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/home\.violation: 2 change/);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  it("W3: the attempt path must name task/repeat/attempt inside --raw-out, with no traversal and no link", async () => {
+    const { o, pf, home } = await crashed();
+    for (const bad of ["../T-4/repeat-1/attempt-001", "T-4/repeat-1/../repeat-1/attempt-001", "/etc/passwd", "T-4/repeat-1", "T-999/repeat-1/attempt-001", "T-4/repeat-1/attempt-001/x"]) {
+      await expect(recoverAttempt(o, pf, bad, { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/must be <task>\/repeat-<n>\/attempt-<nnn>/);
+    }
+    const repeatDir = dirname(rawDirOf(o, pf)); const moved = `${repeatDir}-real`; execFileSync("mv", [repeatDir, moved]); symlinkSync(moved, repeatDir);
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/is not a real directory/);
+    expect(JSON.parse(readFileSync(join(moved, "attempt-001", PROVENANCE_INTENT_FILE), "utf-8")).state).toBe("unresolved");
+    await expect(recoverAttempt(o, { experiment: "../../x" }, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/experiment must be its hex id/);
+  });
+  it("W3: an attempt with no intent is nothing to recover, and one with a recorded stop is refused", async () => {
+    const { o, pf, home } = await crashed();
+    writeFileSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE), "{}");
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/a provenance stop is recorded/);
+    rmSync(join(rawDirOf(o, pf), PROVENANCE_STOP_FILE)); rmSync(join(rawDirOf(o, pf), PROVENANCE_INTENT_FILE));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/nothing to recover/);
+  });
+  it("W3 (K2): the real recovery probe asks only kill(-pgid, 0): ESRCH recovers, EPERM refuses, and nothing is ever sent", async () => {
+    const probe = processGroupSeams.probe; const send = processGroupSeams.send; const probed: number[] = []; const sent: unknown[] = [];
+    let code = "EPERM";
+    const { o, pf, home } = await crashed();
+    processGroupSeams.probe = (g) => { probed.push(g); throw Object.assign(new Error(code), { code }); };
+    processGroupSeams.send = (...a) => { sent.push(a); };
+    try {
+      await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home })).rejects.toThrow(/inaccessible \(EPERM\)/);
+      expect(intentState(o, pf)).toBe("unresolved");
+      code = "ESRCH";
+      await recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home });
+      expect(intentState(o, pf)).toBe("resolved");
+    } finally { processGroupSeams.probe = probe; processGroupSeams.send = send; }
+    expect(probed).toEqual([999999, 999999]); expect(sent).toEqual([]);
+  });
+  // C-F3: recovery resolves only on positive, persisted evidence of a clean turn, revalidated against the intent.
+  const cleanRun = async (): Promise<{ o: RunOptions; pf: Preflight; home: string; raw: string }> => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const home = fakeHome();
+    await runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, provenanceInit: true }, seen), log: () => {} }), ...pin(pinned), homeRoot: home, startOf: () => "S" });
+    const raw = rawDirOf(o, pf);
+    writeFileSync(join(raw, PROVENANCE_INTENT_FILE), `${JSON.stringify({ ...JSON.parse(readFileSync(join(raw, PROVENANCE_INTENT_FILE), "utf-8")), state: "unresolved" })}\n`);
+    return { o, pf, home, raw };
+  };
+  const fileSha = (p: string): string | null => (existsSync(p) ? sha256(readFileSync(p)) : null);
+  const reOutcome = (raw: string): void => {
+    const out = JSON.parse(readFileSync(join(raw, PROVENANCE_OUTCOME_FILE), "utf-8"));
+    writeFileSync(join(raw, PROVENANCE_OUTCOME_FILE), JSON.stringify({ ...out, transcriptSha256: sha256(readFileSync(join(raw, "transcript.jsonl"))) }));
+  };
+  it("C-F3: a crash after the outcome and before the resolution is recovered from the evidence on disk", async () => {
+    const { o, pf, home, raw } = await cleanRun(); const after = fileSha(join(raw, "home.after.json"));
+    await recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE });
+    expect(intentState(o, pf)).toBe("resolved");
+    expect(JSON.parse(readFileSync(join(raw, PROVENANCE_INTENT_FILE), "utf-8"))).toMatchObject({ schema: 1, sessionId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(fileSha(join(raw, "home.after.json"))).toBe(after);
+  });
+  it("C-F3: a crash after a provenance latch, with the home unchanged, is refused (no clean outcome)", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const home = fakeHome();
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, provenanceInit: true, ignoreTerm: true }, seen), log: () => {} }), ...pin({ ...pinned, clientVersion: "9.9.9" }), homeRoot: home, startOf: () => "S" })).rejects.toThrow(/stopped on provenance: provenance\.version/);
+    const raw = rawDirOf(o, pf); rmSync(join(raw, PROVENANCE_STOP_FILE));
+    const after = fileSha(join(raw, "home.after.json"));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/no clean provenance outcome/);
+    expect(intentState(o, pf)).toBe("unresolved");
+    expect(fileSha(join(raw, "home.after.json"))).toBe(after);
+    expect(JSON.parse(readFileSync(join(raw, RECOVERY_DIAGNOSTIC_FILE), "utf-8"))).toMatchObject({ schema: 1, reason: expect.stringMatching(/no clean provenance outcome/) });
+  });
+  it("C-F3: a crash during the terminal journal is refused, and no terminal inventory is taken", async () => {
+    const { o, pf, home, raw } = await cleanRun();
+    for (const f of ["home.after.json", "home.violations.json", PROVENANCE_OUTCOME_FILE]) rmSync(join(raw, f));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/no clean provenance outcome/);
+    expect(intentState(o, pf)).toBe("unresolved");
+    expect(existsSync(join(raw, "home.after.json"))).toBe(false);
+  });
+  it("C-F3: a failed terminal journal write records no clean outcome, and recovery refuses rather than rebuild the inventory", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const home = fakeHome();
+    const real = (await import("../../scripts/headless-common.js")).writeDurable;
+    const failAfter = async (path: string, text: string): Promise<void> => { if (path.endsWith("/home.after.json")) throw new Error("ENOSPC on the terminal journal"); await real(path, text); };
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, provenanceInit: true }, seen), log: () => {} }), ...pin(pinned), homeRoot: home, startOf: () => "S", writeDurable: failAfter })).rejects.toThrow("ENOSPC on the terminal journal");
+    const raw = rawDirOf(o, pf);
+    expect(existsSync(join(raw, PROVENANCE_OUTCOME_FILE))).toBe(false);
+    expect(intentState(o, pf)).toBe("unresolved");
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/no clean provenance outcome/);
+    expect(existsSync(join(raw, "home.after.json"))).toBe(false);
+  });
+  it.each([
+    ["a truncated transcript", (t: string) => t.slice(0, t.length - 20), /truncated line/],
+    ["a transcript with no result event", (t: string) => t.split("\n").filter((l) => !l.includes("\"type\":\"result\"")).join("\n"), /no terminal result event/],
+    ["a transcript with a corrupt line", (t: string) => t.replace("\n", "\n{not json\n"), /corrupt line/],
+  ] as const)("C-F3: %s is refused even when the outcome names its hash", async (_n, cut, why) => {
+    const { o, pf, home, raw } = await cleanRun();
+    writeFileSync(join(raw, "transcript.jsonl"), cut(readFileSync(join(raw, "transcript.jsonl"), "utf-8"))); reOutcome(raw);
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(why);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  it("C-F3: a transcript that is not the one the outcome recorded is refused", async () => {
+    const { o, pf, home, raw } = await cleanRun();
+    writeFileSync(join(raw, "transcript.jsonl"), `${readFileSync(join(raw, "transcript.jsonl"), "utf-8")}\n`);
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/not the one the outcome recorded/);
+  });
+  it("C-F3: the persisted readback is recomputed against the intent's expectation", async () => {
+    const { o, pf, home, raw } = await cleanRun();
+    const rb = JSON.parse(readFileSync(join(raw, PROVENANCE_READBACK_FILE), "utf-8"));
+    writeFileSync(join(raw, PROVENANCE_READBACK_FILE), JSON.stringify({ ...rb, steps: rb.steps.map((st: { subtype: string; response: Record<string, unknown> }) => (st.subtype === "initialize" ? { ...st, response: { ...st.response, claude_code_version: "9.9.9" } } : st)) }));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/readback: provenance\.version/);
+    writeFileSync(join(raw, PROVENANCE_READBACK_FILE), JSON.stringify({ ...rb, expected: { ...rb.expected, project: "/elsewhere" } }));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/expectation is not the one the intent recorded/);
+    rmSync(join(raw, PROVENANCE_READBACK_FILE));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/no readback record/);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  it("C-F3: an init that fails the pin is refused by the recovery's own init check", async () => {
+    const { o, pf, home, raw } = await cleanRun();
+    writeFileSync(join(raw, "transcript.jsonl"), readFileSync(join(raw, "transcript.jsonl"), "utf-8").replace("\"output_style\":\"default\"", "\"output_style\":\"other\"")); reOutcome(raw);
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/init\.provenance:output_style/);
+  });
+  it("C-F3: an outcome record that does not say the cleanup was confirmed is refused", async () => {
+    const { o, pf, home, raw } = await cleanRun();
+    const out = JSON.parse(readFileSync(join(raw, PROVENANCE_OUTCOME_FILE), "utf-8"));
+    writeFileSync(join(raw, PROVENANCE_OUTCOME_FILE), JSON.stringify({ ...out, cleanup: "unconfirmed" }));
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/the outcome record does not match the intent/);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  it("C-F3: with no pin to check, an init that contradicts the persisted readback is refused by the recovery", async () => {
+    // A guarded turn with no pin is a signed-in turn, which no fake run reaches; the evidence is built on disk instead.
+    const { o, pf, home, raw } = await cleanRun();
+    const rb = JSON.parse(readFileSync(join(raw, PROVENANCE_READBACK_FILE), "utf-8"));
+    const { provenance: _p, ...unpinned } = rb.expected;
+    writeFileSync(join(raw, PROVENANCE_READBACK_FILE), JSON.stringify({ ...rb, expected: unpinned }));
+    const intent = JSON.parse(readFileSync(join(raw, PROVENANCE_INTENT_FILE), "utf-8"));
+    writeFileSync(join(raw, PROVENANCE_INTENT_FILE), JSON.stringify({ ...intent, expectedSha256: expectationSha256(unpinned) }));
+    const t = readFileSync(join(raw, "transcript.jsonl"), "utf-8");
+    const v = /"claude_code_version":"([^"]*)"/.exec(t)![1]!;
+    writeFileSync(join(raw, "transcript.jsonl"), t.replace(`"claude_code_version":"${v}"`, `"claude_code_version":"${v}9"`)); reOutcome(raw);
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/init\.contradiction/);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  // C-F4: only ENOENT is absence on the stop file, the intent and the transcript.
+  for (const errno of ["EACCES", "EIO"]) {
+    for (const [name, file] of [["the stop file", PROVENANCE_STOP_FILE], ["the intent", PROVENANCE_INTENT_FILE], ["the transcript", "transcript.jsonl"], ["the outcome", PROVENANCE_OUTCOME_FILE]] as const) {
+      it(`C-F4: ${errno} checking ${name} refuses; the intent stays unresolved and no terminal evidence is replaced`, async () => {
+        const { o, pf, home, raw } = await cleanRun(); const was = fileSha(join(raw, "home.after.json"));
+        const recoveryFs = { lstat: (p: string) => { if (p.endsWith(`/${file}`)) throw Object.assign(new Error(errno), { code: errno }); return lstatSync(p); }, read: (p: string, max: number) => readFileSync(p, "utf-8").slice(0, max) };
+        await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE, recoveryFs })).rejects.toThrow(new RegExp(`cannot be checked \\(${errno}\\)`));
+        expect(intentState(o, pf)).toBe("unresolved"); expect(fileSha(join(raw, "home.after.json"))).toBe(was);
+      });
+    }
+    for (const [name, file] of [["the intent", PROVENANCE_INTENT_FILE], ["the transcript", "transcript.jsonl"]] as const) {
+      it(`C-F4: ${errno} reading ${name} refuses; the intent stays unresolved`, async () => {
+        const { o, pf, home, raw } = await cleanRun(); const was = fileSha(join(raw, "home.after.json"));
+        const recoveryFs = { lstat: (p: string) => lstatSync(p), read: (p: string, max: number) => { if (p.endsWith(`/${file}`)) throw Object.assign(new Error(errno), { code: errno }); return readFileSync(p, "utf-8").slice(0, max); } };
+        await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE, recoveryFs })).rejects.toThrow(new RegExp(`unreadable \\(${errno}\\)`));
+        expect(intentState(o, pf)).toBe("unresolved"); expect(fileSha(join(raw, "home.after.json"))).toBe(was);
+      });
+    }
+  }
+  // C-F5: the exception allowlist is the session the launch chose, recorded in the intent before the spawn.
+  const OTHER_SID = "99999999-2222-4333-8444-555555555555";
+  it("C-F5: an unrelated session id in the transcript plus a write under it stops normal grading", async () => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = []; const home = fakeHome();
+    mkdirSync(join(home, ".claude", "projects", "-w"), { recursive: true });
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, initSession: OTHER_SID }, seen), log: () => {} }), homeRoot: home, startOf: () => { writeFileSync(join(home, ".claude", "projects", "-w", `${OTHER_SID}.jsonl`), "t"); return "S"; } })).rejects.toThrow(new RegExp(`home\\.violation: .*added \\.claude/projects/-w/${OTHER_SID}\\.jsonl`));
+    expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
+  });
+  it.each([
+    ["a mismatched init", { initSession: OTHER_SID }, /home\.session-binding: an init event names a session the launch did not choose/],
+    ["a second init", { before: [JSON.stringify({ ...JSON.parse(POLICY_INIT), session_id: OTHER_SID })] }, /home\.session-binding: 2 init events/],
+    ["an init with no valid session id", { initSession: "not-a-session" }, /home\.session-binding: an init event carries no valid session id/],
+  ] as const)("C-F5: %s alone stops normal grading", async (_n, b, why) => {
+    const o = options({ tasks: ["T-4"], repeats: 1 }); const pf = fakePreflight(); const seen: { cwd: string; env: NodeJS.ProcessEnv; child: FakeChild }[] = [];
+    await expect(runMatrix(o, pf, { ...deps({ spawnFn: fakeSpawn({ complete: true, ...b }, seen), log: () => {} }), homeRoot: fakeHome(), startOf: () => "S" })).rejects.toThrow(why);
+    expect(existsSync(join(pubDirOf(o, pf), "record.json"))).toBe(false);
+  });
+  it("C-F5: recovery refuses an unrelated session id in the transcript plus a write under it", async () => {
+    const { o, pf, home, raw } = await cleanRun();
+    const sid = JSON.parse(readFileSync(join(raw, PROVENANCE_INTENT_FILE), "utf-8")).sessionId as string;
+    writeFileSync(join(raw, "transcript.jsonl"), readFileSync(join(raw, "transcript.jsonl"), "utf-8").replace(`"session_id":"${sid}"`, `"session_id":"${OTHER_SID}"`)); reOutcome(raw);
+    mkdirSync(join(home, ".claude", "projects", "-w"), { recursive: true }); writeFileSync(join(home, ".claude", "projects", "-w", `${OTHER_SID}.jsonl`), "t");
+    await expect(recoverAttempt(o, pf, "T-4/repeat-1/attempt-001", { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/names a session the launch did not choose/);
+    expect(intentState(o, pf)).toBe("unresolved");
+  });
+  it("W3: --recover is a thin caller: it recovers with zero spawns, and is refused alongside a run", async () => {
+    const { o, pf, home, seen } = await crashed(); const before = seen.length;
+    const spawned: unknown[] = []; const spawn = processGroupSeams.spawn; processGroupSeams.spawn = ((...a: unknown[]) => { spawned.push(a); throw new Error("no spawn"); }) as typeof spawn;
+    try {
+      const argv = ["--recover", "T-4/repeat-1/attempt-001", "--experiment", pf.experiment.slice(0, 12), "--out", o.out, "--raw-out", o.rawOut];
+      await expect(cliRecover(["--pilot", ...argv], { homeRoot: home, recoveryProbe: GONE })).rejects.toThrow(/not combined with a run/);
+      expect(intentState(o, pf)).toBe("unresolved");
+      await expect(cliRecover(argv, { homeRoot: home, recoveryProbe: GONE })).resolves.toBe(true);
+      await expect(cliRecover(["--out", o.out])).resolves.toBe(false);
+    } finally { processGroupSeams.spawn = spawn; }
+    expect(spawned).toEqual([]); expect(seen.length).toBe(before);
+    expect(intentState(o, pf)).toBe("resolved");
+    // The module spawns through node:child_process directly, so the zero-spawn proof is also structural: neither
+    // entry names a spawn, a build, the preflight or any run path.
+    for (const fn of [cliRecover, recoverAttempt]) expect(fn.toString()).not.toMatch(/spawn|execFile|preflight|runMatrix|runPilot|runAttempt|driveClaude|Spawn/);
   });
 
   it("B2: a rate-limit stop stops the matrix before any further spawn; the re-run resumes the cell without counting it", async () => {

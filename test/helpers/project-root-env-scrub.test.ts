@@ -16,6 +16,11 @@ import { fileURLToPath } from "node:url";
 const PKG_ROOT = resolve(fileURLToPath(import.meta.url), "../../..");
 const REAL_SETUP = join(PKG_ROOT, "test", "setup.ts");
 
+// ISS-1497: each test starts a child vitest run, which cannot fit the default
+// 5 s test timeout. Measured cold starts, alone, 5 runs at load 28: 7.6 to
+// 8.9 s. CHILD_RUN_MS is about 6 times the slowest, for a loaded machine.
+const CHILD_RUN_MS = 60_000;
+
 // Module scope is read before any hook runs (the load-time scrub), and a value
 // set there must still be gone when the first test starts (the beforeEach).
 const PROBE = `import { it, expect } from "vitest";
@@ -56,11 +61,11 @@ describe("ISS-1305 (D9): the suite never inherits a pen's board", () => {
   it("a child run started with both project-root variables set sees neither at module load, before a test or between tests", () => {
     const { status, output } = runChild([REAL_SETUP]);
     expect(status, output).toBe(0);
-  });
+  }, CHILD_RUN_MS);
 
   it("CONTROL: without the setup file the same probe sees the inherited board and fails", () => {
     const { status, output } = runChild([]);
     expect(status, output).not.toBe(0);
     expect(output).toContain("inherits no project root");
-  });
+  }, CHILD_RUN_MS);
 });

@@ -21,6 +21,11 @@ import { createHash } from "node:crypto";
 const PKG_ROOT = resolve(fileURLToPath(import.meta.url), "../../..");
 const REAL_SETUP = join(PKG_ROOT, "test", "setup.ts");
 
+// ISS-1497: each test starts a child vitest run, which cannot fit the default
+// 5 s test timeout. Measured cold starts, alone, 5 runs at load 28: 7.6 to
+// 8.9 s. CHILD_RUN_MS is about 6 times the slowest, for a loaded machine.
+const CHILD_RUN_MS = 60_000;
+
 /** Builds a throwaway vitest project whose setupFiles is the real setup.ts. */
 function scaffold(body: string): { dir: string; configPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "iss1220-wiring-"));
@@ -63,7 +68,7 @@ describe("ISS-1220 tripwire wiring", () => {
     );
     const { status, output } = runChild(dir, configPath);
     expect(status, `control run should pass:\n${output}`).toBe(0);
-  });
+  }, CHILD_RUN_MS);
 
   it("a child run whose test writes to the watched config FAILS with the ISS-1220 diff", () => {
     // Without the control above, a child that failed for an unrelated reason
@@ -80,5 +85,5 @@ describe("ISS-1220 tripwire wiring", () => {
     expect(status, `expected the child run to FAIL, output:\n${output}`).not.toBe(0);
     expect(output).toContain("ISS-1220");
     expect(output).toContain("git config changed during the test run");
-  });
+  }, CHILD_RUN_MS);
 });

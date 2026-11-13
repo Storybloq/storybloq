@@ -17,6 +17,7 @@ import {
   isLineageAtValue,
   isLineageByValue,
   isLineageFileValue,
+  isLineageRoleValue,
   serializeLineage,
   splitLineage,
   type AbsorbDropReason,
@@ -316,6 +317,49 @@ export interface HandoverCreateLineage {
   readonly role?: string;
   readonly from?: string;
   readonly absorbs?: readonly string[];
+  /**
+   * Earlier occurrences of a singleton flag given more than once (plan
+   * clarification 9): the last occurrence applies, each earlier one is named.
+   */
+  readonly ignoredRepeats?: readonly { readonly flag: string; readonly value: string | null }[];
+}
+
+/**
+ * Turns the parsed yargs values of the lineage flags into one
+ * HandoverCreateLineage. yargs gives an array for a flag given twice; for
+ * the singletons the last occurrence applies and every earlier one is kept
+ * in `ignoredRepeats`. Never throws. `--absorbs` is the only repeatable flag.
+ */
+export function lineageFlagsFromArgv(argv: Readonly<Record<string, unknown>>): HandoverCreateLineage {
+  const ignoredRepeats: { flag: string; value: string | null }[] = [];
+  const single = (flag: string, raw: unknown): string | undefined => {
+    if (raw === undefined || raw === null) return undefined;
+    const all = (Array.isArray(raw) ? raw : [raw]).map((v) => String(v));
+    for (const v of all.slice(0, -1)) ignoredRepeats.push({ flag, value: v });
+    return all[all.length - 1];
+  };
+  const rawNewLine = argv["new-line"];
+  const newLines = rawNewLine === undefined ? [] : Array.isArray(rawNewLine) ? rawNewLine : [rawNewLine];
+  for (let i = 0; i < newLines.length - 1; i++) ignoredRepeats.push({ flag: "--new-line", value: null });
+  const rawAbsorbs = argv.absorbs;
+  const absorbs = rawAbsorbs === undefined || rawAbsorbs === null
+    ? undefined
+    : (Array.isArray(rawAbsorbs) ? rawAbsorbs : [rawAbsorbs]).map((v) => String(v));
+  return {
+    continues: single("--continues", argv.continues),
+    newLine: newLines.length > 0 && newLines[newLines.length - 1] === true,
+    role: single("--role", argv.role),
+    from: single("--from", argv.from),
+    absorbs,
+    ignoredRepeats,
+  };
+}
+
+/** A repeated flag's ignored value is echoed only when it passes that flag's value rule. */
+function echoableRepeat(flag: string, value: string | null): string | null {
+  if (value === null) return null;
+  if (flag === "--role") return isLineageRoleValue(value) ? value : null;
+  return isLineageFileValue(value) ? value : null;
 }
 
 /**
@@ -366,10 +410,12 @@ function planLineage(content: string, flags: HandoverCreateLineage | null): Line
   if (f.from !== undefined) modifiers.push("--from");
   if ((f.absorbs?.length ?? 0) > 0) modifiers.push("--absorbs");
   const hasSelector = f.continues !== undefined || f.newLine === true;
+  const repeats = f.ignoredRepeats ?? [];
   const split = splitLineage(content);
-  if (!hasSelector && modifiers.length === 0 && split.lineage === null) return { kind: "none" };
+  if (!hasSelector && modifiers.length === 0 && repeats.length === 0 && split.lineage === null) return { kind: "none" };
 
   const warnings: LineageWarning[] = [];
+  for (const r of repeats) warnings.push(warn("modifier_ignored", echoableRepeat(r.flag, r.value), r.flag));
   // Any v1 line at the end of the content belongs to the tool and is removed.
   const fallback = split.lineage === null ? content : split.body;
   if (f.continues !== undefined && f.newLine === true) warnings.push(warn("new_line_ignored"));
@@ -390,12 +436,12 @@ function planLineage(content: string, flags: HandoverCreateLineage | null): Line
     from = l.from;
     role = l.role;
     absorbs = [...l.absorbs];
-    if (continues.state !== "invalid") {
-      for (const d of split.lineage.dropped) {
-        // `at` and `by` are recomputed whatever the line said.
-        if (d.attribute === "at" || d.attribute === "by") continue;
-        warnings.push(warn("attribute_dropped", null, `${d.attribute}:${d.reason}`));
-      }
+    for (const d of split.lineage.dropped) {
+      // `at` and `by` are recomputed whatever the line said; an invalid
+      // continues is named once, by continues_invalid (clarification 10).
+      if (d.attribute === "at" || d.attribute === "by") continue;
+      if (d.attribute === "continues" && d.reason === "invalid") continue;
+      warnings.push(warn("attribute_dropped", null, `${d.attribute}:${d.reason}`));
     }
   } else {
     // (Slice B inserts the memo here, between the content line and "none".)
@@ -430,6 +476,15 @@ function planLineage(content: string, flags: HandoverCreateLineage | null): Line
     roleGiven,
     warnings,
   };
+}
+
+/**
+ * Clarification 8: an empty handover file is never written. A fallback
+ * whose bytes trim to empty (content that was only a lineage line) is
+ * refused with main's own empty-content error, before anything is written.
+ */
+function refuseEmptyFallback(bytes: string): void {
+  if (!bytes.trim()) throw new CliValidationError("invalid_input", "Handover content is empty");
 }
 
 function gitShortHead(cwd: string): Promise<string | null> {
@@ -568,6 +623,7 @@ export async function handleHandoverCreate(
   if (plan.kind === "unlinked") {
     toWrite = plan.bytes;
     lineageResult = { ...UNLINKED, warnings: plan.warnings };
+    refuseEmptyFallback(toWrite);
   }
   // `at` and `by` are read before the lock is taken.
   let at: string | null = null;
@@ -586,6 +642,7 @@ export async function handleHandoverCreate(
       const r = await resolveLinkedWrite(plan, handoversDir, absRoot, at, by);
       toWrite = r.bytes;
       lineageResult = r.result;
+      refuseEmptyFallback(toWrite);
     }
 
     const isTeamMode = await detectTeamMode(absRoot);

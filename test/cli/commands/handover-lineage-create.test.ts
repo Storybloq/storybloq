@@ -6,7 +6,7 @@
  * the CLI and through the registered MCP tool, equal goldens captured from
  * main before any lineage code existed.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -19,6 +19,22 @@ import { handleHandoverCreate, lineageIsInvisible } from "../../../src/cli/comma
 import { extractHandoverHeading } from "../../../src/federation/handover-utils.js";
 import { parseHandoverMarkdown } from "../../../src/core/markdown-sections.js";
 import { hasCarriedForwardHeading, parseCarriedForwardSection } from "../../../src/core/handover-template.js";
+
+// A passthrough of node:fs/promises whose readdir fails with EACCES for one
+// chosen folder, so "the folder cannot be listed" is tested as any user,
+// root included (review round 1, item 4).
+const denied = vi.hoisted(() => ({ dir: null as string | null }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const readdir = ((path: unknown, ...rest: unknown[]) => {
+    if (denied.dir !== null && String(path) === denied.dir) {
+      return Promise.reject(Object.assign(new Error(`EACCES: permission denied, scandir '${denied.dir}'`), { code: "EACCES" }));
+    }
+    return (real.readdir as (...a: unknown[]) => Promise<unknown>)(path, ...rest);
+  }) as typeof real.readdir;
+  const m = { ...real, readdir };
+  return { ...m, default: m };
+});
 
 const here = resolve(fileURLToPath(import.meta.url), "..");
 const GOLDENS = join(here, "../../fixtures/handover-lineage/create-goldens.json");
@@ -290,17 +306,30 @@ describe("A6 linked write from a content line", () => {
     expect(codes(r.lineage)).toEqual(["content_line_discarded"]);
   });
 
-  const invalidContents: Record<string, string> = {
-    "an invalid continues": body + "\n" + lineOf('continues="a/b.md"') + "\n",
-    "an invalid first continues and a valid second one": body + "\n" + lineOf(`continues="a/b.md" continues="${OLD}"`) + "\n",
+  const CONTINUES_INVALID = { code: "continues_invalid", target: null, detail: null };
+  const dropped = (detail: string) => ({ code: "attribute_dropped", target: null, detail });
+  const invalidContents: Record<string, { content: string; warnings: Warning[] }> = {
+    "an invalid continues": {
+      content: body + "\n" + lineOf('continues="a/b.md"') + "\n",
+      warnings: [CONTINUES_INVALID],
+    },
+    "an invalid first continues and a valid second one": {
+      content: body + "\n" + lineOf(`continues="a/b.md" continues="${OLD}"`) + "\n",
+      warnings: [dropped("continues:duplicate"), CONTINUES_INVALID],
+    },
+    "an invalid continues with an invalid role and an unknown attribute": {
+      content: body + "\n" + lineOf('continues="a/b.md" role="a<b" colour="red"') + "\n",
+      warnings: [dropped("role:invalid"), dropped("colour:unknown"), CONTINUES_INVALID],
+    },
   };
-  for (const [name, content] of Object.entries(invalidContents)) {
+  for (const [name, { content, warnings }] of Object.entries(invalidContents)) {
     it(`${name} in a content line on the CLI: the body is written unlinked`, async () => {
       const root = await project(false);
       const r = await create(root, content);
       expect(r.bytes).toBe(body);
-      expect(r.lineage).toEqual({ ...UNLINKED_RESULT, warnings: [{ code: "continues_invalid", target: null, detail: null }] });
+      expect(r.lineage).toEqual({ ...UNLINKED_RESULT, warnings });
       expect(r.stdout).not.toContain("a/b.md");
+      expect(r.stdout).not.toContain("a<b");
     });
     it(`${name} in a content line through the MCP tool: the body is written unlinked`, async () => {
       const root = await project(false);
@@ -369,8 +398,23 @@ describe("A6 linked write from a content line", () => {
 });
 
 describe("A7 write-time check", () => {
+  for (const [name, args] of Object.entries({
+    "content that is only a valid lineage line (linked fallback)": [lineOf(`continues="${OLD}"`) + "\n"],
+    "content that is only a lineage line with an invalid continues": [lineOf('continues="a/b.md"') + "\n"],
+    "content that is only a lineage line, under --new-line": [lineOf(`continues="${OLD}"`) + "\n", "--new-line"],
+  })) {
+    it(`refuses ${name} with the empty-content error and writes nothing`, async () => {
+      const root = await project(false);
+      const before = readdirSync(hdir(root)).sort();
+      const [content, ...flags] = args;
+      const r = await runCli(root, ["handover", "create", "--content", content!, "--slug", "lin", "--format", "json", ...flags]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).toContain("Handover content is empty");
+      expect(readdirSync(hdir(root)).sort()).toEqual(before);
+    });
+  }
+
   const rejected: Record<string, { content: string; flags: string[]; written: string }> = {
-    "content that is only a lineage line": { content: lineOf(`continues="${OLD}"`) + "\n", flags: [], written: "" },
     "a body that is only a title": { content: "# Title\n", flags: ["--continues", OLD], written: "# Title\n" },
     "a body ending in a bare federation heading": { content: "## Shipped\n- T-001\n# ", flags: ["--continues", OLD], written: "## Shipped\n- T-001\n# " },
   };
@@ -422,7 +466,8 @@ describe("A7 write-time check", () => {
     const bodies = [
       ...fixtures.map((rel) => readFileSync(join(fixtureRoot, rel), "utf8")),
       ...TAIL_SHAPES.filter((s) => s.body !== undefined).map((s) => s.body!),
-      ...Object.values(rejected).map((r) => r.content.startsWith("<!--") ? "" : r.content),
+      "",
+      ...Object.values(rejected).map((r) => r.content),
     ];
     let rejectedCount = 0;
     for (const b of bodies) {
@@ -602,7 +647,21 @@ describe("A13b scan failures in create", () => {
     expect(codes(r.lineage)).toEqual(["parent_unreadable", "scan_incomplete"]);
   });
 
-  it("a folder that cannot be listed still writes and reports only scan_failed", async () => {
+  it("a folder whose listing fails (EACCES injected) still writes and reports only scan_failed", async () => {
+    const root = await project(false);
+    denied.dir = hdir(root);
+    try {
+      const r = await create(root, "# A\n\nx\n", ["--continues", "2026-02-02-01-gone.md"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.lineage?.linked).toBe(true);
+      expect(r.lineage?.forkChildren).toEqual([]);
+      expect(r.lineage?.warnings).toEqual([{ code: "scan_failed", target: null, detail: null }]);
+    } finally {
+      denied.dir = null;
+    }
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a folder without read permission still writes and reports only scan_failed", async () => {
     const root = await project(false);
     chmodSync(hdir(root), 0o300);
     try {
@@ -653,3 +712,45 @@ function listFixtureHandovers(dir: string, rel = ""): string[] {
   }
   return out.sort();
 }
+
+describe("clarification 9: a singleton lineage flag given twice", () => {
+  it("--continues twice: the last applies, the earlier one is named, a handover is written", async () => {
+    const root = await project(false);
+    seed(root, "2026-01-02-01-other.md", "# O\n\nwork\n");
+    const r = await create(root, "# A\n\nx\n", ["--continues", "2026-01-02-01-other.md", "--continues", OLD]);
+    expect(r.exitCode).toBe(0);
+    expect(r.lineage).toMatchObject({ linked: true, continues: OLD });
+    expect(r.bytes).toBe(appendLineage("# A\n\nx\n", lineOf(`continues="${OLD}"`)));
+    expect(r.lineage?.warnings).toContainEqual({ code: "modifier_ignored", target: "2026-01-02-01-other.md", detail: "--continues" });
+  });
+
+  it("--role twice: the last applies and the earlier value is named", async () => {
+    const root = await project(false);
+    const r = await create(root, "# A\n\nx\n", ["--continues", OLD, "--role", "first", "--role", "second"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.lineage).toMatchObject({ linked: true, role: "second" });
+    expect(r.lineage?.warnings).toEqual([{ code: "modifier_ignored", target: "first", detail: "--role" }]);
+  });
+
+  it("--from twice: the last applies and the earlier value is named", async () => {
+    const root = await project(false);
+    const r = await create(root, "# A\n\nx\n", ["--new-line", "--from", "2026-01-02-01-a.md", "--from", OLD]);
+    expect(r.exitCode).toBe(0);
+    expect(r.lineage).toMatchObject({ linked: true, from: OLD });
+    expect(r.lineage?.warnings).toEqual([{ code: "modifier_ignored", target: "2026-01-02-01-a.md", detail: "--from" }]);
+  });
+
+  it("an ignored value that breaks its rule is named by flag only, never echoed", async () => {
+    const root = await project(false);
+    const r = await create(root, "# A\n\nx\n", ["--continues", "../evil.md", "--continues", OLD]);
+    expect(r.exitCode).toBe(0);
+    expect(r.lineage?.warnings).toEqual([{ code: "modifier_ignored", target: null, detail: "--continues" }]);
+    expect(r.stdout).not.toContain("evil");
+  });
+
+  it("the markdown reply names the ignored occurrence", async () => {
+    const root = await project(false);
+    const r = await create(root, "# A\n\nx\n", ["--continues", OLD, "--role", "first", "--role", "second"], true);
+    expect(r.stdout).toContain("Ignored --role first: given again later, the last one applies.");
+  });
+});

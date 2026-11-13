@@ -3006,11 +3006,15 @@ const ATTRIBUTE_DROP_TEXT: Record<string, string> = {
   size: "the line would be over 1,024 bytes",
 };
 
-function lineageWarningLine(w: LineageWarning): string {
+function lineageWarningLine(w: LineageWarning, linked: boolean): string {
   const t = w.target === null ? null : escapeMarkdownInline(w.target);
   switch (w.code) {
     case "new_line_ignored": return "Ignored --new-line: --continues was given.";
-    case "modifier_ignored": return `Ignored ${w.detail ?? "a flag"}: the handover is not linked.`;
+    case "modifier_ignored":
+      // A linked write ignores a flag only when it was given again later (clarification 9).
+      return linked || w.target !== null || w.detail === "--continues" || w.detail === "--new-line"
+        ? `Ignored ${w.detail ?? "a flag"}${t === null ? "" : ` ${t}`}: given again later, the last one applies.`
+        : `Ignored ${w.detail ?? "a flag"}: the handover is not linked.`;
     case "from_dropped": return `Dropped from${t === null ? "" : ` ${t}`}: from is kept only on a new line.`;
     case "content_line_discarded": return "Discarded a lineage line at the end of the content.";
     case "absorb_dropped": return `Did not absorb ${t ?? "a value"}: ${ABSORB_DROP_TEXT[w.detail ?? ""] ?? w.detail}.`;
@@ -3031,7 +3035,7 @@ function lineageWarningLine(w: LineageWarning): string {
 function formatCreateLineageBlock(l: CreateLineageResult): string {
   const out: string[] = [];
   const esc = escapeMarkdownInline;
-  const by = (codes: readonly string[]) => l.warnings.filter((w) => codes.includes(w.code)).map(lineageWarningLine);
+  const by = (codes: readonly string[]) => l.warnings.filter((w) => codes.includes(w.code)).map((w) => lineageWarningLine(w, l.linked));
   if (l.linked) {
     const head = l.continues === null ? "Lineage: new line" : `Lineage: continues ${esc(l.continues)}`;
     const from = l.from === null ? "" : ` from ${esc(l.from)}`;

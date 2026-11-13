@@ -87,6 +87,7 @@ import {
   handleHandoverGet,
   handleHandoverCreate,
   handleHandoverTemplate,
+  lineageFlagsFromArgv,
 } from "./commands/handover.js";
 import { handleBlockerList, handleBlockerAdd, handleBlockerClear } from "./commands/blocker.js";
 import {
@@ -1077,13 +1078,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             }
 
             try {
-              const lineage = {
-                continues: argv.continues as string | undefined,
-                newLine: argv["new-line"] === true,
-                role: argv.role as string | undefined,
-                from: argv.from as string | undefined,
-                absorbs: (argv.absorbs as string[] | undefined)?.map(String),
-              };
+              const lineage = lineageFlagsFromArgv(argv);
               const result = await runBoardWrite(argv, format, async () => handleHandoverCreate(
                 content,
                 argv.slug as string,

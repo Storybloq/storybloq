@@ -25,6 +25,7 @@ import type { RecommendResult } from "./recommend.js";
 import { isHandoverWindowIncomplete } from "./recommend.js";
 import { describeRepeatInterval } from "./session-intel/sampler.js";
 import type { HandoverBriefResult, HandoverBriefEntry } from "./handover-brief.js";
+import type { CreateLineageResult, LineageWarning } from "./handover-lineage.js";
 import type { SectionRecord, TrajectoryEntry } from "./markdown-sections.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
@@ -2963,6 +2964,8 @@ export function formatHandoverCreateResult(
   stampBinding: "bound" | "unbound-era" = "bound",
   /** ISS-1263: the configured re-arm interval, quoted exactly in the reply. */
   rearmIntervalMs = 600_000,
+  /** ISS-1499: present only when there was lineage input; null keeps the reply byte identical. */
+  lineage: CreateLineageResult | null = null,
 ): string {
   const diverged = stamped && stampedRoot !== null && mcpRoot !== null && stampedRoot !== mcpRoot;
   const failure = stamped ? null : stampFailure;
@@ -2971,11 +2974,13 @@ export function formatHandoverCreateResult(
     if (stamped && stampBinding === "unbound-era") data.tokenPressureStampBinding = "unbound-era";
     if (diverged) data.tokenPressureStampedRoot = stampedRoot;
     if (failure !== null) data.tokenPressureStampReason = failure.reason;
+    if (lineage !== null) data.lineage = lineage;
     return JSON.stringify(successEnvelope(data), null, 2);
   }
+  const block = lineage === null ? "" : `\n\n${formatCreateLineageBlock(lineage)}`;
   if (!stamped) {
     const base = `Created handover: ${filename}`;
-    return failure === null ? base : `${base}\n\n${formatHandoverStampFailure(failure, serverStale, rearmIntervalMs)}`;
+    return (failure === null ? base : `${base}\n\n${formatHandoverStampFailure(failure, serverStale, rearmIntervalMs)}`) + block;
   }
   const note = diverged ? ` (stamped under a different root: ${stampedRoot})` : "";
   const line = compactNeeded
@@ -2983,7 +2988,65 @@ export function formatHandoverCreateResult(
     : stampBinding === "unbound-era"
       ? `Handover recorded at ${filename}. ${rearmIntervalMs > 0 ? `The pressure line will not repeat for ${describeRepeatInterval(rearmIntervalMs)}.` : NO_REPEAT_INTERVAL}`
       : HANDOVER_STAMPED_CONTINUE_LINE;
-  return `Created handover: ${filename}\n\n${line}${note}`;
+  return `Created handover: ${filename}\n\n${line}${note}${block}`;
+}
+
+const ABSORB_DROP_TEXT: Record<string, string> = {
+  not_found: "it is not in this checkout",
+  not_a_tip: "it is not the end of a line",
+  is_parent: "it is the parent",
+  invalid: "the value is not a valid handover file name",
+  scan_incomplete: "some handover files could not be read",
+};
+const ATTRIBUTE_DROP_TEXT: Record<string, string> = {
+  invalid: "the value is not allowed",
+  unknown: "unknown attribute",
+  duplicate: "the attribute was repeated",
+  count_limit: "more than 8 absorbs",
+  size: "the line would be over 1,024 bytes",
+};
+
+function lineageWarningLine(w: LineageWarning): string {
+  const t = w.target === null ? null : escapeMarkdownInline(w.target);
+  switch (w.code) {
+    case "new_line_ignored": return "Ignored --new-line: --continues was given.";
+    case "modifier_ignored": return `Ignored ${w.detail ?? "a flag"}: the handover is not linked.`;
+    case "from_dropped": return `Dropped from${t === null ? "" : ` ${t}`}: from is kept only on a new line.`;
+    case "content_line_discarded": return "Discarded a lineage line at the end of the content.";
+    case "absorb_dropped": return `Did not absorb ${t ?? "a value"}: ${ABSORB_DROP_TEXT[w.detail ?? ""] ?? w.detail}.`;
+    case "attribute_dropped": {
+      const [attribute, reason] = (w.detail ?? ":").split(":");
+      return `Dropped ${attribute}: ${ATTRIBUTE_DROP_TEXT[reason ?? ""] ?? reason}.`;
+    }
+    case "parent_not_in_checkout": return `Parent ${t} is not in this checkout.`;
+    case "parent_unreadable": return `Parent ${t} could not be read.`;
+    case "scan_incomplete": return `${w.detail} handover file(s) could not be read, so other children of the parent may be missing here.`;
+    case "scan_failed": return "The handovers folder could not be listed, so the parent was not checked.";
+    case "continues_invalid": return "Written unlinked: the continues value is not a valid handover file name.";
+    case "parser_check_failed": return "Written unlinked: the lineage line would change what a reader finds in this handover.";
+  }
+}
+
+/** ISS-1499 plan 5.4: the reply block, one line each, in the plan's order. */
+function formatCreateLineageBlock(l: CreateLineageResult): string {
+  const out: string[] = [];
+  const esc = escapeMarkdownInline;
+  const by = (codes: readonly string[]) => l.warnings.filter((w) => codes.includes(w.code)).map(lineageWarningLine);
+  if (l.linked) {
+    const head = l.continues === null ? "Lineage: new line" : `Lineage: continues ${esc(l.continues)}`;
+    const from = l.from === null ? "" : ` from ${esc(l.from)}`;
+    const role = l.role === null ? "" : ` (role ${esc(l.role)})`;
+    out.push(`${head}${from}${role}`);
+  }
+  if (l.forkChildren.length > 0 && l.continues !== null) {
+    out.push(`Fork: ${esc(l.continues)} was already continued by ${l.forkChildren.map(esc).join(", ")}.`);
+  }
+  out.push(...by(["scan_incomplete", "scan_failed"]));
+  out.push(...by(["parent_not_in_checkout", "parent_unreadable"]));
+  if (l.absorbs.length > 0) out.push(`Absorbs: ${l.absorbs.map(esc).join(", ")}`);
+  out.push(...by(["new_line_ignored", "modifier_ignored", "from_dropped", "content_line_discarded", "absorb_dropped", "attribute_dropped"]));
+  out.push(...by(["continues_invalid", "parser_check_failed"]));
+  return out.join("\n");
 }
 
 // --- Snapshot / Recap / Export ---

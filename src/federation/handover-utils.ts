@@ -7,6 +7,19 @@ export interface LatestHandoverInfo {
   heading: string | null;
 }
 
+/**
+ * The heading federation shows for a handover: the first line matching
+ * `^#\s+(.+)` (multiline), trimmed, clipped to 117 characters plus "..."
+ * when longer than 120. Pure, so the handover lineage write-time check
+ * (ISS-1499) compares exactly what this reader derives.
+ */
+export function extractHandoverHeading(content: string): string | null {
+  const headingMatch = content.match(/^#\s+(.+)/m);
+  if (!headingMatch) return null;
+  const heading = headingMatch[1]!.trim();
+  return heading.length > 120 ? heading.slice(0, 117) + "..." : heading;
+}
+
 /** `signal` (T-486 U2-3b): checked before each read, so a node scan's deadline stops it. */
 export async function findLatestHandover(handoversDir: string, signal?: AbortSignal): Promise<LatestHandoverInfo | null> {
   signal?.throwIfAborted();
@@ -22,13 +35,7 @@ export async function findLatestHandover(handoversDir: string, signal?: AbortSig
   signal?.throwIfAborted();
   try {
     const content = await readFile(join(handoversDir, latest), "utf-8");
-    const headingMatch = content.match(/^#\s+(.+)/m);
-    if (headingMatch) {
-      heading = headingMatch[1]!.trim();
-      if (heading.length > 120) {
-        heading = heading.slice(0, 117) + "...";
-      }
-    }
+    heading = extractHandoverHeading(content);
   } catch {
     // read error, skip heading
   }

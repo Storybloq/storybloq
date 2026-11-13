@@ -1012,6 +1012,27 @@ export function registerHandoverCommand(yargs: Argv): Argv {
                   default: "session",
                   describe: "Slug for filename (e.g. phase5b-wrapup)",
                 })
+                .option("continues", {
+                  type: "string",
+                  describe: "Handover file this one continues (links it to that line)",
+                })
+                .option("new-line", {
+                  type: "boolean",
+                  describe: "Start a new line of handovers",
+                })
+                .option("role", {
+                  type: "string",
+                  describe: "Role label for the line (default: the parent's)",
+                })
+                .option("from", {
+                  type: "string",
+                  describe: "Handover a new line starts from",
+                })
+                .option("absorbs", {
+                  type: "string",
+                  array: true,
+                  describe: "End of another line this handover closes (repeatable)",
+                })
                 .conflicts("content", "stdin")
                 .check((argv) => {
                   if (!argv.content && !argv.stdin) {
@@ -1056,11 +1077,20 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             }
 
             try {
+              const lineage = {
+                continues: argv.continues as string | undefined,
+                newLine: argv["new-line"] === true,
+                role: argv.role as string | undefined,
+                from: argv.from as string | undefined,
+                absorbs: (argv.absorbs as string[] | undefined)?.map(String),
+              };
               const result = await runBoardWrite(argv, format, async () => handleHandoverCreate(
                 content,
                 argv.slug as string,
                 format,
                 root,
+                {},
+                lineage,
               ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;

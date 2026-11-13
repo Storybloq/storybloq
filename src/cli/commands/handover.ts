@@ -1,15 +1,35 @@
-import { readHandover } from "../../core/handover-parser.js";
+import { listHandovers, readHandover } from "../../core/handover-parser.js";
 import { buildHandoverBrief, isFilenameAdmitted } from "../../core/handover-brief.js";
 import {
   HANDOVER_TEMPLATE_MARKER,
   computeCarriedForward,
+  hasCarriedForwardHeading,
   parseCarriedForwardSection,
   parseOverrideBody,
   renderHandoverTemplate,
   type CarriedForwardEntry,
   type OverrideLine,
 } from "../../core/handover-template.js";
-import type { TrajectoryEntry } from "../../core/markdown-sections.js";
+import { parseHandoverMarkdown, type TrajectoryEntry } from "../../core/markdown-sections.js";
+import {
+  appendLineage,
+  buildLineageGraph,
+  isLineageAtValue,
+  isLineageByValue,
+  isLineageFileValue,
+  serializeLineage,
+  splitLineage,
+  type AbsorbDropReason,
+  type ContinuesState,
+  type CreateLineageResult,
+  type LineageWarning,
+  type LineageWarningCode,
+} from "../../core/handover-lineage.js";
+import { scanHandoverLineage } from "../../core/handover-lineage-scan.js";
+import { extractHandoverHeading } from "../../federation/handover-utils.js";
+import type { LoadWarning } from "../../core/errors.js";
+import { execFile } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import { existsSync } from "node:fs";
 import { recordBoardTarget } from "../../core/board-write-recorder.js";
 import { mkdir } from "node:fs/promises";
@@ -287,6 +307,228 @@ async function detectTeamMode(absRoot: string): Promise<boolean> {
   }
 }
 
+// --- Lineage (ISS-1499 slice A, plan section 5) ---
+
+/** The lineage flags of `handover create` (CLI only; MCP carries lineage as a line in the content). */
+export interface HandoverCreateLineage {
+  readonly continues?: string;
+  readonly newLine?: boolean;
+  readonly role?: string;
+  readonly from?: string;
+  readonly absorbs?: readonly string[];
+}
+
+/**
+ * The write-time check (plan 5.3 step 5): true when appending the lineage
+ * line changes nothing any reader derives from the handover. Compares, for
+ * `body` and `final`, every derivation a reader makes from a handover's text:
+ * the section records (brief, recommend), the carried-forward bullets and
+ * heading (template, validate), and the federation heading (scanner, digest,
+ * session compact). Raw delivery (`handover latest`/`get`) shows the line
+ * as is, by design.
+ */
+export function lineageIsInvisible(body: string, final: string, file: string): boolean {
+  return (
+    isDeepStrictEqual(parseHandoverMarkdown(body, file), parseHandoverMarkdown(final, file)) &&
+    isDeepStrictEqual(parseCarriedForwardSection(body), parseCarriedForwardSection(final)) &&
+    hasCarriedForwardHeading(body) === hasCarriedForwardHeading(final) &&
+    extractHandoverHeading(body) === extractHandoverHeading(final)
+  );
+}
+
+const warn = (code: LineageWarningCode, target: string | null = null, detail: string | null = null): LineageWarning => ({ code, target, detail });
+
+const UNLINKED: Omit<CreateLineageResult, "warnings"> = {
+  linked: false, continues: null, from: null, absorbs: [], role: null, at: null, by: null, forkChildren: [],
+};
+
+/** What to write, decided before the lock from the content and the flags alone. */
+type LineagePlan =
+  | { readonly kind: "none" }
+  | { readonly kind: "unlinked"; readonly bytes: string; readonly warnings: readonly LineageWarning[] }
+  | {
+      readonly kind: "linked";
+      /** The unlinked fallback bytes (5.3), and the body the line is appended to. */
+      readonly fallback: string;
+      readonly continues: string | null;
+      readonly from: string | null;
+      readonly absorbs: readonly string[];
+      readonly role: string | null;
+      /** A role was given (flag or content line), so it is not copied from the parent. */
+      readonly roleGiven: boolean;
+      readonly warnings: readonly LineageWarning[];
+    };
+
+function planLineage(content: string, flags: HandoverCreateLineage | null): LineagePlan {
+  const f = flags ?? {};
+  const modifiers: string[] = [];
+  if (f.role !== undefined) modifiers.push("--role");
+  if (f.from !== undefined) modifiers.push("--from");
+  if ((f.absorbs?.length ?? 0) > 0) modifiers.push("--absorbs");
+  const hasSelector = f.continues !== undefined || f.newLine === true;
+  const split = splitLineage(content);
+  if (!hasSelector && modifiers.length === 0 && split.lineage === null) return { kind: "none" };
+
+  const warnings: LineageWarning[] = [];
+  // Any v1 line at the end of the content belongs to the tool and is removed.
+  const fallback = split.lineage === null ? content : split.body;
+  if (f.continues !== undefined && f.newLine === true) warnings.push(warn("new_line_ignored"));
+  if (split.lineage !== null && hasSelector) warnings.push(warn("content_line_discarded"));
+  for (let i = 0; i < split.discarded.length; i++) warnings.push(warn("content_line_discarded"));
+
+  let continues: ContinuesState;
+  let from: string | null = null;
+  let role: string | null = null;
+  let absorbs: string[] = [];
+  if (f.continues !== undefined) {
+    continues = isLineageFileValue(f.continues) ? { state: "valid", file: f.continues } : { state: "invalid" };
+  } else if (f.newLine === true) {
+    continues = { state: "absent" };
+  } else if (split.lineage !== null) {
+    const l = split.lineage.lineage;
+    continues = l.continues;
+    from = l.from;
+    role = l.role;
+    absorbs = [...l.absorbs];
+    if (continues.state !== "invalid") {
+      for (const d of split.lineage.dropped) {
+        // `at` and `by` are recomputed whatever the line said.
+        if (d.attribute === "at" || d.attribute === "by") continue;
+        warnings.push(warn("attribute_dropped", null, `${d.attribute}:${d.reason}`));
+      }
+    }
+  } else {
+    // (Slice B inserts the memo here, between the content line and "none".)
+    for (const m of modifiers) warnings.push(warn("modifier_ignored", null, m));
+    return { kind: "unlinked", bytes: content, warnings };
+  }
+
+  if (continues.state === "invalid") {
+    warnings.push(warn("continues_invalid"));
+    for (const m of modifiers) warnings.push(warn("modifier_ignored", null, m));
+    return { kind: "unlinked", bytes: fallback, warnings };
+  }
+
+  let roleGiven = role !== null;
+  if (f.role !== undefined) {
+    role = f.role;
+    roleGiven = true;
+  }
+  if (f.from !== undefined) from = f.from;
+  if (continues.state === "valid" && from !== null) {
+    warnings.push(warn("from_dropped", isLineageFileValue(from) ? from : null));
+    from = null;
+  }
+  absorbs.push(...(f.absorbs ?? []));
+  return {
+    kind: "linked",
+    fallback,
+    continues: continues.state === "valid" ? continues.file : null,
+    from,
+    absorbs,
+    role,
+    roleGiven,
+    warnings,
+  };
+}
+
+function gitShortHead(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", ["rev-parse", "--short", "HEAD"], { cwd, timeout: 3000 }, (err, stdout) => {
+      resolve(err ? null : stdout.trim());
+    });
+  });
+}
+
+/**
+ * Plan 5.3 steps 1 to 5, inside the project lock: scan, fork report,
+ * absorbs, compose, write-time check. Returns the bytes to write and the
+ * reply's lineage result. Never throws because of a handover file.
+ */
+async function resolveLinkedWrite(
+  plan: Extract<LineagePlan, { kind: "linked" }>,
+  handoversDir: string,
+  absRoot: string,
+  at: string | null,
+  by: string | null,
+): Promise<{ bytes: string; result: CreateLineageResult }> {
+  const listWarnings: LoadWarning[] = [];
+  const names = await listHandovers(handoversDir, absRoot, listWarnings);
+  const enumerated = !listWarnings.some((w) => w.type === "parse_error");
+  const scan = scanHandoverLineage(handoversDir, enumerated ? names : [], enumerated);
+  const graph = buildLineageGraph(scan);
+  const byName = new Map(scan.files.map((x) => [x.name, x]));
+
+  const found: LineageWarning[] = [];
+  let forkChildren: string[] = [];
+  let role = plan.role;
+  const parent = plan.continues;
+  if (!enumerated) {
+    found.push(warn("scan_failed"));
+  } else {
+    if (parent !== null) {
+      const entry = byName.get(parent);
+      if (entry === undefined) found.push(warn("parent_not_in_checkout", parent));
+      else if (entry.state === "unknown") found.push(warn("parent_unreadable", parent));
+      else {
+        forkChildren = [...(graph.certainChildren.get(parent) ?? [])];
+        if (!plan.roleGiven && entry.state === "linked") role = entry.lineage?.lineage.role ?? null;
+      }
+    }
+    if (!scan.complete) {
+      const unread = scan.files.filter((x) => x.state === "unknown").length;
+      found.push(warn("scan_incomplete", null, String(unread)));
+    }
+  }
+
+  const tips = new Set(graph.tips);
+  const kept: string[] = [];
+  const seen = new Set<string>();
+  const drop = (target: string | null, reason: AbsorbDropReason) => found.push(warn("absorb_dropped", target, reason));
+  for (const a of plan.absorbs) {
+    if (!isLineageFileValue(a)) { drop(null, "invalid"); continue; }
+    if (seen.has(a)) continue;
+    seen.add(a);
+    if (!scan.complete) drop(a, "scan_incomplete");
+    else if (a === parent) drop(a, "is_parent");
+    else if (!byName.has(a)) drop(a, "not_found");
+    else if (!tips.has(a)) drop(a, "not_a_tip");
+    else kept.push(a);
+  }
+
+  const ser = serializeLineage({
+    continues: parent,
+    from: plan.from,
+    absorbs: kept,
+    role,
+    at: at !== null && isLineageAtValue(at) ? at : null,
+    by: by !== null && isLineageByValue(by) ? by : null,
+  });
+  for (const d of ser.dropped) found.push(warn("attribute_dropped", null, `${d.attribute}:${d.reason}`));
+
+  const final = appendLineage(plan.fallback, ser.line);
+  const check = splitLineage(final);
+  const holds = check.lineage !== null && check.discarded.length === 0 && lineageIsInvisible(plan.fallback, final, "handover.md");
+  if (!holds) {
+    return { bytes: plan.fallback, result: { ...UNLINKED, warnings: [...plan.warnings, warn("parser_check_failed")] } };
+  }
+  const l = ser.lineage;
+  return {
+    bytes: final,
+    result: {
+      linked: true,
+      continues: parent,
+      from: l.from,
+      absorbs: [...l.absorbs],
+      role: l.role,
+      at: l.at,
+      by: l.by,
+      forkChildren,
+      warnings: [...plan.warnings, ...found],
+    },
+  };
+}
+
 /**
  * Creates a handover markdown file.
  * Runs inside withProjectLock for atomic filename allocation + write.
@@ -309,6 +551,8 @@ export async function handleHandoverCreate(
      */
     readonly surface?: "mcp" | "cli";
   } = {},
+  /** ISS-1499: the CLI lineage flags. MCP passes none; a content line still applies. */
+  lineage: HandoverCreateLineage | null = null,
 ): Promise<CommandResult> {
   if (!content.trim()) {
     throw new CliValidationError("invalid_input", "Handover content is empty");
@@ -318,11 +562,31 @@ export async function handleHandoverCreate(
   const date = todayISO();
   let filename: string | undefined;
   const absRoot = resolve(root);
+  const plan = planLineage(content, lineage);
+  let lineageResult: CreateLineageResult | null = null;
+  let toWrite = content;
+  if (plan.kind === "unlinked") {
+    toWrite = plan.bytes;
+    lineageResult = { ...UNLINKED, warnings: plan.warnings };
+  }
+  // `at` and `by` are read before the lock is taken.
+  let at: string | null = null;
+  let by: string | null = null;
+  if (plan.kind === "linked") {
+    const { gitUserEmail } = await import("../../autonomous/git-inspector.js");
+    [at, by] = await Promise.all([gitShortHead(absRoot), gitUserEmail(absRoot)]);
+  }
 
   await withProjectLock(root, { strict: false }, async () => {
     const handoversDir = join(absRoot, ".story", "handovers");
     await mkdir(handoversDir, { recursive: true });
     const wrapDir = join(absRoot, ".story");
+
+    if (plan.kind === "linked") {
+      const r = await resolveLinkedWrite(plan, handoversDir, absRoot, at, by);
+      toWrite = r.bytes;
+      lineageResult = r.result;
+    }
 
     const isTeamMode = await detectTeamMode(absRoot);
 
@@ -339,7 +603,7 @@ export async function handleHandoverCreate(
         try {
           await parseHandoverFilename(candidate, handoversDir);
           await guardPath(candidatePath, wrapDir);
-          writeFileSync(tmpPath, content, "utf-8");
+          writeFileSync(tmpPath, toWrite, "utf-8");
           tmpCreated = true;
           await fencedLink(tmpPath, candidatePath);
           recordBoardTarget(candidatePath, "write");
@@ -398,7 +662,7 @@ export async function handleHandoverCreate(
 
       await parseHandoverFilename(candidate, handoversDir);
       await guardPath(candidatePath, wrapDir);
-      await atomicWrite(candidatePath, content);
+      await atomicWrite(candidatePath, toWrite);
       filename = candidate;
     }
   });
@@ -460,5 +724,5 @@ export async function handleHandoverCreate(
   // a suppression that did not happen. ISS-1185: stampedRoot is reported
   // only when it diverges from the MCP root (formatHandoverCreateResult
   // gates on that itself).
-  return { output: formatHandoverCreateResult(filename!, format, stamped, stampedRoot, absRoot, compactNeeded, stampFailure, serverStale, stampBinding, rearmIntervalMs) };
+  return { output: formatHandoverCreateResult(filename!, format, stamped, stampedRoot, absRoot, compactNeeded, stampFailure, serverStale, stampBinding, rearmIntervalMs, lineageResult) };
 }

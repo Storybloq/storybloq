@@ -1,0 +1,102 @@
+{
+  "everything/cli-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "everything/cli-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "everything/mcp-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}",
+    "exitCode": null,
+    "isError": false
+  },
+  "everything/mcp-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).",
+    "exitCode": null,
+    "isError": false
+  },
+  "fifo/cli-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "fifo/cli-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "fifo/mcp-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}",
+    "exitCode": null,
+    "isError": false
+  },
+  "fifo/mcp-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).",
+    "exitCode": null,
+    "isError": false
+  },
+  "malformedV1/cli-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "malformedV1/cli-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "malformedV1/mcp-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}",
+    "exitCode": null,
+    "isError": false
+  },
+  "malformedV1/mcp-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).",
+    "exitCode": null,
+    "isError": false
+  },
+  "v10Line/cli-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "v10Line/cli-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "v10Line/mcp-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}",
+    "exitCode": null,
+    "isError": false
+  },
+  "v10Line/mcp-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).",
+    "exitCode": null,
+    "isError": false
+  },
+  "v2Line/cli-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "v2Line/cli-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "v2Line/mcp-json": {
+    "output": "{\n  \"version\": 1,\n  \"data\": {\n    \"valid\": true,\n    \"errorCount\": 0,\n    \"warningCount\": 1,\n    \"infoCount\": 0,\n    \"findings\": [\n      {\n        \"level\": \"warning\",\n        \"code\": \"review_contract_absent\",\n        \"message\": \"No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).\",\n        \"entity\": null\n      }\n    ]\n  }\n}",
+    "exitCode": null,
+    "isError": false
+  },
+  "v2Line/mcp-md": {
+    "output": "Validation passed.\nErrors: 0 | Warnings: 1 | Info: 0\n\n## review_contract_absent -- 1 finding\nWARN: No REVIEW.md found at <ROOT>/REVIEW.md, and review backends are configured (codex, agent). Reviewers are running without a quality contract, so findings are classified by the built-in severity ladder. That ladder remains in force and the review gate is live; to declare which principles block, add REVIEW.md (`storybloq setup-skill` then the /story setup flow proposes one).",
+    "exitCode": null,
+    "isError": false
+  }
+}

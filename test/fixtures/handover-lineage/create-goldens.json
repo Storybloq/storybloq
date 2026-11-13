@@ -1,0 +1,338 @@
+{
+  "sequenced/cli-json/crlf": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUDQoNCi0gYQ0K",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/lineNotFinal": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/nearMissV1": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/plain": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBTZXNzaW9uCkRvbmUu",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/trailingWhitespace": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/unicode": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/v10Line": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-json/v2Line": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-01-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-01-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/crlf": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUDQoNCi0gYQ0K",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/lineNotFinal": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/nearMissV1": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/plain": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBTZXNzaW9uCkRvbmUu",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/trailingWhitespace": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/unicode": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/v10Line": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/cli-md/v2Line": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "sequenced/mcp/crlf": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUDQoNCi0gYQ0K",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/lineNotFinal": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/nearMissV1": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/plain": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBTZXNzaW9uCkRvbmUu",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/trailingWhitespace": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/unicode": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/v10Line": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "sequenced/mcp/v2Line": {
+    "file": "<DATE>-01-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
+    "reply": "Created handover: <DATE>-01-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-01-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/cli-json/crlf": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUDQoNCi0gYQ0K",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/lineNotFinal": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/nearMissV1": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/plain": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBTZXNzaW9uCkRvbmUu",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/trailingWhitespace": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/unicode": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/v10Line": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-json/v2Line": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
+    "reply": "{\n  \"version\": 1,\n  \"data\": {\n    \"filename\": \"<DATE>-<TIME>-<ENTROPY>-golden.md\",\n    \"git\": [\n      {\n        \"path\": \".story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md\",\n        \"state\": \"no git (not a repository)\"\n      }\n    ],\n    \"gitUnavailable\": {\n      \"reason\": \"not a repository\"\n    }\n  }\n}\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/crlf": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUDQoNCi0gYQ0K",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/lineNotFinal": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/nearMissV1": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/plain": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBTZXNzaW9uCkRvbmUu",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/trailingWhitespace": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/unicode": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/v10Line": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/cli-md/v2Line": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)\n",
+    "exitCode": 0,
+    "isError": false
+  },
+  "team/mcp/crlf": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUDQoNCi0gYQ0K",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/lineNotFinal": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/nearMissV1": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/plain": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBTZXNzaW9uCkRvbmUu",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/trailingWhitespace": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/unicode": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/v10Line": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  },
+  "team/mcp/v2Line": {
+    "file": "<DATE>-<TIME>-<ENTROPY>-golden.md",
+    "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
+    "reply": "Created handover: <DATE>-<TIME>-<ENTROPY>-golden.md\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<DATE>-<TIME>-<ENTROPY>-golden.md no git (not a repository)",
+    "exitCode": null,
+    "isError": false
+  }
+}

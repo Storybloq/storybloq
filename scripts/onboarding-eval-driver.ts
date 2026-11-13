@@ -18,19 +18,19 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { chmodSync, closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordedGroupAlive, runInGroup } from "../src/core/process-group.js";
 import { GROUPS_FILE_ENV, readGroups, realSweepSignals, sweepGroups, type SweepSignals } from "./onboarding-eval-groups.js";
 import { readRevisions } from "./onboarding-eval-regrade.js";
-import { leftoverCheck } from "./onboarding-eval-host.js";
+import { GIT_ENV, leftoverCheck } from "./onboarding-eval-host.js";
 import { scanForCredentials } from "./onboarding-eval-review.js";
 import { evalInputDigest } from "./build-eval.mjs";
 import type { RunnerResult } from "./onboarding-eval-runner-result.js";
 import { claudeProbe, codexProbe, PROBE_PROMPT_TEMPLATE, PROBE_SHA256, type ProbeTargets, type ProbeTurnResult } from "./onboarding-eval-probe.js";
-import { unconditionalSignedInRefusal } from "./continuity-signed-in.js";
+import { realHome, unconditionalSignedInRefusal } from "./continuity-signed-in.js";
 
 const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).digest("hex");
 
@@ -103,7 +103,7 @@ function gitOut(git: Git, op: string, args: readonly string[]): string {
 
 export function realGit(cwd: string): Git {
   return (args) => {
-    const r = spawnSync("git", [...args], { cwd, encoding: "utf-8", env: { PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1" } });
+    const r = spawnSync("git", [...args], { cwd, encoding: "utf-8", env: { ...GIT_ENV } });
     return { ok: r.status === 0, out: r.stdout ?? "", status: r.status };
   };
 }
@@ -1043,10 +1043,69 @@ export async function preflightProblems(m: Manifest, root: string, arm: Arm, p: 
 /** Locations whose presence means a managed policy could override the clients' settings. */
 export const MANAGED_SETTINGS = ["/Library/Application Support/ClaudeCode", "/etc/claude-code", "/etc/codex"] as const;
 
-const count = (pattern: string): number => {
-  const r = spawnSync("/usr/bin/pgrep", ["-f", pattern], { encoding: "utf-8" });
+/** T-538 S4: the spawn seam the driver's own probes use; tests pass a recording one. */
+export type DriverSpawn = (cmd: string, args: readonly string[], o: { encoding: "utf-8"; env: Record<string, string>; timeout?: number }) => { status: number | null; stdout: string | null };
+
+/** S4 (env table row b): the pgrep counts' environment, explicit, never the driver's own. */
+export const PGREP_ENV: Readonly<Record<string, string>> = { PATH: "/usr/bin:/bin" };
+
+/** A count of processes matching `pattern`; the count only, never the command lines. */
+export function processCount(pattern: string, spawn: DriverSpawn = spawnSync): number {
+  const r = spawn("/usr/bin/pgrep", ["-f", pattern], { encoding: "utf-8", env: { ...PGREP_ENV } });
   return (r.stdout ?? "").split("\n").filter(Boolean).length;
-};
+}
+
+/**
+ * S4 (env table row d): `<client> --version` under a scratch HOME the caller owns, so the client's start-up writes
+ * no state into the operator's home; the version is not account-bound. PATH is the driver's, to find the client.
+ */
+export function clientVersion(arm: Arm, scratchHome: string, source: NodeJS.ProcessEnv, spawn: DriverSpawn = spawnSync): string | null {
+  const r = spawn(arm, ["--version"], { encoding: "utf-8", env: { PATH: source.PATH ?? "/usr/bin:/bin", HOME: scratchHome }, timeout: 30_000 });
+  return r.status === 0 ? (r.stdout ?? "").trim() : null;
+}
+
+/** S4 (row g): the Codex home the driver hands its children: its own CODEX_HOME, else the password-database home's. */
+export function driverCodexHome(source: NodeJS.ProcessEnv, home: () => string = realHome): string {
+  return source.CODEX_HOME !== undefined && source.CODEX_HOME !== "" ? source.CODEX_HOME : join(home(), ".codex");
+}
+
+/**
+ * S4 (env table row g, note v5 section 9): the environment the runner and judge children get. The driver's PATH,
+ * a driver scratch HOME and the Codex home, explicit; no token and no other variable of the driver's.
+ */
+export function childEnv(source: NodeJS.ProcessEnv, scratchHome: string, codexHome: string): Record<string, string> {
+  return { PATH: source.PATH ?? "/usr/bin:/bin", HOME: scratchHome, CODEX_HOME: codexHome };
+}
+
+/**
+ * The driver's scratch home under the experiment root; children and version probes get it as HOME. Nothing is
+ * followed: the root and driver-home are each lstat'd and must be real directories owned by this uid, and
+ * driver-home's real location must be the root's own driver-home. A reused root's driver-home with a wider mode is
+ * tightened to 0700 rather than refused: it is already proven to be our own real directory, and a reused root is
+ * the ordinary case. Any other shape is refused by path.
+ */
+export function driverScratchHome(root: string): string {
+  const base = resolve(root);
+  const home = join(base, "driver-home");
+  const uid = process.getuid?.() ?? -1;
+  const realDir = (p: string, what: string): void => {
+    const st = lstatSync(p, { throwIfNoEntry: false });
+    if (st === undefined) throw new Error(`onboarding-eval: the ${what} ${p} does not exist`);
+    if (st.isSymbolicLink()) throw new Error(`onboarding-eval: the ${what} ${p} is a symlink; refused`);
+    if (!st.isDirectory()) throw new Error(`onboarding-eval: the ${what} ${p} is not a directory; refused`);
+    if (st.uid !== uid) throw new Error(`onboarding-eval: the ${what} ${p} is not owned by this user; refused`);
+  };
+  realDir(base, "experiment root");
+  try {
+    mkdirSync(home, { mode: 0o700 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  realDir(home, "driver scratch home");
+  if (realpathSync(home) !== join(realpathSync(base), "driver-home")) throw new Error(`onboarding-eval: the driver scratch home ${home} does not resolve beneath the experiment root; refused`);
+  if ((lstatSync(home).mode & 0o777) !== 0o700) chmodSync(home, 0o700);
+  return home;
+}
 
 /** Every file under `dir` with its sha256, by relative path. */
 export function treeHashes(dir: string): Record<string, string> {
@@ -1139,17 +1198,14 @@ export function realCapabilityProbe(pkg: string, root: string, env: NodeJS.Proce
  * supply or skip it; only test code builds a PreflightProbe of its own.
  */
 export function realPreflightProbe(pkg: string, git: Git, root: string, env: NodeJS.ProcessEnv): PreflightProbe {
-  const version = (a: Arm): string | null => {
-    const r = spawnSync(a, ["--version"], { encoding: "utf-8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/nonexistent" }, timeout: 30_000 });
-    return r.status === 0 ? (r.stdout ?? "").trim() : null;
-  };
+  const version = (a: Arm): string | null => clientVersion(a, driverScratchHome(root), process.env);
   return {
     version,
     managedSettings: () => MANAGED_SETTINGS.filter((p) => existsSync(p)),
     freeBytes: () => freeBytes(root),
-    counts: () => ({ vitest: count("vitest"), jest: count("jest") }),
+    counts: () => ({ vitest: processCount("vitest"), jest: processCount("jest") }),
     // lstat only: the credential is never opened or read.
-    codexCredential: () => { try { lstatSync(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json")); return true; } catch { return false; } },
+    codexCredential: () => { try { lstatSync(join(driverCodexHome(process.env), "auth.json")); return true; } catch { return false; } },
     claudeTokenLength: () => (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").length,
     evalInputDigest: () => evalInputDigest(pkg),
     toolListSha256: () => sha256(readFileSync(join(pkg, "scripts", "onboarding-eval-tools.json"))),
@@ -1158,8 +1214,6 @@ export function realPreflightProbe(pkg: string, git: Git, root: string, env: Nod
   };
 }
 
-/** The environment the runner and judge children get: the path, the home, the Codex home and the token, passed through unread. */
-const childEnv = (): NodeJS.ProcessEnv => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/nonexistent", ...(process.env.CODEX_HOME ? { CODEX_HOME: process.env.CODEX_HOME } : {}), ...(process.env.CLAUDE_CODE_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN } : {}) });
 
 /** The entry's own wiring: the real git, the real probes, the real executor. */
 export async function entry(argv: readonly string[]): Promise<number> {
@@ -1170,12 +1224,13 @@ export async function entry(argv: readonly string[]): Promise<number> {
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } },
     out: (s) => { process.stdout.write(s); },
     git,
-    preflight: (m, root, arm) => preflightProblems(m, root, arm, realPreflightProbe(PKG, git, root, childEnv()), Date.now()),
+    // S4 (row g): every child gets childEnv: the driver's scratch home and its Codex home, explicitly.
+    preflight: (m, root, arm) => preflightProblems(m, root, arm, realPreflightProbe(PKG, git, root, childEnv(process.env, driverScratchHome(root), driverCodexHome(process.env))), Date.now()),
     arm: (root, m, sha, arm) => runArm(root, m, sha, arm, {
       now: () => Date.now(),
       groupAlive: recordedGroupAlive,
       leftoverClean: (a) => leftoverClean(a),
-      executor: realExecutor({ pkg: PKG, node: process.execPath, env: childEnv() }),
+      executor: realExecutor({ pkg: PKG, node: process.execPath, env: childEnv(process.env, driverScratchHome(root), driverCodexHome(process.env)) }),
     }),
   });
 }

@@ -70,7 +70,7 @@ import { PassThrough } from "node:stream";
 import { type GroupControl } from "../src/core/process-group.js";
 import { runInGroup } from "./onboarding-eval-groups.js";
 import { createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -79,6 +79,7 @@ import { sha256 } from "./continuity-lib.js";
 import { judgeFromResponse, type JudgeRuling } from "./onboarding-eval-lib.js";
 import { INVALID_FILE, SCAN_PENDING_FILE, PACKET_LIMIT_BYTES, packetMismatch, resolveOnPath, rolloutModels } from "./onboarding-eval-run.js";
 import { scanForCredentials } from "./onboarding-eval-review.js";
+import { codexAuthPath } from "./onboarding-eval-host.js";
 
 export const JUDGE_MODEL = "gpt-6-astra";
 /** The codex-cli version the lockdown was measured on; `codex --version` must print `codex-cli <this>`. */
@@ -590,7 +591,9 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (found === null) return refuse("no codex on PATH");
   let bin: string;
   try { bin = realpathSync(found); } catch { return refuse(`codex on PATH does not resolve: ${found}`); }
-  const realAuth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
+  // T-538 S4 (row g): CODEX_HOME comes from the driver explicitly; no HOME fallback.
+  const realAuth = codexAuthPath(process.env);
+  if (realAuth === null) return refuse("CODEX_HOME is not an absolute path the driver passed; there is no HOME fallback");
   if (!existsSync(realAuth)) return refuse(`no Codex auth at ${realAuth}`);
 
   const scratch = mkdtempSync(join(tmpdir(), "onboarding-eval-judge-"));

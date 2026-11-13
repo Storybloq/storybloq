@@ -53,7 +53,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { closeSync, constants as fsConstants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -65,7 +65,7 @@ import { realHome, signedInEnvProblems, storybloqLauncherEnv, writeStorybloqLaun
 import { type GroupControl } from "../src/core/process-group.js";
 import { runInGroup } from "./onboarding-eval-groups.js";
 import {
-  codexApprovalProblems, codexApprovalTables, envFor, envKeyProblems, HOST_CHECKS_RAW, launcherExtraFor, hostChecksText, launchHeld, leftoverCheck, processOutcome, serverLaunchFailure, serverLaunchLines,
+  codexApprovalProblems, codexApprovalTables, codexAuthPath, envFor, envKeyProblems, GIT_ENV, HOST_CHECKS_RAW, launcherExtraFor, hostChecksText, launchHeld, leftoverCheck, processOutcome, serverLaunchFailure, serverLaunchLines,
   sandboxedRun, serverLaunch, TURN_LIMITS, writeServerLauncher, type SandboxedRun, TurnCapture, type AttemptCapture, type EnvInputs, type LeftoverCheck, type ProcessOutcome, type TurnHostChecks,
 } from "./onboarding-eval-host.js";
 import {
@@ -649,12 +649,19 @@ export function effectivePathProblems(effective: EffectivePaths, env: NodeJS.Pro
   return problems;
 }
 
-function buildIdentity(): Record<string, string> {
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: PKG_ROOT, encoding: "utf-8" });
-  const dirty = spawnSync("git", ["status", "--porcelain", "--", "src", "scripts"], { cwd: PKG_ROOT, encoding: "utf-8" });
+/** T-538 S4 (env table row h): the identity's two git calls, each with GIT_ENV, never the run's own environment. */
+export function checkoutState(spawn: (cmd: string, args: readonly string[], o: { cwd: string; encoding: "utf-8"; env: Record<string, string> }) => { status: number | null; stdout: string } = spawnSync): { readonly checkoutHead: string; readonly checkoutDirty: string } {
+  const head = spawn("git", ["rev-parse", "HEAD"], { cwd: PKG_ROOT, encoding: "utf-8", env: { ...GIT_ENV } });
+  const dirty = spawn("git", ["status", "--porcelain", "--", "src", "scripts"], { cwd: PKG_ROOT, encoding: "utf-8", env: { ...GIT_ENV } });
   return {
     checkoutHead: head.status === 0 ? head.stdout.trim() : "unknown",
     checkoutDirty: dirty.status === 0 ? String(dirty.stdout.trim().length > 0) : "unknown",
+  };
+}
+
+function buildIdentity(): Record<string, string> {
+  return {
+    ...checkoutState(),
     cliSha256: sha256(readFileSync(join(PKG_ROOT, "dist", "cli.js"))),
     mcpSha256: sha256(readFileSync(join(PKG_ROOT, "dist", "mcp.js"))),
     skillSha256: sha256(readFileSync(join(PKG_ROOT, "src", "skill", "setup-flow.md"))),
@@ -1317,7 +1324,9 @@ async function main(argv: readonly string[], admission?: StandInAdmission): Prom
   progress.rawDir = rawDir;
 
   // The real Codex auth is located before anything else; nothing else of the real homes is used.
-  const realCodexAuth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
+  // S4 (row g): CODEX_HOME comes from the driver explicitly; no HOME fallback.
+  const realCodexAuth = codexAuthPath(process.env);
+  if (realCodexAuth === null) throw new Error("onboarding-eval: CODEX_HOME must be an absolute path the driver passes; there is no HOME fallback");
   const globalDir = join(work, "storybloq-global");
   // Check set 6 (T-536): the setup reviewer's store, per run, so rule 2 reads this run's revisions only.
   // The name carries the default store's prefix, so a turn that touches it reads as touching the store in a replay too.

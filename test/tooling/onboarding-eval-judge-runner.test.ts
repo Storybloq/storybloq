@@ -224,6 +224,22 @@ describe("ISS-1348 judge runner, fake codex", { timeout: 180_000 }, () => {
     expect(existsSync(attempt(r))).toBe(false);
   });
 
+  it.each([["unset", null], ["empty", ""], ["relative", "real-codex-home"]] as const)("R9c (T-538 S4): an %s CODEX_HOME is refused before any reservation; a Codex auth under HOME is never used", (_n, value) => {
+    const r = rig();
+    // A complete-looking Codex home under HOME: the removed fallback would have found it.
+    mkdirSync(join(r.home, ".codex"), { recursive: true });
+    writeFileSync(join(r.home, ".codex", "auth.json"), '{"auth_mode":"dummy","not":"real"}\n');
+    const env = envFor(r);
+    if (value === null) delete env.CODEX_HOME;
+    else env.CODEX_HOME = value;
+    const p = spawnSync(process.execPath, [TSX, SCRIPT, "--record", r.record], { env, cwd: r.root, encoding: "utf-8", timeout: 120_000 });
+    const res = { code: p.status, stderr: p.stderr };
+    expect(res.code).toBe(2);
+    expect(res.stderr).toContain("onboarding-eval-judge: refused: CODEX_HOME is not an absolute path the driver passed; there is no HOME fallback");
+    expect(existsSync(attempt(r))).toBe(false);
+    expect(execs(r)).toEqual([]);
+  });
+
   it("R10: a final message that is not JSON", () => {
     const r = rig({ finalText: "All lines pass." });
     expectFailedAfterSpawn(r, run(r), "final-message-not-json");

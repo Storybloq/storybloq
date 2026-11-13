@@ -917,7 +917,7 @@ describe("7.2: the real entry always wires the capability probe", () => {
   it("no option of the command line or the environment reaches the probe; the entry passes the real probes as they are", () => {
     const src = readFileSync(join(PKG, "scripts", "onboarding-eval-driver.ts"), "utf-8");
     const entrySrc = src.slice(src.indexOf("export async function entry("), src.indexOf("export function leftoverClean("));
-    expect(entrySrc).toContain("preflightProblems(m, root, arm, realPreflightProbe(PKG, git, root, childEnv()), Date.now())");
+    expect(entrySrc).toContain("preflightProblems(m, root, arm, realPreflightProbe(PKG, git, root, childEnv(process.env, driverScratchHome(root), driverCodexHome(process.env))), Date.now())");
     expect(src.slice(src.indexOf("export function realPreflightProbe("), src.indexOf("export async function entry("))).toContain("capabilityProbe: realCapabilityProbe(pkg, root, env),");
     expect(src).not.toMatch(/process\.env\.[A-Z_]*PROBE|argv\.includes\("--[a-z-]*probe|need\("[a-z-]*probe/);
   });

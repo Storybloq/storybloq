@@ -350,6 +350,19 @@ export function launcherExtraFor(i: EnvInputs): Record<string, string> {
   return extra;
 }
 
+/** T-538 S4 (env table rows a and h): every identity git call's environment: a fixed PATH, no home, no system config. */
+export const GIT_ENV: Readonly<Record<string, string>> = { PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1" };
+
+/**
+ * T-538 S4 (env table row g): the Codex auth path a run or judge child uses, from the CODEX_HOME the driver passes
+ * explicitly. There is no HOME fallback, so a scratch HOME cannot misdirect it; null when it is unset or not absolute.
+ */
+export function codexAuthPath(env: NodeJS.ProcessEnv): string | null {
+  const home = env.CODEX_HOME;
+  if (home === undefined || home === "" || !home.startsWith("/")) return null;
+  return join(home, "auth.json");
+}
+
 export const mcpEnvFor = (i: EnvInputs): Record<string, string> => envFor("server", i);
 
 /** Every key of `env` that the role's column does not name, and every one it names that is missing. */

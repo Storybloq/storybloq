@@ -29,6 +29,8 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleCapabilityList: "read",
   handleCapabilityMatch: "read",
   handleCheckpointList: "read",
+  handleBoardIdAdopt: "C-v4.1 2.3 board-id adopt: commits only config.json itself, through the board-write recorder and reportBoardWrite inside the handler (commit forced on)",
+  handleBoardIdInit: "C-v4.1 2.1 board-id init: commits only config.json itself, through the board-write recorder and reportBoardWrite inside the handler (commit forced on)",
   handleConflictsList: "read",
   handleConflictsShow: "read",
   handleDispatch: "read",

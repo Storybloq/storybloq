@@ -163,7 +163,9 @@ function isPlainObject(value: unknown): boolean {
 export const ConflictEntrySchema = z.object({
   fieldPath: z.string(),
   field: z.string().optional(),
-  kind: z.enum(["field", "array-element", "coupled", "delete-edit", "invariant"]),
+  kind: z.enum(["field", "array-element", "coupled", "delete-edit", "invariant", "receipt", "receipt-opaque", "board-identity"]),
+  // C-v4.1 3.6: the receipt id, lm- landing id or oc- opaque conflict id a receipt record names.
+  id: z.string().min(1).optional(),
   group: z.string().optional(),
   base: z.unknown(),
   ours: z.unknown(),

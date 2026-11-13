@@ -136,6 +136,10 @@ export const ConfigSchema = z
     version: z.number().int().min(1),
     schemaVersion: z.number().int().optional(),
     project: z.string().min(1),
+    // C-v4.1 2.1: the board's durable id, `b-` plus 16 Crockford characters.
+    // Declared permissively (any string) so a hand-edited value never blocks
+    // the config load; src/core/board-id.ts treats a malformed value as absent.
+    boardId: z.string().optional(),
     type: z.string(),
     language: z.string(),
     features: FeaturesSchema,

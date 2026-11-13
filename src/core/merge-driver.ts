@@ -1,5 +1,7 @@
 import { getMergeRules, getCoupledGroups, type CoupledGroup, type EntityType, type MergeRule } from "./field-classification.js";
 import { carryForward, mergeConflictSets, attachConflicts } from "./conflict-lifecycle.js";
+import { mergeBoardId } from "./board-id.js";
+import { mergeAppendOnly } from "./append-only-merge.js";
 import { recordCoversViolation, type CatalogInvariantViolation } from "../models/catalog-invariant.js";
 import { capabilityNameViolations } from "../models/capability.js";
 import { termOwnerViolations } from "../models/glossary.js";
@@ -11,7 +13,7 @@ import { termOwnerViolations } from "../models/glossary.js";
 export interface ConflictEntry {
   fieldPath: string;
   field?: string;
-  kind: "field" | "coupled" | "delete-edit" | "array-element" | "invariant";
+  kind: "field" | "coupled" | "delete-edit" | "array-element" | "invariant" | "receipt" | "receipt-opaque" | "board-identity";
   base: unknown;
   ours: unknown;
   theirs: unknown;
@@ -22,6 +24,8 @@ export interface ConflictEntry {
   rule?: "term-owner" | "capability-name";
   key?: string;
   entityIds?: string[];
+  /** C-v4.1 3.6: the receipt id, landing lm- id or oc- opaque conflict id a `receipt`/`receipt-opaque` record names. */
+  id?: string;
 }
 
 function toPointer(fieldName: string): string {
@@ -322,6 +326,20 @@ export function threeWayMerge(
     const bVal = base[key];
     const oVal = ours[key];
     const tVal = theirs[key];
+
+    // C-v4.1 3.6: append-only fields run before the generic early returns,
+    // which would take a one-sided removal as the merged value.
+    const appendRule = rules[key];
+    if (appendRule?.kind === "append-only-by-id") {
+      const arrays = [bVal, oVal, tVal].every((v) => v === undefined || Array.isArray(v));
+      if (arrays) {
+        const r = mergeAppendOnly(key, (bVal as unknown[] | undefined) ?? [], (oVal as unknown[] | undefined) ?? [], (tVal as unknown[] | undefined) ?? [], appendRule.keying);
+        merged[key] = r.merged;
+        conflicts.push(...r.conflicts);
+        continue;
+      }
+      // A non-array value on some side is not ours to reinterpret: the generic rules below apply.
+    }
 
     if (deepEqual(bVal, oVal) && deepEqual(bVal, tVal)) {
       merged[key] = bVal;
@@ -930,6 +948,14 @@ export function mergeConfig(
     const bHas = key in b;
     const oHas = key in o;
     const tHas = key in t;
+
+    // C-v4.1 2.2: the board id never settles by the generic rules.
+    if (key === "boardId") {
+      const m = mergeBoardId(bVal, oVal, tVal, { base: bHas, ours: oHas, theirs: tHas });
+      if (m.present) merged[key] = m.value;
+      if (m.conflict) conflicts.push(m.conflict);
+      continue;
+    }
 
     const isKnownObjectKey = CONFIG_DEEP_MERGE_KEYS.has(key) || key === CONFIG_NODES_KEY;
     if (isKnownObjectKey) {

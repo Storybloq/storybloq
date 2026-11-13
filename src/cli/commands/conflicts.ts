@@ -16,6 +16,7 @@ import { loadRulingsSafe, writeRulingUnlocked } from "../../core/ruling-loader.j
 import type { CommandResult } from "../types.js";
 import { CliValidationError, parsePriority, parseWaitingOn } from "../helpers.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "../../core/display-text.js";
+import { MERGE_RESOLUTION_AUTHORITY, receiptResolveHint, resolveReceiptConflict } from "../../core/receipt-resolve.js";
 import { catalogOnlyFlags, handleCatalogResolve, type CatalogResolveInput } from "./resolve-catalog.js";
 
 export type ConflictTarget =
@@ -288,6 +289,8 @@ function renderConflicts(displayId: string, conflicts: Array<Record<string, unkn
     lines.push(`- Base:   ${JSON.stringify(c.base)}`);
     lines.push(`- Ours:   ${JSON.stringify(c.ours)}`);
     lines.push(`- Theirs: ${JSON.stringify(c.theirs)}`);
+    const hint = receiptResolveHint(displayId, c);
+    if (hint) lines.push(hint);
     lines.push("");
   }
   return displayLines(lines);
@@ -510,15 +513,29 @@ function assertAssignedPriorityFields(prior: Record<string, unknown>, resolved: 
 export async function handleResolve(
   id: string,
   root: string,
-  options: ResolveOptions & Omit<CatalogResolveInput, "field" | "use" | "value"> & { format?: "md" | "json" },
+  options: ResolveOptions & Omit<CatalogResolveInput, "field" | "use" | "value"> & {
+    format?: "md" | "json";
+    /** C-v4.1 3.6: a receipt conflict by receipt (or lm-) id, with --keep ours|theirs|both. */
+    receipt?: string;
+    /** C-v4.1 3.6: a receipt-opaque conflict by its oc- id, with --keep. */
+    receiptConflict?: string;
+  },
 ): Promise<CommandResult> {
   const format = options.format ?? "md";
+  const receiptMode = options.receipt !== undefined || options.receiptConflict !== undefined;
+  if (receiptMode) {
+    if (options.receipt !== undefined && options.receiptConflict !== undefined) throw new Error("Give --receipt or --receipt-conflict, not both.");
+    if (options.field !== undefined || options.use !== undefined || options.value !== undefined) {
+      throw new Error("--receipt and --receipt-conflict take --keep ours|theirs|both, not --field, --use or --value.");
+    }
+    if (options.keep === undefined) throw new Error("--receipt and --receipt-conflict need --keep ours|theirs|both.");
+  }
   // T-529: a catalog is resolved by its own handler, BEFORE this function's
   // lock: `mutateForRepair` takes the conflict-resolution lock itself, and
   // that lock is not re-entrant.
   const catalogTarget = catalogTargetOf(id);
   if (catalogTarget !== null) return handleCatalogResolve(catalogTarget, root, options);
-  const catalogFlags = catalogOnlyFlags(options);
+  const catalogFlags = catalogOnlyFlags(receiptMode ? { ...options, keep: undefined } : options);
   if (catalogFlags.length > 0) {
     throw new Error(
       `${catalogFlags.join(", ")} ${catalogFlags.length === 1 ? "applies" : "apply"} only to a catalog ` +
@@ -567,6 +584,9 @@ export async function handleResolve(
     let result: ResolveResult;
     let label: string;
 
+    if (receiptMode && target.kind !== "ticket" && target.kind !== "issue") {
+      throw new Error(`--receipt and --receipt-conflict apply to a ticket or an issue, not to ${JSON.stringify(id)}.`);
+    }
     if (target.kind === "config") {
       const mutable = { ...(state.config as Record<string, unknown>) };
       result = resolveDocConflicts(mutable, resolveOptions);
@@ -603,6 +623,14 @@ export async function handleResolve(
       result = resolveConflicts(mutable, resolveOptions);
       await writeRulingUnlocked(JSON.parse(JSON.stringify(mutable)) as never, root);
       label = target.entity.id;
+    } else if (receiptMode && (target.kind === "ticket" || target.kind === "issue")) {
+      const mutable = { ...target.entity } as Record<string, unknown>;
+      label = displayIdOf(target.entity as { id: string; displayId?: string | null });
+      result = resolveReceiptConflict(mutable, {
+        receipt: options.receipt, receiptConflict: options.receiptConflict, keep: String(options.keep), actor, label,
+      }, MERGE_RESOLUTION_AUTHORITY);
+      if (target.kind === "ticket") await writeTicketUnlocked(mutable as never, root, { touch: false });
+      else await writeIssueUnlocked(mutable as never, root, { touch: false });
     } else {
       const mutable = { ...target.entity };
       const before = ((target.entity as Record<string, unknown>)._conflicts ?? []) as ConflictEntry[];

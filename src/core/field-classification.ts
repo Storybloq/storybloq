@@ -9,11 +9,15 @@ export type MergeRule =
   | { kind: "monotonic"; compare: "max" }
   | { kind: "latest-wins"; timestampField: string }
   | { kind: "hard-conflict" }
+  // C-v4.1 3.6: union by id, nothing dropped; applied before the generic early returns.
+  | { kind: "append-only-by-id"; keying: "receipt" | "landing" }
   | { kind: "coupled"; group: string; members: string[]; latestWinsField?: string; onAmbiguous?: "conflict" | "release"; onDivergence?: "base" | "keep-ours" };
 
 export type EntityType = "ticket" | "issue" | "note" | "lesson" | "arrangement" | "ruling";
 
 const TICKET_RULES: Record<string, MergeRule> = {
+  receipts: { kind: "append-only-by-id", keying: "receipt" },
+  landings: { kind: "append-only-by-id", keying: "landing" },
   id: { kind: "identity" },
   createdDate: { kind: "identity" },
   createdAt: { kind: "identity" },
@@ -73,6 +77,8 @@ const TICKET_RULES: Record<string, MergeRule> = {
 };
 
 const ISSUE_RULES: Record<string, MergeRule> = {
+  receipts: { kind: "append-only-by-id", keying: "receipt" },
+  landings: { kind: "append-only-by-id", keying: "landing" },
   id: { kind: "identity" },
   discoveredDate: { kind: "identity" },
   createdAt: { kind: "identity" },

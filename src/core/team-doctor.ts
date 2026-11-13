@@ -1,4 +1,5 @@
 import { displayIdOf } from "./resolver.js";
+import { boardRegistry, duplicateBoardIds } from "./board-id.js";
 import { execFileSync } from "node:child_process";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
@@ -99,6 +100,17 @@ function buildResult(findings: DoctorFinding[]): DoctorResult {
     else infoCount++;
   }
   return { findings, errorCount, warningCount, infoCount };
+}
+
+/** C-v4.1 2.2: two registered boards carrying one board id (a copied .story/). */
+function checkDuplicateBoardIds(_state: ProjectState, ctx: DoctorContext): DoctorFinding[] {
+  return duplicateBoardIds(boardRegistry(ctx.root)).map((d) => ({
+    severity: "error" as const,
+    code: "duplicate_board_id",
+    message: `board id ${d.boardId} is carried by ${d.paths.length} boards: ${d.paths.join(", ")}`,
+    entity: null,
+    repair: null,
+  }));
 }
 
 function checkDuplicateDisplayIds(state: ProjectState): DoctorFinding[] {
@@ -821,6 +833,7 @@ registerDoctorCheck(checkLoadWarnings);
 registerDoctorCheck(checkStaleClaims);
 registerDoctorCheck(checkStaleTombstones);
 registerDoctorCheck(checkConflictsPresent);
+registerDoctorCheck(checkDuplicateBoardIds);
 registerDoctorCheck(checkMergeDriverConfig);
 registerDoctorCheck(checkReservationHealth);
 registerDoctorCheck(checkLocalIdAllocator);

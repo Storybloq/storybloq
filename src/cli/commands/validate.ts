@@ -7,6 +7,7 @@ import {
   citingEntitiesOf,
   unresolvedConflictFinding,
 } from "../../core/validation.js";
+import { boardRegistry, duplicateBoardIds } from "../../core/board-id.js";
 import { catalogConflictItems } from "../../core/conflicts.js";
 import { validateIssueSourceRefs } from "../../core/issue-source-ref.js";
 import { checkCapabilities } from "../../core/capability.js";
@@ -228,6 +229,7 @@ function validateWithRulings(ctx: CommandContext): ValidationResult {
     ...loaderFindings,
     ...arrangementFindings(ctx.root),
     ...reviewContractFindings(ctx),
+    ...boardIdFindings(ctx.root),
   ]);
 }
 
@@ -334,6 +336,16 @@ function glossaryFindings(ctx: CommandContext): ValidationFinding[] {
     }
   }
   return findings;
+}
+
+/** C-v4.1 2.2: two registered boards carrying one board id; both paths are named. */
+function boardIdFindings(root: string): ValidationFinding[] {
+  return duplicateBoardIds(boardRegistry(root)).map((d) => ({
+    level: "error",
+    code: "duplicate_board_id",
+    message: `board id ${d.boardId} is carried by ${d.paths.length} boards: ${d.paths.join(", ")}; every reference to it resolves to duplicate`,
+    entity: null,
+  }));
 }
 
 export function handleValidate(ctx: CommandContext): CommandResult {

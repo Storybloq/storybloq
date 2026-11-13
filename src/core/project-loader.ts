@@ -12,6 +12,7 @@ import {
   mkdir,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { assertBoardIdWriteAllowed, type BOARD_ID_AUTHORITY } from "./board-id.js";
 import { existsSync, lstatSync, realpathSync, constants as fsConstants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
@@ -988,19 +989,29 @@ export async function writeRoadmap(
 export async function prepareConfigWrite(
   config: Config,
   root: string,
+  options: { boardIdAuthority?: typeof BOARD_ID_AUTHORITY } = {},
 ): Promise<{ target: string; content: string }> {
   const parsed = ConfigSchema.parse(config);
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "config.json");
   await guardPath(target, wrapDir);
+  // C-v4.1 2.1: a landed board id never changes or disappears, except by adopt.
+  let prior: Record<string, unknown> | undefined;
+  try {
+    prior = JSON.parse(await readFile(target, "utf-8")) as Record<string, unknown>;
+  } catch {
+    prior = undefined;
+  }
+  assertBoardIdWriteAllowed(prior?.boardId, (parsed as Record<string, unknown>).boardId, options.boardIdAuthority);
   return { target, content: serializeJSON(parsed) };
 }
 
 export async function writeConfigUnlocked(
   config: Config,
   root: string,
+  options: { boardIdAuthority?: typeof BOARD_ID_AUTHORITY } = {},
 ): Promise<void> {
-  const { target, content } = await prepareConfigWrite(config, root);
+  const { target, content } = await prepareConfigWrite(config, root, options);
   await atomicWrite(target, content);
   // T-486 B6: decisions derived from the old config (the fence) must not
   // outlive it within this operation.
@@ -1016,11 +1027,12 @@ export function invalidateResolutionWriteContext(root: string): void {
 export async function writeConfig(
   config: Config,
   root: string,
+  options: { boardIdAuthority?: typeof BOARD_ID_AUTHORITY } = {},
 ): Promise<void> {
   const wrapDir = resolve(root, ".story");
   await withLock(wrapDir, async () => {
     await assertNoConflictsFromDisk(root);
-    await writeConfigUnlocked(config, root);
+    await writeConfigUnlocked(config, root, options);
   });
 }
 

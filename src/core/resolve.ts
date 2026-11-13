@@ -1,5 +1,13 @@
 import type { ConflictEntry } from "../models/types.js";
 
+/**
+ * C-v4.1 3.6: a `receipt` or `receipt-opaque` entry is never applied as a field
+ * value (its sides are digests, not bodies); `resolve --receipt` clears it.
+ */
+const RECEIPT_KINDS = new Set(["receipt", "receipt-opaque"]);
+const isReceiptKind = (c: ConflictEntry): boolean => RECEIPT_KINDS.has(c.kind);
+export const RECEIPT_RESOLVE_HINT = "Receipt conflicts are resolved with `storybloq resolve <id> --receipt <id> --keep ours|theirs|both` (or `--receipt-conflict <oc-id>`).";
+
 export interface ResolveOptions {
   field?: string;
   use?: "ours" | "theirs";
@@ -267,6 +275,9 @@ export function resolveConflicts(
   if (options.field) {
     const selection = selectConflicts(conflicts, { field: options.field });
     const target = selection.target;
+    if (isReceiptKind(target)) {
+      throw new Error(`--field "${options.field}" names a receipt conflict. ${RECEIPT_RESOLVE_HINT}`);
+    }
 
     if (target.kind === "coupled" && target.group) {
       if (options.value !== undefined) {
@@ -310,8 +321,13 @@ export function resolveConflicts(
     const side = options.use;
     // Entity-level entries are applied FIRST (wholesale body replacement),
     // then field-level entries land on the replaced body.
-    const entityLevel = conflicts.filter((c) => isEntityLevel(c));
-    const fieldLevel = conflicts.filter((c) => !isEntityLevel(c));
+    const receiptLevel = conflicts.filter((c) => isReceiptKind(c));
+    const entityLevel = conflicts.filter((c) => !isReceiptKind(c) && isEntityLevel(c));
+    const fieldLevel = conflicts.filter((c) => !isReceiptKind(c) && !isEntityLevel(c));
+    if (receiptLevel.length > 0) {
+      remaining.push(...receiptLevel);
+      messages.push(`${receiptLevel.length} receipt conflict(s) left open. ${RECEIPT_RESOLVE_HINT}`);
+    }
     for (const c of entityLevel) {
       // Blanket application always uses the side; --value only applies to a
       // --field-targeted entry.

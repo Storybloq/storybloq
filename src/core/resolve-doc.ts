@@ -510,6 +510,11 @@ function applyPlanned(doc: Record<string, unknown>, ops: PlannedOp[], side: "our
   for (const cap of sortedDeletes) applyCapturedOp(doc, cap, book);
 }
 
+/** C-v4.1 2.3: the one way out of a `board-identity` conflict. */
+export const BOARD_IDENTITY_RESOLVE_HINT =
+  "The board identity conflict is not resolved by picking a side: the board id never changes by merge. " +
+  "Run `storybloq board-id adopt <b-id>` to choose the id this clone keeps.";
+
 export function resolveDocConflicts(
   doc: Record<string, unknown>,
   options: ResolveOptions,
@@ -528,6 +533,7 @@ export function resolveDocConflicts(
     // T-529: the shared selection rule; config and roadmap resolve the one
     // record it names (they register no coupled groups).
     const target = selectConflicts(conflicts, { field: options.field }).target;
+    if (target.kind === "board-identity") throw new Error(BOARD_IDENTITY_RESOLVE_HINT);
     // ISS-758 guard: an explicit choice is required.
     if (options.value === undefined && !options.use) {
       throw new Error(
@@ -546,10 +552,17 @@ export function resolveDocConflicts(
     }
   } else if (options.use) {
     const side = options.use;
-    const ops = conflicts.map((c) => planOp(doc, c, side === "ours" ? c.ours : c.theirs));
+    // C-v4.1 2: a board identity conflict is never settled by picking a side.
+    const identity = conflicts.filter((c) => c.kind === "board-identity");
+    const settle = conflicts.filter((c) => c.kind !== "board-identity");
+    const ops = settle.map((c) => planOp(doc, c, side === "ours" ? c.ours : c.theirs));
     applyPlanned(doc, ops, side);
-    for (const c of conflicts) {
+    for (const c of settle) {
       resolved.push(fieldName(c) || "_entity");
+    }
+    if (identity.length > 0) {
+      remaining.push(...identity);
+      messages.push(BOARD_IDENTITY_RESOLVE_HINT);
     }
   } else {
     throw new Error("Must specify --use or --field");

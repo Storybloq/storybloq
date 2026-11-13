@@ -486,7 +486,9 @@ export function registerResolveCommand(yargs: Argv): Argv {
         .option("id", { type: "string", describe: "Catalog only: the entry whose records to resolve" })
         .option("group", { type: "string", describe: "Catalog only: resolve an entry's coupled group (with --id)" })
         .option("invariant", { type: "number", describe: "Catalog only: the invariant conflict to resolve, numbered as conflicts show prints it" })
-        .option("keep", { type: "string", describe: "With --invariant: keep this term, delete the other claimants" }), {
+        .option("keep", { type: "string", describe: "With --invariant: keep this term, delete the other claimants. With --receipt or --receipt-conflict: ours, theirs or both" })
+        .option("receipt", { type: "string", describe: "Resolve a receipt conflict by receipt id (with --keep ours|theirs|both)" })
+        .option("receipt-conflict", { type: "string", describe: "Resolve an opaque receipt conflict by its oc- id (with --keep ours|theirs|both)" }), {
         rename: { comma: "literal", empty: "preserve", trim: "never", describe: "With --invariant: <id> <new value>" },
         "drop-alias": { comma: "literal", empty: "preserve", trim: "never", describe: "With --invariant: <id> <alias>" },
       }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
@@ -509,6 +511,8 @@ export function registerResolveCommand(yargs: Argv): Argv {
           rename: argv.rename as string[] | undefined,
           dropAlias: argv["drop-alias"] as string[] | undefined,
           keep: argv.keep,
+          receipt: argv.receipt as string | undefined,
+          receiptConflict: argv["receipt-conflict"] as string | undefined,
           format: (argv.format as "md" | "json") ?? "md",
         });
         writeOutput(result.output, outputFormatOf(argv.format));
@@ -627,6 +631,47 @@ export function registerMergeDriverCommand(yargs: Argv): Argv {
       }
       process.exitCode = await handleMergeDriver(ancestor, ours, theirs, pathname, protocol);
     },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// board-id (C-v4.1 section 2, ISS-1433)
+// ---------------------------------------------------------------------------
+
+export function registerBoardIdCommand(yargs: Argv): Argv {
+  const run = async (argv: Record<string, unknown>, fn: (root: string, format: "md" | "json") => Promise<{ output: string; exitCode?: number }>) => {
+    const format = (argv.format as "md" | "json") ?? "md";
+    const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+    if (!root) { writeOutput(noProjectFoundOutput(argv.format as never, "ok"), outputFormatOf(argv.format as never)); process.exitCode = ExitCode.USER_ERROR; return; }
+    try {
+      const result = await fn(root, format);
+      writeOutput(result.output, format);
+      if (result.exitCode) process.exitCode = result.exitCode;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeOutput(format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message, format);
+      process.exitCode = ExitCode.USER_ERROR;
+    }
+  };
+  return yargs.command(
+    "board-id",
+    "The board's durable id in config.json",
+    (y) =>
+      y.command(
+        "init",
+        "Mint this board's id and commit only config.json (refused when one exists)",
+        (y2) => addFormatOption(y2, 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
+        async (argv) => run(argv, async (root, format) => (await import("./commands/board-id.js")).handleBoardIdInit(root, format)),
+      )
+      .command(
+        "adopt",
+        "Replace this clone's board id with the one on the default branch, clearing a board-identity conflict",
+        (y2) => addFormatOption(y2
+          .option("ref", { type: "string", default: "origin/main", describe: "The default-branch ref to read the landed id from" }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
+        async (argv) => run(argv, async (root, format) => (await import("./commands/board-id.js")).handleBoardIdAdopt(root, { ref: argv.ref as string }, format)),
+      )
+      .demandCommand(1, "Specify a board-id subcommand: init or adopt"),
+    () => {},
   );
 }
 

@@ -133,6 +133,9 @@ export const IssueSchema = z
     deletedAt: z.string().optional(),
     deletedBy: z.string().optional(),
     _conflicts: z.array(ConflictEntrySchema).optional(),
+    // C-v4.1 3.3: proof receipts, read raw by src/core/receipts.ts. Any value
+    // loads, so a malformed array never blocks the record.
+    receipts: z.unknown().optional(),
     // T-475: pick-exclusion state, distinct from assignedTo (legacy free-text
     // attribution). Issues carry no claimedBySession/claim field at all (no
     // per-session acquisition state exists to match an `assigned` earmark's

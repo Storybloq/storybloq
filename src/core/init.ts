@@ -2,6 +2,7 @@ import { mkdir, stat, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { writeConfig, writeRoadmap, loadProject } from "./project-loader.js";
 import { localDateOf } from "./local-date.js";
+import { isBoardId, mintBoardId } from "./board-id.js";
 import { recordBoardTarget } from "./board-write-recorder.js";
 import { ProjectLoaderError, CURRENT_SCHEMA_VERSION, INTEGRITY_WARNING_TYPES } from "./errors.js";
 import type { Config } from "../models/config.js";
@@ -77,8 +78,18 @@ export async function initProject(
 
   const isOrchestrator = (options.type ?? "generic") === "orchestrator";
 
+  // C-v4.1 2.1: a new board gets its id here; a forced re-init keeps the one it has.
+  let boardId = mintBoardId();
+  try {
+    const existing = (JSON.parse(await readFile(join(wrapDir, "config.json"), "utf-8")) as Record<string, unknown>).boardId;
+    if (isBoardId(existing)) boardId = existing;
+  } catch {
+    // No config yet (or unreadable): the freshly minted id stands.
+  }
+
   const config: Config = {
     version: 2,
+    boardId,
     schemaVersion: CURRENT_SCHEMA_VERSION,
     project: options.name,
     type: options.type ?? "generic",

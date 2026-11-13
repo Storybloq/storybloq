@@ -160,11 +160,13 @@ describe("A1 lineage grammar", () => {
   it("serialising drops invalid values by name and refuses an invalid continues", () => {
     const s = serializeLineage({ role: "a<b", from: "../x.md", by: "ok", absorbs: ["x/y.md", "z.md", "z.md"] });
     expect(s.line).toBe('<!-- storybloq-lineage v1 absorbs="z.md" by="ok" -->');
-    expect(s.dropped).toEqual([
+    // The plan fixes no order for these diagnostics: compare as a set, with the exact count.
+    expect(s.dropped).toHaveLength(3);
+    expect(s.dropped).toEqual(expect.arrayContaining([
       { attribute: "from", reason: "invalid" },
       { attribute: "role", reason: "invalid" },
       { attribute: "absorbs", reason: "invalid" },
-    ]);
+    ]));
     expect(() => serializeLineage({ continues: "a/b.md" })).toThrow();
   });
 

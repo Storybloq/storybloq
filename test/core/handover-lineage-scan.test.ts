@@ -4,7 +4,7 @@
  * entry that is not a regular file: no symlink is followed, even one that
  * stays inside the folder, and a FIFO never blocks the scan.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -13,6 +13,23 @@ import { fileURLToPath } from "node:url";
 import { readLineage } from "../../src/core/handover-lineage.js";
 import { scanHandoverFile, scanHandoverLineage } from "../../src/core/handover-lineage-scan.js";
 import { LINE, TAIL_SHAPES } from "../fixtures/handover-lineage/shapes.js";
+
+// A counting passthrough of node:fs: every call reaches the real function, and
+// the bounded-I/O tests read what the scan asked for.
+vi.mock("node:fs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs")>();
+  const spy = <F extends (...a: never[]) => unknown>(f: F) => vi.fn(f);
+  const m = {
+    ...real,
+    lstatSync: spy(real.lstatSync),
+    statSync: spy(real.statSync),
+    openSync: spy(real.openSync),
+    readSync: spy(real.readSync),
+    readFileSync: spy(real.readFileSync),
+    createReadStream: spy(real.createReadStream),
+  };
+  return { ...m, default: m };
+});
 
 const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
 let dir: string;
@@ -127,5 +144,45 @@ describe("scan result", () => {
     });
     expect(scanHandoverLineage(dir, ["a.md", "gone.md"], true).complete).toBe(false);
     expect(scanHandoverLineage(dir, [], false)).toEqual({ files: [], enumerated: false, complete: false });
+  });
+});
+
+describe("3.2a bounded I/O", () => {
+  const io = async () => {
+    const fs = await import("node:fs");
+    return {
+      lstat: vi.mocked(fs.lstatSync), stat: vi.mocked(fs.statSync), open: vi.mocked(fs.openSync),
+      read: vi.mocked(fs.readSync), readFile: vi.mocked(fs.readFileSync), stream: vi.mocked(fs.createReadStream),
+    };
+  };
+  const clear = async () => { for (const f of Object.values(await io())) f.mockClear(); };
+
+  it("a large regular file is read with at most 2,048 bytes, all from offset size minus 2,048", async () => {
+    const big = Buffer.concat([Buffer.from("# T\n\n" + "x".repeat(200_000) + "\n\n"), Buffer.from(LINE + "\n")]);
+    writeFileSync(join(dir, "big.md"), big);
+    await clear();
+    const f = scanHandoverFile(dir, "big.md");
+    expect(f.state).toBe("linked");
+    const { read, readFile, stream, open } = await io();
+    expect(readFile).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls.length).toBeGreaterThan(0);
+    let total = 0;
+    for (const call of read.mock.calls) {
+      const [, , , length, position] = call as unknown as [number, Buffer, number, number, number];
+      expect(typeof position).toBe("number");
+      expect(position).toBeGreaterThanOrEqual(big.length - 2048);
+      total += length;
+    }
+    expect(total).toBeLessThanOrEqual(2048);
+  });
+
+  it("an inadmissible name causes no lstat, stat, open or read", async () => {
+    await clear();
+    const f = scanHandoverFile(dir, "x".repeat(5000) + ".md");
+    expect(f).toEqual({ name: "x".repeat(5000) + ".md", state: "unknown", reason: "name_too_long" });
+    const { lstat, stat, open, read, readFile, stream } = await io();
+    for (const fn of [lstat, stat, open, read, readFile, stream]) expect(fn).not.toHaveBeenCalled();
   });
 });

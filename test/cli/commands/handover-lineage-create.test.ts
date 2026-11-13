@@ -38,11 +38,23 @@ async function project(team: boolean): Promise<string> {
   return root;
 }
 
-function normalise(text: string, root: string): string {
-  return text
-    .split(root).join("<ROOT>")
-    .replace(/\d{4}-\d{2}-\d{2}-\d{6}-[0-9a-f]{8}-/g, "<DATE>-<TIME>-<ENTROPY>-")
-    .replace(/\d{4}-\d{2}-\d{2}-(\d{2})-(?!old)/g, "<DATE>-$1-");
+/** Replaces the project root and the exact filename that was written, nothing broader. */
+function normalise(text: string, root: string, file: string): string {
+  return text.split(root).join("<ROOT>").split(file).join("<FILE>");
+}
+
+const localDate = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const utcDate = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** The written filename has main's format for the mode and today's date (local for sequenced, UTC for team). */
+function expectFilename(file: string, team: boolean, before: Date, after: Date): void {
+  const m = team
+    ? /^(\d{4}-\d{2}-\d{2})-\d{6}-[0-9a-f]{8}-golden\.md$/.exec(file)
+    : /^(\d{4}-\d{2}-\d{2})-01-golden\.md$/.exec(file);
+  expect(m, `filename format: ${file}`).not.toBeNull();
+  const day = team ? utcDate : localDate;
+  expect([day(before), day(after)]).toContain(m![1]);
 }
 
 /** Contents with no lineage line: each must be written and answered exactly as main does. */
@@ -60,9 +72,10 @@ const UNLINKED_CONTENTS: Record<string, string> = {
 type Surface = "cli-md" | "cli-json" | "mcp";
 interface Golden { file: string; bytes: string; reply: string; exitCode: number | null; isError: boolean }
 
-async function createVia(surface: Surface, root: string, content: string): Promise<Golden> {
+async function createVia(surface: Surface, root: string, content: string, team: boolean): Promise<Golden> {
   const dir = join(root, ".story", "handovers");
   const before = new Set(readdirSync(dir));
+  const startedAt = new Date();
   let reply: string;
   let exitCode: number | null = null;
   let isError = false;
@@ -78,10 +91,11 @@ async function createVia(surface: Surface, root: string, content: string): Promi
   const added = readdirSync(dir).filter((f) => !before.has(f));
   expect(added.length).toBe(1);
   const file = added[0]!;
+  expectFilename(file, team, startedAt, new Date());
   return {
-    file: normalise(file, root),
+    file: normalise(file, root, file),
     bytes: readFileSync(join(dir, file)).toString("base64"),
-    reply: normalise(reply, root),
+    reply: normalise(reply, root, file),
     exitCode,
     isError,
   };
@@ -96,7 +110,7 @@ describe("A4 unlinked identity: no lineage input writes and answers exactly as m
         const key = `${team ? "team" : "sequenced"}/${surface}/${name}`;
         it(key, async () => {
           const root = await project(team);
-          const got = await createVia(surface, root, content);
+          const got = await createVia(surface, root, content, team);
           // The bytes on disk are the content exactly as received.
           expect(Buffer.from(got.bytes, "base64").toString("utf8")).toBe(content);
           if (UPDATE) {

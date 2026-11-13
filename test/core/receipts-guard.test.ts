@@ -493,4 +493,108 @@ describe("the merge-resolution authority admits one resolution transition only",
       expect(unchanged).toBe(true);
     });
   });
+
+  it("refuses a resolution when another append-only field gained a value with no canonical form after the resolver's load, and the file is unchanged", async () => {
+    const root = await project();
+    merged(root, [B], [B, A], [B, A2]);
+    const file = join(root, ".story", "tickets", "T-001.json");
+    let injected = "";
+    const readPrior = prepareTicketWriteSeams.readPrior;
+    try {
+      prepareTicketWriteSeams.readPrior = async (path) => {
+        // A concurrent edit leaves landings holding a non-finite number.
+        injected = `${readFileSync(file, "utf-8").trimEnd().slice(0, -1)},"landings":[{"n":1e999}]}\n`;
+        writeFileSync(file, injected);
+        return readPrior(path);
+      };
+      const out = await handleResolve("T-001", root, { receipt: A.id as string, keep: "ours", actor: "tester" }).catch((e: unknown) => e);
+      expect(out instanceof Error ? out.message : JSON.stringify(out)).toMatch(/receipts_unpreservable/);
+    } finally {
+      prepareTicketWriteSeams.readPrior = readPrior;
+    }
+    expect(readFileSync(file, "utf-8")).toBe(injected);
+  });
+
+  describe("a conflict on the resolution history itself", () => {
+    const entryOf = (conflictId: string): Json => {
+      const rest: Json = { kind: "receipt", field: "receipts", conflictId, keep: "ours", bodies: { base: [], ours: [], theirs: [] }, by: "t", at: "2026-01-01T00:00:00Z" };
+      return { id: resolutionEntryId(rest), ...rest };
+    };
+    const H1 = entryOf("rc-1111111111111111");
+    const H2 = entryOf("rc-2222222222222222");
+    const historyMerge = (root: string, base: unknown[], ours: unknown[], theirs: unknown[]) => {
+      const m = threeWayMerge({ ...TICKET, receiptResolutions: base }, { ...TICKET, receiptResolutions: ours }, { ...TICKET, receiptResolutions: theirs }, "ticket");
+      writeFileSync(join(root, ".story", "tickets", "T-001.json"), JSON.stringify(m.merged, null, 2) + "\n");
+      return m.merged as Json;
+    };
+
+    it.each(["ours", "both"])("a history entry removed on one branch resolves with --keep %s: the conflict clears, the history keeps it, and the new entry is appended", async (keep) => {
+      const root = await project();
+      const m = historyMerge(root, [H1, H2], [H1, H2], [H2]);
+      expect((m._conflicts as Json[]).map((c) => c.kind)).toEqual(["receipt"]);
+      const result = await handleResolve("T-001", root, { receipt: H1.id as string, keep, actor: "tester" });
+      expect(result.exitCode ?? 0).toBe(0);
+      const t = read(root, "tickets/T-001.json");
+      expect(t._conflicts).toBeUndefined();
+      const history = t.receiptResolutions as Json[];
+      expect(history.slice(0, -1)).toEqual(m.receiptResolutions);
+      expect(history.at(-1)).toMatchObject({ field: "receiptResolutions", conflictId: H1.id, keep });
+    });
+
+    it("--keep theirs is refused by the resolver (theirs holds no body), and nothing is written", async () => {
+      const root = await project();
+      historyMerge(root, [H1, H2], [H1, H2], [H2]);
+      const before = raw(root, "tickets/T-001.json");
+      const out = await handleResolve("T-001", root, { receipt: H1.id as string, keep: "theirs", actor: "tester" }).catch((e: unknown) => e);
+      expect(out instanceof Error ? out.message : JSON.stringify(out)).toMatch(/holds no body/);
+      expect(raw(root, "tickets/T-001.json")).toBe(before);
+    });
+
+    /** A history conflict on H1, where H2 is an existing entry naming that conflict, written as tampered by `tamper`. */
+    const tamperedHistory = async (tamper: (history: Json[]) => Json[]) => {
+      const root = await project();
+      const H2n: Json = (() => {
+        const rest: Json = { kind: "receipt", field: "receiptResolutions", conflictId: H1.id, keep: "ours", bodies: { base: [], ours: [], theirs: [] }, by: "t", at: "2026-01-01T00:00:00Z" };
+        return { id: resolutionEntryId(rest), ...rest };
+      })();
+      const m = historyMerge(root, [H1, H2n], [H1, H2n], [H2n]);
+      const next = structuredClone(m);
+      delete next._conflicts;
+      next.receiptResolutions = tamper(m.receiptResolutions as Json[]).map((x) => (x === H2n ? H2n : x));
+      const before = raw(root, "tickets/T-001.json");
+      const out = await withConflictResolutionLock(root, async () => {
+        await writeTicketUnlocked(next as never, root, { touch: false, receiptsAuthority: MERGE_RESOLUTION_AUTHORITY });
+      }).then(() => "written", (e: unknown) => (e as Error).message);
+      return { out, unchanged: raw(root, "tickets/T-001.json") === before, H2n };
+    };
+
+    it("refuses a history resolution whose appended entry is one already in the history, and writes nothing", async () => {
+      const { out, unchanged } = await tamperedHistory((h) => [...h, h.find((x) => x.field === "receiptResolutions")!]);
+      expect(out).toMatch(/receipts_immutable/);
+      expect(unchanged).toBe(true);
+    });
+
+    it("refuses a history resolution that also drops an entry the conflict does not name, and writes nothing", async () => {
+      const { out, unchanged } = await tamperedHistory((h) => {
+        const rest: Json = { kind: "receipt", field: "receiptResolutions", conflictId: H1.id, keep: "ours", bodies: { base: [H1], ours: [H1], theirs: [] }, by: "x", at: "2026-02-01T00:00:00Z" };
+        return [h[0]!, { id: resolutionEntryId(rest), ...rest }];
+      });
+      expect(out).toMatch(/receipts_immutable/);
+      expect(unchanged).toBe(true);
+    });
+
+    it("a removed opaque history element resolves and no history is lost", async () => {
+      const root = await project();
+      const O = { note: "an opaque history element" };
+      const m = historyMerge(root, [H1, O], [H1, O], [H1]);
+      const oc = (m._conflicts as Json[]).find((c) => c.kind === "receipt-opaque")!;
+      const result = await handleResolve("T-001", root, { receiptConflict: oc.id as string, keep: "both", actor: "tester" });
+      expect(result.exitCode ?? 0).toBe(0);
+      const t = read(root, "tickets/T-001.json");
+      expect(t._conflicts).toBeUndefined();
+      const history = t.receiptResolutions as Json[];
+      expect(history.slice(0, -1)).toEqual(m.receiptResolutions);
+      expect(history.at(-1)).toMatchObject({ kind: "receipt-opaque", field: "receiptResolutions", conflictId: oc.id });
+    });
+  });
 });

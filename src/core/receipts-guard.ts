@@ -158,30 +158,39 @@ function assertResolutionTransition(prior: Raw | null, next: Raw): void {
   const conflict = before[removedAt]!.raw;
   const kind = String(conflict.kind);
   const field = typeof conflict.field === "string" ? conflict.field : "receipts";
-  if (!APPEND_ONLY_FIELDS.includes(field) || field === "receiptResolutions") no(`cannot act on field ${JSON.stringify(field)}`);
+  if (!APPEND_ONLY_FIELDS.includes(field)) no(`cannot act on field ${JSON.stringify(field)}`);
+  const onHistory = field === "receiptResolutions";
 
-  // Exactly one history entry, naming that conflict, appended at the end.
+  // Every other append-only field is unchanged, by the same rule as any
+  // unauthorised write: a present value with no canonical form is refused,
+  // and present against absent is a change.
+  for (const other of APPEND_ONLY_FIELDS) {
+    if (other === "receiptResolutions" || other === field) continue;
+    checkField(other, prior, next, undefined);
+  }
+
+  // Exactly one new history entry, naming that conflict, appended at the end.
+  // A present history that is not an array, or holds an element with no
+  // canonical form, is refused by elementTexts, never read as absent.
   const hBefore = elementTexts("receiptResolutions", "current", prior, next);
   const hAfter = elementTexts("receiptResolutions", "new", next, next);
-  if (hAfter.length !== hBefore.length + 1 || !hBefore.every((t, i) => hAfter[i] === t)) no("appends exactly one history entry and keeps the history unchanged");
-  const entry = (next.receiptResolutions as unknown[])[hBefore.length];
+  if (hAfter.length === 0) no("appends exactly one history entry");
+  const hKept = hAfter.slice(0, -1);
+  if (hBefore.includes(hAfter[hAfter.length - 1]!)) no("appends a new history entry, not one already in the history");
+  if (!onHistory && (hKept.length !== hBefore.length || !hBefore.every((t, i) => hKept[i] === t))) no("appends exactly one history entry and keeps the history unchanged");
+  const entry = (next.receiptResolutions as unknown[])[hAfter.length - 1];
   if (!isRecord(entry) || typeof entry.id !== "string" || !RESOLUTION_ID_REGEX.test(entry.id) || resolutionEntryId(entry) !== entry.id) {
     no("appends a history entry carrying its rr- id");
   }
   const e = entry as Record<string, unknown>;
   if (e.kind !== kind || e.conflictId !== conflict.id || (e.field ?? "receipts") !== field) no("appends the history entry of the conflict it clears");
 
-  // Every other append-only field is unchanged.
-  for (const other of APPEND_ONLY_FIELDS) {
-    if (other === "receiptResolutions" || other === field) continue;
-    if (canonical(prior?.[other]) !== canonical(next[other])) no(`never changes ${other}`);
-  }
-
-  // In the conflict's field: removals only, in order, of named bodies the history keeps.
-  const fBefore = elementTexts(field, "current", prior, next);
-  const fAfter = elementTexts(field, "new", next, next);
-  if (prior?.[field] === undefined && next[field] !== undefined) no(`never adds ${field}`);
-  if (prior?.[field] !== undefined && next[field] === undefined) no(`never removes ${field}`);
+  // In the conflict's field (for the history, the entries before the new
+  // one): removals only, in order, of named bodies the new entry keeps.
+  const fBefore = onHistory ? hBefore : elementTexts(field, "current", prior, next);
+  const fAfter = onHistory ? hKept : elementTexts(field, "new", next, next);
+  if (!onHistory && prior?.[field] === undefined && next[field] !== undefined) no(`never adds ${field}`);
+  if (!onHistory && prior?.[field] !== undefined && next[field] === undefined) no(`never removes ${field}`);
   const named = new Set([...digestsOf(conflict.base), ...digestsOf(conflict.ours), ...digestsOf(conflict.theirs)]);
   const bodies = isRecord(e.bodies) ? e.bodies : {};
   const kept = new Set(["base", "ours", "theirs"].flatMap((side) => (Array.isArray(bodies[side]) ? (bodies[side] as unknown[]) : []).map((b) => canonical(b))));

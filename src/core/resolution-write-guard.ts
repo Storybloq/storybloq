@@ -68,7 +68,15 @@ export interface ResolutionWriteContext {
    * `withdrawalGated` marks bytes whose ledger refusals run at commit
    * (T-486 U2-6, `assertTicketResolutionWrite`).
    */
-  recordPrepared(target: string, content: string, dependsOnBoard: boolean, withdrawalGated?: boolean): void;
+  recordPrepared(target: string, content: string, dependsOnBoard: boolean, withdrawalGated?: boolean, receiptsAuthority?: symbol): void;
+  /**
+   * C-v4.1 3.4: the receipts authority `content` for `target` was prepared
+   * under by this context, if any. Held in the context, keyed by target and
+   * content hash, and dropped when the context is released.
+   */
+  receiptsAuthorityFor(target: string, content: string): symbol | undefined;
+  /** How many prepared receipts authorities this context holds (zero once released). */
+  receiptsAuthorities(): number;
   /** Whether committing `content` to `target` is covered by a current token of this context. */
   preparedVerdict(target: string, content: string): PreparedVerdict;
   /** Whether a current token of this context covers exactly `content` for `target` and is withdrawal-gated. */
@@ -157,6 +165,8 @@ interface SharedState {
   config: { value: Pick<Config, "team"> | null } | null;
   misnamed: MisnamedAnswers;
   memo: Map<string, { out: string } | { err: unknown }>;
+  /** Resolved target to the content hash and receipts authority it was prepared under. */
+  receipts: Map<string, { hash: string; authority: symbol }>;
 }
 
 /**
@@ -166,7 +176,7 @@ interface SharedState {
  * `withLock`). Nothing is read unless a kind actually changes.
  */
 export function createResolutionWriteContext(root: string, git: GitRead = gitRead, ownsLock: () => boolean = () => true): ResolutionWriteContext {
-  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, misnamed: unboundMisnamed(), memo: new Map() }, git);
+  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, misnamed: unboundMisnamed(), memo: new Map(), receipts: new Map() }, git);
 }
 
 function contextOver(root: string, shared: SharedState, git: GitRead): ResolutionWriteContext {
@@ -196,13 +206,24 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     ownsLock() {
       return shared.ownsLock();
     },
-    recordPrepared(target, content, dependsOnBoard, withdrawalGated = false) {
+    recordPrepared(target, content, dependsOnBoard, withdrawalGated = false, receiptsAuthority) {
+      const hash = contentHash(content);
       preparedTokens.set(resolve(target), {
         owner: shared,
-        hash: contentHash(content),
+        hash,
         generation: dependsOnBoard ? shared.generation : null,
         withdrawal: withdrawalGated,
       });
+      if (receiptsAuthority === undefined) shared.receipts.delete(resolve(target));
+      else shared.receipts.set(resolve(target), { hash, authority: receiptsAuthority });
+    },
+    receiptsAuthorityFor(target, content) {
+      if (shared.released) return undefined;
+      const held = shared.receipts.get(resolve(target));
+      return held !== undefined && held.hash === contentHash(content) ? held.authority : undefined;
+    },
+    receiptsAuthorities() {
+      return shared.receipts.size;
     },
     preparedVerdict(target, content) {
       const token = preparedTokens.get(resolve(target));
@@ -272,6 +293,7 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     },
     release() {
       shared.released = true;
+      shared.receipts.clear();
       shared.config = null;
       shared.misnamed = unboundMisnamed();
       shared.memo.clear();

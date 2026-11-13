@@ -3,9 +3,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
-import { assertPreparedWritesCurrent, prepareIssueWrite, prepareIssueWriteSeams, prepareTicketWrite, withProjectLock, writeIssueUnlocked, writeTicketUnlocked } from "../../src/core/project-loader.js";
+import { assertPreparedWritesCurrent, prepareIssueWrite, prepareIssueWriteSeams, prepareTicketWrite, prepareTicketWriteSeams, resolutionWriteContextFor, withConflictResolutionLock, runTransactionUnlocked, withProjectLock, writeIssueUnlocked, writeTicketUnlocked } from "../../src/core/project-loader.js";
+import { handleResolve } from "../../src/cli/commands/conflicts.js";
+import { threeWayMerge } from "../../src/core/merge-driver.js";
 import { LANDING_APPEND_AUTHORITY, RECEIPT_APPEND_AUTHORITY } from "../../src/core/receipts-guard.js";
-import { MERGE_RESOLUTION_AUTHORITY } from "../../src/core/receipt-resolve.js";
+import { MERGE_RESOLUTION_AUTHORITY, resolveReceiptConflict } from "../../src/core/receipt-resolve.js";
+import { resolutionEntryId } from "../../src/core/append-only-merge.js";
 import { appendReceipt } from "../../src/core/receipt-append.js";
 import { restoreRecord, RestoreUnsafe } from "../../src/core/ledger-restore.js";
 import { capabilityCatalog } from "../../src/cli/commands/capability.js";
@@ -74,8 +77,10 @@ describe("writers keep receipts equal in canonical content", () => {
 
   it("a present non-array receipts value is preserved by an unrelated update, never read as empty", async () => {
     const root = await project({ receipts: { not: "an array" } });
-    await handleTicketUpdate("T-001", { title: "Renamed" } as never, "json", root).catch(() => undefined);
-    expect(read(root, "tickets/T-001.json").receipts).toEqual({ not: "an array" });
+    await handleTicketUpdate("T-001", { title: "Renamed" } as never, "json", root);
+    const t = read(root, "tickets/T-001.json");
+    expect(t.title).toBe("Renamed");
+    expect(t.receipts).toEqual({ not: "an array" });
   });
 });
 
@@ -219,6 +224,37 @@ describe("byte authorisation re-runs the guard against the bytes on disk", () =>
     });
     expect((read(root, "tickets/T-001.json").receipts as Json[]).map((r) => r.id)).toEqual([A.id, "rc-9999999999999999"]);
   });
+
+  it("the transaction refuses prepared bytes when a receipt was appended after preparation, and the receipt survives", async () => {
+    const root = await project({ receipts: [A] });
+    const file = join(root, ".story", "tickets", "T-001.json");
+    const X = receipt({ id: "rc-9999999999999999" });
+    await withProjectLock(root, { strict: false }, async () => {
+      const prepared = await prepareTicketWrite({ ...TICKET, title: "Renamed", receipts: [A] } as never, root, { touch: false });
+      writeFileSync(file, JSON.stringify({ ...TICKET, receipts: [A, X] }, null, 2) + "\n");
+      await expect(runTransactionUnlocked(root, [{ op: "write", ...prepared }])).rejects.toThrow(/receipts_immutable/);
+    });
+    expect(read(root, "tickets/T-001.json")).toMatchObject({ title: "Ticket", receipts: [A, X] });
+  });
+});
+
+describe("prepared receipt authorities live only as long as their lock", () => {
+  it("repeated appends and a failed preparation leave no authority once the lock scope ends", async () => {
+    const root = await project({ receipts: [A] });
+    const C = receipt({ id: "rc-cccccccccccccccc" });
+    let ctx: ReturnType<typeof resolutionWriteContextFor> | undefined;
+    await withProjectLock(root, { strict: false }, async () => {
+      ctx = resolutionWriteContextFor(root);
+      await writeTicketUnlocked({ ...TICKET, receipts: [A, B] } as never, root, { touch: false, receiptsAuthority: RECEIPT_APPEND_AUTHORITY });
+      await writeTicketUnlocked({ ...TICKET, receipts: [A, B, C] } as never, root, { touch: false, receiptsAuthority: RECEIPT_APPEND_AUTHORITY });
+      const held = ctx.receiptsAuthorities();
+      expect(held).toBeGreaterThan(0);
+      await expect(prepareTicketWrite({ ...TICKET, receipts: [A] } as never, root, { touch: false, receiptsAuthority: RECEIPT_APPEND_AUTHORITY })).rejects.toThrow(/receipts_immutable/);
+      expect(ctx.receiptsAuthorities()).toBe(held);
+    });
+    expect(ctx!.released).toBe(true);
+    expect(ctx!.receiptsAuthorities()).toBe(0);
+  });
 });
 
 describe("the append path", () => {
@@ -332,18 +368,129 @@ describe("each guard site refuses on its own", () => {
     }
     expect(readFileSync(file, "utf-8")).toBe(before);
   });
+
+  it("an issue prior that does not parse is never overwritten, even when its receipts key is escaped", async () => {
+    const root = await project({}, { receipts: [A] });
+    const file = join(root, ".story", "issues", "ISS-001.json");
+    const before = readFileSync(file, "utf-8");
+    const escaped = before.replace('"receipts"', '"\\u0072eceipts"');
+    expect(escaped).not.toContain('"receipts"');
+    const torn = escaped.slice(0, -4);
+    const read = prepareIssueWriteSeams.readPrior;
+    try {
+      // The file is torn after the misnamed-file scan and before the read.
+      prepareIssueWriteSeams.readPrior = async () => {
+        writeFileSync(file, torn);
+        return torn;
+      };
+      await expect(withProjectLock(root, { strict: false }, async () => {
+        await writeIssueUnlocked(ISSUE as never, root, { touch: false });
+      })).rejects.toThrow(/receipts_unpreservable/);
+    } finally {
+      prepareIssueWriteSeams.readPrior = read;
+    }
+    expect(readFileSync(file, "utf-8")).toBe(torn);
+  });
 });
 
-describe("the merge-resolution authority only removes", () => {
+describe("the merge-resolution authority admits one resolution transition only", () => {
   const writeM = (root: string, receipts: unknown) => withProjectLock(root, { strict: false }, async () => {
     await writeTicketUnlocked({ ...TICKET, receipts } as never, root, { touch: false, receiptsAuthority: MERGE_RESOLUTION_AUTHORITY });
   });
-  it("refuses a reorder or an addition, and allows removing a named body in order", async () => {
+  const A2 = receipt({ id: "rc-aaaaaaaaaaaaaaaa", result: "fail", data: { passed: 1, failed: 1 } });
+  /** The real merge over three receipt arrays, stored as the ticket. */
+  const merged = (root: string, base: unknown[], ours: unknown[], theirs: unknown[]) => {
+    const m = threeWayMerge({ ...TICKET, receipts: base }, { ...TICKET, receipts: ours }, { ...TICKET, receipts: theirs }, "ticket");
+    writeFileSync(join(root, ".story", "tickets", "T-001.json"), JSON.stringify(m.merged, null, 2) + "\n");
+  };
+
+  it("refuses a removal, a reorder or an addition when no receipt conflict is cleared, and writes nothing", async () => {
     const C = receipt({ id: "rc-cccccccccccccccc" });
     const root = await project({ receipts: [A, B, C] });
+    const before = raw(root, "tickets/T-001.json");
     await expect(writeM(root, [B, A, C])).rejects.toThrow(/receipts_immutable/);
     await expect(writeM(root, [A, B, C, receipt({ id: "rc-dddddddddddddddd" })])).rejects.toThrow(/receipts_immutable/);
-    await writeM(root, [A, C]);
-    expect(read(root, "tickets/T-001.json").receipts).toEqual([A, C]);
+    await expect(writeM(root, [A, C])).rejects.toThrow(/receipts_immutable/);
+    expect(raw(root, "tickets/T-001.json")).toBe(before);
+  });
+
+  it("resolve --receipt removes only the conflict's other body, keeps it in history, and keeps every unrelated receipt", async () => {
+    const root = await project();
+    merged(root, [B], [B, A], [B, A2]);
+    const result = await handleResolve("T-001", root, { receipt: A.id as string, keep: "ours", actor: "tester" });
+    expect(result.exitCode ?? 0).toBe(0);
+    const t = read(root, "tickets/T-001.json");
+    expect(t.receipts).toEqual([B, A]);
+    expect(t._conflicts).toBeUndefined();
+    const [h] = t.receiptResolutions as Json[];
+    expect(h).toMatchObject({ kind: "receipt", conflictId: A.id, keep: "ours", bodies: { ours: [A], theirs: [A2] } });
+  });
+
+  it("refuses a resolution that would drop a receipt appended after the resolver read the record, and the receipt survives", async () => {
+    const root = await project();
+    merged(root, [B], [B, A], [B, A2]);
+    const file = join(root, ".story", "tickets", "T-001.json");
+    const X = receipt({ id: "rc-9999999999999999" });
+    const readPrior = prepareTicketWriteSeams.readPrior;
+    try {
+      prepareTicketWriteSeams.readPrior = async (path) => {
+        // Another writer appends X between the resolver's load and its write.
+        const now = JSON.parse(readFileSync(file, "utf-8")) as Json;
+        writeFileSync(file, JSON.stringify({ ...now, receipts: [...(now.receipts as Json[]), X] }, null, 2) + "\n");
+        return readPrior(path);
+      };
+      const out = await handleResolve("T-001", root, { receipt: A.id as string, keep: "ours", actor: "tester" }).catch((e: unknown) => e);
+      expect(out instanceof Error ? out.message : JSON.stringify(out)).toMatch(/receipts_immutable/);
+    } finally {
+      prepareTicketWriteSeams.readPrior = readPrior;
+    }
+    const t = read(root, "tickets/T-001.json");
+    expect(t.receipts).toEqual([B, A, A2, X]);
+    expect(t.receiptResolutions).toBeUndefined();
+  });
+
+  describe("each rule of the transition refuses on its own", () => {
+    /** The real resolution of A (keep ours) on base [B], ours [B, A], theirs [B, A2], then tampered. */
+    const tampered = async (tamper: (next: Json, entry: Json) => void) => {
+      const root = await project();
+      merged(root, [B], [B, A], [B, A2]);
+      const next = structuredClone(read(root, "tickets/T-001.json"));
+      resolveReceiptConflict(next, { receipt: A.id as string, keep: "ours", label: "T-001", actor: "t", now: () => "2026-01-01T00:00:00Z" }, MERGE_RESOLUTION_AUTHORITY);
+      const history = next.receiptResolutions as Json[];
+      const entry = history[history.length - 1]!;
+      tamper(next, entry);
+      const { id: _old, ...rest } = entry;
+      history[history.length - 1] = { id: resolutionEntryId(rest), ...rest };
+      const before = raw(root, "tickets/T-001.json");
+      // The lock resolve itself writes under (a record with conflicts blocks every other lock).
+      const out = await withConflictResolutionLock(root, async () => {
+        await writeTicketUnlocked(next as never, root, { touch: false, receiptsAuthority: MERGE_RESOLUTION_AUTHORITY });
+      }).then(() => "written", (e: unknown) => (e as Error).message);
+      return { out, unchanged: raw(root, "tickets/T-001.json") === before };
+    };
+
+    it("the untampered resolution is written", async () => {
+      expect((await tampered(() => undefined)).out).toBe("written");
+    });
+
+    it.each([
+      ["removes an element the conflict does not name, even one the history keeps", (n: Json, e: Json) => {
+        n.receipts = (n.receipts as Json[]).filter((r) => r.id !== B.id);
+        (e.bodies as Json).base = [B];
+      }],
+      ["removes a named body the history does not keep", (_n: Json, e: Json) => {
+        (e.bodies as Json).theirs = [];
+      }],
+      ["removes the kept side's body too", (n: Json) => {
+        n.receipts = (n.receipts as Json[]).filter((r) => r.id !== A.id);
+      }],
+      ["appends a history entry for another conflict", (_n: Json, e: Json) => {
+        e.conflictId = B.id;
+      }],
+    ])("refuses a resolution that %s, and writes nothing", async (_l, tamper) => {
+      const { out, unchanged } = await tampered(tamper as (n: Json, e: Json) => void);
+      expect(out).toMatch(/receipts_immutable/);
+      expect(unchanged).toBe(true);
+    });
   });
 });

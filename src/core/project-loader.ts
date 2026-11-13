@@ -560,9 +560,8 @@ async function prepareTicketWriteChecked(
   const ctx = heldResolutionContext(root, options?.resolutionContext);
   const content = serializeJSON(parsed);
   assertReceiptsPreservable(parsed, content);
-  recordReceiptsAuthority(target, content, options?.receiptsAuthority);
   const decision = assertTicketResolutionWrite(ctx, `.story/tickets/${parsed.id}.json`, prior ?? {}, parsed);
-  ctx.recordPrepared(target, content, decision.dependsOnBoard, decision.withdrawalGated);
+  ctx.recordPrepared(target, content, decision.dependsOnBoard, decision.withdrawalGated, options?.receiptsAuthority);
   return { target, content };
 }
 
@@ -750,8 +749,8 @@ export async function prepareIssueWrite(
   const ctx = heldResolutionContext(root, options?.resolutionContext);
   const content = serializeJSON(parsed);
   assertReceiptsPreservable(parsed, content);
-  recordReceiptsAuthority(target, content, options?.receiptsAuthority);
-  ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed));
+  const dependsOnBoard = assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed);
+  ctx.recordPrepared(target, content, dependsOnBoard, false, options?.receiptsAuthority);
   return { target, content };
 }
 
@@ -873,8 +872,11 @@ export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<
   const contexts = (resolutionContextChain.getStore() ?? []).filter((c) => c.root === absRoot);
   for (const { target, content } of writes) {
     const verdicts = contexts.map((c) => c.preparedVerdict(target, content));
-    if (verdicts.includes("current")) {
-      assertReceiptsBytesAllowed(absRoot, target, content);
+    const owner = contexts[verdicts.indexOf("current")];
+    if (owner !== undefined) {
+      // C-v4.1 3.4: the authority the bytes were prepared under, held by the
+      // context that prepared them and released with its lock.
+      assertReceiptsBytesAllowed(absRoot, target, content, owner.receiptsAuthorityFor(target, content) as ReceiptsWriteAuthority | undefined);
       continue;
     }
     const verdict = verdicts.find((v) => v !== "missing") ?? "missing";
@@ -890,31 +892,18 @@ export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<
 }
 
 /**
- * C-v4.1 3.4: the authority each prepared ticket or issue write was checked
- * under, keyed by target and exact bytes, so byte authorisation re-runs the
- * receipts guard against the bytes on disk at commit time.
+ * The prior the receipts guard reads. A file that exists but does not parse
+ * as a record is refused, whatever its text: no text check can show it holds
+ * no receipts (JSON allows escaped property names), so it is never overwritten.
  */
-const preparedReceiptsAuthority = new Map<string, ReceiptsWriteAuthority>();
-const receiptsKey = (target: string, content: string) => `${resolve(target)}\0${content}`;
-
-function recordReceiptsAuthority(target: string, content: string, authority: ReceiptsWriteAuthority | undefined): void {
-  const key = receiptsKey(target, content);
-  if (authority === undefined) preparedReceiptsAuthority.delete(key);
-  else preparedReceiptsAuthority.set(key, authority);
-}
-
-/** The prior the receipts guard reads: refuses an unparseable file that names an append-only field. */
 function guardPrior(text: string | null, prior: Readonly<Record<string, unknown>> | "unknown", rel: string): Readonly<Record<string, unknown>> | null {
   if (text === null) return null;
   if (prior !== "unknown") return prior;
-  if (APPEND_ONLY_FIELDS.some((f) => text.includes(`"${f}"`))) {
-    throw new ProjectLoaderError("conflict", `receipts_unpreservable: ${rel} does not parse and may hold receipts, landings or resolution history; it is never overwritten as it stands. Repair it by hand first.`);
-  }
-  return null;
+  throw new ProjectLoaderError("conflict", `receipts_unpreservable: ${rel} does not parse as a record, so it may hold receipts, landings or resolution history; it is never overwritten as it stands. Repair it by hand first.`);
 }
 
 /** Byte authorisation: the bytes about to be committed against the record on disk now. */
-function assertReceiptsBytesAllowed(absRoot: string, target: string, content: string): void {
+function assertReceiptsBytesAllowed(absRoot: string, target: string, content: string, authority: ReceiptsWriteAuthority | undefined): void {
   const abs = resolve(target);
   const rel = relative(join(absRoot, ".story"), abs);
   if (!/^(tickets|issues)[\\/]/.test(rel)) return;
@@ -926,7 +915,7 @@ function assertReceiptsBytesAllowed(absRoot: string, target: string, content: st
     text = null;
   }
   const next = JSON.parse(content) as Record<string, unknown>;
-  assertReceiptsWriteAllowed(guardPrior(text, priorRecord(text), rel), next, preparedReceiptsAuthority.get(receiptsKey(target, content)));
+  assertReceiptsWriteAllowed(guardPrior(text, priorRecord(text), rel), next, authority);
 }
 
 /** The record a write replaces: `{}` when absent, "unknown" when unparseable. */

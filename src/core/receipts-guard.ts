@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { APPEND_ONLY_FIELDS, RESOLUTION_ID_REGEX, resolutionEntryId } from "./append-only-merge.js";
 import { canonicalJson } from "./canonical-json.js";
 import { ProjectLoaderError } from "./errors.js";
@@ -16,9 +17,12 @@ import { ReceiptSchema } from "./receipts.js";
  *   end of `receipts`; `LANDING_APPEND_AUTHORITY` exactly one object at the end
  *   of `landings`. Every prior element stays equal in canonical content,
  *   malformed, id-less and future-version ones included.
- * - `MERGE_RESOLUTION_AUTHORITY` may drop bodies from `receipts` or `landings`
- *   (order kept, nothing added), append exactly one history entry with its rr-
- *   id, and remove `receipt`/`receipt-opaque` entries from `_conflicts`.
+ * - `MERGE_RESOLUTION_AUTHORITY` admits one resolution transition (3.6), checked
+ *   as a whole: exactly one `receipt`/`receipt-opaque` conflict leaves
+ *   `_conflicts`, exactly one history entry naming that conflict is appended
+ *   with its rr- id, the only elements removed are bodies of the conflict's
+ *   field whose digests the conflict names and that the entry keeps, a kept
+ *   side's body stays, and every other element of every field is unchanged.
  * - Anything else is refused: a removal, an alteration, a reorder, an append
  *   without authority, a field added where there was none, and any value that
  *   has no canonical form.
@@ -51,13 +55,6 @@ function canonical(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-/** True when `sub` is `full` with zero or more elements removed, order kept. */
-function isSubsequence(sub: readonly string[], full: readonly string[]): boolean {
-  let i = 0;
-  for (const text of full) if (i < sub.length && sub[i] === text) i++;
-  return i === sub.length;
 }
 
 function texts(field: string, who: string, value: unknown[], t: Raw): string[] {
@@ -103,42 +100,107 @@ function checkField(field: string, prior: Raw | null, next: Raw, authority: Rece
     if (after.length === before.length + 1 && prefixKept && added !== null && typeof added === "object" && !Array.isArray(added)) return;
     refuse("receipts_immutable", `${label(next)}: a landing append adds exactly one landing at the end and keeps every existing landing unchanged.`);
   }
-  if (authority === MERGE_RESOLUTION_AUTHORITY) {
-    if (field === "receiptResolutions") {
-      const entry = (n as unknown[])[before.length] as Record<string, unknown> | undefined;
-      const valid = entry !== null && typeof entry === "object" && !Array.isArray(entry)
-        && typeof entry.id === "string" && RESOLUTION_ID_REGEX.test(entry.id) && canonical(entry) !== undefined
-        && resolutionEntryId(entry) === entry.id;
-      if (after.length === before.length + 1 && prefixKept && valid) return;
-      refuse("receipts_immutable", `${label(next)}: a resolution appends exactly one history entry with its rr- id and keeps the history unchanged.`);
-    }
-    if (p !== undefined && isSubsequence(after, before)) return;
-    refuse("receipts_immutable", `${label(next)}: a resolution only removes the bodies its conflict names from ${field}; it never adds, alters or reorders one.`);
-  }
   refuse(
     "receipts_immutable",
     `${label(next)}: ${field} is append-only. Receipts change only through \`storybloq receipt add\` and \`storybloq resolve --receipt\`; nothing removes, alters or reorders an element.`,
   );
 }
 
-function receiptConflictTexts(t: Raw | null): string[] {
+function receiptConflicts(t: Raw | null): { text: string; raw: Record<string, unknown> }[] {
   const conflicts = t?._conflicts;
   if (!Array.isArray(conflicts)) return [];
   return conflicts
     .filter((c) => c !== null && typeof c === "object" && RECEIPT_CONFLICT_KINDS.has(String((c as { kind?: unknown }).kind)))
-    .map((c) => canonical(c) ?? `unrepresentable:${String((c as { id?: unknown }).id)}`);
+    .map((c) => ({ text: canonical(c) ?? `unrepresentable:${String((c as { id?: unknown }).id)}`, raw: c as Record<string, unknown> }));
 }
 
 export function assertReceiptsWriteAllowed(prior: Raw | null, next: Raw, authority?: ReceiptsWriteAuthority): void {
+  if (authority === MERGE_RESOLUTION_AUTHORITY) {
+    assertResolutionTransition(prior, next);
+    return;
+  }
   for (const field of APPEND_ONLY_FIELDS) checkField(field, prior, next, authority);
   // Receipt conflicts leave _conflicts only through a resolution, and no
   // writer adds one (only the merge driver, which writes no prepared bytes).
-  const before = receiptConflictTexts(prior);
-  const after = receiptConflictTexts(next);
-  const same = before.length === after.length && before.every((t, i) => after[i] === t);
-  if (same) return;
-  if (authority === MERGE_RESOLUTION_AUTHORITY && after.length === before.length - 1 && isSubsequence(after, before)) return;
+  const before = receiptConflicts(prior).map((c) => c.text);
+  const after = receiptConflicts(next).map((c) => c.text);
+  if (before.length === after.length && before.every((t, i) => after[i] === t)) return;
   refuse("receipts_immutable", `${label(next)}: receipt conflicts are cleared only by \`storybloq resolve --receipt\` or \`--receipt-conflict\`, one at a time.`);
+}
+
+const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
+const digestsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((d): d is string => typeof d === "string") : []);
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** The canonical texts of an append-only field, `[]` when absent; anything else is refused. */
+function elementTexts(field: string, who: string, t: Raw | null, next: Raw): string[] {
+  const v = t?.[field];
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) refuse("receipts_immutable", `${label(next)}: the ${who} ${field} is not an array; a resolution never touches it. Repair it by hand.`);
+  return texts(field, who, v, next);
+}
+
+/**
+ * 3.6: a resolution is one transition, checked against the record on disk.
+ * Anything it did not name (a receipt appended by another writer after the
+ * resolver read the record, another conflict, another field) is unchanged.
+ */
+function assertResolutionTransition(prior: Raw | null, next: Raw): void {
+  const no = (why: string): never => refuse("receipts_immutable", `${label(next)}: a resolution ${why}; nothing was written.`);
+
+  // Exactly one receipt conflict leaves, the rest stay in order.
+  const before = receiptConflicts(prior);
+  const after = receiptConflicts(next);
+  if (after.length !== before.length - 1) no("clears exactly one receipt conflict");
+  const gone = before.findIndex((c, i) => after[i]?.text !== c.text);
+  const removedAt = gone === -1 ? before.length - 1 : gone;
+  if (!after.every((c, i) => c.text === before[i < removedAt ? i : i + 1]!.text)) no("clears one receipt conflict and keeps every other conflict unchanged");
+  const conflict = before[removedAt]!.raw;
+  const kind = String(conflict.kind);
+  const field = typeof conflict.field === "string" ? conflict.field : "receipts";
+  if (!APPEND_ONLY_FIELDS.includes(field) || field === "receiptResolutions") no(`cannot act on field ${JSON.stringify(field)}`);
+
+  // Exactly one history entry, naming that conflict, appended at the end.
+  const hBefore = elementTexts("receiptResolutions", "current", prior, next);
+  const hAfter = elementTexts("receiptResolutions", "new", next, next);
+  if (hAfter.length !== hBefore.length + 1 || !hBefore.every((t, i) => hAfter[i] === t)) no("appends exactly one history entry and keeps the history unchanged");
+  const entry = (next.receiptResolutions as unknown[])[hBefore.length];
+  if (!isRecord(entry) || typeof entry.id !== "string" || !RESOLUTION_ID_REGEX.test(entry.id) || resolutionEntryId(entry) !== entry.id) {
+    no("appends a history entry carrying its rr- id");
+  }
+  const e = entry as Record<string, unknown>;
+  if (e.kind !== kind || e.conflictId !== conflict.id || (e.field ?? "receipts") !== field) no("appends the history entry of the conflict it clears");
+
+  // Every other append-only field is unchanged.
+  for (const other of APPEND_ONLY_FIELDS) {
+    if (other === "receiptResolutions" || other === field) continue;
+    if (canonical(prior?.[other]) !== canonical(next[other])) no(`never changes ${other}`);
+  }
+
+  // In the conflict's field: removals only, in order, of named bodies the history keeps.
+  const fBefore = elementTexts(field, "current", prior, next);
+  const fAfter = elementTexts(field, "new", next, next);
+  if (prior?.[field] === undefined && next[field] !== undefined) no(`never adds ${field}`);
+  if (prior?.[field] !== undefined && next[field] === undefined) no(`never removes ${field}`);
+  const named = new Set([...digestsOf(conflict.base), ...digestsOf(conflict.ours), ...digestsOf(conflict.theirs)]);
+  const bodies = isRecord(e.bodies) ? e.bodies : {};
+  const kept = new Set(["base", "ours", "theirs"].flatMap((side) => (Array.isArray(bodies[side]) ? (bodies[side] as unknown[]) : []).map((b) => canonical(b))));
+  const removable = kind === "receipt" && (e.keep === "ours" || e.keep === "theirs");
+  let j = 0;
+  for (const text of fBefore) {
+    if (j < fAfter.length && fAfter[j] === text) {
+      j++;
+      continue;
+    }
+    if (!removable) no(`keeping ${String(e.keep)} removes nothing from ${field}`);
+    if (!named.has(digest(text))) no(`removes only the bodies its conflict names from ${field}; an element it did not name is kept`);
+    if (!kept.has(text)) no(`removes a body only when its history entry keeps it`);
+  }
+  if (j !== fAfter.length) no(`never adds, alters or reorders an element of ${field}`);
+  if (removable) {
+    const chosen = digestsOf(conflict[e.keep as "ours" | "theirs"]);
+    if (chosen.length !== 1 || !fAfter.some((text) => digest(text) === chosen[0])) no(`keeps the ${String(e.keep)} body of ${String(conflict.id)}`);
+  }
 }
 
 /**

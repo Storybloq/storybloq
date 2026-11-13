@@ -31,7 +31,7 @@ While it runs, the Claude Code ledger dashboard tags its In progress card (`T-00
 | `standard` | risk-derived rounds | risk-derived rounds, cap 12 |
 | `thorough` | at least 2 rounds | at least 2 rounds |
 
-"Prefers" is exact: the dial narrows WITHIN the configured backends and never adds one, so a per-stage `backends` list you set explicitly is left alone, and a lenses-only project keeps its lens fan-out because there is no other reviewer to fall back to.
+"Prefers" is exact: the dial narrows WITHIN the configured backends and never adds one, so a per-stage `backends` list you set is left alone, and a lenses-only project keeps its lens fan-out because there is no other reviewer to fall back to.
 
 `off` is the ONLY level that removes a review stage from the walk. `light` lowers the depth of both stages and never skips either one, which matters because `light` is reachable automatically through size mapping: a heuristic may make a review cheaper, but it never makes a gate disappear.
 
@@ -67,7 +67,7 @@ After FINALIZE commits an item, KNOWLEDGE_REVIEW asks what it did to the project
 
 - `applied`: the record is updated and its check is current.
 - `pending`: a marker (`capability defer` / `term defer`, the note naming the id), or for a note an open issue that names it.
-- `needs-decision`: a ruling conflict, filed as a proposal (`storybloq_ruling_propose`); the accepted ruling is never rewritten.
+- `needs-decision`: a ruling conflict, filed as a proposal (`storybloq_ruling_write` `propose`; before 1.20 `storybloq_ruling_propose`); the accepted ruling is never rewritten.
 
 Ledger changes go in `.story/`-only commits listed in `maintenanceCommits`, with nothing under `.story/` left uncommitted. Code committed after the item needs `knowledge_rebase` first. A report the ledger does not back is retried with the reason; a branch reset past the item is `knowledge_diverged`. The item completes only when the review is accepted. Each accepted review is stored once (a replayed report changes nothing), shown on COMPLETE, and written into the handover's "Knowledge impact" section and `storybloq session-report`. Compaction, a usage-limit stop and drift resume into the stage like any other.
 
@@ -210,7 +210,7 @@ A project may declare a review contract in REVIEW.md: named principles, each wit
 
 ### Code-review landing cap
 
-`recipeOverrides.stages.CODE_REVIEW.maxReviewRounds` defaults to 12. The effective cap is the larger of that value and the ticket risk's required review rounds; `0` explicitly disables the cap. `reject`, plan redirects, and unresolved critical findings remain blocking at any round. At the cap, `revise` or `request_changes` with zero unresolved critical findings advances to FINALIZE and converts unresolved major/minor findings into deduplicated follow-up issues. A `landingDecision.reason` of `max_review_rounds_no_blocking` is an instruction to land the ticket, not reopen implementation. PLAN_REVIEW convergence remains separate.
+`recipeOverrides.stages.CODE_REVIEW.maxReviewRounds` defaults to 12. The effective cap is the larger of that value and the ticket risk's required review rounds; `0` disables the cap. `reject`, plan redirects, and unresolved critical findings remain blocking at any round. At the cap, `revise` or `request_changes` with zero unresolved critical findings advances to FINALIZE and converts unresolved major/minor findings into deduplicated follow-up issues. A `landingDecision.reason` of `max_review_rounds_no_blocking` is an instruction to land the ticket, not reopen implementation. PLAN_REVIEW convergence remains separate.
 
 **Coverage-only change requests (ISS-950).** Report the lens judge's `capReasons` with every lens-backed round. A `revise` whose caps all name an uncovered core lens and that carries no blocking or major findings is coverage-only: nothing was found, a lens did not look. It never reaches the implementer -- the guide returns a scoped re-run of exactly those lenses, twice at most, and counts no round. Never clear such a cap by resubmitting a skip as `ok` with zero findings; that is recorded as a relabel and is never coverage. See review-lenses.md.
 
@@ -290,7 +290,7 @@ no local `main` exists. It is main-preferred, not default-branch-aware: a reposi
 keeps a vestigial `main` while `master` is its real default gets `main`. Resolution is
 local-only, with no fetch and no fast-forward, so a stale local `main` is used as-is.
 
-**Where branches are cut from.** These deliberately differ:
+**Where branches are cut from.** These differ:
 
 - `new_branch_from_main` always bases the new branch on the resolved local main. Its whole
   purpose is to get off a branch whose history you do not want.

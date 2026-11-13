@@ -713,7 +713,7 @@ export async function cli(argv: readonly string[], deps: { pkg: string; now: () 
     const dirty = gitOut(deps.git, "status", ["status", "--porcelain", "--untracked-files=all", "--", "."]).trim();
     if (dirty !== "") throw new Error(`uncommitted changes under the package; the manifest names a clean HEAD: ${dirty.split("\n")[0]}`);
     const commit = head.out.trim();
-    const m = generateManifest({ id: need("id"), commit, evalBundleDigest: evalInputDigest(deps.pkg), toolListSha256: sha256(readFileSync(join(deps.pkg, "scripts", "onboarding-eval-tools.json"))), probeSha256: PROBE_SHA256, codexVersion: need("codex-version"), claudeVersion: need("claude-version") });
+    const m = generateManifest({ id: need("id"), commit, evalBundleDigest: evalInputDigest(deps.pkg), toolListSha256: sha256(readFileSync(join(deps.pkg, "scripts", "tool-lists", "1.20-commit0", "onboarding-eval-tools.json"))), probeSha256: PROBE_SHA256, codexVersion: need("codex-version"), claudeVersion: need("claude-version") });
     writeJournalText(join(deps.pkg, MANIFEST_PATH), `${JSON.stringify(m, null, 2)}\n`);
     deps.out(`wrote ${MANIFEST_PATH} for ${commit}\n`);
     return 0;
@@ -1208,7 +1208,7 @@ export function realPreflightProbe(pkg: string, git: Git, root: string, env: Nod
     codexCredential: () => { try { lstatSync(join(driverCodexHome(process.env), "auth.json")); return true; } catch { return false; } },
     claudeTokenLength: () => (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").length,
     evalInputDigest: () => evalInputDigest(pkg),
-    toolListSha256: () => sha256(readFileSync(join(pkg, "scripts", "onboarding-eval-tools.json"))),
+    toolListSha256: () => sha256(readFileSync(join(pkg, "scripts", "tool-lists", "1.20-commit0", "onboarding-eval-tools.json"))),
     distProblems: (commit) => distRebuildProblems(pkg, commit, git, mkdtempSync(join(tmpdir(), "t538-dist-"))),
     capabilityProbe: realCapabilityProbe(pkg, root, env),
   };

@@ -24,7 +24,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import {
-  AST_REVIEWED_FORMS, BOARD_WRITE_TOOLS, COMMIT_PARAM_DESCRIPTION, MCP_COMMIT_PARAM_DESCRIPTION, MCP_CUSTOM_HANDLERS,
+  AST_REVIEWED_FORMS, BOARD_WRITE_FAMILIES, BOARD_WRITE_TOOLS, COMMIT_PARAM_DESCRIPTION, MCP_COMMIT_PARAM_DESCRIPTION, MCP_CUSTOM_HANDLERS,
   WRITE_ENVELOPE_EXEMPT, registerWriteTool,
 } from "../../src/mcp/board-write-tools.js";
 import { CLI_NON_BOARD_HANDLERS, CLI_REPORTING_RUNNERS } from "../../src/cli/board-write-routes.js";
@@ -60,6 +60,8 @@ interface McpLists {
   exempt: Readonly<Record<string, string>>;
   custom: Readonly<Record<string, string>>;
   reviewed: Readonly<Record<string, string>>;
+  /** 1.20 commit 0: a listed write family and the board writes it dispatches to. */
+  families: Readonly<Record<string, readonly string[]>>;
 }
 
 /**
@@ -75,6 +77,15 @@ function classifyMcp(source: string, lists: McpLists): string[] {
   for (const tool of lists.board) {
     if (tool in lists.exempt) violations.push(`${tool}: listed as a board write and as exempt`);
     if (tool in lists.custom) violations.push(`${tool}: listed as a board write and as a custom handler`);
+  }
+  const seenFamily = new Set<string>();
+  for (const [family, members] of Object.entries(lists.families)) {
+    if (lists.board.includes(family) || family in lists.exempt || family in lists.custom) {
+      violations.push(`${family}: a write family must not be listed anywhere else`);
+    }
+    for (const member of members) {
+      if (!lists.board.includes(member)) violations.push(`${family}: member ${member} is not a listed board write`);
+    }
   }
   const isRegistrationRef = (n: ts.Node): boolean =>
     (ts.isIdentifier(n) && n.text === "registerWriteTool"
@@ -104,10 +115,17 @@ function classifyMcp(source: string, lists: McpLists): string[] {
           const calls = callsIn(handler);
           const writes = calls.has("runMcpWriteTool");
           const reads = calls.has("runMcpReadTool");
+          const dispatches = calls.has("dispatchWriteFamily");
           if (viaWrite) {
             seenBoard.add(tool);
             if (!lists.board.includes(tool)) violations.push(`${tool}: registered as a board write but not listed`);
             if (!writes) violations.push(`${tool}: board write handler does not call runMcpWriteTool`);
+          } else if (tool in lists.families) {
+            // Every board write it reaches runs through registerWriteTool's own handler.
+            seenFamily.add(tool);
+            if (!dispatches || writes) violations.push(`${tool}: write family handler does not only call dispatchWriteFamily`);
+          } else if (dispatches) {
+            violations.push(`${tool}: calls dispatchWriteFamily but is not a listed write family`);
           } else if (lists.board.includes(tool)) {
             violations.push(`${tool}: listed as a board write but registered without registerWriteTool`);
           } else if (writes && !(tool in lists.exempt)) {
@@ -122,6 +140,7 @@ function classifyMcp(source: string, lists: McpLists): string[] {
   };
   visit(sf);
   for (const tool of lists.board) if (!seenBoard.has(tool)) violations.push(`${tool}: listed but never registered`);
+  for (const tool of Object.keys(lists.families)) if (!seenFamily.has(tool)) violations.push(`${tool}: family listed but never registered`);
   return violations;
 }
 
@@ -144,7 +163,10 @@ function classifyCli(source: string, runners: readonly string[], nonBoard: Reado
   return violations;
 }
 
-const LISTS: McpLists = { board: BOARD_WRITE_TOOLS, exempt: WRITE_ENVELOPE_EXEMPT, custom: MCP_CUSTOM_HANDLERS, reviewed: AST_REVIEWED_FORMS };
+const LISTS: McpLists = {
+  board: BOARD_WRITE_TOOLS, exempt: WRITE_ENVELOPE_EXEMPT, custom: MCP_CUSTOM_HANDLERS, reviewed: AST_REVIEWED_FORMS,
+  families: BOARD_WRITE_FAMILIES,
+};
 
 describe("board write classification (ISS-1107)", () => {
   it("A1: every MCP registration in tools.ts is classified", () => {
@@ -164,13 +186,22 @@ describe("board write classification (ISS-1107)", () => {
       reg("storybloq_hidden_write", {}, async () => runMcpWriteTool(root, h));
       const write = registerWriteTool;
       server.registerTool("storybloq_delegated", {}, delegate);
+      server.registerTool("storybloq_good_family", {}, (a, e) => dispatchWriteFamily(f, m, a, e));
+      server.registerTool("storybloq_rogue_family", {}, (a, e) => dispatchWriteFamily(f, m, a, e));
+      server.registerTool("storybloq_lazy_family", {}, async () => ({ content: [] }));
     `;
     expect(classifyMcp(fixture, {
       ...LISTS,
       board: ["storybloq_ticket_create", "storybloq_both"],
       exempt: { ...LISTS.exempt, storybloq_both: "listed twice" },
+      families: {
+        storybloq_good_family: ["storybloq_ticket_create"],
+        storybloq_lazy_family: ["storybloq_ticket_create", "storybloq_not_a_write"],
+        storybloq_missing_family: [],
+      },
     })).toEqual([
       "storybloq_both: listed as a board write and as exempt",
+      "storybloq_lazy_family: member storybloq_not_a_write is not a listed board write",
       "storybloq_sneaky_write: calls runMcpWriteTool without registerWriteTool or an exemption",
       "storybloq_unlisted_custom: custom handler not classified",
       "storybloq_named_handler: handler is not inline and not reviewed",
@@ -182,7 +213,10 @@ describe("board write classification (ISS-1107)", () => {
       "registerWriteTool: registration function used as a value (aliased or delegated)",
       "storybloq_delegated: handler is not inline and not reviewed",
       "storybloq_delegated: custom handler not classified",
+      "storybloq_rogue_family: calls dispatchWriteFamily but is not a listed write family",
+      "storybloq_lazy_family: write family handler does not only call dispatchWriteFamily",
       "storybloq_both: listed but never registered",
+      "storybloq_missing_family: family listed but never registered",
     ]);
   });
 
@@ -197,7 +231,8 @@ describe("board write classification (ISS-1107)", () => {
       // The strict-schema wrapper turns a raw shape into a z.object; read its shape either way.
       const schema = (configs.get(name)?.inputSchema ?? {}) as { shape?: Record<string, unknown> };
       const hasCommit = Object.keys(schema.shape ?? schema).includes("commit");
-      expect(hasCommit, `${name}: commit in schema`).toBe(board.has(name));
+      // A write family lists `commit` because its members take it, and passes it through.
+      expect(hasCommit, `${name}: commit in schema`).toBe(board.has(name) || name in BOARD_WRITE_FAMILIES);
     }
     for (const tool of Object.keys(WRITE_ENVELOPE_EXEMPT)) expect(names).toContain(tool);
   });

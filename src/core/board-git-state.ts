@@ -26,7 +26,7 @@ export const COMMIT_PARAM_DESCRIPTION =
  * the seat rule). The long form above is the CLI --help wording.
  */
 export const MCP_COMMIT_PARAM_DESCRIPTION =
-  "Commit only the file(s) this call wrote; refused if one is already staged. Pen only; worker seats leave it unset.";
+  "Commit only the file(s) this call wrote; refused if one is already staged. Pen only.";
 
 // --- The single source of every reply string ---
 

@@ -219,9 +219,9 @@ export function continuityOptions(effort: string): ClaudePolicyOptions {
 }
 
 
-export const CONTINUITY_TOOLS_FILE = join(SCRIPT_DIR, "continuity-tools.json");
+export const CONTINUITY_TOOLS_FILE = join(SCRIPT_DIR, "tool-lists", "1.20-commit0", "continuity-tools.json");
 /** G1: the onboarding inventory, whose `withheld` map is the one list of tools no evaluation serves. */
-export const ONBOARDING_TOOLS_FILE = join(SCRIPT_DIR, "onboarding-eval-tools.json");
+export const ONBOARDING_TOOLS_FILE = join(SCRIPT_DIR, "tool-lists", "1.20-commit0", "onboarding-eval-tools.json");
 
 /** G1: the names the onboarding inventory withholds, each with its reason; read from that file, never copied. */
 export function withheldTools(file = ONBOARDING_TOOLS_FILE): Record<string, string> {
@@ -623,7 +623,7 @@ export interface Preflight {
   readonly isolation: "fresh" | "shared";
   /** Always null since ISS-1486: each attempt provisions its own config dir. */
   readonly sharedConfigDir: string | null;
-  /** ISS-1486 D2: the storybloq tool names the policy allows and the readback expects (scripts/continuity-tools.json). */
+  /** ISS-1486 D2: the storybloq tool names the policy allows and the readback expects (CONTINUITY_TOOLS_FILE). */
   readonly tools: readonly string[];
   /** The configuration fingerprint every attempt must match before and after. */
   readonly configHash: string;

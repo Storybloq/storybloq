@@ -137,7 +137,7 @@ interface Options {
 }
 
 /** Plan 5.4's pinned inventory: the degraded and full lists, and the withheld names with their reasons. */
-export const TOOL_SETS_FILE = join(PKG_ROOT, "scripts", "onboarding-eval-tools.json");
+export const TOOL_SETS_FILE = join(PKG_ROOT, "scripts", "tool-lists", "1.20-commit0", "onboarding-eval-tools.json");
 
 /** The two storybloq tool inventories: before a project exists and after. */
 export interface ClaudeToolSets { readonly degraded: readonly string[]; readonly full: readonly string[] }

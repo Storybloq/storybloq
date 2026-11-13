@@ -198,11 +198,16 @@ export function outsideProbe(dir: string): "held" | "absent" {
 /** 5.4: the names the pinned inventory permits (the union of its two lists) and the file's sha256. */
 export function allowList(file: string): { readonly names: ReadonlySet<string>; readonly sha256: string } {
   const text = readFileSync(file, "utf-8");
-  const v = JSON.parse(text) as { degraded?: unknown; full?: unknown };
+  const v = JSON.parse(text) as { degraded?: unknown; full?: unknown; hidden?: unknown };
   const names = new Set<string>();
   for (const list of [v.degraded, v.full]) {
     if (!Array.isArray(list) || list.length === 0 || list.some((n) => typeof n !== "string")) throw new Error(`eval-fault-mcp: ${file} is not the tool inventory`);
     for (const n of list as string[]) names.add(n);
+  }
+  // 1.20 commit 0: a hidden former name is registered (callable by name) and never listed, as in production.
+  if (v.hidden !== undefined) {
+    if (v.hidden === null || typeof v.hidden !== "object" || Array.isArray(v.hidden)) throw new Error(`eval-fault-mcp: ${file} is not the tool inventory`);
+    for (const n of Object.keys(v.hidden)) names.add(n);
   }
   return { names, sha256: sha256(text) };
 }

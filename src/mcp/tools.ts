@@ -62,7 +62,9 @@ import {
 } from "../autonomous/subprocess-registry.js";
 import { handlePrepare, handleSynthesize, handleJudge, generateIssueKey, generateReviewFilingKey } from "../autonomous/lens-harness/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerWriteTool } from "./board-write-tools.js";
+import { registerWriteTool, registeredBoardWriteTools } from "./board-write-tools.js";
+import { WRITE_FAMILIES, dispatchWriteFamily, familyDescription, familyInputShape, type WriteFamily } from "./tool-profile.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { activeBoardWriteContext } from "../core/board-write-recorder.js";
 import { reportBoardWrite } from "../core/board-git-state.js";
 
@@ -2001,6 +2003,44 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     pinnedRoot, boardLabelFor(pinnedRoot, args.node));
   });
 
+  // --- Write families (1.20 commit 0, ISS-1433/1435 plan v4.1 section 9) ---
+  // One listed tool per group; each action runs the former tool's own strict
+  // schema and handler. The former names stay registered and callable, and
+  // are hidden from tools/list (tool-profile.ts). Registered after every
+  // member, which familyInputShape requires.
+  const writeMembers = registeredBoardWriteTools(server);
+  const family = (name: string): WriteFamily => WRITE_FAMILIES.find((f) => f.name === name)!;
+  const rulingWrite = family("storybloq_ruling_write");
+  const earmarkWrite = family("storybloq_earmark_write");
+  const checkpointWrite = family("storybloq_checkpoint_write");
+  const capabilityWrite = family("storybloq_capability_write");
+  const termWrite = family("storybloq_term_write");
+
+  server.registerTool("storybloq_ruling_write", {
+    description: familyDescription(rulingWrite, writeMembers),
+    inputSchema: familyInputShape(rulingWrite, writeMembers),
+  }, (args, extra) => dispatchWriteFamily(rulingWrite, writeMembers, args, extra) as Promise<CallToolResult>);
+
+  server.registerTool("storybloq_earmark_write", {
+    description: familyDescription(earmarkWrite, writeMembers),
+    inputSchema: familyInputShape(earmarkWrite, writeMembers),
+  }, (args, extra) => dispatchWriteFamily(earmarkWrite, writeMembers, args, extra) as Promise<CallToolResult>);
+
+  server.registerTool("storybloq_checkpoint_write", {
+    description: familyDescription(checkpointWrite, writeMembers),
+    inputSchema: familyInputShape(checkpointWrite, writeMembers),
+  }, (args, extra) => dispatchWriteFamily(checkpointWrite, writeMembers, args, extra) as Promise<CallToolResult>);
+
+  server.registerTool("storybloq_capability_write", {
+    description: familyDescription(capabilityWrite, writeMembers),
+    inputSchema: familyInputShape(capabilityWrite, writeMembers),
+  }, (args, extra) => dispatchWriteFamily(capabilityWrite, writeMembers, args, extra) as Promise<CallToolResult>);
+
+  server.registerTool("storybloq_term_write", {
+    description: familyDescription(termWrite, writeMembers),
+    inputSchema: familyInputShape(termWrite, writeMembers),
+  }, (args, extra) => dispatchWriteFamily(termWrite, writeMembers, args, extra) as Promise<CallToolResult>);
+
   // --- Lesson tools ---
 
   server.registerTool("storybloq_lesson_list", {
@@ -2390,7 +2430,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         issueId: z.string().optional().describe("For issue_picked"),
         commitHash: z.string().optional().describe("For commit_done"),
         overrideAttribution: z.boolean().optional().describe("When true, bypasses FINALIZE's commit-attribution mismatch on a commit_done report; every use is audited (ISS-982)."),
-        overrideOverlap: z.boolean().optional().describe("When true, lets FINALIZE proceed on a files_staged report whose staged set includes files that were already untracked at session start; without it FINALIZE refuses and asks you to unstage them. Not separately recorded (ISS-988)."),
+        overrideOverlap: z.boolean().optional().describe("FINALIZE: accept a files_staged set that includes files untracked at session start; otherwise refused (ISS-988). Not recorded."),
         handoverContent: z.string().optional().describe("Markdown content"),
         verdict: z.string().optional().describe("approve|revise|request_changes|reject"),
         findings: z.array(z.object({
@@ -2514,7 +2554,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         ),
         reviewerTurnId: z.string().optional(),
         // ISS-1282: checked by the guide, so a wrong shape is a retry, not a -32602.
-        reviewReceipts: z.unknown().optional().describe("codex-bridge: code [{cwd,base,head,receipt,models,sessionId}] per call in chain order; plan {receipt,planSha256,models,sessionId}. Attested by the reporter, not authenticated by the bridge."),
+        reviewReceipts: z.unknown().optional().describe("codex-bridge receipts: code [{cwd,base,head,receipt,models,sessionId}] in chain order; plan {receipt,planSha256,models,sessionId}. Reporter-attested, not bridge-authenticated."),
         implementerModel: z.string().optional().describe("Model IMPLEMENT ran on; pass with implementation_done."),
         implementerTier: z.string().optional(),
         implementerSource: z.enum(["explicit-pin", "session-default"]).optional(),

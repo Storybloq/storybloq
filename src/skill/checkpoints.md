@@ -4,6 +4,8 @@ An owner checkpoint is a ticket only the owner answers: a decision (a question) 
 
 `storybloq checkpoint list` shows each checkpoint's state and the tokens (generation, revision, digest) every change must name. `[checkpoint pending, ready]` means every prerequisite is done: prepare the evidence and ask now. A pending checkpoint that is not ready still waits on work; do that work first.
 
+MCP writes go through `storybloq_checkpoint_write` and `storybloq_ruling_write` with an `action`; servers before 1.20 list `storybloq_checkpoint_<action>` and `storybloq_ruling_<action>` instead.
+
 ## 1. Prepare, then ask
 
 For a ready checkpoint, produce the evidence first:
@@ -16,14 +18,14 @@ Then ask one question that names the evidence revision path, quotes the question
 
 ## 2. Approve
 
-`storybloq_checkpoint_resolve` with the current tokens, the owner's words as `response`, `artifactRef` set to the evidence revision path for an acceptance (on an immutable checkpoint it must be one of the record's revisions), and `rulingAttribution: "owner-direct"`.
+`storybloq_checkpoint_write` `resolve` with the current tokens, the owner's words as `response`, `artifactRef` set to the evidence revision path for an acceptance (on an immutable checkpoint it must be one of the record's revisions), and `rulingAttribution: "owner-direct"`.
 
 ## 3. Change requested
 
 Read the checkpoint first with `ticket get` for its current state and tokens. Then, by state:
-- **approved:** `storybloq_checkpoint_reopen` first, with the owner's words as the reason, so its dependents block again at once; then continue as for pending.
-- **pending:** `storybloq_ruling_create` (owner-direct) for the feedback. Create one follow-up ticket per change, with `citesRuling` set. A follow-up never depends on the checkpoint or on anything that depends on it. Then add the follow-ups to the checkpoint's prerequisites with `storybloq ticket update <checkpoint> --add-blocked-by <follow-ups>` (MCP `addBlockedBy`): the existing prerequisites are kept, a cycle is refused with nothing written, and only a pending checkpoint takes new ones.
-- **the owner changed the question or criteria:** `storybloq_checkpoint_change` with the current tokens, and only then.
+- **approved:** `storybloq_checkpoint_write` `reopen` first, with the owner's words as the reason, so its dependents block again at once; then continue as for pending.
+- **pending:** `storybloq_ruling_write` `create` (owner-direct) for the feedback. Create one follow-up ticket per change, with `citesRuling` set. A follow-up never depends on the checkpoint or on anything that depends on it. Then add the follow-ups to the checkpoint's prerequisites with `storybloq ticket update <checkpoint> --add-blocked-by <follow-ups>` (MCP `addBlockedBy`): the existing prerequisites are kept, a cycle is refused with nothing written, and only a pending checkpoint takes new ones.
+- **the owner changed the question or criteria:** `storybloq_checkpoint_write` `change` with the current tokens, and only then.
 
 ## 4. Not now
 
@@ -39,4 +41,4 @@ The evidence for accepting a first version has three sections, tied to the requi
 
 ## 7. Reopen
 
-At the owner's word, `storybloq_checkpoint_reopen`. `recommend` then lists the completed work that depended on the answer as `checkpoint_reassess`; list it for the owner and do not rewrite it.
+At the owner's word, `storybloq_checkpoint_write` `reopen`. `recommend` then lists the completed work that depended on the answer as `checkpoint_reassess`; list it for the owner and do not rewrite it.

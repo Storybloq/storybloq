@@ -414,7 +414,9 @@ Some queries also refresh gitignored runtime or presence metadata. `storybloq_se
 
 ### Write (mutate `.story/`)
 
-`storybloq_snapshot` · `storybloq_handover_create` · `storybloq_ticket_create` · `storybloq_ticket_update` · `storybloq_ticket_meta_set` · `storybloq_ticket_meta_unset` · `storybloq_issue_create` · `storybloq_issue_update` · `storybloq_issue_meta_set` · `storybloq_issue_meta_unset` · `storybloq_note_create` · `storybloq_note_update` · `storybloq_lesson_create` · `storybloq_lesson_update` · `storybloq_lesson_reinforce` · `storybloq_term_add` · `storybloq_term_update` · `storybloq_ruling_create` · `storybloq_ruling_supersede` · `storybloq_ruling_propose` · `storybloq_ruling_accept` · `storybloq_ruling_withdraw` · `storybloq_phase_create`
+`storybloq_snapshot` · `storybloq_handover_create` · `storybloq_ticket_create` · `storybloq_ticket_update` · `storybloq_ticket_meta_set` · `storybloq_ticket_meta_unset` · `storybloq_issue_create` · `storybloq_issue_update` · `storybloq_issue_meta_set` · `storybloq_issue_meta_unset` · `storybloq_note_create` · `storybloq_note_update` · `storybloq_lesson_create` · `storybloq_lesson_update` · `storybloq_lesson_reinforce` · `storybloq_term_write` · `storybloq_ruling_write` · `storybloq_capability_write` · `storybloq_checkpoint_write` · `storybloq_earmark_write` · `storybloq_phase_create`
+
+Each `_write` family takes an `action`. The former per-action tools (`storybloq_ruling_create`, `storybloq_term_add`, `storybloq_earmark_reserve` and the rest, `storybloq_<x>_<action>`) are still registered and callable by name; since 1.20 they are not listed, and servers before 1.20 list only them.
 
 ### Autonomous mode + review + observability
 

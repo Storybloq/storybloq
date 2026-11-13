@@ -415,9 +415,10 @@ describe("Codex's tool approvals (Addendum B, ruling 2)", () => {
 });
 
 describe("the pinned inventory file (5.4)", () => {
-  const pinned = JSON.parse(readFileSync(TOOL_SETS_FILE, "utf-8")) as { degraded: string[]; full: string[]; withheld: Record<string, string> };
+  const pinned = JSON.parse(readFileSync(TOOL_SETS_FILE, "utf-8")) as { degraded: string[]; full: string[]; withheld: Record<string, string>; hidden: Record<string, string> };
   it("names the degraded and full lists, and the thirteen withheld names with their reasons", () => {
-    expect(Object.keys(pinned).sort()).toEqual(["degraded", "full", "withheld"]);
+    // 1.20 commit 0: the versioned inventory adds `about` and `hidden` (the former write tools, callable, never listed).
+    expect(Object.keys(pinned).sort()).toEqual(["about", "degraded", "full", "hidden", "withheld"]);
     expect(Object.keys(pinned.withheld).sort()).toEqual([
       "storybloq_bus_ack", "storybloq_bus_poll", "storybloq_bus_redeliver", "storybloq_bus_send", "storybloq_bus_thread_get", "storybloq_bus_thread_update", "storybloq_export",
       "storybloq_node_add", "storybloq_node_init", "storybloq_node_update", "storybloq_projection_write", "storybloq_register_subprocess", "storybloq_unregister_subprocess",

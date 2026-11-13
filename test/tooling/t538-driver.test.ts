@@ -875,7 +875,7 @@ describe("7.1: the manifest generator", { timeout: 120_000 }, () => {
     expect(m.cells.filter((c) => c.gateAfter).map((c) => c.id)).toEqual(["1a", "6c"]);
     expect(m.clients).toEqual({ codex: { version: "0.153.4", model: "gpt-6-astra", judgeModel: "gpt-6-astra", isolation: "fresh" }, claude: { version: "2.9.0", model: "opus", judgeModel: "gpt-6-astra", isolation: "signed-in" } });
     expect(m.probeSha256).toBe(PROBE_SHA256);
-    expect(m.toolListSha256).toBe(createHash("sha256").update(readFileSync(join(r.pkg, "scripts", "onboarding-eval-tools.json"))).digest("hex"));
+    expect(m.toolListSha256).toBe(createHash("sha256").update(readFileSync(join(r.pkg, "scripts", "tool-lists", "1.20-commit0", "onboarding-eval-tools.json"))).digest("hex"));
     r.g("add", "."); r.g("commit", "-qm", "manifest only");
     const c = readCheckout(r.git);
     expect(c.problems).toEqual([]);

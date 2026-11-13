@@ -527,6 +527,9 @@ describe("tool description contract (T-460)", () => {
     // setup runs as one engine call, and the agent copies its report verbatim.
     // T-538 S3a-2 adds storybloq_setup_verify (105 -> 106): the agent runs an
     // establishment ticket's tests when the scaffold it waits on is built.
-    expect(result.tools.length).toBe(106);
+    // 1.20 commit 0 (C-v4.1 and amendment 1) lists five write families in
+    // place of eighteen write tools (106 + 5 - 18 = 93). The eighteen stay
+    // registered and callable by name; only tools/list hides them.
+    expect(result.tools.length).toBe(93);
   });
 });

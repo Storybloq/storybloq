@@ -33,8 +33,8 @@ function section(doc: string, heading: string): string {
 
 const ANCHORS: readonly (readonly [string, readonly string[]])[] = [
   ["## 1. Prepare, then ask", ["checkpoint evidence", "docs/checkpoints/", "approve; change requested; not now", "verbatim", "checkpoint change"]],
-  ["## 2. Approve", ["storybloq_checkpoint_resolve", "artifactRef", "one of the record's revisions", "owner-direct"]],
-  ["## 3. Change requested", ["ticket get", "storybloq_checkpoint_reopen` first", "storybloq_ruling_create", "citesRuling", "never depends on the checkpoint", "--add-blocked-by", "only a pending checkpoint", "storybloq_checkpoint_change"]],
+  ["## 2. Approve", ["storybloq_checkpoint_write` `resolve", "artifactRef", "one of the record's revisions", "owner-direct"]],
+  ["## 3. Change requested", ["ticket get", "storybloq_checkpoint_write` `reopen` first", "storybloq_ruling_write` `create", "citesRuling", "never depends on the checkpoint", "--add-blocked-by", "only a pending checkpoint", "storybloq_checkpoint_write` `change"]],
   ["## 4. Not now", ["Nothing is written"]],
   ["## 5. Never invent an answer", ["owner message", "not the owner's answer"]],
   ["## 6. First-version acceptance evidence", ["demonstrated behaviour", "unverified claims", "limitations"]],

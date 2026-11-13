@@ -4,6 +4,9 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { runWithBoardWriteContext } from "../core/board-write-recorder.js";
 import { COMMIT_PARAM_DESCRIPTION, MCP_COMMIT_PARAM_DESCRIPTION } from "../core/board-git-state.js";
 
+import { WRITE_FAMILIES, type FamilyMember } from "./tool-profile.js";
+import { strictInputSchema } from "./strict-schemas.js";
+
 export { COMMIT_PARAM_DESCRIPTION, MCP_COMMIT_PARAM_DESCRIPTION };
 
 /**
@@ -66,6 +69,39 @@ export const BOARD_WRITE_TOOLS: readonly string[] = [
 ];
 
 /**
+ * 1.20 commit 0: write families. Each is registered with `server.registerTool`
+ * and an inline handler that calls `dispatchWriteFamily`, which runs a member's
+ * own registered board write tool (strict schema, recorder, `commit`). Every
+ * member must itself be in BOARD_WRITE_TOOLS; the classification test checks it.
+ */
+export const BOARD_WRITE_FAMILIES: Readonly<Record<string, readonly string[]>> = Object.freeze(
+  Object.fromEntries(WRITE_FAMILIES.map((f) => [f.name, f.actions.map((a) => f.prefix + a)])),
+);
+
+const REGISTERED_WRITE_TOOLS = new WeakMap<object, Map<string, FamilyMember>>();
+
+/**
+ * The board write tools registered on this server so far, by name: each one's
+ * description, its strict input schema (built by `strictInputSchema` from the
+ * very shape handed to `registerTool`, as the strict shim builds it) and the
+ * very handler function handed to `registerTool`. Recorded here rather than
+ * read back from the SDK's RegisteredTool so it works on any server, test
+ * doubles included.
+ */
+export function registeredBoardWriteTools(server: McpServer): ReadonlyMap<string, FamilyMember> {
+  // Keyed by the protocol server underneath, so the strict-schema proxy
+  // registerAllTools registers through and the McpServer it wraps share one
+  // record. A test double without one is keyed by itself.
+  const key = (server as { server?: object }).server ?? server;
+  let map = REGISTERED_WRITE_TOOLS.get(key);
+  if (!map) {
+    map = new Map();
+    REGISTERED_WRITE_TOOLS.set(key, map);
+  }
+  return map;
+}
+
+/**
  * Tools that call `runMcpWriteTool` for its envelope only. They get no
  * `commit` argument and never a Git line (no recorder is active for them).
  */
@@ -119,10 +155,17 @@ export function registerWriteTool<InputArgs extends undefined | z.ZodRawShape = 
     commit: z.boolean().optional().describe(MCP_COMMIT_PARAM_DESCRIPTION),
   };
   const call = handler as unknown as (...args: unknown[]) => CallToolResult | Promise<CallToolResult>;
-  return server.registerTool(name, { ...config, inputSchema }, async (args, extra) => {
+  const wrapped = async (args: unknown, extra: unknown): Promise<CallToolResult> => {
     const { commit, ...rest } = (args ?? {}) as Record<string, unknown>;
     const { value } = await runWithBoardWriteContext(name, commit === true, async () =>
       hadSchema ? call(rest, extra) : call(extra));
     return value;
+  };
+  const registered = server.registerTool(name, { ...config, inputSchema }, wrapped as never);
+  (registeredBoardWriteTools(server) as Map<string, FamilyMember>).set(name, {
+    description: config.description,
+    inputSchema: strictInputSchema(inputSchema) as FamilyMember["inputSchema"],
+    handler: wrapped,
   });
+  return registered;
 }

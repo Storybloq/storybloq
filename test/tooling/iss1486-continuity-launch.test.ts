@@ -650,8 +650,10 @@ describe("ISS-1486 D9: the pilot", () => {
     expect(rest).toContain("sandbox_workspace_write.network_access=false");
     expect(rest.slice(-3)).toEqual(["<PKG>/.eval-dist/eval-mcp.js", "--entry", "mcp"]);
     expect(JSON.stringify(launch)).not.toContain("dist/mcp.js\"");
-    const permitted = continuityTools();
-    const withheld = Object.keys(withheldTools());
+    // The stored pilot is recorded evidence from before 1.20 commit 0: it is checked against the lists it was
+    // recorded with (kept byte-unchanged under scripts/), not the commit-0 lists the runner now uses.
+    const permitted = continuityTools(join(PKG, "scripts", "continuity-tools.json"), join(PKG, "scripts", "onboarding-eval-tools.json"));
+    const withheld = Object.keys(withheldTools(join(PKG, "scripts", "onboarding-eval-tools.json")));
     expect([...launch.mcpTools].sort()).toEqual([...permitted].sort());
     expect([...launch.expected.mcpTools].sort()).toEqual([...permitted].sort());
     const served = readback.steps.find((s) => s.subtype === "mcp_status")!.response as { mcpServers: { tools: { name: string }[] }[] };

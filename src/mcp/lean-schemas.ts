@@ -1,5 +1,6 @@
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { hideLegacyTools } from "./tool-profile.js";
 
 /**
  * Drops the `$schema` header the SDK stamps onto every advertised tool schema.
@@ -64,7 +65,8 @@ export function withLeanToolSchemas(server: McpServer): void {
       original(schema, handler);
       return;
     }
-    original(schema, async (req, extra) => stripSchemaHeaders(await handler(req, extra)));
+    // 1.20 commit 0: the former write tool names are callable but not listed.
+    original(schema, async (req, extra) => hideLegacyTools(stripSchemaHeaders(await handler(req, extra))));
   };
   low[APPLIED] = true;
 }

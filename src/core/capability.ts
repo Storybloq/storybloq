@@ -23,6 +23,7 @@ import { sanitizeDisplayPath, sanitizeDisplayText } from "./display-text.js";
 import { loadRulingsSafe } from "./ruling-loader.js";
 import { glossaryCatalog } from "./glossary.js";
 import { COMMANDS, MCP_TOOLS } from "../cli/commands/reference.js";
+import { HIDDEN_LEGACY_TOOLS } from "./write-families.js";
 import { entryPointViolations, hasPendingNote, normalizeEntryPoint, type Capability, type EntryPointRule } from "../models/capability.js";
 import type { ProjectState } from "./project-state.js";
 import type { LedgerSnapshot } from "./ledger-snapshot.js";
@@ -507,7 +508,7 @@ function buildReferenceIndex(root: string, state: ProjectState | null, snapshot?
       itemScanIncomplete: items.incomplete,
       ...snapshotGlossaryIds(snapshot),
       cliNames: new Set(COMMANDS.map((c) => c.name)),
-      mcpNames: new Set(MCP_TOOLS.map((t) => t.name)),
+      mcpNames: knownMcpNames(),
     };
   }
   const scan = loadRulingsSafe(root);
@@ -537,7 +538,7 @@ function buildReferenceIndex(root: string, state: ProjectState | null, snapshot?
     itemScanIncomplete: false,
     ...glossary,
     cliNames: new Set(COMMANDS.map((c) => c.name)),
-    mcpNames: new Set(MCP_TOOLS.map((t) => t.name)),
+    mcpNames: knownMcpNames(),
   };
 }
 
@@ -601,9 +602,19 @@ export interface SurfaceNames {
   readonly mcpNames: ReadonlySet<string>;
 }
 
-/** The names `storybloq reference` lists, from the registry compiled into this CLI. */
+/**
+ * The MCP names a capability may cite: every tool `storybloq reference` lists,
+ * plus the former write tool names a write family lists in place of (1.20
+ * commit 0). Those stay registered and callable, so an entry citing one is
+ * not citing a missing tool.
+ */
+export function knownMcpNames(): ReadonlySet<string> {
+  return new Set([...MCP_TOOLS.map((t) => t.name), ...HIDDEN_LEGACY_TOOLS]);
+}
+
+/** The names `storybloq reference` lists, from the registry compiled into this CLI, plus the hidden former names. */
 export function referenceSurfaceNames(): SurfaceNames {
-  return { cliNames: new Set(COMMANDS.map((c) => c.name)), mcpNames: new Set(MCP_TOOLS.map((t) => t.name)) };
+  return { cliNames: new Set(COMMANDS.map((c) => c.name)), mcpNames: knownMcpNames() };
 }
 
 export function unknownSurfaces(

@@ -8,6 +8,7 @@ import { registerAllTools } from "../../../src/mcp/tools.js";
 import { initProject } from "../../../src/core/init.js";
 import { loadProject, writeConfig } from "../../../src/core/project-loader.js";
 import { COMMANDS, MCP_TOOLS } from "../../../src/cli/commands/reference.js";
+import { HIDDEN_LEGACY_TOOLS } from "../../../src/core/write-families.js";
 import * as registrations from "../../../src/cli/register.js";
 import { toolSchema } from "../../mcp/tool-schema-helpers.js";
 
@@ -37,12 +38,17 @@ describe("reference registration parity", () => {
       },
     } as unknown as Parameters<typeof registerAllTools>[0];
     registerAllTools(server, root);
-    const registeredNames = actual.map(tool => tool.name);
+    // 1.20 commit 0: the former write tool names stay registered but are not
+    // listed, so reference documents their write families instead.
+    for (const hidden of HIDDEN_LEGACY_TOOLS) expect(actual.map(tool => tool.name), `${hidden} stays registered`).toContain(hidden);
+    const listed = actual.filter(tool => !HIDDEN_LEGACY_TOOLS.has(tool.name));
+    const registeredNames = listed.map(tool => tool.name);
     const documentedNames = MCP_TOOLS.map(tool => tool.name);
     expect(new Set(registeredNames).size).toBe(registeredNames.length);
     expect(new Set(documentedNames).size).toBe(documentedNames.length);
     expect([...documentedNames].sort()).toEqual([...registeredNames].sort());
-    for (const tool of actual) {
+    for (const hidden of HIDDEN_LEGACY_TOOLS) expect(documentedNames, `${hidden} is not documented as listed`).not.toContain(hidden);
+    for (const tool of listed) {
       const documented = MCP_TOOLS.find(entry => entry.name === tool.name)!;
       expect([...(documented.params ?? [])].sort(), tool.name).toEqual([...tool.params].sort());
       expect(new Set(documented.params).size, `${tool.name}: duplicate argument`).toBe(documented.params?.length ?? 0);

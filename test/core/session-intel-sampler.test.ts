@@ -7,6 +7,13 @@ import { resolveCeiling } from "../../src/core/session-intel/ceiling-resolver.js
 import type { LedgerEntry } from "../../src/core/session-intel/boundary-ledger.js";
 
 const cfg = resolveSessionIntelConfig(null);
+// r-awey8xrtwqf1r005 moved the default imperative line to 90% of the ceiling.
+// The hold, re-arm and rate-limit blocks below test what happens AT an
+// imperative, which does not depend on where the line sits. Their numbers
+// were written for a line 60,000 tokens under the ceiling (85% of 400,000),
+// so they pin that line explicitly instead of the default one.
+const LINE_85 = { imperativePct: 0.85, imperativeHeadroomTokens: 60_000 } as const;
+const cfg85 = resolveSessionIntelConfig(LINE_85);
 const NOW = "2026-09-09T12:30:00.000Z";
 
 function ceiling(over: Partial<CeilingResolution> = {}): CeilingResolution {
@@ -26,6 +33,7 @@ const NO_USAGE: UsageAdvisoryInput = { window: null, source: null, provenance: "
 
 const sample = (tokens: number | null, over: { deltas?: number[]; record?: SessionIntelPresence | null; ceiling?: CeilingResolution; usage?: UsageAdvisoryInput; sampledAt?: string; cfg?: SessionIntelConfig } = {}) =>
   computeSample({ scan: scan(tokens, over.deltas ?? []), ceiling: over.ceiling ?? ceiling(), cfg: over.cfg ?? cfg, sampledBy: "query", sampledAt: over.sampledAt ?? NOW, record: over.record ?? null, usage: over.usage ?? NO_USAGE });
+const sample85: typeof sample = (tokens, over = {}) => sample(tokens, { cfg: cfg85, ...over });
 
 describe("computeSample states", () => {
   it("266,711 against 417,737 is 63.8%, ok", () => {
@@ -37,14 +45,15 @@ describe("computeSample states", () => {
     expect(s.jumpAllowanceBasis).toMatch(/floor 25000 \(0 deltas/);
   });
 
-  it("advisory at 70%, imperative at 60000 tokens of headroom (T-533; ISS-1249: 83% is still advisory)", () => {
+  it("advisory at 70%, imperative at 90% (r-awey8xrtwqf1r005; 83% and 60000 tokens of headroom are still advisory)", () => {
     expect(sample(Math.ceil(0.7 * 417_737)).state).toBe("advisory");
     expect(sample(Math.ceil(0.7 * 417_737) - 1).state).toBe("ok");
     expect(sample(Math.ceil(0.83 * 417_737)).state).toBe("advisory");
-    const imperativeAt = 417_737 - 60_000;
+    expect(sample(417_737 - 60_000).state).toBe("advisory");
+    const imperativeAt = Math.ceil(0.9 * 417_737);
     expect(sample(imperativeAt).state).toBe("imperative");
     expect(sample(imperativeAt - 1).state).toBe("advisory");
-    expect(sample(imperativeAt).reason).toMatch(/^357737 leaves headroom 60000 <= 60000 \(the larger of imperativeHeadroomTokens 60000 and jump allowance 25000\)$/);
+    expect(sample(imperativeAt).reason).toBe(`${imperativeAt} >= 0.9 x 417737 (${417_737 - imperativeAt} tokens left)`);
   });
 
   it("jump allowance is p90 of deltas since the epoch, clamped, floor under 5 deltas", () => {
@@ -54,12 +63,11 @@ describe("computeSample states", () => {
     expect(jumpAllowanceFor([30_000, 31_000, 32_000, 33_000, 34_000], cfg).value).toBe(34_000);
     expect(jumpAllowanceFor([1, 1, 1, 1, 1], cfg)).toMatchObject({ value: 25_000, basis: expect.stringMatching(/raised to floor/) });
     expect(jumpAllowanceFor([1e6, 1e6, 1e6, 1e6, 1e6], cfg)).toMatchObject({ value: 150_000, basis: expect.stringMatching(/capped/) });
-    // A p90 over the headroom floor pulls imperative earlier: 95,000 of headroom.
+    // r-awey8xrtwqf1r005: a large p90 is still reported, and no longer moves the imperative line.
     const tokens = 417_737 - 95_000;
-    expect(sample(tokens).state).toBe("advisory");
     const big = sample(tokens, { deltas: [90_000, 100_000, 100_000, 100_000, 100_000] });
-    expect(big.state).toBe("imperative");
-    expect(big.reason).toMatch(/headroom 95000 <= 100000 \(the larger of imperativeHeadroomTokens 60000 and jump allowance 100000\)/);
+    expect(big.state).toBe("advisory");
+    expect(big.jumpAllowance).toBe(100_000);
   });
 
   it("a ceiling conflict floors state at advisory even below 70%", () => {
@@ -75,6 +83,7 @@ describe("computeSample states", () => {
 });
 
 describe("handover suppression", () => {
+  const sample = sample85;
   const imperativeTokens = 417_737 - 60_000;
   const withHandover = (over: Partial<SessionIntelPresence>): SessionIntelPresence => ({
     ...emptySessionIntel(),
@@ -139,7 +148,7 @@ describe("handover suppression", () => {
 
   it("mutant-prompts-gate-ignores-hook-off: the prompt gate is skipped when the prompt hook is off, since nothing would ever advance the count", () => {
     const record = rearm({ promptsSinceHandover: 0 });
-    const noHook = resolveSessionIntelConfig({ promptHook: false });
+    const noHook = resolveSessionIntelConfig({ ...LINE_85, promptHook: false });
     expect(sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(11), cfg: noHook })).toMatchObject({ rawState: "imperative", state: "imperative", suppressedBy: null });
     // The same record with the hook on is held by the prompt gate.
     const held = sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(11) });
@@ -292,79 +301,85 @@ describe("compact-needed", () => {
 });
 
 // ---------------------------------------------------------------------------
-// T-533: the imperative fires at 60000 tokens of headroom (or the jump
-// allowance, if larger) or at imperativePct of the ceiling, whichever first.
+// T-533, amended by owner ruling r-awey8xrtwqf1r005: the imperative fires
+// once the context is BOTH at imperativePct of the ceiling AND within
+// imperativeHeadroomTokens of it (whichever comes later). The jump allowance
+// is still measured and reported, and no longer widens the rule.
 // ---------------------------------------------------------------------------
 
-describe("T-533 imperative: headroom or share, whichever first", () => {
+describe("T-533 imperative, amended by r-awey8xrtwqf1r005: share AND headroom, whichever comes later", () => {
   const at = (c: number) => ceiling({ ceiling: c });
+  const share = (c: number) => Math.ceil(0.9 * c);
 
-  it("a 268k ceiling turns imperative at 59k of headroom, not at 61k", () => {
-    expect(sample(207_000, { ceiling: at(268_000) }).state).toBe("advisory");
-    const s = sample(209_000, { ceiling: at(268_000) });
+  it("the field case: 168,300 on a 228,163 ceiling (74%, 59,863 left) is advisory; the line is 90%", () => {
+    expect(sample(168_300, { ceiling: at(228_163) }).state).toBe("advisory");
+    const line = share(228_163);
+    expect(sample(line - 1, { ceiling: at(228_163) }).state).toBe("advisory");
+    const s = sample(line, { ceiling: at(228_163) });
     expect(s.state).toBe("imperative");
-    expect(s.reason).toMatch(/^209000 leaves headroom 59000 <= 60000 /);
+    expect(s.reason).toBe(`${line} >= 0.9 x 228163 (${228_163 - line} tokens left)`);
   });
 
-  it("a 925k ceiling: 810k and 860k are advisory, 866k is imperative", () => {
-    // Under the old rule 810k + the 25k allowance cleared 0.9 x 925k.
-    expect(sample(810_000, { ceiling: at(925_000) }).state).toBe("advisory");
-    expect(sample(860_000, { ceiling: at(925_000) }).state).toBe("advisory");
-    const s = sample(866_000, { ceiling: at(925_000) });
+  it("a 268k ceiling turns imperative at 90%, not at 50k of headroom", () => {
+    expect(sample(218_000, { ceiling: at(268_000) }).state).toBe("advisory");
+    expect(sample(share(268_000) - 1, { ceiling: at(268_000) }).state).toBe("advisory");
+    expect(sample(share(268_000), { ceiling: at(268_000) }).state).toBe("imperative");
+  });
+
+  it("a 925k ceiling: 90% and 874,999 are advisory, 875k is imperative by headroom", () => {
+    expect(sample(share(925_000), { ceiling: at(925_000) }).state).toBe("advisory");
+    expect(sample(874_999, { ceiling: at(925_000) }).state).toBe("advisory");
+    const s = sample(875_000, { ceiling: at(925_000) });
     expect(s.state).toBe("imperative");
-    expect(s.reason).toMatch(/headroom 59000 <= 60000/);
+    expect(s.reason).toMatch(/^875000 leaves headroom 50000 <= imperativeHeadroomTokens 50000 /);
   });
 
   it("headroom exactly at the floor is imperative, one token more is not", () => {
-    expect(sample(208_000, { ceiling: at(268_000) }).state).toBe("imperative");
-    expect(sample(207_999, { ceiling: at(268_000) }).state).toBe("advisory");
+    expect(sample(1_950_000, { ceiling: at(2_000_000) }).state).toBe("imperative");
+    expect(sample(1_949_999, { ceiling: at(2_000_000) }).state).toBe("advisory");
   });
 
   it("the headroom is the raw difference, not the rounded one", () => {
-    // 60000.4 of headroom rounds to 60000 but is over the floor.
-    expect(sample(208_000, { ceiling: at(268_000.4) }).state).toBe("advisory");
-    expect(sample(208_001, { ceiling: at(268_000.4) }).state).toBe("imperative");
+    // 50000.4 of headroom rounds to 50000 but is over the floor.
+    expect(sample(1_950_000, { ceiling: at(2_000_000.4) }).state).toBe("advisory");
+    expect(sample(1_950_001, { ceiling: at(2_000_000.4) }).state).toBe("imperative");
   });
 
-  it("a p90 jump of 90k widens the headroom line to 90k", () => {
-    const deltas = [90_000, 90_000, 90_000, 90_000, 90_000];
-    const s = sample(179_000, { ceiling: at(268_000), deltas });
-    expect(s.state).toBe("imperative");
-    expect(s.reason).toMatch(/headroom 89000 <= 90000 \(the larger of imperativeHeadroomTokens 60000 and jump allowance 90000\)/);
-    // 91k of headroom, and under the 70% advisory line.
-    expect(sample(177_000, { ceiling: at(268_000), deltas }).state).toBe("ok");
+  it("the jump allowance no longer widens either line", () => {
+    const small = [90_000, 90_000, 90_000, 90_000, 90_000];
+    expect(sample(share(268_000) - 1, { ceiling: at(268_000), deltas: small }).state).toBe("advisory");
+    // 100k of headroom sits inside a 150k allowance; it is still over the 50k floor.
+    const large = [150_000, 150_000, 150_000, 150_000, 150_000];
+    expect(sample(1_900_000, { ceiling: at(2_000_000), deltas: large }).state).toBe("advisory");
+    expect(sample(1_950_000, { ceiling: at(2_000_000), deltas: large }).state).toBe("imperative");
   });
 
-  it("on a 2M ceiling the share fires first: 1.9M is imperative by 0.95, one token lower is advisory", () => {
-    const s = sample(1_900_000, { ceiling: at(2_000_000) });
-    expect(s.state).toBe("imperative");
-    expect(s.reason).toBe("1900000 >= 0.95 x 2000000");
-    expect(sample(1_899_999, { ceiling: at(2_000_000) }).state).toBe("advisory");
+  it("the reason names the line that decides, and it never flips past both", () => {
+    // 268k: the share line (241.2k) is above the headroom line (218k).
+    expect(sample(260_000, { ceiling: at(268_000) }).reason).toBe("260000 >= 0.9 x 268000 (8000 tokens left)");
+    // 2M: the headroom line (1.95M) is above the share line (1.8M).
+    expect(sample(1_955_000, { ceiling: at(2_000_000) }).reason).toMatch(/^1955000 leaves headroom 45000 <= imperativeHeadroomTokens 50000 \(and is past 0\.9 x 2000000\)/);
   });
 
-  it("the jump allowance does not add to the share clause", () => {
-    // 1.8M + a 150k allowance clears 0.95 x 2M, but 200k of headroom is over it.
-    const deltas = [150_000, 150_000, 150_000, 150_000, 150_000];
-    expect(sample(1_800_000, { ceiling: at(2_000_000), deltas }).state).toBe("advisory");
-  });
-
-  it("past both lines the reason names the one that came first", () => {
-    // 268k: the headroom line (208k) is below the share line (254.6k).
-    expect(sample(260_000, { ceiling: at(268_000) }).reason).toMatch(/^260000 leaves headroom 8000 <= 60000 /);
-    // 2M: the share line (1.9M) is below the headroom line (1.94M).
-    expect(sample(1_950_000, { ceiling: at(2_000_000) }).reason).toBe("1950000 >= 0.95 x 2000000");
-  });
-
-  it("compact-needed moves to 98%: 96% and 97.9% stay imperative", () => {
+  it("compact-needed stays at 98%: below it and inside both lines is imperative", () => {
     expect(sample(Math.ceil(0.98 * 2_000_000), { ceiling: at(2_000_000) }).state).toBe("compact-needed");
-    expect(sample(Math.ceil(0.96 * 2_000_000), { ceiling: at(2_000_000) }).state).toBe("imperative");
+    expect(sample(1_955_000, { ceiling: at(2_000_000) }).state).toBe("imperative");
     expect(sample(Math.ceil(0.979 * 2_000_000), { ceiling: at(2_000_000) }).state).toBe("imperative");
+    // 96% of 2M leaves 80k: past the share, outside the floor.
+    expect(sample(Math.ceil(0.96 * 2_000_000), { ceiling: at(2_000_000) }).state).toBe("advisory");
   });
 
   it("imperativeHeadroomTokens is configurable", () => {
     const wide = resolveSessionIntelConfig({ imperativeHeadroomTokens: 100_000 });
-    expect(sample(168_000, { ceiling: at(268_000), cfg: wide }).state).toBe("imperative");
-    expect(sample(167_999, { ceiling: at(268_000), cfg: wide }).state).toBe("ok");
+    expect(sample(1_900_000, { ceiling: at(2_000_000), cfg: wide }).state).toBe("imperative");
+    expect(sample(1_899_999, { ceiling: at(2_000_000), cfg: wide }).state).toBe("advisory");
+  });
+
+  it("with a lower share the headroom floor decides on a small ceiling", () => {
+    const low = resolveSessionIntelConfig({ imperativePct: 0.8 });
+    // 80% of 268k leaves 53.6k: past the share, still outside the 50k floor.
+    expect(sample(Math.ceil(0.8 * 268_000), { ceiling: at(268_000), cfg: low }).state).toBe("advisory");
+    expect(sample(218_000, { ceiling: at(268_000), cfg: low }).state).toBe("imperative");
   });
 });
 
@@ -441,6 +456,7 @@ describe("computeSample carries the advisory on every path", () => {
 });
 
 describe("ISS-1263: an unbound-era stamp and the imperative rate limit", () => {
+  const sample = sample85;
   const imperativeTokens = 417_737 - 60_000;
   const minutesBefore = (m: number) => new Date(Date.parse(NOW) - m * 60_000).toISOString();
   const stamped = (binding: "bound" | "unbound-era" | null): SessionIntelPresence => ({
@@ -472,14 +488,14 @@ describe("ISS-1263: an unbound-era stamp and the imperative rate limit", () => {
     expect(at10).toMatchObject({ state: "imperative", suppressedBy: null });
     const at11 = sample(imperativeTokens, { record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(11) } });
     expect(at11).toMatchObject({ state: "imperative", suppressedBy: null });
-    const short = resolveSessionIntelConfig({ handoverRearmIntervalMs: 60_000 });
+    const short = resolveSessionIntelConfig({ ...LINE_85, handoverRearmIntervalMs: 60_000 });
     expect(sample(imperativeTokens, { cfg: short, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(2) } })).toMatchObject({ state: "imperative" });
     expect(sample(imperativeTokens, { cfg: short, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(0.5) } })).toMatchObject({ state: "advisory", suppressedBy: "rate-limit" });
     // The reason quotes the configured interval exactly, never rounded up to minutes.
-    const odd = resolveSessionIntelConfig({ handoverRearmIntervalMs: 90_000 });
+    const odd = resolveSessionIntelConfig({ ...LINE_85, handoverRearmIntervalMs: 90_000 });
     expect(sample(imperativeTokens, { cfg: odd, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(0.5) } }).reason).toMatch(/it repeats at most once every 90 seconds$/);
     // Zero is no interval: nothing is ever rate-limited.
-    const zero = resolveSessionIntelConfig({ handoverRearmIntervalMs: 0 });
+    const zero = resolveSessionIntelConfig({ ...LINE_85, handoverRearmIntervalMs: 0 });
     expect(sample(imperativeTokens, { cfg: zero, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(0) } })).toMatchObject({ state: "imperative", suppressedBy: null });
   });
 

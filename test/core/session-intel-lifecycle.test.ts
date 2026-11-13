@@ -371,7 +371,7 @@ describe("status.json projection", () => {
       expect(buildActivePayload(state, { tokenPressure: coarse }).tokenPressure).toEqual(coarse);
 
       // An imperative sample carries the boolean as false, never absent.
-      writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(3), read: Math.ceil(0.925 * 450_000) - 60_000 })]);
+      writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(3), read: Math.ceil(0.9 * 0.925 * 450_000) + 1_000 })]);
       handleStopHookSample({ root: f.root, sessionId: SID, cwd: f.root, now: T0 + 6 * 60_000, projectsDir: f.projects, userSettingsPath: f.userSettings });
       expect(readCoarseTokenPressureForSession(f.root, { claudeCodeSessionId: SID }, T0 + 6 * 60_000)).toMatchObject({ state: "imperative", compactNeeded: false });
     });
@@ -411,7 +411,7 @@ describe("status.json projection", () => {
 describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
   const CEILING = 0.925 * 450_000;
   const ADVISORY_TOKENS = Math.ceil(0.7 * CEILING) + 1_000;
-  const IMPERATIVE_TOKENS = Math.ceil(CEILING) - 60_000 + 1_000;
+  const IMPERATIVE_TOKENS = Math.ceil(0.9 * CEILING) + 1_000;
   /** ISS-1197 commit 2: past the default compactNeededPct of 0.98 (T-533). */
   const COMPACT_TOKENS = Math.ceil(0.98 * CEILING) + 1_000;
   const seams = (f: Fx) => ({ cwd: f.root, projectsDir: f.projects, userSettingsPath: f.userSettings });
@@ -450,7 +450,7 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
       const parsed = JSON.parse(imp.output!) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
       expect(parsed).toEqual({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: expect.any(String) } });
       expect(PROMPT_HOOK_EVENT_NAME).toBe("UserPromptSubmit");
-      expect(parsed.hookSpecificOutput.additionalContext).toMatch(/^\[storybloq\] Context pressure IMPERATIVE: 8[0-9]% of the expected auto-compact point \([0-9,]+ tokens; source setting, high confidence\)\. Basis: [0-9]+ leaves headroom [0-9]+ <= 60000 \(the larger of imperativeHeadroomTokens 60000 and jump allowance [0-9]+\)\. Write a handover now via storybloq_handover_create/);
+      expect(parsed.hookSpecificOutput.additionalContext).toMatch(/^\[storybloq\] Context pressure IMPERATIVE: 9[0-7]% of the expected auto-compact point \([0-9,]+ tokens; source setting, high confidence\)\. Basis: [0-9]+ >= 0\.9 x [0-9]+ \([0-9]+ tokens left\)\. Write a handover now via storybloq_handover_create/);
       // ISS-1197: the directive says compaction after the handover is expected.
       expect(parsed.hookSpecificOutput.additionalContext).toMatch(/auto-compaction that follows is expected and safe: the session continues through it/);
       expect(Object.keys(parsed)).toEqual(["hookSpecificOutput"]);
@@ -640,7 +640,7 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
 
 describe("ISS-1316: a handover whose stamp did not land", () => {
   const CEILING = 0.925 * 450_000;
-  const IMPERATIVE_TOKENS = Math.ceil(CEILING) - 60_000 + 1_000;
+  const IMPERATIVE_TOKENS = Math.ceil(0.9 * CEILING) + 1_000;
   const seams = (f: Fx) => ({ cwd: f.root, projectsDir: f.projects, userSettingsPath: f.userSettings });
   const contextOfLine = (r: { output: string | null }) => (JSON.parse(r.output!) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
 

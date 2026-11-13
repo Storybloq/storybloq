@@ -415,7 +415,7 @@ describe("persistSample end to end", () => {
   it("a handover stamped between compute and persist is honoured: suppression is recomputed on the SAME validated scan and the persisted observation is the one that passed", () => {
     withRoot((root) => {
       seed(root, { era: "1:2" });
-      const tokens = 417_737 - 60_000;
+      const tokens = 417_737 - 40_000; // past 0.9 x the ceiling and within 50,000 of it
       const path = writeTranscript(join(root, "projects"), "p", SID, [assistantRecord({ ts: at(0), read: tokens - 2 })]);
       const scan = scanTail({ path, sessionId: SID, era: "1:2", revisionSeen: 0, epochSince: null })!;
       const computed = computeSample({ scan, ceiling: ceiling(), cfg, sampledBy: "query", sampledAt: at(0), record: null, usage: USAGE });
@@ -1020,7 +1020,7 @@ describe("ISS-1263: the unbound-era stamp and the emission record", () => {
     it("persistSample never writes the emission record, whoever sampled", () => {
       withRoot((root) => {
         seed(root, { era: "1:2" });
-        const tokens = 417_737 - 60_000;
+        const tokens = 417_737 - 40_000; // past 0.9 x the ceiling and within 50,000 of it
         const path = writeTranscript(join(root, "projects"), "p", SID, [assistantRecord({ ts: at(0), read: tokens - 2 })]);
         for (const sampledBy of ["prompt-hook", "mcp-refresh", "stop-hook", "query"] as const) {
           const scan = scanTail({ path, sessionId: SID, era: "1:2", revisionSeen: intelOf(root).revision, epochSince: null })!;

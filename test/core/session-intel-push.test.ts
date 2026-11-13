@@ -103,7 +103,7 @@ const T0 = Date.parse("2026-09-09T12:00:00Z");
 const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
 const CEILING = 0.925 * 450_000;
 const ADVISORY_TOKENS = Math.ceil(0.7 * CEILING) + 1_000;
-const IMPERATIVE_TOKENS = Math.ceil(CEILING) - 60_000 + 1_000;
+const IMPERATIVE_TOKENS = Math.ceil(0.9 * CEILING) + 1_000;
 /** ISS-1197 commit 2: past the default compactNeededPct of 0.98 (T-533). */
 const COMPACT_TOKENS = Math.ceil(0.98 * CEILING) + 1_000;
 
@@ -174,7 +174,7 @@ describe("basisText (ISS-1249)", () => {
     expect(basisText("1900000 >= 0.95 x 2000000")).toBe(" Basis: 1900000 >= 0.95 x 2000000.");
   });
   it("states the rule in words when the sample carries no reason", () => {
-    expect(basisText(null)).toBe(" Basis: the imperative fires at the headroom floor (or the next-turn jump allowance, if larger) or at the imperative share of the expected auto-compact point, whichever comes first.");
+    expect(basisText(null)).toBe(" Basis: the imperative fires once the context is both at the imperative share of the expected auto-compact point and within the headroom floor of it, whichever comes later.");
     expect(basisText(undefined)).toBe(basisText(null));
   });
   it("states a suppression reason without the threshold parenthetical", () => {
@@ -368,7 +368,7 @@ describe("guide directive and handover stamp", () => {
       // ISS-1263: the directive claims the one imperative line, so it is read
       // once and both properties are checked on that one delivery.
       const directive = guideDirectiveFor(f.root, SID, now + 1000);
-      expect(directive).toMatch(/^Context pressure imperative \([78][0-9]% of ceiling, source setting, high confidence\): write a handover now via storybloq_handover_create, then keep working in this same turn\./);
+      expect(directive).toMatch(/^Context pressure imperative \(9[0-7]% of ceiling, source setting, high confidence\): write a handover now via storybloq_handover_create, then keep working in this same turn\./);
       // ISS-1197: the directive says compaction after the handover is expected.
       expect(directive).toMatch(/auto-compaction that follows is expected and safe: the session continues through it/);
       expect(guideDirectiveFor(f.root, null, now + 1000)).toBeNull();

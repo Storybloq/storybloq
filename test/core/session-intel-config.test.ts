@@ -75,8 +75,8 @@ describe("sessionIntel config: hot-path reader", () => {
     expect(clamped.notes).toHaveLength(3);
   });
 
-  it("T-533: the imperative defaults to 0.95 with 60000 tokens of headroom, and compact-needed to 0.98", () => {
-    expect(resolveSessionIntelConfig(null)).toMatchObject({ advisoryPct: 0.7, imperativePct: 0.95, imperativeHeadroomTokens: 60_000, compactNeededPct: 0.98 });
+  it("T-533, r-awey8xrtwqf1r005: the imperative defaults to 0.9 with 50000 tokens of headroom, and compact-needed to 0.98", () => {
+    expect(resolveSessionIntelConfig(null)).toMatchObject({ advisoryPct: 0.7, imperativePct: 0.9, imperativeHeadroomTokens: 50_000, compactNeededPct: 0.98 });
   });
 
   it("T-533: imperativeHeadroomTokens is taken as written in 10000..500000, falls back per field outside it, and joins no pair rule", () => {
@@ -87,9 +87,9 @@ describe("sessionIntel config: hot-path reader", () => {
     }
     for (const value of [9_999, 500_001, 60_000.5, "60000", null, Number.NaN]) {
       const cfg = resolveSessionIntelConfig({ imperativeHeadroomTokens: value });
-      expect(cfg.imperativeHeadroomTokens, `${String(value)} reader`).toBe(60_000);
+      expect(cfg.imperativeHeadroomTokens, `${String(value)} reader`).toBe(50_000);
       expect(cfg.notes, `${String(value)} note`).toHaveLength(1);
-      expect(cfg.notes[0], `${String(value)} note`).toMatch(/^sessionIntel\.imperativeHeadroomTokens ignored \(.*\); default 60000 used$/);
+      expect(cfg.notes[0], `${String(value)} note`).toMatch(/^sessionIntel\.imperativeHeadroomTokens ignored \(.*\); default 50000 used$/);
       expect(SessionIntelConfigSchema.safeParse({ imperativeHeadroomTokens: value }).success, `${String(value)} schema`).toBe(false);
     }
     // A headroom is not ordered against the percentages: extreme pairs pass.
@@ -113,18 +113,18 @@ describe("sessionIntel config: hot-path reader", () => {
   });
 
   it("ISS-1197 commit 2: compactNeededPct at or below imperativePct falls back to the DEFAULT PAIR", () => {
-    const equal = resolveSessionIntelConfig({ imperativePct: 0.9, compactNeededPct: 0.9 });
-    expect(equal.imperativePct).toBe(0.95);
+    const equal = resolveSessionIntelConfig({ imperativePct: 0.92, compactNeededPct: 0.92 });
+    expect(equal.imperativePct).toBe(0.9);
     expect(equal.compactNeededPct).toBe(0.98);
     expect(equal.notes).toHaveLength(1);
-    expect(equal.notes[0]).toMatch(/compactNeededPct \(0\.9\) must exceed imperativePct \(0\.9\)/);
+    expect(equal.notes[0]).toMatch(/compactNeededPct \(0\.92\) must exceed imperativePct \(0\.92\)/);
 
     // Only imperativePct raised: the pair rule still governs against the default.
     const onlyImperative = resolveSessionIntelConfig({ imperativePct: 0.99 });
-    expect(onlyImperative.imperativePct).toBe(0.95);
+    expect(onlyImperative.imperativePct).toBe(0.9);
     expect(onlyImperative.compactNeededPct).toBe(0.98);
     expect(onlyImperative.notes).toHaveLength(1);
-    expect(onlyImperative.notes[0]).toMatch(/defaults 0\.95\/0\.98 used for the pair/);
+    expect(onlyImperative.notes[0]).toMatch(/defaults 0\.9\/0\.98 used for the pair/);
     // T-533: 0.97 now sits under the default compact-needed line and is legal.
     expect(resolveSessionIntelConfig({ imperativePct: 0.97 })).toMatchObject({ imperativePct: 0.97, compactNeededPct: 0.98, notes: [] });
 
@@ -136,23 +136,23 @@ describe("sessionIntel config: hot-path reader", () => {
     // The restored default imperative is still ordered against advisory: the
     // advisory rule runs after this one and reports its own fallback.
     const cascade = resolveSessionIntelConfig({ advisoryPct: 0.95, imperativePct: 0.94, compactNeededPct: 0.92 });
-    expect(cascade).toMatchObject({ advisoryPct: 0.7, imperativePct: 0.95, compactNeededPct: 0.98 });
+    expect(cascade).toMatchObject({ advisoryPct: 0.7, imperativePct: 0.9, compactNeededPct: 0.98 });
     expect(cascade.notes).toHaveLength(2);
-    // T-533: advisoryPct at its 0.95 maximum meets the default imperative, so it falls back alone.
+    // T-533: advisoryPct at its 0.95 maximum is above the default imperative (0.9), so it falls back alone.
     const top = resolveSessionIntelConfig({ advisoryPct: 0.95 });
-    expect(top).toMatchObject({ advisoryPct: 0.7, imperativePct: 0.95, compactNeededPct: 0.98 });
+    expect(top).toMatchObject({ advisoryPct: 0.7, imperativePct: 0.9, compactNeededPct: 0.98 });
     expect(top.notes).toHaveLength(1);
-    expect(top.notes[0]).toMatch(/defaults 0\.7\/0\.95 used for the pair/);
+    expect(top.notes[0]).toMatch(/defaults 0\.7\/0\.9 used for the pair/);
   });
 
   it("ISS-1197 commit 2: the advisory/imperative fallback can RAISE imperativePct into compactNeededPct, and the chain is restored afterwards", () => {
     // Both inputs are individually in bounds and pass the compact rule on the
-    // way in; the advisory rule then resets imperativePct to 0.95 (T-533), at
+    // way in; the advisory rule then resets imperativePct to 0.9 (r-awey8xrtwqf1r005), at
     // or above the value compactNeededPct was allowed to keep.
     for (const raw of [
       { advisoryPct: 0.75, imperativePct: 0.7, compactNeededPct: 0.9 },
       { advisoryPct: 0.85, imperativePct: 0.8, compactNeededPct: 0.9 },
-      { advisoryPct: 0.9, imperativePct: 0.85, compactNeededPct: 0.95 },
+      { advisoryPct: 0.88, imperativePct: 0.86, compactNeededPct: 0.88 },
     ]) {
       const cfg = resolveSessionIntelConfig(raw);
       expect(cfg.advisoryPct, JSON.stringify(raw)).toBeLessThan(cfg.imperativePct);
@@ -176,14 +176,14 @@ describe("sessionIntel config: hot-path reader", () => {
   it("imperative at or below advisory falls back to the DEFAULT PAIR, not just the offender", () => {
     const equal = resolveSessionIntelConfig({ advisoryPct: 0.8, imperativePct: 0.8 });
     expect(equal.advisoryPct).toBe(0.7);
-    expect(equal.imperativePct).toBe(0.95);
+    expect(equal.imperativePct).toBe(0.9);
     expect(equal.notes).toHaveLength(1);
     expect(equal.notes[0]).toMatch(/imperativePct \(0\.8\) must exceed advisoryPct \(0\.8\)/);
 
-    // The user set only advisoryPct at the default imperative (0.95, T-533): the pair rule still governs.
-    const onlyAdvisory = resolveSessionIntelConfig({ advisoryPct: 0.95 });
+    // The user set only advisoryPct at the default imperative (0.9, r-awey8xrtwqf1r005): the pair rule still governs.
+    const onlyAdvisory = resolveSessionIntelConfig({ advisoryPct: 0.9 });
     expect(onlyAdvisory.advisoryPct).toBe(0.7);
-    expect(onlyAdvisory.imperativePct).toBe(0.95);
+    expect(onlyAdvisory.imperativePct).toBe(0.9);
     expect(onlyAdvisory.notes).toHaveLength(1);
   });
 
@@ -201,7 +201,7 @@ describe("sessionIntel config: hot-path reader", () => {
     // advisoryPct out of bounds -> default 0.7; imperativePct 0.65 is in bounds but below 0.7.
     const cfg = resolveSessionIntelConfig({ advisoryPct: 2, imperativePct: 0.65 });
     expect(cfg.notes).toHaveLength(2);
-    expect(cfg.imperativePct).toBe(0.95);
+    expect(cfg.imperativePct).toBe(0.9);
   });
 
   it("unknown keys pass through untouched", () => {

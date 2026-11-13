@@ -4,9 +4,11 @@
  *
  *   advisory    contextTokens >= advisoryPct x ceiling, or the ceiling
  *               carries a conflict;
- *   imperative  ceiling - contextTokens <= max(imperativeHeadroomTokens,
- *               jumpAllowance) or contextTokens >= imperativePct x ceiling,
- *               whichever first (T-533); jumpAllowance = clamp(p90 of
+ *   imperative  ceiling - contextTokens <= imperativeHeadroomTokens AND
+ *               contextTokens >= imperativePct x ceiling, so the later of
+ *               the two lines (T-533, owner ruling r-awey8xrtwqf1r005);
+ *               jumpAllowance is reported only and no longer widens the
+ *               rule; jumpAllowance = clamp(p90 of
  *               per-assistant deltas since the epoch, floor, cap), floor
  *               when fewer than 5 deltas;
  *   compact-needed
@@ -183,15 +185,17 @@ export function computeSample(input: ComputeSampleInput): TokenPressureSample {
   // and imperative would otherwise win every time; and without the jump
   // allowance, because the allowance is headroom reserved for the NEXT turn,
   // while this line is about where the context already is.
-  // T-533: the imperative fires at a headroom floor (or the jump allowance,
-  // if larger, so a turn's worth of room is kept) or at imperativePct of the
-  // ceiling, whichever comes first. The allowance lives only in the headroom
-  // term; the raw difference is compared, not the rounded `headroom` field.
-  const headroomLimit = Math.max(cfg.imperativeHeadroomTokens, jump.value);
+  // T-533, amended by owner ruling r-awey8xrtwqf1r005: the imperative fires
+  // once the context is BOTH at imperativePct of the ceiling AND within the
+  // headroom floor of it, which is the later of the two lines. A session at
+  // 74% with 60,000 tokens left was being asked for a handover; the owner
+  // ruled that far too early. The jump allowance no longer widens the floor.
+  // The raw difference is compared, not the rounded `headroom` field.
+  const headroomLimit = cfg.imperativeHeadroomTokens;
   const byHeadroom = c - tokens <= headroomLimit;
   const byPct = tokens >= cfg.imperativePct * c;
   if (tokens >= cfg.compactNeededPct * c) rawState = "compact-needed";
-  else if (byHeadroom || byPct) rawState = "imperative";
+  else if (byHeadroom && byPct) rawState = "imperative";
   else if (tokens >= cfg.advisoryPct * c || ceiling.conflict !== null) rawState = "advisory";
 
   let state = rawState;
@@ -218,12 +222,13 @@ export function computeSample(input: ComputeSampleInput): TokenPressureSample {
   // alone already clear the higher line), so the stamp continues rather than
   // being cleared and re-taken on the way past.
   const imperativeSince = rawState === "imperative" || rawState === "compact-needed" ? previousSince ?? input.sampledAt : null;
-  // When both clauses hold, the reason names the one whose line is lower in
-  // tokens: the one that fired first as the context grew, so it never flips.
-  const pctFirst = cfg.imperativePct * c <= c - headroomLimit;
-  const imperativeBasis = byPct && (pctFirst || !byHeadroom)
-    ? `${tokens} >= ${cfg.imperativePct} x ${Math.round(c)}`
-    : `${tokens} leaves headroom ${Math.round(c - tokens)} <= ${headroomLimit} (the larger of imperativeHeadroomTokens ${cfg.imperativeHeadroomTokens} and jump allowance ${jump.value})`;
+  // Both clauses hold at an imperative. The reason names the one whose line
+  // is HIGHER in tokens: the one that was reached last and so decided it. It
+  // depends on the ceiling and the config only, so it never flips.
+  const pctDecides = cfg.imperativePct * c >= c - headroomLimit;
+  const imperativeBasis = pctDecides
+    ? `${tokens} >= ${cfg.imperativePct} x ${Math.round(c)} (${Math.round(c - tokens)} tokens left)`
+    : `${tokens} leaves headroom ${Math.round(c - tokens)} <= imperativeHeadroomTokens ${headroomLimit} (and is past ${cfg.imperativePct} x ${Math.round(c)})`;
   const reason =
     rawState === "compact-needed"
       ? `${tokens} >= ${cfg.compactNeededPct} x ${Math.round(c)}; past this point a handover does not help and only /compact does`

@@ -82,7 +82,7 @@ export const COMPACT_NEEDED_ADVICE =
  * presence sample, which carries no reason.
  */
 export function basisText(reason: string | null | undefined): string {
-  if (!reason) return " Basis: the imperative fires at the headroom floor (or the next-turn jump allowance, if larger) or at the imperative share of the expected auto-compact point, whichever comes first.";
+  if (!reason) return " Basis: the imperative fires once the context is both at the imperative share of the expected auto-compact point and within the headroom floor of it, whichever comes later.";
   return ` Basis: ${reason}.`;
 }
 

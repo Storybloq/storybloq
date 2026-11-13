@@ -112,8 +112,8 @@ Do NOT search source code for this. The full config.json schema is shown below. 
   "sessionIntel": {
     "enabled": "boolean (default true). false disables sampling, banners, the prompt-hook line, the guide directive and the status projection for this project; `session intel` still answers read-only",
     "advisoryPct": "number 0.5-0.95 (default 0.70) of the expected auto-compact ceiling",
-    "imperativePct": "number 0.6-0.99 (default 0.95), must exceed advisoryPct; imperative here or at imperativeHeadroomTokens, whichever first",
-    "imperativeHeadroomTokens": "integer 10000-500000 (default 60000) headroom, or the jump allowance if larger",
+    "imperativePct": "number 0.6-0.99 (default 0.90), must exceed advisoryPct; imperative when this and imperativeHeadroomTokens both hold",
+    "imperativeHeadroomTokens": "integer 10000-500000 (default 50000) headroom",
     "compactNeededPct": "number 0.85-1.0 (default 0.98), must exceed imperativePct; past it every surface says /compact, not a handover; nothing suppresses it",
     "ceilingFraction": "number 0.8-1.0 (default 0.925; measured fire point over autoCompactWindow)",
     "boundarySampleCount": "integer 1-50 (default 20) recent auto-compaction boundaries used for the measured ceiling",

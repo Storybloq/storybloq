@@ -256,7 +256,7 @@ describe("sampleSession", () => {
   it("read-only and bound queries agree after a new boundary: a pre-compaction handover suppresses neither, and nothing is written by the read-only one", () => {
     withFixture((f) => {
       const era = bindCaller(f.root);
-      const tokens = 416_250 - 60_000;
+      const tokens = 416_250 - 40_000; // past 0.9 x the ceiling and within 50,000 of it
       writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(0), read: tokens })]);
       expect(sampleSession({ root: f.root, cwd: f.root, sampledBy: "query", projectsDir: f.projects, now: T0 }).pressure?.state).toBe("imperative");
       expect(stampHandover(f.root, SID, era, tokens, T0).status).toBe("written");
@@ -320,8 +320,8 @@ describe("handleSessionIntel (the shared CLI/MCP handler)", () => {
   it("ISS-1197: the md surface carries the same imperative wording as the banner, the guide directive and the prompt hook", () => {
     withFixture((f) => {
       bindCaller(f.root);
-      // T-533: imperative fires at 60,000 tokens of headroom (356,250 of 416,250), before 0.95 x 416,250.
-      writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(0), read: 360_000 })]);
+      // r-awey8xrtwqf1r005: imperative needs 0.9 x 416,250 (374,625) AND 50,000 or fewer tokens left.
+      writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(0), read: 380_000 })]);
       const md = formatSessionIntelMd(handleSessionIntel({ cwd: f.root, format: "json", projectsDir: f.projects }).result);
       expect(md).toMatch(/Token pressure: IMPERATIVE/);
       expect(md).toMatch(/Write a handover now \(storybloq handover create \/ storybloq_handover_create\), then keep working in this same turn\./);

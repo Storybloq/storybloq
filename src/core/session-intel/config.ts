@@ -20,10 +20,14 @@ export interface SessionIntelConfig {
   readonly advisoryPct: number;
   readonly imperativePct: number;
   /**
-   * T-533: the imperative also fires once the headroom (ceiling minus tokens)
-   * is at or below the larger of this and the next-turn jump allowance,
-   * whichever of that and `imperativePct` comes first. It joins no pair rule:
-   * a token count has no ordering against the percentages.
+   * T-533, amended by owner ruling r-awey8xrtwqf1r005 (2026-11-13): the
+   * imperative fires once BOTH hold: the tokens reached `imperativePct` of
+   * the ceiling AND the headroom (ceiling minus tokens) is at or below this.
+   * That is the later of the two lines, so a session whose ceiling is small
+   * is asked at the share, and one whose ceiling is very large is asked only
+   * when this much room is left. The next-turn jump allowance no longer
+   * widens it. It joins no pair rule: a token count has no ordering against
+   * the percentages.
    */
   readonly imperativeHeadroomTokens: number;
   readonly ceilingFraction: number;
@@ -71,8 +75,8 @@ export interface SessionIntelConfig {
 export const DEFAULT_SESSION_INTEL_CONFIG: Omit<SessionIntelConfig, "notes"> = {
   enabled: true,
   advisoryPct: 0.7,
-  imperativePct: 0.95,
-  imperativeHeadroomTokens: 60_000,
+  imperativePct: 0.9,
+  imperativeHeadroomTokens: 50_000,
   ceilingFraction: 0.925,
   boundarySampleCount: 20,
   jumpAllowanceFloorTokens: 25_000,

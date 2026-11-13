@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "./canonical-json.js";
-import { legacyLandingId } from "./legacy-landings.js";
-import { receiptElementId } from "./receipts.js";
+import { APPEND_ONLY_FIELDS, appendOnlyKeyOf, appendOnlyKeying, resolutionEntryId } from "./append-only-merge.js";
 import type { ResolveResult } from "./resolve.js";
 
 /**
@@ -16,7 +15,13 @@ import type { ResolveResult } from "./resolve.js";
  *
  * Every resolution writes under `MERGE_RESOLUTION_AUTHORITY` (the receipts
  * guard, commit 2, admits these moves only under it) and appends a history
- * entry to `receiptResolutions` carrying every body the conflict named.
+ * entry to `receiptResolutions` carrying every body the conflict named. The
+ * entry's `id` is its stable rr- id; `conflictId` names the conflict. The
+ * history merges append-only by that id.
+ *
+ * Keeping one side removes only the keyed bodies the conflict's digests name,
+ * classified exactly as the merge classified them: an opaque element that
+ * happens to share the id (malformed, or a future version) is never touched.
  */
 
 export const MERGE_RESOLUTION_AUTHORITY: unique symbol = Symbol("receipt-merge-resolution");
@@ -42,22 +47,8 @@ export interface ReceiptResolveOptions {
   now?: () => string;
 }
 
-const digestOf = (element: unknown): string => {
-  let text: string;
-  try {
-    text = canonicalJson(element);
-  } catch {
-    text = `unrepresentable:${String(element)}`;
-  }
-  return createHash("sha256").update(text).digest("hex");
-};
-
-function elementKey(element: unknown, field: string): string | undefined {
-  if (field === "landings") {
-    return element !== null && typeof element === "object" && !Array.isArray(element) ? legacyLandingId(element) : undefined;
-  }
-  return receiptElementId(element);
-}
+/** Content identity is the canonical form only; an element without one refuses the resolve. */
+const digestOf = (element: unknown): string => createHash("sha256").update(canonicalJson(element)).digest("hex");
 
 const asDigests = (v: unknown): string[] => (Array.isArray(v) ? v.filter((d): d is string => typeof d === "string") : []);
 
@@ -80,13 +71,14 @@ export function resolveReceiptConflict(
     throw new Error(`No ${opaque ? "receipt-opaque conflict" : "receipt conflict"} for ${JSON.stringify(wanted)} on ${options.label}.`);
   }
   const field = typeof target.field === "string" ? target.field : "receipts";
-  if (field !== "receipts" && field !== "landings") throw new Error(`Receipt conflict on unknown field ${JSON.stringify(field)}.`);
+  if (!APPEND_ONLY_FIELDS.includes(field)) throw new Error(`Receipt conflict on unknown field ${JSON.stringify(field)}.`);
+  const keying = appendOnlyKeying(field);
   const array = Array.isArray(entity[field]) ? (entity[field] as unknown[]) : [];
 
   // Every body the conflict names, found by digest in the merged array.
   const byDigest = new Map<string, unknown>();
   for (const element of array) {
-    if (opaque || elementKey(element, field) === wanted) {
+    if (opaque || appendOnlyKeyOf(element, keying) === wanted) {
       const d = digestOf(element);
       if (!byDigest.has(d)) byDigest.set(d, element);
     }
@@ -104,14 +96,18 @@ export function resolveReceiptConflict(
       );
     }
     const survivor = chosen[0]!;
+    const named = new Set([...sides.base, ...sides.ours, ...sides.theirs]);
     let placed = false;
     const next: unknown[] = [];
     for (const element of array) {
-      if (elementKey(element, field) !== wanted) {
+      if (appendOnlyKeyOf(element, keying) !== wanted) {
         next.push(element);
         continue;
       }
-      if (!placed && digestOf(element) === survivor) {
+      const d = digestOf(element);
+      if (!named.has(d)) {
+        next.push(element);
+      } else if (d === survivor && !placed) {
         next.push(element);
         placed = true;
       }
@@ -120,15 +116,16 @@ export function resolveReceiptConflict(
   }
 
   const history = Array.isArray(entity.receiptResolutions) ? [...(entity.receiptResolutions as unknown[])] : [];
-  history.push({
+  const entry: Record<string, unknown> = {
     kind,
     field,
-    id: wanted,
+    conflictId: wanted,
     keep,
     bodies: { base: bodiesOf(sides.base), ours: bodiesOf(sides.ours), theirs: bodiesOf(sides.theirs) },
     by: options.actor ?? "unknown",
     at: (options.now ?? (() => new Date().toISOString()))(),
-  });
+  };
+  history.push({ id: resolutionEntryId(entry), ...entry });
   entity.receiptResolutions = history;
 
   const remaining = conflicts.filter((c) => c !== target);

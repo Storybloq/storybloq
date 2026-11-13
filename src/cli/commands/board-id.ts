@@ -1,13 +1,14 @@
 /**
  * C-v4.1 2.1 and 2.3 (ISS-1433): `storybloq board-id init` and `storybloq board-id adopt`.
  *
- * Both write config.json through the canonical config writer under the project
- * lock, then commit only that file (the ISS-1107 recorder with commit forced on).
+ * Both read, check and write config.json inside one hold of the project lock
+ * (the unlocked writer under the held lock), then commit only that file (the
+ * ISS-1107 recorder with commit forced on).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  BOARD_ID_AUTHORITY, isBoardId, mintBoardId, readLandedBoardId, receiptsNamingBoard,
+  BOARD_ID_AUTHORITY, isBoardId, mintBoardId, readLandedIdentity, receiptsNamingBoardOnDisk,
 } from "../../core/board-id.js";
 import { runWithBoardWriteContext } from "../../core/board-write-recorder.js";
 import { reportBoardWrite, type BoardWriteReport } from "../../core/board-git-state.js";
@@ -33,17 +34,19 @@ function readConfigRaw(root: string): Record<string, unknown> {
 
 /** Mints the board id on a board that has none and commits only config.json. */
 export async function handleBoardIdInit(root: string, format: Format): Promise<CommandResult> {
-  const { writeConfig } = await import("../../core/project-loader.js");
+  const { withProjectLock, writeConfigUnlocked } = await import("../../core/project-loader.js");
   let refused: string | undefined;
   let minted: string | undefined;
   const { context } = await runWithBoardWriteContext("board-id init", true, async () => {
-    const config = readConfigRaw(root);
-    if (isBoardId(config.boardId)) {
-      refused = `This board already has the board id ${config.boardId}. It never changes; nothing was written.`;
-      return;
-    }
-    minted = mintBoardId();
-    await writeConfig({ ...config, boardId: minted } as never, root);
+    await withProjectLock(root, { strict: false }, async () => {
+      const config = readConfigRaw(root);
+      if (isBoardId(config.boardId)) {
+        refused = `This board already has the board id ${config.boardId}. It never changes; nothing was written.`;
+        return;
+      }
+      minted = mintBoardId();
+      await writeConfigUnlocked({ ...config, boardId: minted } as never, root);
+    });
   });
   if (refused) return render(format, false, refused);
   const report = await reportBoardWrite(context);
@@ -62,8 +65,13 @@ export async function handleBoardIdAdopt(root: string, opts: { ref?: string }, f
   let message = "";
   let landed: string | undefined;
   const { context } = await runWithBoardWriteContext("board-id adopt", true, async () => {
-    await withConflictResolutionLock(root, async ({ state }) => {
-      landed = readLandedBoardId(root, ref);
+    await withConflictResolutionLock(root, async () => {
+      const identity = readLandedIdentity(root, ref);
+      if (identity.conflicted) {
+        refused = `Cannot adopt from ${ref}: its config has an unresolved board identity conflict. Resolve it on ${ref} first; nothing was written.`;
+        return;
+      }
+      landed = identity.boardId;
       if (!landed) {
         refused = `No board id on ${ref}. Land one first (\`storybloq board-id init\` on the default branch).`;
         return;
@@ -77,8 +85,13 @@ export async function handleBoardIdAdopt(root: string, opts: { ref?: string }, f
         return;
       }
       if (local && local !== landed) {
-        const records = [...state.tickets, ...state.issues] as unknown as Record<string, unknown>[];
-        const naming = receiptsNamingBoard(records, local);
+        // The raw records, not the loaded state: a schema-invalid record the
+        // loader skipped can still hold a receipt naming the local id.
+        const { naming, uninspectable } = receiptsNamingBoardOnDisk(root, local);
+        if (uninspectable.length > 0) {
+          refused = `Cannot adopt ${landed}: ${uninspectable.length} record(s) cannot be inspected for receipts naming ${local}: ${uninspectable.join(", ")}. Repair them first; nothing was written.`;
+          return;
+        }
         if (naming.length > 0) {
           refused = `Cannot adopt ${landed}: ${naming.length} receipt(s) on this board name the local id ${local}: ${naming.join(", ")}.`;
           return;

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleConflictsList, handleConflictsShow, handleResolve } from "../../../src/cli/commands/conflicts.js";
@@ -11,8 +11,14 @@ import { receipt } from "../../core/receipt-fixture.js";
 
 type Json = Record<string, unknown>;
 
+const made: string[] = [];
+afterEach(() => {
+  for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 function makeProject(): string {
   const dir = mkdtempSync(join(tmpdir(), "receipt-resolve-"));
+  made.push(dir);
   for (const sub of ["tickets", "issues", "notes", "lessons", "handovers"]) mkdirSync(join(dir, ".story", sub), { recursive: true });
   writeFileSync(join(dir, ".story", "config.json"), JSON.stringify({
     version: 2, project: "test", type: "npm", language: "ts",
@@ -71,7 +77,8 @@ describe("resolve --receipt <id> --keep", () => {
     const read = readReceipts(t);
     expect(read.state === "ok" && read.entries.map((e) => e.state)).toEqual(["ok"]);
     const [h] = t.receiptResolutions as Json[];
-    expect(h).toMatchObject({ kind: "receipt", field: "receipts", id: A.id, keep: "ours", by: "tester" });
+    expect(h).toMatchObject({ kind: "receipt", field: "receipts", conflictId: A.id, keep: "ours", by: "tester" });
+    expect(h!.id).toMatch(/^rr-[0-9a-f]{16}$/);
     expect(h!.bodies).toEqual({ base: [], ours: [A], theirs: [A2] });
     expect(typeof h!.at).toBe("string");
   });
@@ -140,7 +147,7 @@ describe("resolve --receipt-conflict <oc-id> --keep", () => {
       const t = readTicket(dir);
       expect(t.receipts).toEqual([A, NO_ID]);
       expect(conflictsOf(t)).toEqual([]);
-      expect((t.receiptResolutions as Json[])[0]).toMatchObject({ kind: "receipt-opaque", id: oc, keep, bodies: { base: [NO_ID], ours: [], theirs: [NO_ID] } });
+      expect((t.receiptResolutions as Json[])[0]).toMatchObject({ kind: "receipt-opaque", conflictId: oc, keep, bodies: { base: [NO_ID], ours: [], theirs: [NO_ID] } });
     }
   });
 });
@@ -189,5 +196,94 @@ describe("supersedes after resolution (reader level; the scope rule is 3.7, comm
     await handleResolve("T-001", dir, { receipt: A.id as string, keep: "both" });
     const read = readReceipts(readTicket(dir));
     expect(read.state === "ok" && read.entries.filter((e) => e.state === "ok").map((e) => (e as { receipt: Json }).receipt.id)).toEqual([C.id]);
+  });
+});
+
+describe("review fixes: resolution history, exact bodies, entity-level replacement", () => {
+  const writeTicket = (dir: string, t: Json) => writeFileSync(join(dir, ".story", "tickets", "T-001.json"), JSON.stringify(t, null, 2) + "\n");
+
+  it("keeping one side removes only the keyed bodies the conflict named; a future-version element sharing the id survives", async () => {
+    const dir = makeProject();
+    const FUTURE_A = { ...A, v: 2, shape: "new" };
+    const MALFORMED_A = { id: A.id, kind: "test" };
+    mergedTicket(dir, [], [A, FUTURE_A, MALFORMED_A], [A2]);
+    await handleResolve("T-001", dir, { receipt: A.id as string, keep: "theirs" });
+    const t = readTicket(dir);
+    expect(t.receipts).toEqual([A2, FUTURE_A, MALFORMED_A]);
+  });
+
+  it("history entries carry stable ids, and concurrent resolutions on two clones merge to both entries with every body", async () => {
+    const dir = makeProject();
+    const B2 = receipt({ id: "rc-bbbbbbbbbbbbbbbb", result: "error" });
+    const base = mergedTicket(dir, [], [A, B], [A2, B2]);
+    await handleResolve("T-001", dir, { receipt: A.id as string, keep: "ours", actor: "one" });
+    const ours = readTicket(dir);
+    writeTicket(dir, base);
+    await handleResolve("T-001", dir, { receipt: B.id as string, keep: "theirs", actor: "two" });
+    const theirs = readTicket(dir);
+    for (const t of [ours, theirs]) expect((t.receiptResolutions as Json[])[0]!.id).toMatch(/^rr-[0-9a-f]{16}$/);
+    const m = threeWayMerge(base, ours, theirs, "ticket");
+    const history = m.merged.receiptResolutions as Json[];
+    expect(history.map((h) => h.by)).toEqual(["one", "two"]);
+    expect(history[0]!.bodies).toEqual({ base: [], ours: [A], theirs: [A2] });
+    expect(history[1]!.bodies).toEqual({ base: [], ours: [B], theirs: [B2] });
+    expect(((m.merged._conflicts as Json[] | undefined) ?? []).filter((c) => c.field === "receiptResolutions")).toEqual([]);
+  });
+
+  it("the same conflict resolved on both clones keeps both history entries", async () => {
+    const dir = makeProject();
+    const base = mergedTicket(dir, [], [A], [A2]);
+    await handleResolve("T-001", dir, { receipt: A.id as string, keep: "ours", actor: "one" });
+    const ours = readTicket(dir);
+    writeTicket(dir, base);
+    await handleResolve("T-001", dir, { receipt: A.id as string, keep: "theirs", actor: "two" });
+    const theirs = readTicket(dir);
+    const m = threeWayMerge(base, ours, theirs, "ticket");
+    expect((m.merged.receiptResolutions as Json[]).map((h) => [h.by, h.keep])).toEqual([["one", "ours"], ["two", "theirs"]]);
+  });
+
+  it("generic --field and blanket --use never replace or delete the resolution history", async () => {
+    const dir = makeProject();
+    mergedTicket(dir, [], [A], [A2]);
+    await handleResolve("T-001", dir, { receipt: A.id as string, keep: "ours" });
+    const t0 = readTicket(dir);
+    const history = t0.receiptResolutions;
+    t0._conflicts = [{ fieldPath: "/receiptResolutions", field: "receiptResolutions", kind: "field", base: [], ours: [], theirs: [] }];
+    writeTicket(dir, t0);
+    await expect(handleResolve("T-001", dir, { field: "receiptResolutions", use: "theirs" })).rejects.toThrow(/receiptResolutions/);
+    await handleResolve("T-001", dir, { use: "theirs" });
+    const t = readTicket(dir);
+    expect(t.receiptResolutions).toEqual(history);
+    expect(conflictsOf(t).map((c) => c.field)).toEqual(["receiptResolutions"]);
+  });
+
+  const entityCase = async () => {
+    const dir = makeProject();
+    mergedTicket(dir, [], [A, B], [A2, receipt({ id: "rc-bbbbbbbbbbbbbbbb", result: "error" })]);
+    await handleResolve("T-001", dir, { receipt: B.id as string, keep: "ours" });
+    const t0 = readTicket(dir);
+    const snapshot = { ...T, title: "Theirs whole" };
+    t0._conflicts = [...conflictsOf(t0), { fieldPath: "", field: "_entity", kind: "delete-edit", base: null, ours: { ...T }, theirs: snapshot }];
+    writeTicket(dir, t0);
+    return { dir, receipts: t0.receipts, history: t0.receiptResolutions };
+  };
+
+  it("blanket --use with an entity-level conflict keeps every receipt and the history while receipt conflicts stay open", async () => {
+    const { dir, receipts, history } = await entityCase();
+    await handleResolve("T-001", dir, { use: "theirs" });
+    const t = readTicket(dir);
+    expect(t.title).toBe("Theirs whole");
+    expect(t.receipts).toEqual(receipts);
+    expect(t.receiptResolutions).toEqual(history);
+    expect(conflictsOf(t).map((c) => c.kind)).toEqual(["receipt"]);
+  });
+
+  it("--field _entity keeps every receipt and the history", async () => {
+    const { dir, receipts, history } = await entityCase();
+    await handleResolve("T-001", dir, { field: "_entity", use: "theirs" });
+    const t = readTicket(dir);
+    expect(t.title).toBe("Theirs whole");
+    expect(t.receipts).toEqual(receipts);
+    expect(t.receiptResolutions).toEqual(history);
   });
 });

@@ -1,18 +1,25 @@
+import { canonicalJson as busCanonicalJson } from "../bus/canonical.js";
+
 /**
- * C-v4.1 3.3 (M6): the one canonical JSON form, for equality, fingerprints and
- * receipt identity.
+ * C-v4.1 3.3 (M6, as amended): the one canonical JSON form, for equality,
+ * fingerprints and receipt identity.
  *
- * Keys are sorted at every depth and the output has no whitespace. The walk
- * reads keys with `Object.keys` and writes the output string directly; it
- * never assigns into a plain object, so an own `__proto__` key survives
- * (ISS-1475 is the writer that loses it).
- *
- * It refuses anything JSON cannot round-trip: non-finite numbers, `undefined`
- * (as a value or inside an array), and objects that are not plain (a Date, a
- * Map, a class instance), as well as functions, symbols, bigints and cycles.
+ * Serialisation is `bus/canonical.ts` (JCS through `canonicalize`), so there is
+ * one canonicaliser. In front of it sits the strict receipt-input validator:
+ * it refuses anything JSON cannot round-trip that the bus form would rewrite
+ * instead of refusing, namely `undefined` inside an array, objects that are
+ * not plain (a Date, a Map, a class instance), functions, symbols, bigints and
+ * cycles. Non-finite numbers, `undefined` values and lone UTF-16 surrogates
+ * are refused by both. An own `__proto__` key is kept (keys are read with
+ * `Object.keys`; ISS-1475 is the writer that loses it).
  */
 export function canonicalJson(value: unknown): string {
-  return write(value, new Set<object>(), "$");
+  validate(value, new Set<object>(), "$");
+  try {
+    return busCanonicalJson(value);
+  } catch (err) {
+    throw new Error(`canonicalJson: ${err instanceof Error ? err.message : String(err)}; the value cannot round-trip through JSON`);
+  }
 }
 
 function refuse(path: string, what: string): never {
@@ -24,16 +31,15 @@ function isPlainObject(value: object): boolean {
   return proto === Object.prototype || proto === null;
 }
 
-function write(value: unknown, stack: Set<object>, path: string): string {
-  if (value === null) return "null";
+function validate(value: unknown, stack: Set<object>, path: string): void {
+  if (value === null) return;
   switch (typeof value) {
     case "string":
-      return JSON.stringify(value);
     case "boolean":
-      return value ? "true" : "false";
+      return;
     case "number":
       if (!Number.isFinite(value)) refuse(path, String(value));
-      return JSON.stringify(value);
+      return;
     case "undefined":
       return refuse(path, "undefined");
     case "object":
@@ -46,16 +52,12 @@ function write(value: unknown, stack: Set<object>, path: string): string {
   stack.add(obj);
   try {
     if (Array.isArray(obj)) {
-      const parts: string[] = [];
-      for (let i = 0; i < obj.length; i++) parts.push(write(obj[i], stack, `${path}[${i}]`));
-      return `[${parts.join(",")}]`;
+      for (let i = 0; i < obj.length; i++) validate(obj[i], stack, `${path}[${i}]`);
+      return;
     }
     if (!isPlainObject(obj)) refuse(path, "a non-plain object");
     const record = obj as Record<string, unknown>;
-    const keys = Object.keys(record).sort();
-    const parts: string[] = [];
-    for (const key of keys) parts.push(`${JSON.stringify(key)}:${write(record[key], stack, `${path}.${key}`)}`);
-    return `{${parts.join(",")}}`;
+    for (const key of Object.keys(record)) validate(record[key], stack, `${path}.${key}`);
   } finally {
     stack.delete(obj);
   }

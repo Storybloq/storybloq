@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CROCKFORD_CLASS } from "../models/types.js";
 import { generateCanonicalId } from "./canonical-id.js";
@@ -119,18 +119,31 @@ function git(root: string, args: string[]): string | undefined {
   }
 }
 
-/** The boardId in `.story/config.json` at `ref`, read only, or undefined when absent there. */
-export function readLandedBoardId(root: string, ref: string): string | undefined {
-  if (ref.startsWith("-")) return undefined;
+export interface LandedIdentity {
+  /** The landed board id, when the landed config carries a valid one. */
+  readonly boardId?: string;
+  /** True when the landed config itself holds an open board-identity conflict. */
+  readonly conflicted: boolean;
+}
+
+/** The board identity in `.story/config.json` at `ref`, read only. */
+export function readLandedIdentity(root: string, ref: string): LandedIdentity {
+  if (ref.startsWith("-")) return { conflicted: false };
   const prefix = (git(root, ["rev-parse", "--show-prefix"]) ?? "").trim();
   const text = git(root, ["show", `${ref}:${prefix}.story/config.json`]);
-  if (text === undefined) return undefined;
+  if (text === undefined) return { conflicted: false };
   try {
-    const id = (JSON.parse(text) as Record<string, unknown>).boardId;
-    return isBoardId(id) ? id : undefined;
+    const config = JSON.parse(text) as Record<string, unknown>;
+    const id = config.boardId;
+    return { ...(isBoardId(id) ? { boardId: id } : {}), conflicted: hasBoardIdentityConflict(config) };
   } catch {
-    return undefined;
+    return { conflicted: false };
   }
+}
+
+/** The boardId in `.story/config.json` at `ref`, read only, or undefined when absent there. */
+export function readLandedBoardId(root: string, ref: string): string | undefined {
+  return readLandedIdentity(root, ref).boardId;
 }
 
 /**
@@ -150,7 +163,14 @@ export function checkBoardIdLanded(root: string, defaultRef: string): BoardIdLan
   if (!local) {
     return { ok: false, code: "board_id_missing", message: "board_id_missing: this board has no board id. Run `storybloq board-id init`, then land it." };
   }
-  const landed = readLandedBoardId(root, defaultRef);
+  const landedIdentity = readLandedIdentity(root, defaultRef);
+  if (landedIdentity.conflicted) {
+    return {
+      ok: false, code: "board_id_conflicted", local,
+      message: `board_id_conflicted: the config on ${defaultRef} has an unresolved board identity conflict. Resolve it there (\`storybloq board-id adopt\` on the default branch) before recording receipts.`,
+    };
+  }
+  const landed = landedIdentity.boardId;
   if (!landed) {
     return {
       ok: false, code: "board_id_not_landed", local,
@@ -291,4 +311,47 @@ export function receiptsNamingBoard(records: readonly Record<string, unknown>[],
     }
   }
   return out;
+}
+
+export interface ReceiptScan {
+  /** Receipt ids (or a placeholder for a receipt with none) naming the board. */
+  readonly naming: string[];
+  /** Record files that could not be read or parsed as an object. */
+  readonly uninspectable: string[];
+}
+
+/**
+ * 2.3: every receipt on the board's raw ticket and issue records that names
+ * `boardId`. Reads the files themselves, not the loaded state, so a record the
+ * loader skipped as schema-invalid is still inspected. Call it under the lock.
+ */
+export function receiptsNamingBoardOnDisk(root: string, boardId: string): ReceiptScan {
+  const naming: string[] = [];
+  const uninspectable: string[] = [];
+  for (const dir of ["tickets", "issues"]) {
+    const abs = join(resolve(root), ".story", dir);
+    let names: string[];
+    try {
+      names = readdirSync(abs).filter((n) => n.endsWith(".json")).sort();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      uninspectable.push(`.story/${dir}`);
+      continue;
+    }
+    for (const name of names) {
+      let record: unknown;
+      try {
+        record = JSON.parse(readFileSync(join(abs, name), "utf-8"));
+      } catch {
+        uninspectable.push(`.story/${dir}/${name}`);
+        continue;
+      }
+      if (record === null || typeof record !== "object" || Array.isArray(record)) {
+        uninspectable.push(`.story/${dir}/${name}`);
+        continue;
+      }
+      naming.push(...receiptsNamingBoard([record as Record<string, unknown>], boardId));
+    }
+  }
+  return { naming, uninspectable };
 }

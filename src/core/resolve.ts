@@ -1,4 +1,6 @@
 import type { ConflictEntry } from "../models/types.js";
+import { APPEND_ONLY_FIELDS } from "./append-only-merge.js";
+import { canonicalJson } from "./canonical-json.js";
 
 /**
  * C-v4.1 3.6: a `receipt` or `receipt-opaque` entry is never applied as a field
@@ -6,6 +8,9 @@ import type { ConflictEntry } from "../models/types.js";
  */
 const RECEIPT_KINDS = new Set(["receipt", "receipt-opaque"]);
 const isReceiptKind = (c: ConflictEntry): boolean => RECEIPT_KINDS.has(c.kind);
+/** A conflict a generic path must leave alone: a receipt conflict, or any entry on an append-only field. */
+const isAppendOnlyConflict = (c: ConflictEntry): boolean =>
+  isReceiptKind(c) || (!isEntityLevel(c) && APPEND_ONLY_FIELDS.includes(fieldName(c)));
 export const RECEIPT_RESOLVE_HINT = "Receipt conflicts are resolved with `storybloq resolve <id> --receipt <id> --keep ours|theirs|both` (or `--receipt-conflict <oc-id>`).";
 
 export interface ResolveOptions {
@@ -158,14 +163,37 @@ function otherSide(side: "ours" | "theirs" | undefined): "ours" | "theirs" {
   return side === "ours" ? "theirs" : "ours";
 }
 
-/** Wholesale replacement of the entity body with a full-entity object. */
+/**
+ * Wholesale replacement of the entity body with a full-entity object. The
+ * append-only fields (receipts, landings, the resolution history) are never
+ * replaced: the body keeps every element it held, in order, followed by any
+ * element only the chosen side holds, compared by canonical content. Open
+ * receipt conflicts keep naming exactly the bodies they named.
+ */
 function replaceEntityBody(entity: Record<string, unknown>, chosen: Record<string, unknown>): void {
+  const kept = new Map<string, unknown[]>();
+  for (const field of APPEND_ONLY_FIELDS) {
+    const current = Array.isArray(entity[field]) ? (entity[field] as unknown[]) : undefined;
+    const incoming = Array.isArray(chosen[field]) ? (chosen[field] as unknown[]) : [];
+    if (current === undefined && chosen[field] === undefined) continue;
+    const out = [...(current ?? [])];
+    const seen = new Set(out.map((e) => canonicalJson(e)));
+    for (const e of incoming) {
+      const text = canonicalJson(e);
+      if (!seen.has(text)) {
+        seen.add(text);
+        out.push(e);
+      }
+    }
+    kept.set(field, out);
+  }
   for (const k of Object.keys(entity)) {
     if (k !== "_conflicts") delete entity[k];
   }
   for (const [k, v] of Object.entries(chosen)) {
     if (k !== "_conflicts" && !isReservedKey(k)) entity[k] = v;
   }
+  for (const [field, value] of kept) entity[field] = value;
 }
 
 /**
@@ -278,6 +306,9 @@ export function resolveConflicts(
     if (isReceiptKind(target)) {
       throw new Error(`--field "${options.field}" names a receipt conflict. ${RECEIPT_RESOLVE_HINT}`);
     }
+    if (isAppendOnlyConflict(target)) {
+      throw new Error(`--field "${options.field}" names the append-only field ${fieldName(target)}, which is never replaced or deleted. ${RECEIPT_RESOLVE_HINT}`);
+    }
 
     if (target.kind === "coupled" && target.group) {
       if (options.value !== undefined) {
@@ -321,9 +352,9 @@ export function resolveConflicts(
     const side = options.use;
     // Entity-level entries are applied FIRST (wholesale body replacement),
     // then field-level entries land on the replaced body.
-    const receiptLevel = conflicts.filter((c) => isReceiptKind(c));
-    const entityLevel = conflicts.filter((c) => !isReceiptKind(c) && isEntityLevel(c));
-    const fieldLevel = conflicts.filter((c) => !isReceiptKind(c) && !isEntityLevel(c));
+    const receiptLevel = conflicts.filter((c) => isAppendOnlyConflict(c));
+    const entityLevel = conflicts.filter((c) => !isAppendOnlyConflict(c) && isEntityLevel(c));
+    const fieldLevel = conflicts.filter((c) => !isAppendOnlyConflict(c) && !isEntityLevel(c));
     if (receiptLevel.length > 0) {
       remaining.push(...receiptLevel);
       messages.push(`${receiptLevel.length} receipt conflict(s) left open. ${RECEIPT_RESOLVE_HINT}`);

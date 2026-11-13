@@ -1,7 +1,7 @@
 import { getMergeRules, getCoupledGroups, type CoupledGroup, type EntityType, type MergeRule } from "./field-classification.js";
 import { carryForward, mergeConflictSets, attachConflicts } from "./conflict-lifecycle.js";
 import { mergeBoardId } from "./board-id.js";
-import { mergeAppendOnly } from "./append-only-merge.js";
+import { AppendOnlyMergeRefusal, mergeAppendOnly } from "./append-only-merge.js";
 import { recordCoversViolation, type CatalogInvariantViolation } from "../models/catalog-invariant.js";
 import { capabilityNameViolations } from "../models/capability.js";
 import { termOwnerViolations } from "../models/glossary.js";
@@ -338,7 +338,17 @@ export function threeWayMerge(
         conflicts.push(...r.conflicts);
         continue;
       }
-      // A non-array value on some side is not ours to reinterpret: the generic rules below apply.
+      // A non-array value on some side: unchanged everywhere stays as it is;
+      // anything else would let the generic rules take the replacement and drop
+      // every body, so the merge refuses and the driver writes nothing.
+      if (deepEqual(bVal, oVal) && deepEqual(bVal, tVal)) {
+        merged[key] = bVal;
+        continue;
+      }
+      const shape = (v: unknown) => (v === undefined ? "absent" : v === null ? "null" : Array.isArray(v) ? "an array" : `a ${typeof v}`);
+      throw new AppendOnlyMergeRefusal(
+        `${key} must be an array on every side (base ${shape(bVal)}, ours ${shape(oVal)}, theirs ${shape(tVal)}); refusing to merge so no body is dropped.`,
+      );
     }
 
     if (deepEqual(bVal, oVal) && deepEqual(bVal, tVal)) {

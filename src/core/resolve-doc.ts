@@ -513,7 +513,7 @@ function applyPlanned(doc: Record<string, unknown>, ops: PlannedOp[], side: "our
 /** C-v4.1 2.3: the one way out of a `board-identity` conflict. */
 export const BOARD_IDENTITY_RESOLVE_HINT =
   "The board identity conflict is not resolved by picking a side: the board id never changes by merge. " +
-  "Run `storybloq board-id adopt <b-id>` to choose the id this clone keeps.";
+  "Run `storybloq board-id adopt`, which takes the landed board id on the default branch for this clone.";
 
 export function resolveDocConflicts(
   doc: Record<string, unknown>,

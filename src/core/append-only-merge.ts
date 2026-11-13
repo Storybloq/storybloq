@@ -20,7 +20,22 @@ import { ReceiptSchema, receiptElementId } from "./receipts.js";
  * An absent field on every side stays absent; the caller never calls this then.
  */
 
-export type AppendOnlyKey = "receipt" | "landing";
+export type AppendOnlyKey = "receipt" | "landing" | "resolution";
+
+/** The fields merged append-only; no generic resolve path replaces or deletes them. */
+export const APPEND_ONLY_FIELDS: readonly string[] = ["receipts", "landings", "receiptResolutions"];
+
+export const RESOLUTION_ID_REGEX = /^rr-[0-9a-f]{16}$/;
+
+/**
+ * A `receiptResolutions` entry's stable id: `rr-` and the first 16 hex
+ * characters of sha256 over the canonical entry without its id. Every clone
+ * computes the same id for the same entry, so two clones' histories union.
+ */
+export function resolutionEntryId(entry: Record<string, unknown>): string {
+  const { id: _id, ...rest } = entry;
+  return `rr-${createHash("sha256").update(canonicalJson(rest)).digest("hex").slice(0, 16)}`;
+}
 
 export interface AppendOnlyConflict {
   fieldPath: string;
@@ -39,8 +54,22 @@ function pointer(field: string, id: string): string {
   return `/${esc(field)}/${esc(id)}`;
 }
 
-/** The id an element merges under, or undefined when it is opaque. */
-function keyOf(element: unknown, keying: AppendOnlyKey): string | undefined {
+/**
+ * The id an element merges under, or undefined when it is opaque. The resolver
+ * classifies with this same function, so it never treats as keyed what the
+ * merge kept as opaque.
+ */
+export function appendOnlyKeyOf(element: unknown, keying: AppendOnlyKey): string | undefined {
+  if (keying === "resolution") {
+    if (element === null || typeof element !== "object" || Array.isArray(element)) return undefined;
+    const id = (element as { id?: unknown }).id;
+    if (typeof id !== "string" || !RESOLUTION_ID_REGEX.test(id)) return undefined;
+    try {
+      return resolutionEntryId(element as Record<string, unknown>) === id ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   if (keying === "landing") {
     if (element === null || typeof element !== "object" || Array.isArray(element)) return undefined;
     return legacyLandingId(element);
@@ -52,11 +81,20 @@ function keyOf(element: unknown, keying: AppendOnlyKey): string | undefined {
   return ReceiptSchema.safeParse(element).success ? id : undefined;
 }
 
-function canonicalOrString(element: unknown): string {
+/**
+ * Content identity is the canonical form only. An element that has none (a
+ * non-finite number from a parsed 1e999, say) cannot be compared, so the merge
+ * refuses and the driver leaves every input file as it was.
+ */
+export class AppendOnlyMergeRefusal extends Error {}
+
+function canonicalOrRefuse(element: unknown, field: string): string {
   try {
     return canonicalJson(element);
-  } catch {
-    return `unrepresentable:${String(element)}`;
+  } catch (err) {
+    throw new AppendOnlyMergeRefusal(
+      `${field}: an element cannot be compared by canonical content (${err instanceof Error ? err.message : String(err)}); refusing to merge.`,
+    );
   }
 }
 
@@ -69,11 +107,11 @@ interface Side {
   order: string[];
 }
 
-function sideOf(arr: unknown[], keying: AppendOnlyKey): Side {
+function sideOf(arr: unknown[], keying: AppendOnlyKey, field: string): Side {
   const side: Side = { keyed: new Map(), opaque: new Map(), order: [] };
   for (const element of arr) {
-    const text = canonicalOrString(element);
-    const id = keyOf(element, keying);
+    const text = canonicalOrRefuse(element, field);
+    const id = appendOnlyKeyOf(element, keying);
     if (id !== undefined) {
       let bodies = side.keyed.get(id);
       if (!bodies) {
@@ -95,6 +133,11 @@ function sideOf(arr: unknown[], keying: AppendOnlyKey): Side {
 
 const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every((x) => b.has(x));
 
+/** The keying a field merges under. */
+export function appendOnlyKeying(field: string): AppendOnlyKey {
+  return field === "landings" ? "landing" : field === "receiptResolutions" ? "resolution" : "receipt";
+}
+
 export function mergeAppendOnly(
   field: string,
   base: unknown[],
@@ -102,9 +145,9 @@ export function mergeAppendOnly(
   theirs: unknown[],
   keying: AppendOnlyKey,
 ): { merged: unknown[]; conflicts: AppendOnlyConflict[] } {
-  const b = sideOf(base, keying);
-  const o = sideOf(ours, keying);
-  const t = sideOf(theirs, keying);
+  const b = sideOf(base, keying, field);
+  const o = sideOf(ours, keying, field);
+  const t = sideOf(theirs, keying, field);
   const order: string[] = [];
   const seen = new Set<string>();
   for (const slot of [...o.order, ...t.order, ...b.order]) {
@@ -134,7 +177,9 @@ export function mergeAppendOnly(
       continue;
     }
     const d = slot.slice(2);
-    const element = o.opaque.get(d) ?? t.opaque.get(d) ?? b.opaque.get(d);
+    // A stored null is an element, not an absence: test presence with has().
+    const holder = [o, t, b].find((s) => s.opaque.has(d))!;
+    const element = holder.opaque.get(d);
     merged.push(element);
     if (b.opaque.has(d) && (!o.opaque.has(d) || !t.opaque.has(d))) {
       const shape = { base: [d], ours: o.opaque.has(d) ? [d] : [], theirs: t.opaque.has(d) ? [d] : [] };

@@ -2,7 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mergeConfig } from "../../src/core/merge-driver.js";
-import { writeConfig } from "../../src/core/project-loader.js";
+import { withProjectLock, writeConfig } from "../../src/core/project-loader.js";
+import { BOARD_IDENTITY_RESOLVE_HINT } from "../../src/core/resolve-doc.js";
 import { initProject } from "../../src/core/init.js";
 import {
   BOARD_ID_REGEX, assertBoardsInitialised, boardRegistry, canonicalRef, checkBoardIdLanded,
@@ -247,5 +248,96 @@ describe("2.2 and 2.4 federation references, read only", () => {
       expect(resolveBoardRef(boardRegistry(node), id)).toEqual(resolveBoardRef(boardRegistry(orch), id));
     }
     expect(resolveBoardRef(boardRegistry(node), nodeId)).toMatchObject({ state: "ok", entry: { path: node } });
+  });
+});
+
+describe("review fixes: board identity", () => {
+  const ticketWith = (id: string, receipts: unknown[], over: Record<string, unknown> = {}) => JSON.stringify({
+    id, title: "t", description: "", type: "task", status: "open", phase: "p0", order: 10,
+    createdDate: "2026-01-01", completedDate: null, blockedBy: [], parentTicket: null, receipts, ...over,
+  }, null, 2) + "\n";
+
+  /** A repo whose branch `landed` carries ID2, so adopt would replace the local id. */
+  async function adoptRepo(prefix: string) {
+    const { root } = await makeProjectRepo({ prefix });
+    const local = readConfig(root).boardId as string;
+    git(root, "checkout", "-q", "-b", "landed");
+    writeConfigRaw(root, { ...readConfig(root), boardId: ID2 });
+    git(root, "commit", "-q", "-am", "other id");
+    git(root, "checkout", "-q", "main");
+    return { root, local };
+  }
+
+  it("board-id init reads and writes under one lock, so a concurrent config edit survives", async () => {
+    const { root } = await makeProjectRepo({ prefix: "bid-lock" });
+    const c = readConfig(root);
+    delete c.boardId;
+    writeConfigRaw(root, c);
+    git(root, "commit", "-q", "-am", "drop id");
+    let held!: () => void;
+    let release!: () => void;
+    const isHeld = new Promise<void>((r) => { held = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    const holder = withProjectLock(root, { strict: false }, async () => { held(); await gate; });
+    await isHeld;
+    const init = handleBoardIdInit(root, "json");
+    await new Promise((r) => setTimeout(r, 200));
+    writeConfigRaw(root, { ...readConfig(root), project: "edited-concurrently" });
+    release();
+    await holder;
+    const result = await init;
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(readConfig(root)).toMatchObject({ project: "edited-concurrently", boardId: expect.stringMatching(BOARD_ID_REGEX) });
+  });
+
+  it("adopt refuses when an otherwise schema-invalid record holds a receipt naming the local id", async () => {
+    const { root, local } = await adoptRepo("bid-adopt-invalid");
+    const r = receipt({ id: "rc-dddddddddddddddd", target: `${local}:t-0000000000000000` });
+    writeFileSync(join(root, ".story", "tickets", "T-002.json"), ticketWith("T-002", [r], { status: 42, type: "nonsense" }));
+    const result = await handleBoardIdAdopt(root, { ref: "landed" }, "md");
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("rc-dddddddddddddddd");
+    expect(readConfig(root).boardId).toBe(local);
+  });
+
+  it("adopt refuses when a ticket or issue record cannot be inspected", async () => {
+    const { root, local } = await adoptRepo("bid-adopt-unreadable");
+    writeFileSync(join(root, ".story", "issues", "ISS-001.json"), "{ not json\n");
+    const result = await handleBoardIdAdopt(root, { ref: "landed" }, "md");
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toMatch(/cannot be inspected/);
+    expect(result.output).toContain("ISS-001.json");
+    expect(readConfig(root).boardId).toBe(local);
+  });
+
+  /** A repo whose branch `landed` carries this board's id with an open board-identity conflict. */
+  async function landedConflictRepo(prefix: string) {
+    const { root } = await makeProjectRepo({ prefix });
+    const local = readConfig(root).boardId as string;
+    git(root, "checkout", "-q", "-b", "landed");
+    writeConfigRaw(root, { ...readConfig(root), _conflicts: [{ fieldPath: "/boardId", field: "boardId", kind: "board-identity", base: null, ours: local, theirs: ID2 }] });
+    git(root, "commit", "-q", "-am", "landed with an open identity conflict");
+    git(root, "checkout", "-q", "main");
+    return { root, local };
+  }
+
+  it("the landed-check reads conflicted while the landed config's own board identity is unresolved", async () => {
+    const { root } = await landedConflictRepo("bid-landed-conf");
+    expect(checkBoardIdLanded(root, "landed")).toMatchObject({ ok: false, code: "board_id_conflicted" });
+  });
+
+  it("adopt refuses to clear a local conflict from a landed identity that is itself unresolved", async () => {
+    const { root, local } = await landedConflictRepo("bid-adopt-landed-conf");
+    writeConfigRaw(root, { ...readConfig(root), _conflicts: [{ fieldPath: "/boardId", field: "boardId", kind: "board-identity", base: null, ours: local, theirs: ID2 }] });
+    const result = await handleBoardIdAdopt(root, { ref: "landed" }, "md");
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toMatch(/unresolved board identity conflict/);
+    expect(conflictsOf(readConfig(root)).map((e) => e.kind)).toEqual(["board-identity"]);
+  });
+
+  it("the board-identity hint names the command as it is and what it adopts", () => {
+    expect(BOARD_IDENTITY_RESOLVE_HINT).not.toContain("<b-id>");
+    expect(BOARD_IDENTITY_RESOLVE_HINT).toContain("`storybloq board-id adopt`");
+    expect(BOARD_IDENTITY_RESOLVE_HINT).toMatch(/landed board id on the default branch/);
   });
 });

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { handleMergeDriver } from "../../src/cli/commands/merge-driver.js";
 import { threeWayMerge } from "../../src/core/merge-driver.js";
 import { canonicalJson } from "../../src/core/canonical-json.js";
 import { legacyLandingId } from "../../src/core/legacy-landings.js";
@@ -120,5 +124,78 @@ describe("append-only-by-id: legacy landings, keyed by lm- id", () => {
     const m = mergeL([L1, L2], [L1], [L1, L2]);
     expect(m.merged.landings).toEqual([L1, L2]);
     expect(conflictsOf(m as never)[0]).toMatchObject({ kind: "receipt", field: "landings", id: legacyLandingId(L2) });
+  });
+});
+
+describe("append-only-by-id: review fixes (null elements, unrepresentable content, non-array values)", () => {
+  it("keeps a null added on ours", () => {
+    const m = merge([], [null], []);
+    expect(m.merged.receipts).toEqual([null]);
+    expect(conflictsOf(m)).toEqual([]);
+  });
+
+  it("keeps a null added on theirs", () => {
+    const m = merge([], [], [null]);
+    expect(m.merged.receipts).toEqual([null]);
+  });
+
+  it("keeps a null after one side deleted it, with an opaque conflict", () => {
+    const m = merge([null], [], [null]);
+    expect(m.merged.receipts).toEqual([null]);
+    expect(conflictsOf(m).map((c) => c.kind)).toEqual(["receipt-opaque"]);
+  });
+
+  it("refuses to merge two distinct objects holding non-finite numbers, never deduping them by String()", () => {
+    const one = JSON.parse('{"kind":"test","n":1e999,"a":1}') as unknown;
+    const two = JSON.parse('{"kind":"test","n":1e999,"b":2}') as unknown;
+    expect(() => merge([], [one], [two])).toThrow(/cannot be compared|canonical/i);
+  });
+
+  it("the merge driver writes nothing and exits 2 on unrepresentable receipt content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aom-driver-"));
+    const t = (receipts: string) => `{"id":"T-001","title":"t","description":"","type":"task","status":"open","phase":"p1","order":10,"createdDate":"2026-01-01","blockedBy":[],"parentTicket":null,"completedDate":null,"receipts":${receipts}}\n`;
+    const base = join(dir, "base.json");
+    const ours = join(dir, "ours.json");
+    const theirs = join(dir, "theirs.json");
+    writeFileSync(base, t("[]"));
+    const oursText = t('[{"kind":"test","n":1e999,"a":1}]');
+    writeFileSync(ours, oursText);
+    writeFileSync(theirs, t('[{"kind":"test","n":1e999,"b":2}]'));
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(handleMergeDriver(base, ours, theirs, ".story/tickets/T-001.json")).toBe(2);
+    } finally {
+      spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["null", null],
+    ["an object", { not: "an array" }],
+    ["a string", "receipts"],
+  ])("refuses a one-sided replacement of the receipts array by %s, never yielding it", (_label, value) => {
+    expect(() => threeWayMerge({ ...T, receipts: [A] }, { ...T, receipts: value }, { ...T, receipts: [A] }, "ticket")).toThrow(/receipts/);
+    expect(() => threeWayMerge({ ...T, receipts: [A] }, { ...T, receipts: [A] }, { ...T, receipts: value }, "ticket")).toThrow(/receipts/);
+  });
+
+  it("the merge driver leaves the inputs alone when one side replaced receipts by null", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aom-driver-"));
+    const t = (receipts: string) => `{"id":"T-001","title":"t","description":"","type":"task","status":"open","phase":"p1","order":10,"createdDate":"2026-01-01","blockedBy":[],"parentTicket":null,"completedDate":null,"receipts":${receipts}}\n`;
+    const base = join(dir, "base.json");
+    const ours = join(dir, "ours.json");
+    const theirs = join(dir, "theirs.json");
+    writeFileSync(base, t(JSON.stringify([A])));
+    const oursText = t("null");
+    writeFileSync(ours, oursText);
+    writeFileSync(theirs, t(JSON.stringify([A])));
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(handleMergeDriver(base, ours, theirs, ".story/tickets/T-001.json")).toBe(2);
+      expect(readFileSync(ours, "utf-8")).toBe(oursText);
+    } finally {
+      spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

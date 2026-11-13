@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson } from "../../src/core/canonical-json.js";
+import { canonicalJson as busCanonicalJson } from "../../src/bus/canonical.js";
 
 /**
  * C-v4.1 3.3 (M6): one canonical form for equality, fingerprints and receipt
@@ -62,5 +63,22 @@ describe("canonicalJson", () => {
     const a: Record<string, unknown> = {};
     a.self = a;
     expect(() => canonicalJson(a)).toThrow(/canonicalJson/);
+  });
+
+  describe("one canonicaliser (amendment to 3.3): serialisation is bus/canonical.ts behind the strict receipt validator", () => {
+    it.each([
+      ["a lone high surrogate in a value", { s: "a\ud800b" }],
+      ["a lone low surrogate in a value", ["\udc00"]],
+      ["a lone surrogate in a key", { ["k\ud800"]: 1 }],
+    ])("refuses %s, exactly where the bus canonicaliser refuses", (_label, value) => {
+      expect(() => busCanonicalJson(value)).toThrow();
+      expect(() => canonicalJson(value)).toThrow(/canonicalJson/);
+    });
+
+    it("writes the same text as bus/canonical.ts, own __proto__ key and surrogate pairs included", () => {
+      const parsed = JSON.parse('{"z":[1,-0,1e21,"\\ud83d\\ude00"],"__proto__":{"b":true,"a":null},"a":"q\\u2028"}') as unknown;
+      expect(canonicalJson(parsed)).toBe(busCanonicalJson(parsed));
+      expect(canonicalJson(parsed)).toContain('"__proto__":{"a":null,"b":true}');
+    });
   });
 });

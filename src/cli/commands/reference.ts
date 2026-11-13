@@ -657,8 +657,20 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "resolve",
     description: "Resolve merge conflicts on a .story/ item",
-    usage: "storybloq resolve <target> [--field <value>] [--use <ours|theirs>] [--value <value>] [--id <value>] [--group <value>] [--invariant <n>] [--rename <id> <value>] [--drop-alias <id> <alias>] [--keep <id>] [--format <json|md>]",
-    flags: ["--field", "--use", "--value", "--id", "--group", "--invariant", "--rename", "--drop-alias", "--keep", "--format"],
+    usage: "storybloq resolve <target> [--field <value>] [--use <ours|theirs>] [--value <value>] [--id <value>] [--group <value>] [--invariant <n>] [--rename <id> <value>] [--drop-alias <id> <alias>] [--keep <id>] [--receipt <id>] [--receipt-conflict <id>] [--format <json|md>]",
+    flags: ["--field", "--use", "--value", "--id", "--group", "--invariant", "--rename", "--drop-alias", "--keep", "--receipt", "--receipt-conflict", "--format"],
+  },
+  {
+    name: "board-id init",
+    description: "Mint this board's id; commits only config.json",
+    usage: "storybloq board-id init [--format <json|md>]",
+    flags: ["--format"],
+  },
+  {
+    name: "board-id adopt",
+    description: "Take the default branch's board id",
+    usage: "storybloq board-id adopt [--ref <value>] [--format <json|md>]",
+    flags: ["--ref", "--format"],
   },
   {
     name: "merge-driver",

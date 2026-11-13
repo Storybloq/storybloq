@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -59,6 +59,9 @@ async function newProject(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "mcp-families-"));
   tempDirs.push(root);
   await initProject(root, { name: "fixture" });
+  // C-v4.1 2.1: init mints a random board id; a fixed one keeps the two projects byte-identical.
+  const configPath = join(root, ".story", "config.json");
+  writeFileSync(configPath, readFileSync(configPath, "utf-8").replace(/"boardId": "b-[0-9a-z]{16}"/, '"boardId": "b-0000000000000000"'));
   const env = {
     ...process.env,
     GIT_AUTHOR_DATE: "2026-01-01T00:00:00Z",

@@ -18,7 +18,9 @@ export function encodeBase32Crockford(bytes: Uint8Array): string {
   return result;
 }
 
-export type CanonicalPrefix = "t" | "i" | "n" | "l" | "a" | "g" | "r";
+// C-v4.1 2.1: "b" mints board ids (config.json boardId), not entity ids; CANONICAL_ID_REGEX
+// deliberately leaves it out.
+export type CanonicalPrefix = "t" | "i" | "n" | "l" | "a" | "g" | "r" | "b";
 
 export function generateCanonicalId(prefix: CanonicalPrefix): string {
   const bytes = randomBytes(10);

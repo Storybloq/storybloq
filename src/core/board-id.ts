@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CROCKFORD_CLASS } from "../models/types.js";
-import { encodeBase32Crockford } from "./canonical-id.js";
+import { generateCanonicalId } from "./canonical-id.js";
 import { ProjectLoaderError } from "./errors.js";
 import { resolveAllNodes, resolveOrchestratorRoot } from "../federation/resolver.js";
 
@@ -23,7 +22,7 @@ export const BOARD_ID_REGEX = new RegExp(`^b-${CROCKFORD_CLASS}{16}$`);
 export const BOARD_ID_AUTHORITY: unique symbol = Symbol("board-id-adopt");
 
 export function mintBoardId(): string {
-  return `b-${encodeBase32Crockford(randomBytes(10))}`;
+  return generateCanonicalId("b");
 }
 
 export function isBoardId(value: unknown): value is string {

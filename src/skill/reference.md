@@ -115,7 +115,9 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **reconcile** (--dry-run?, --ci?, --rebalance-ranks?, --format?) - Detect and fix duplicate displayIds across all entity types
 - **conflicts list** (--format?) - List all items with unresolved merge conflicts
 - **conflicts show <id>** (--format?) - Show field-level conflict detail for an item
-- **resolve <target>** (--field?, --use?, --value?, --id?, --group?, --invariant?, --rename?, --drop-alias?, --keep?, --format?) - Resolve merge conflicts on a .story/ item
+- **resolve <target>** (--field?, --use?, --value?, --id?, --group?, --invariant?, --rename?, --drop-alias?, --keep?, --receipt?, --receipt-conflict?, --format?) - Resolve merge conflicts on a .story/ item
+- **board-id init** (--format?) - Mint this board's id; commits only config.json
+- **board-id adopt** (--ref?, --format?) - Take the default branch's board id
 - **merge-driver <ancestor> <ours> <theirs> <pathname>** (--protocol?) | **merge-driver** (--protocol?, --capabilities) - Git merge driver for .story/ JSON files (registered via team setup)
 - **team init** (--claim-staleness-hours?, --id-allocator?, --format?) - Enable team mode on this project
 - **team setup** (--format?) - Install the git merge driver and .gitattributes for team mode

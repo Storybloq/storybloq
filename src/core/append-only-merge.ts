@@ -88,12 +88,16 @@ export function appendOnlyKeyOf(element: unknown, keying: AppendOnlyKey): string
  */
 export class AppendOnlyMergeRefusal extends Error {}
 
+/** How a repository gets out of a refused merge; every refusal names it. */
+export const APPEND_ONLY_WAY_OUT =
+  "To get out: inspect the three sides with `git show :1:<path>`, `git show :2:<path>` and `git show :3:<path>`; edit <path> so the field is an array holding every element from both sides; run `storybloq validate`; then `git add <path>` and finish with `git commit` (or `git rebase --continue`). `git merge --abort` (or `git rebase --abort`) backs out instead.";
+
 function canonicalOrRefuse(element: unknown, field: string): string {
   try {
     return canonicalJson(element);
   } catch (err) {
     throw new AppendOnlyMergeRefusal(
-      `${field}: an element cannot be compared by canonical content (${err instanceof Error ? err.message : String(err)}); refusing to merge.`,
+      `${field}: an element cannot be compared by canonical content (${err instanceof Error ? err.message : String(err)}); refusing to merge. ${APPEND_ONLY_WAY_OUT}`,
     );
   }
 }

@@ -341,3 +341,21 @@ describe("review fixes: board identity", () => {
     expect(BOARD_IDENTITY_RESOLVE_HINT).toMatch(/landed board id on the default branch/);
   });
 });
+
+describe("review fixes, round 3: adopt never reads a non-array receipts value as none", () => {
+  it("adopt refuses when a record's receipts is present but not an array", async () => {
+    const { root } = await makeProjectRepo({ prefix: "bid-adopt-nonarray" });
+    const local = readConfig(root).boardId as string;
+    git(root, "checkout", "-q", "-b", "landed");
+    writeConfigRaw(root, { ...readConfig(root), boardId: ID2 });
+    git(root, "commit", "-q", "-am", "other id");
+    git(root, "checkout", "-q", "main");
+    writeFileSync(join(root, ".story", "tickets", "T-009.json"), JSON.stringify({ id: "T-009", title: "t", receipts: { target: `${local}:x` } }) + "\n");
+    const result = await handleBoardIdAdopt(root, { ref: "landed" }, "md");
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toMatch(/cannot be inspected/);
+    expect(result.output).toContain("T-009.json");
+    expect(readConfig(root).boardId).toBe(local);
+  });
+});
+

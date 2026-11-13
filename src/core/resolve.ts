@@ -171,8 +171,26 @@ function otherSide(side: "ours" | "theirs" | undefined): "ours" | "theirs" {
  * receipt conflicts keep naming exactly the bodies they named.
  */
 function replaceEntityBody(entity: Record<string, unknown>, chosen: Record<string, unknown>): void {
-  const kept = new Map<string, unknown[]>();
+  // A present value that is not an array is never read as absent: identical on
+  // both sides it is kept as it is, otherwise nothing is touched.
+  const kept = new Map<string, unknown>();
   for (const field of APPEND_ONLY_FIELDS) {
+    const cur = entity[field];
+    const inc = chosen[field];
+    const bad = (v: unknown) => v !== undefined && !Array.isArray(v);
+    if (bad(cur) || bad(inc)) {
+      if (cur !== undefined && inc !== undefined && canonicalJson(cur) === canonicalJson(inc)) {
+        kept.set(field, cur);
+        continue;
+      }
+      throw new Error(
+        `Cannot replace the whole record: ${field} is not an array on ${bad(cur) ? "the record" : "the chosen side"}. ` +
+        `Repair ${field} by hand into an array holding every element, then resolve again; nothing was written.`,
+      );
+    }
+  }
+  for (const field of APPEND_ONLY_FIELDS) {
+    if (kept.has(field)) continue;
     const current = Array.isArray(entity[field]) ? (entity[field] as unknown[]) : undefined;
     const incoming = Array.isArray(chosen[field]) ? (chosen[field] as unknown[]) : [];
     if (current === undefined && chosen[field] === undefined) continue;

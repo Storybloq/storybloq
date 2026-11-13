@@ -350,6 +350,12 @@ export function receiptsNamingBoardOnDisk(root: string, boardId: string): Receip
         uninspectable.push(`.story/${dir}/${name}`);
         continue;
       }
+      const receipts = (record as Record<string, unknown>).receipts;
+      if (receipts !== undefined && !Array.isArray(receipts)) {
+        // A present non-array value is never read as no receipts.
+        uninspectable.push(`.story/${dir}/${name}`);
+        continue;
+      }
       naming.push(...receiptsNamingBoard([record as Record<string, unknown>], boardId));
     }
   }

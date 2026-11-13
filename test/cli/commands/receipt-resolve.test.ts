@@ -287,3 +287,50 @@ describe("review fixes: resolution history, exact bodies, entity-level replaceme
     expect(t.receiptResolutions).toEqual(history);
   });
 });
+
+describe("review fixes, round 3: a present non-array append-only value is never treated as absent", () => {
+  const writeTicket = (dir: string, t: Json) => writeFileSync(join(dir, ".story", "tickets", "T-001.json"), JSON.stringify(t, null, 2) + "\n");
+  const rawTicket = (dir: string) => readFileSync(join(dir, ".story", "tickets", "T-001.json"), "utf-8");
+
+  function entityWith(dir: string, current: Json, chosen: Json) {
+    writeTicket(dir, { ...T, ...current, _conflicts: [{ fieldPath: "", field: "_entity", kind: "delete-edit", base: null, ours: { ...T }, theirs: { ...T, title: "Theirs whole", ...chosen } }] });
+    return rawTicket(dir);
+  }
+
+  it.each([
+    ["receipts held as an object", { receipts: { not: "an array" } }, {}],
+    ["landings held as a string", { landings: "landings" }, {}],
+    ["receiptResolutions held as an object on the chosen side", {}, { receiptResolutions: { x: 1 } }],
+  ])("blanket --use refuses the entity replacement before any write when %s", async (_l, current, chosen) => {
+    const dir = makeProject();
+    const before = entityWith(dir, current, chosen);
+    await expect(handleResolve("T-001", dir, { use: "theirs" })).rejects.toThrow(/not an array/);
+    expect(rawTicket(dir)).toBe(before);
+  });
+
+  it("--field _entity refuses the same way", async () => {
+    const dir = makeProject();
+    const before = entityWith(dir, { receipts: { not: "an array" } }, {});
+    await expect(handleResolve("T-001", dir, { field: "_entity", use: "theirs" })).rejects.toThrow(/not an array/);
+    expect(rawTicket(dir)).toBe(before);
+  });
+
+  it("an identical malformed value on both sides is kept unchanged", async () => {
+    const dir = makeProject();
+    entityWith(dir, { receipts: { same: 1 } }, { receipts: { same: 1 } });
+    await handleResolve("T-001", dir, { use: "theirs" });
+    const t = readTicket(dir);
+    expect(t.title).toBe("Theirs whole");
+    expect(t.receipts).toEqual({ same: 1 });
+  });
+
+  it("a receipt resolve refuses a non-array receiptResolutions without writing anything", async () => {
+    const dir = makeProject();
+    const m = mergedTicket(dir, [], [A], [A2]);
+    writeTicket(dir, { ...m, receiptResolutions: { not: "an array" } });
+    const before = rawTicket(dir);
+    await expect(handleResolve("T-001", dir, { receipt: A.id as string, keep: "ours" })).rejects.toThrow(/receiptResolutions is not an array/);
+    expect(rawTicket(dir)).toBe(before);
+  });
+});
+

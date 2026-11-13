@@ -48,7 +48,9 @@ const field = (entry: Record<string, unknown>, key: string): Field => {
 
 export function projectLegacyLandings(record: Record<string, unknown>): LegacyLandingView[] {
   const raw = record.landings;
-  if (!Array.isArray(raw)) return [];
+  if (raw === undefined) return [];
+  // A present value that is not an array is refused, never shown as no landings.
+  if (!Array.isArray(raw)) throw new Error(`landings is not an array on ${String(record.id)}; repair it by hand into an array holding every element.`);
   const seen = new Set<string>();
   const out: LegacyLandingView[] = [];
   for (const element of raw) {

@@ -13,7 +13,7 @@ const ENTRY = {
 describe("projectLegacyLandings", () => {
   it("reads none when the record has no landings", () => {
     expect(projectLegacyLandings({})).toEqual([]);
-    expect(projectLegacyLandings({ landings: "not an array" })).toEqual([]);
+    expect(() => projectLegacyLandings({ landings: "not an array" })).toThrow(/landings is not an array/);
   });
 
   it("gives a stable lm- id: sha256 over canonicalJson, 16 hex characters", () => {
@@ -46,3 +46,14 @@ describe("projectLegacyLandings", () => {
     expect(projectLegacyLandings({ landings: [7, null, ENTRY] }).map((v) => v.sha)).toEqual([ENTRY.sha]);
   });
 });
+
+describe("review fixes, round 3: a present non-array landings value is refused, never shown as none", () => {
+  it.each([["an object", { a: 1 }], ["a string", "landings"], ["null", null]])("refuses landings held as %s", (_l, value) => {
+    expect(() => projectLegacyLandings({ id: "T-001", landings: value })).toThrow(/landings is not an array/);
+  });
+
+  it("an absent landings field is an empty view", () => {
+    expect(projectLegacyLandings({ id: "T-001" })).toEqual([]);
+  });
+});
+

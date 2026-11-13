@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleMergeDriver } from "../../src/cli/commands/merge-driver.js";
@@ -161,9 +162,12 @@ describe("append-only-by-id: review fixes (null elements, unrepresentable conten
     const oursText = t('[{"kind":"test","n":1e999,"a":1}]');
     writeFileSync(ours, oursText);
     writeFileSync(theirs, t('[{"kind":"test","n":1e999,"b":2}]'));
+    const before = [base, ours, theirs].map((f) => readFileSync(f, "utf-8"));
     const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       expect(handleMergeDriver(base, ours, theirs, ".story/tickets/T-001.json")).toBe(2);
+      expect([base, ours, theirs].map((f) => readFileSync(f, "utf-8"))).toEqual(before);
+      expect(before[1]).toBe(oursText);
     } finally {
       spy.mockRestore();
       rmSync(dir, { recursive: true, force: true });
@@ -199,3 +203,56 @@ describe("append-only-by-id: review fixes (null elements, unrepresentable conten
     }
   });
 });
+
+describe("the refused merge leaves a real repository's index untouched", () => {
+  it("snapshots the index around the driver call on unrepresentable receipt content", () => {
+    const repo = mkdtempSync(join(tmpdir(), "aom-index-"));
+    const run = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf-8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+    try {
+      run("init", "-q", "-b", "main");
+      mkdirSync(join(repo, ".story", "tickets"), { recursive: true });
+      const t = (receipts: string) => `{"id":"T-001","title":"t","description":"","type":"task","status":"open","phase":"p1","order":10,"createdDate":"2026-01-01","blockedBy":[],"parentTicket":null,"completedDate":null,"receipts":${receipts}}\n`;
+      writeFileSync(join(repo, ".story", "tickets", "T-001.json"), t("[]"));
+      run("add", "-A");
+      run("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "base");
+      const sides = join(repo, "..", `${repo.split("/").pop()}-sides`);
+      mkdirSync(sides, { recursive: true });
+      const base = join(sides, "base.json");
+      const ours = join(sides, "ours.json");
+      const theirs = join(sides, "theirs.json");
+      writeFileSync(base, t("[]"));
+      writeFileSync(ours, t('[{"kind":"test","n":1e999,"a":1}]'));
+      writeFileSync(theirs, t('[{"kind":"test","n":1e999,"b":2}]'));
+      const index = () => [run("ls-files", "-s", "--debug"), readFileSync(join(repo, ".git", "index")).toString("hex")];
+      const indexBefore = index();
+      const worktreeBefore = readFileSync(join(repo, ".story", "tickets", "T-001.json"), "utf-8");
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const cwd = process.cwd();
+      try {
+        process.chdir(repo);
+        expect(handleMergeDriver(base, ours, theirs, ".story/tickets/T-001.json")).toBe(2);
+      } finally {
+        process.chdir(cwd);
+        spy.mockRestore();
+      }
+      expect(index()).toEqual(indexBefore);
+      expect(readFileSync(join(repo, ".story", "tickets", "T-001.json"), "utf-8")).toBe(worktreeBefore);
+      rmSync(sides, { recursive: true, force: true });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("review fixes, round 3: every merge refusal documents the way out", () => {
+  it("names the inspect, repair, validate, add and continue-or-abort sequence", () => {
+    const one = JSON.parse('{"kind":"test","n":1e999,"a":1}') as unknown;
+    for (const run of [
+      () => merge([], [one], []),
+      () => threeWayMerge({ ...T, receipts: [A] }, { ...T, receipts: null }, { ...T, receipts: [A] }, "ticket"),
+    ]) {
+      expect(run).toThrow(/git show :1:<path>.*storybloq validate.*git add <path>.*git commit.*git merge --abort/);
+    }
+  });
+});
+

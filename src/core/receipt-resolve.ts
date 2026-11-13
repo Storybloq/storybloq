@@ -62,6 +62,14 @@ export function resolveReceiptConflict(
   if (!(RECEIPT_KEEP as readonly string[]).includes(keep)) {
     throw new Error(`--keep takes ours, theirs or both (given ${JSON.stringify(keep)}).`);
   }
+  // Validated before any receipt body is touched: absent is an empty history,
+  // a present non-array value is refused and nothing is written.
+  for (const name of APPEND_ONLY_FIELDS) {
+    const v = entity[name];
+    if (v !== undefined && !Array.isArray(v)) {
+      throw new Error(`${name} is not an array on ${options.label}; repair it by hand into an array holding every element, then resolve again. Nothing was written.`);
+    }
+  }
   const opaque = options.receiptConflict !== undefined;
   const wanted = opaque ? options.receiptConflict! : options.receipt!;
   const kind = opaque ? "receipt-opaque" : "receipt";

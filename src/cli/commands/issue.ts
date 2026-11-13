@@ -1,4 +1,5 @@
 import { displayIdOf } from "../../core/resolver.js";
+import { receiptsGetView } from "../../core/receipts-page.js";
 import {
   type IssueCreateInput,
   validateIssueCreateSeverity,
@@ -225,13 +226,15 @@ export function handleIssueList(
   return { output: formatIssueList(issues, ctx.format, citationMapFor(issues, loadCitationContext(ctx.root))) };
 }
 
-export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false): CommandResult;
-export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean): CommandResult | Promise<CommandResult>;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number): CommandResult;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number): CommandResult | Promise<CommandResult>;
 /** T-486 U2-4: async only with actionability (the shared targeted lookup). */
 export function handleIssueGet(
   id: string,
   ctx: CommandContext,
   withActionability = false,
+  /** C-v4.1 commit 3 (Q6): one page of the record's receipts; omitted, the summary only. */
+  receiptsPage?: number,
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveIssueRef(id);
   if (result.kind === "ambiguous") {
@@ -250,9 +253,15 @@ export function handleIssueGet(
   }
   const rulingCtx = loadCitationContext(ctx.root);
   const item = result.item;
-  const render = (extraJsonFields?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => ({
-    output: formatIssue(item, ctx.format, ctx.state, resolveEntityCitations(item, rulingCtx), extraJsonFields),
-  });
+  const receipts = receiptsGetView(item as unknown as Record<string, unknown>, receiptsPage);
+  if (!receipts.ok) {
+    return { output: formatError("invalid_input", receipts.message, ctx.format), exitCode: ExitCode.USER_ERROR, errorCode: "invalid_input" };
+  }
+  const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
+    const extraJsonFields = { ...actionability, receipts: receipts.json };
+    const text = formatIssue(item, ctx.format, ctx.state, resolveEntityCitations(item, rulingCtx), extraJsonFields);
+    return { output: ctx.format === "json" || receipts.lines.length === 0 ? text : `${text}\n\n${receipts.lines.join("\n")}` };
+  };
   return withActionability ? computeTargetedActionability(ctx, "issue", item).then(render) : render();
 }
 

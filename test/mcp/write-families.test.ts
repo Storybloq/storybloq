@@ -217,7 +217,9 @@ describe("write families (1.20 commit 0)", () => {
 
   it("names, in the new skill, only tools an older server lists, or families with a fallback to the former names", () => {
     const families = new Map(WRITE_FAMILIES.map((f) => [f.name, f]));
-    const before = new Set(BEFORE.names);
+    // Tools added after commit 0 with no former name to fall back to (C-v4.1 commit 3: `storybloq receipt add`).
+    // An older server lacks them, so a skill line naming one names a new capability, not a renamed one.
+    const before = new Set([...BEFORE.names, "storybloq_receipt_add"]);
     for (const { path, text } of skillFiles()) {
       for (const name of new Set(text.match(/storybloq_[a-z0-9_]*[a-z0-9]/g) ?? [])) {
         if (before.has(name)) continue;

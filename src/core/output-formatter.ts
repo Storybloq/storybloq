@@ -3683,9 +3683,9 @@ export function formatReference(
 
   lines.push("## MCP Tools");
   lines.push("");
-  lines.push("The base tools below are registered in full mode (inside a .story/ project). The storybloq_bus_* tools are always registered in full mode; when the Bus is disabled or uninitialized they return setup guidance pointing at `storybloq bus setup`, with no MCP restart required.");
+  lines.push("The base tools below are registered in full mode (inside a .story/ project). The storybloq_bus_* tools are always registered there; with the Bus disabled or uninitialized they return setup guidance (`storybloq bus setup`), no MCP restart needed.");
   lines.push("");
-  lines.push("Arguments marked ? are optional in the registered schema; handlers may require combinations depending on the action. Use the client’s tool schema for types and constraints.");
+  lines.push("? marks optional arguments; handlers may require combinations per action. The client's tool schema gives types and constraints.");
   lines.push("");
   for (const tool of mcpTools) {
     const params = tool.params?.length ? ` (${tool.params.join(", ")})` : "";

@@ -27,6 +27,7 @@ export const BOARD_WRITE_TOOLS: readonly string[] = [
   "storybloq_ticket_update",
   "storybloq_ticket_meta_set",
   "storybloq_ticket_meta_unset",
+  "storybloq_receipt_add",
   "storybloq_issue_create",
   "storybloq_issue_update",
   "storybloq_issue_meta_set",

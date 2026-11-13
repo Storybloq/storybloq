@@ -159,8 +159,10 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     const all = await surfaces(root, "ISS-001");
     expect(Object.keys(all)).toContain("phaseExportRow");
     for (const [surface, body] of Object.entries(all)) {
-      const { effective, citedRulings, ...stored } = body;
+      const { effective, citedRulings, receipts, ...stored } = body;
       void citedRulings;
+      // C-v4.1 commit 3: get replies carry the receipts summary beside the record (Q6).
+      if (receipts !== undefined) expect(receipts, surface).toEqual({ summary: { total: 0, states: {} } });
       const expected = EXPORT_SURFACES.has(surface)
         ? Object.fromEntries(Object.entries(loaded(issue)).filter(([k]) => EXPORT_LEAN_KEYS.has(k)))
         : loaded(issue);

@@ -19,12 +19,19 @@ import { ReceiptSchema, receiptElementId } from "./receipts.js";
 
 export const RECEIPT_ID_RETRIES = 3;
 
+/** The parts of the loaded project state a receipt builder reads. */
+export interface ProjectStateLike {
+  ticketByID(id: string): unknown;
+  issueByID(id: string): unknown;
+}
+
 export function mintReceiptId(): string {
   return `rc-${encodeBase32Crockford(randomBytes(10))}`;
 }
 
 export interface ReceiptAppendTarget {
-  readonly kind: "ticket" | "issue";
+  /** Omitted: the id is looked up as a ticket, then as an issue. */
+  readonly kind?: "ticket" | "issue";
   readonly id: string;
 }
 
@@ -36,14 +43,18 @@ export interface ReceiptAppendDeps {
 export async function appendReceipt(
   root: string,
   target: ReceiptAppendTarget,
-  build: (id: string) => Record<string, unknown>,
+  /** Called under the lock with the minted id, the record as reloaded from disk, and the loaded state. */
+  build: (id: string, record: Readonly<Record<string, unknown>>, state: ProjectStateLike) => Record<string, unknown>,
   deps: ReceiptAppendDeps = {},
 ): Promise<Record<string, unknown>> {
   const mint = deps.mintId ?? mintReceiptId;
   let appended: Record<string, unknown> | undefined;
   await withProjectLockForReceipt(root, async ({ state }) => {
-    const existing = target.kind === "ticket" ? state.ticketByID(target.id) : state.issueByID(target.id);
-    if (!existing) throw new ProjectLoaderError("not_found", `${target.kind} ${target.id} not found`);
+    const asTicket = target.kind === "issue" ? undefined : state.ticketByID(target.id);
+    const asIssue = asTicket !== undefined || target.kind === "ticket" ? undefined : state.issueByID(target.id);
+    const existing = asTicket ?? asIssue;
+    if (!existing) throw new ProjectLoaderError("not_found", `${target.kind ?? "ticket or issue"} ${target.id} not found`);
+    const kind = asTicket !== undefined ? "ticket" : "issue";
     const record = existing as unknown as Record<string, unknown>;
     const has = Object.prototype.hasOwnProperty.call(record, "receipts");
     const prior = has ? record.receipts : undefined;
@@ -58,12 +69,12 @@ export async function appendReceipt(
       }
       id = mint();
     }
-    const body = build(id);
+    const body = build(id, record, state as unknown as ProjectStateLike);
     if (body.id !== id || !ReceiptSchema.safeParse(body).success) {
       throw new ProjectLoaderError("invalid_input", `The receipt for ${target.id} is not a well-formed v 1 receipt with the minted id; nothing was written.`);
     }
     const next = { ...record, receipts: [...(prior ?? []), body] };
-    if (target.kind === "ticket") await writeTicketUnlocked(next as never, root, { receiptsAuthority: RECEIPT_APPEND_AUTHORITY });
+    if (kind === "ticket") await writeTicketUnlocked(next as never, root, { receiptsAuthority: RECEIPT_APPEND_AUTHORITY });
     else await writeIssueUnlocked(next as never, root, { receiptsAuthority: RECEIPT_APPEND_AUTHORITY });
     appended = body;
   });

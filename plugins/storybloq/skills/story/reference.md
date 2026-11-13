@@ -118,6 +118,8 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **resolve <target>** (--field?, --use?, --value?, --id?, --group?, --invariant?, --rename?, --drop-alias?, --keep?, --receipt?, --receipt-conflict?, --format?) - Resolve merge conflicts on a .story/ item
 - **board-id init** (--format?) - Mint this board's id; commits only config.json
 - **board-id adopt** (--ref?, --format?) - Take the default branch's board id
+- **receipt add <target>** (--kind, --sha, --result, --base?, --unit?, --covers?, --built-from?, --built-clean?, --built-dirty?, --supersedes?, --data?, --command?, --evidence?, --repo?, --commit?, --format?) - Append a proof receipt
+- **receipts <id>** (--page?, --format?) - Page an item's receipts
 - **merge-driver <ancestor> <ours> <theirs> <pathname>** (--protocol?) | **merge-driver** (--protocol?, --capabilities) - Git merge driver for .story/ JSON files (registered via team setup)
 - **team init** (--claim-staleness-hours?, --id-allocator?, --format?) - Enable team mode on this project
 - **team setup** (--format?) - Install the git merge driver and .gitattributes for team mode
@@ -195,9 +197,9 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 
 ## MCP Tools
 
-The base tools below are registered in full mode (inside a .story/ project). The storybloq_bus_* tools are always registered in full mode; when the Bus is disabled or uninitialized they return setup guidance pointing at `storybloq bus setup`, with no MCP restart required.
+The base tools below are registered in full mode (inside a .story/ project). The storybloq_bus_* tools are always registered there; with the Bus disabled or uninitialized they return setup guidance (`storybloq bus setup`), no MCP restart needed.
 
-Arguments marked ? are optional in the registered schema; handlers may require combinations depending on the action. Use the client’s tool schema for types and constraints.
+? marks optional arguments; handlers may require combinations per action. The client's tool schema gives types and constraints.
 
 - **storybloq_status** (format?, clientTaskId?, compact?) - Project summary; markdown default, JSON includes session ownership/leases. clientTaskId enriches this session's presence; omitted, the environment identity is used. compact returns reduced JSON (fields: CLI status).
 - **storybloq_roster_get** (format?, all?) - Seat roster: live sessions and subagents (Bus endpoints merged) with live/stale/terminal counts; terminal seats hidden unless all. Read-only; writes are CLI-only.
@@ -205,12 +207,12 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_phase_current** - First non-complete phase
 - **storybloq_phase_tickets** (phaseId, node?) - Leaf tickets for a specific phase
 - **storybloq_ticket_list** (status?, phase?, type?, priority?, waitingOn?, node?) - List leaf tickets with optional filters
-- **storybloq_ticket_get** (id, format?, withActionability?, node?) - Get a ticket by ID
+- **storybloq_ticket_get** (id, format?, withActionability?, receiptsPage?, node?) - Get a ticket by ID
 - **storybloq_ticket_meta_get** (id, path?) - Get custom passthrough metadata from a ticket
 - **storybloq_ticket_next** (count?, node?) - Highest-priority unblocked ticket(s)
 - **storybloq_ticket_blocked** (node?) - All blocked tickets with dependencies
 - **storybloq_issue_list** (status?, severity?, component?, phase?, disposition?, actionable?, resolutionKind?, priority?, waitingOn?, format?, node?) - List issues with optional filters
-- **storybloq_issue_get** (id, format?, withActionability?, node?) - Get an issue by ID
+- **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, node?) - Get an issue by ID
 - **storybloq_issue_meta_get** (id, path?) - Get custom passthrough metadata from an issue
 - **storybloq_handover_list** - List handover filenames (newest first)
 - **storybloq_handover_latest** (count?, brief?, priming?, format?) - Content of most recent handover
@@ -234,6 +236,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?, sourceRefs?, order?, phase?, citesRuling?, clearCitesRulings?, resolutionKind?, duplicateOf?, disposition?, dispositionReason?, dispositionRef?, priority?, waitingOn?, node?, commit?) - Update issue
 - **storybloq_issue_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on an issue
 - **storybloq_issue_meta_unset** (id, path, commit?) - Unset custom passthrough metadata from an issue
+- **storybloq_receipt_add** (target, kind, sha, result, base?, unitRef?, covers?, attestation?, supersedes?, data?, command?, evidence?, repo?, commit?) - Append a proof receipt
 - **storybloq_phase_create** (id, name, label, description, summary?, after?, atStart?, commit?) - Create phase in roadmap
 - **storybloq_lesson_list** (status?, tag?, source?) - List lessons
 - **storybloq_lesson_get** (id) - Get lesson by ID

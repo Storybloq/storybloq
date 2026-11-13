@@ -530,6 +530,8 @@ describe("tool description contract (T-460)", () => {
     // 1.20 commit 0 (C-v4.1 and amendment 1) lists five write families in
     // place of eighteen write tools (106 + 5 - 18 = 93). The eighteen stay
     // registered and callable by name; only tools/list hides them.
-    expect(result.tools.length).toBe(93);
+    // C-v4.1 commit 3 adds storybloq_receipt_add (93 -> 94): an agent records
+    // the proof it just ran; the CLI `receipt add` calls the same handler.
+    expect(result.tools.length).toBe(94);
   });
 });

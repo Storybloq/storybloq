@@ -55,6 +55,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleNoteGet: "read",
   handleNoteList: "read",
   handlePhaseTickets: "read",
+  handleReceiptsCommand: "read",
   handleRecommend: "read",
   handleReference: "read",
   handleRepair: "read",

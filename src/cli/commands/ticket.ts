@@ -1,4 +1,5 @@
 import { displayIdOf } from "../../core/resolver.js";
+import { receiptsGetView } from "../../core/receipts-page.js";
 import { nextTicket, nextTickets, blockedTickets, currentPhase, waitingInventory } from "../../core/queries.js";
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
@@ -171,13 +172,15 @@ export function handleTicketList(
   return { output: formatTicketList(tickets, ctx.format, citationMapFor(tickets, rulingCtx)) };
 }
 
-export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false): CommandResult;
-export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean): CommandResult | Promise<CommandResult>;
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number): CommandResult;
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number): CommandResult | Promise<CommandResult>;
 /** T-486 U2-4: async only with actionability, which reads the live cross-node observation. */
 export function handleTicketGet(
   id: string,
   ctx: CommandContext,
   withActionability = false,
+  /** C-v4.1 commit 3 (Q6): one page of the record's receipts; omitted, the summary only. */
+  receiptsPage?: number,
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveTicketRef(id);
   if (result.kind === "ambiguous") {
@@ -196,9 +199,15 @@ export function handleTicketGet(
   }
   const rulingCtx = loadCitationContext(ctx.root);
   const item = result.item;
-  const render = (extraJsonFields?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => ({
-    output: formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields),
-  });
+  const receipts = receiptsGetView(item as unknown as Record<string, unknown>, receiptsPage);
+  if (!receipts.ok) {
+    return { output: formatError("invalid_input", receipts.message, ctx.format), exitCode: ExitCode.USER_ERROR, errorCode: "invalid_input" };
+  }
+  const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
+    const extraJsonFields = { ...actionability, receipts: receipts.json };
+    const text = formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields);
+    return { output: ctx.format === "json" || receipts.lines.length === 0 ? text : `${text}\n\n${receipts.lines.join("\n")}` };
+  };
   return withActionability ? computeTargetedActionability(ctx, "ticket", item).then(render) : render();
 }
 

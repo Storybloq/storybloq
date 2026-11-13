@@ -676,6 +676,72 @@ export function registerBoardIdCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// receipt add / receipts (C-v4.1 commit 3, ISS-1435)
+// ---------------------------------------------------------------------------
+
+export function registerReceiptCommand(yargs: Argv): Argv {
+  return yargs
+    .command(
+      "receipt",
+      "Proof receipts on tickets and issues",
+      (y) =>
+        y.command(
+          "add <target>",
+          "Append a test, mutant, review or device receipt (the same handler as storybloq_receipt_add)",
+          (y2) => addCommitOption(addFormatOption(arrayOptions(y2
+            .positional("target", { type: "string", demandOption: true, describe: "Ticket or issue id the receipt sits on" })
+            .option("kind", { type: "string", demandOption: true, describe: "test, mutant, review or device" })
+            .option("sha", { type: "string", demandOption: true, describe: "Full commit id" })
+            .option("result", { type: "string", demandOption: true, describe: "pass, fail or error" })
+            .option("base", { type: "string", describe: "review: full base id of the reviewed range" })
+            .option("unit", { type: "string", describe: "device: the unit the result proves" })
+            .option("built-from", { type: "string", describe: "Attestation: the sha the build came from" })
+            .option("built-clean", { type: "boolean", describe: "Attestation: built from a clean tree" })
+            .option("built-dirty", { type: "boolean", describe: "Attestation: built from a dirty tree" })
+            .option("data", { type: "string", describe: "Per-kind data as JSON" })
+            .option("command", { type: "string", describe: "The command run (stored, never executed)" })
+            .option("evidence", { type: "string", describe: "Repo-relative path or sha256" })
+            .option("repo", { type: "string", describe: "Registry alias of the repo the sha belongs to" }), {
+              covers: { comma: "split", emptyAfterSplit: "reject", empty: "drop", trim: "always", describe: "device: the children proved" },
+              supersedes: { comma: "split", emptyAfterSplit: "reject", empty: "drop", trim: "always", describe: "Receipt ids this attempt replaces" },
+            }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)')),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            const flags: Record<string, unknown> = {};
+            for (const k of ["kind", "sha", "result", "base", "unit", "covers", "builtFrom", "builtClean", "builtDirty", "supersedes", "data", "command", "evidence", "repo"]) {
+              if (argv[k] !== undefined) flags[k] = argv[k];
+            }
+            const { handleReceiptAddCommand } = await import("./commands/receipt.js");
+            const result = await runBoardWrite(argv, format, async () => handleReceiptAddCommand(root, String(argv.target), flags, format === "json" ? "json" : "md"));
+            writeOutput(result.output, format);
+            process.exitCode = result.exitCode ?? ExitCode.OK;
+          },
+        )
+        .demandCommand(1, "Specify a receipt subcommand: add")
+        .strict(),
+      () => {},
+    )
+    .command(
+      "receipts <id>",
+      "One page of a ticket's or issue's receipts, 20 per page",
+      (y) => addFormatOption(y
+        .positional("id", { type: "string", demandOption: true, describe: "Ticket or issue id" })
+        .option("page", { type: "number", describe: "Page number, from 1" })),
+      async (argv) => {
+        const format = parseOutputFormat(argv.format);
+        const { handleReceiptsCommand } = await import("./commands/receipt.js");
+        await runReadCommand(format, (ctx) => handleReceiptsCommand(String(argv.id), argv.page as number | undefined, ctx));
+      },
+    );
+}
+
+// ---------------------------------------------------------------------------
 // team
 // ---------------------------------------------------------------------------
 

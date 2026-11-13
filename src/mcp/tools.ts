@@ -4,6 +4,7 @@
  * Storybloq tools use a shared read/write pipeline:
  *   loadProject(root) → build CommandContext → call handler → classify result
  */
+import { handleReceiptAdd } from "../cli/commands/receipt.js";
 import { BRIEF_BUDGET_MAX, BRIEF_BUDGET_MIN, handleBrief } from "../cli/commands/brief.js";
 import { z } from "zod";
 import { ISSUE_RESOLUTION_KINDS } from "../core/resolution-kind.js";
@@ -830,6 +831,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, T-079b, t-[canonical]"),
       format: z.enum(["md", "json"]).optional().describe("default: md"),
       withActionability: z.boolean().optional(),
+      receiptsPage: z.number().optional().describe("Receipts page, 20 per page"),
       node: nodeParam,
     },
   }, (args) => {
@@ -837,7 +839,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleTicketGet(args.id, ctx, args.withActionability ?? false),
+      (ctx) => handleTicketGet(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );
@@ -895,6 +897,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
       format: z.enum(["md", "json"]).optional().describe("default: md"),
       withActionability: z.boolean().optional(),
+      receiptsPage: z.number().optional().describe("Receipts page, 20 per page"),
       node: nodeParam,
     },
   }, (args) => {
@@ -902,7 +905,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleIssueGet(args.id, ctx, args.withActionability ?? false),
+      (ctx) => handleIssueGet(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );
@@ -1122,6 +1125,26 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleTicketMetaUnset(args.id, args.path, format, root),
   ));
+
+  // C-v4.1 commit 3: the same handler as `storybloq receipt add`.
+  registerWriteTool(server, "storybloq_receipt_add", {
+    description: "Append a proof receipt (test, mutant, review or device) to a ticket or issue. The tool fills id, repo, revisions, observation and recordedAt/By.",
+    inputSchema: {
+      target: z.string().describe("Ticket or issue id"),
+      kind: z.string().describe("test, mutant, review or device"),
+      sha: z.string().describe("Full commit id"),
+      result: z.string().describe("pass, fail or error"),
+      base: z.string().optional().describe("review: full base id of the range"),
+      unitRef: z.string().optional().describe("device: the unit proved"),
+      covers: z.array(z.string()).optional().describe("device: children proved"),
+      attestation: z.object({ builtFromSha: z.string(), builtClean: z.boolean() }).optional().describe("test, device: required"),
+      supersedes: z.array(z.string()).optional().describe("Receipt ids this replaces (same record and kind)"),
+      data: z.record(z.unknown()).optional().describe("Per-kind counts or review details"),
+      command: z.string().optional(),
+      evidence: z.string().optional().describe("Repo-relative path or sha256"),
+      repo: z.string().optional().describe("Registry alias of the sha's repo; default this board"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleReceiptAdd(root, args as Record<string, unknown>, format)));
 
   // --- Issue write tools ---
 

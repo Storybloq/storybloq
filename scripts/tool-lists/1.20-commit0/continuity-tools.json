@@ -49,6 +49,7 @@
     "storybloq_phase_list",
     "storybloq_phase_tickets",
     "storybloq_recap",
+    "storybloq_receipt_add",
     "storybloq_recommend",
     "storybloq_review_lenses_judge",
     "storybloq_review_lenses_prepare",

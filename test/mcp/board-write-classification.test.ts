@@ -65,6 +65,26 @@ interface McpLists {
 }
 
 /**
+ * 1.20 commit 0: a family handler is exactly `(a, e) => dispatchWriteFamily(f, m, a, e)`,
+ * optionally behind a type assertion or in a block holding only that return,
+ * with plain identifiers as arguments: no work before, after or around the dispatch.
+ */
+function solelyDispatches(handler: ts.Node): boolean {
+  if (!ts.isArrowFunction(handler) && !ts.isFunctionExpression(handler)) return false;
+  let body: ts.Node = handler.body;
+  if (ts.isBlock(body)) {
+    if (body.statements.length !== 1) return false;
+    const only = body.statements[0]!;
+    if (!ts.isReturnStatement(only) || !only.expression) return false;
+    body = only.expression;
+  }
+  while (ts.isParenthesizedExpression(body) || ts.isAsExpression(body) || ts.isSatisfiesExpression(body)) body = body.expression;
+  return ts.isCallExpression(body)
+    && ts.isIdentifier(body.expression) && body.expression.text === "dispatchWriteFamily"
+    && body.arguments.every((arg) => ts.isIdentifier(arg));
+}
+
+/**
  * The MCP rule: returns one violation string per unclassified registration.
  * A form the rule cannot read statically (a computed tool name, a registration
  * function taken as a value rather than called) is unsupported unless it is
@@ -123,7 +143,7 @@ function classifyMcp(source: string, lists: McpLists): string[] {
           } else if (tool in lists.families) {
             // Every board write it reaches runs through registerWriteTool's own handler.
             seenFamily.add(tool);
-            if (!dispatches || writes) violations.push(`${tool}: write family handler does not only call dispatchWriteFamily`);
+            if (!solelyDispatches(handler)) violations.push(`${tool}: write family handler does not only call dispatchWriteFamily`);
           } else if (dispatches) {
             violations.push(`${tool}: calls dispatchWriteFamily but is not a listed write family`);
           } else if (lists.board.includes(tool)) {
@@ -189,6 +209,11 @@ describe("board write classification (ISS-1107)", () => {
       server.registerTool("storybloq_good_family", {}, (a, e) => dispatchWriteFamily(f, m, a, e));
       server.registerTool("storybloq_rogue_family", {}, (a, e) => dispatchWriteFamily(f, m, a, e));
       server.registerTool("storybloq_lazy_family", {}, async () => ({ content: [] }));
+      server.registerTool("storybloq_cast_family", {}, (a, e) => dispatchWriteFamily(f, m, a, e) as Promise<R>);
+      server.registerTool("storybloq_block_family", {}, async (a, e) => { return dispatchWriteFamily(f, m, a, e); });
+      server.registerTool("storybloq_busy_family", {}, async (a, e) => { await touch(a); return dispatchWriteFamily(f, m, a, e); });
+      server.registerTool("storybloq_sly_family", {}, (a, e) => dispatchWriteFamily(f, m, rewrite(a), e));
+      server.registerTool("storybloq_after_family", {}, (a, e) => dispatchWriteFamily(f, m, a, e).then(log));
     `;
     expect(classifyMcp(fixture, {
       ...LISTS,
@@ -198,6 +223,11 @@ describe("board write classification (ISS-1107)", () => {
         storybloq_good_family: ["storybloq_ticket_create"],
         storybloq_lazy_family: ["storybloq_ticket_create", "storybloq_not_a_write"],
         storybloq_missing_family: [],
+        storybloq_cast_family: ["storybloq_ticket_create"],
+        storybloq_block_family: ["storybloq_ticket_create"],
+        storybloq_busy_family: ["storybloq_ticket_create"],
+        storybloq_sly_family: ["storybloq_ticket_create"],
+        storybloq_after_family: ["storybloq_ticket_create"],
       },
     })).toEqual([
       "storybloq_both: listed as a board write and as exempt",
@@ -215,6 +245,9 @@ describe("board write classification (ISS-1107)", () => {
       "storybloq_delegated: custom handler not classified",
       "storybloq_rogue_family: calls dispatchWriteFamily but is not a listed write family",
       "storybloq_lazy_family: write family handler does not only call dispatchWriteFamily",
+      "storybloq_busy_family: write family handler does not only call dispatchWriteFamily",
+      "storybloq_sly_family: write family handler does not only call dispatchWriteFamily",
+      "storybloq_after_family: write family handler does not only call dispatchWriteFamily",
       "storybloq_both: listed but never registered",
       "storybloq_missing_family: family listed but never registered",
     ]);

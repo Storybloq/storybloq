@@ -12,8 +12,9 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { registeredBoardWriteTools } from "../../src/mcp/board-write-tools.js";
-import { HIDDEN_LEGACY_TOOLS, WRITE_FAMILIES } from "../../src/mcp/tool-profile.js";
+import { HIDDEN_LEGACY_TOOLS, WRITE_FAMILIES, dispatchWriteFamily, familyInputShape, type FamilyMember, type WriteFamily } from "../../src/mcp/tool-profile.js";
 import { initProject } from "../../src/core/init.js";
+import { handleCheckpointEnable } from "../../src/cli/commands/checkpoint.js";
 import { referenceSurfaceNames, unknownSurfaces } from "../../src/core/capability.js";
 import { MCP_TOOLS } from "../../src/cli/commands/reference.js";
 
@@ -231,7 +232,7 @@ describe("write families (1.20 commit 0)", () => {
     }
   });
 
-  it("lists each family property with the least constrained member type", async () => {
+  it("lists each family property as the members' one shared schema, or the union of their distinct schemas", async () => {
     const { tools } = await conn.client.listTools();
     const members = registeredBoardWriteTools(conn.server);
     const jsonOf = (type: z.ZodTypeAny): string => {
@@ -241,27 +242,70 @@ describe("write families (1.20 commit 0)", () => {
       const { description: _d, ...rest } = json.properties.k ?? {};
       return JSON.stringify(rest);
     };
+    const bare = (node: unknown): string => {
+      const { description: _d, ...rest } = node as Record<string, unknown>;
+      return JSON.stringify(rest);
+    };
+    let unions = 0;
     for (const family of WRITE_FAMILIES) {
       const listed = tools.find((t) => t.name === family.name)!.inputSchema as { properties: Record<string, Record<string, unknown>> };
       for (const [key, prop] of Object.entries(listed.properties)) {
         if (key === "action") continue;
         // The SDK lists a type object shared with an earlier one as a $ref to it.
-        const { description: _d, ...rest } = deref(prop, listed) as Record<string, unknown>;
-        const memberTypes = family.actions
+        const shown = deref(prop, listed) as Record<string, unknown>;
+        const distinct = [...new Set(family.actions
           .map((a) => members.get(family.prefix + a)!.inputSchema.shape[key] as z.ZodTypeAny | undefined)
           .filter((t): t is z.ZodTypeAny => t !== undefined)
-          .map(jsonOf);
-        const shortest = Math.min(...memberTypes.map((j) => j.length));
-        expect(memberTypes, `${family.name}.${key} is a member's own type`).toContain(JSON.stringify(rest));
-        expect(JSON.stringify(rest).length, `${family.name}.${key} is the least constrained`).toBe(shortest);
+          .map(jsonOf))].sort();
+        if (distinct.length === 1) {
+          expect(bare(shown), `${family.name}.${key} is the members' shared schema`).toBe(distinct[0]);
+        } else {
+          unions += 1;
+          const options = (shown.anyOf as unknown[] | undefined) ?? [];
+          expect(options.map(bare).sort(), `${family.name}.${key} is the union of the members' schemas`).toEqual(distinct);
+        }
       }
     }
-    // The case the rule exists for: checkpoint `reason` is optional on reopen
-    // and required on retire, so the family lists the optional one.
-    const checkpoint = tools.find((t) => t.name === "storybloq_checkpoint_write")!.inputSchema as {
-      properties: Record<string, Record<string, unknown>>;
-    };
-    expect(checkpoint.properties.reason!.minLength).toBeUndefined();
+    // The case the rule exists for: checkpoint `reason` has no minimum on
+    // reopen and a minimum of 1 on retire, so the family takes either.
+    expect(unions).toBe(1);
+  });
+
+  it("accepts at the family every value some member accepts, even under incomparable constraints", async () => {
+    const seen: Array<{ action: string; args: unknown }> = [];
+    const member = (action: string, n: z.ZodTypeAny): FamilyMember => ({
+      inputSchema: z.object({ n }).strict(),
+      handler: async (args) => {
+        seen.push({ action, args });
+        return { content: [] };
+      },
+    });
+    const family: WriteFamily = { name: "storybloq_probe_write", prefix: "storybloq_probe_", head: "Probe", actions: ["short", "long", "num"] };
+    const members = new Map<string, FamilyMember>([
+      ["storybloq_probe_short", member("short", z.string().max(3))],
+      ["storybloq_probe_long", member("long", z.string().min(5))],
+      ["storybloq_probe_num", member("num", z.number().int().optional())],
+    ]);
+    const parse = z.object(familyInputShape(family, members)).strict();
+    for (const [action, n] of [["short", "ab"], ["long", "abcdef"], ["num", 7], ["num", undefined]] as const) {
+      const args = n === undefined ? { action } : { action, n };
+      expect(parse.safeParse(args).success, `${action} ${String(n)} passes the family parse`).toBe(true);
+      await dispatchWriteFamily(family, members, parse.parse(args) as Record<string, unknown>, {});
+    }
+    expect(seen.map((s) => s.action)).toEqual(["short", "long", "num", "num"]);
+    // Each member still applies its own constraint at dispatch.
+    await expect(dispatchWriteFamily(family, members, { action: "short", n: "abcdef" }, {})).rejects.toThrow(/storybloq_probe_short/);
+    await expect(dispatchWriteFamily(family, members, { action: "long", n: "ab" }, {})).rejects.toThrow(/storybloq_probe_long/);
+    // A value no member accepts is refused at the family.
+    expect(parse.safeParse({ action: "num", n: true }).success).toBe(false);
+
+    // The real catalog: an empty reason is valid for reopen, so the family takes it.
+    const real = registeredBoardWriteTools(conn.server);
+    const checkpoint = WRITE_FAMILIES.find((f) => f.name === "storybloq_checkpoint_write")!;
+    const realParse = z.object(familyInputShape(checkpoint, real)).strict();
+    const reopen = { id: "T-001", generation: 1, revision: 1, digest: "d", reason: "" };
+    expect(real.get("storybloq_checkpoint_reopen")!.inputSchema.safeParse(reopen).success).toBe(true);
+    expect(realParse.safeParse({ action: "reopen", ...reopen }).success).toBe(true);
   });
 
   it("refuses a key another action takes with the former tool's own refusal text", async () => {
@@ -367,11 +411,25 @@ describe("a family action and its former name give the same result", () => {
     expect(family).toEqual(legacy);
   });
 
-  it("checkpoint create refusal on a missing item: same code and text", async () => {
+  it("checkpoint create with keys create does not take (an invalid-schema refusal): same code and text", async () => {
     const { legacy, family } = await twin("storybloq_checkpoint_create", {
       id: "T-999", generation: 0, revision: 0, digest: "d", kind: "decision", question: "Which?",
     });
     expect(legacy.isError).toBe(true);
+    expect(legacy.text).toContain("Invalid arguments for tool storybloq_checkpoint_create");
+    expect(family).toEqual(legacy);
+  });
+
+  it("checkpoint attach to a missing ticket (a handler-level refusal): same code and text, nothing written", async () => {
+    const enable = async (c: Connected) => {
+      await handleCheckpointEnable("md", c.root);
+    };
+    const { legacy, family } = await twin("storybloq_checkpoint_attach", {
+      id: "T-999", owner: "owner", kind: "decision", question: "Which store?",
+    }, enable);
+    expect(legacy.isError).toBe(true);
+    expect(legacy.text).not.toContain("Invalid arguments");
+    expect(legacy.text).toContain("T-999");
     expect(family).toEqual(legacy);
   });
 });

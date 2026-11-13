@@ -78,11 +78,12 @@ function typeKey(type: z.ZodTypeAny): string {
  * first-seen order, all optional (each action's own required fields are
  * enforced by its own schema at dispatch).
  *
- * Where members disagree on a property's type, the least constrained one is
- * listed (the shortest JSON), so the family never refuses a call a former
- * tool would accept; the member's own schema then applies its constraint.
- * The longest member description is listed, prefixed with the actions that
- * use the property when not all of them do.
+ * Where members disagree on a property's schema, the family lists the UNION
+ * of their distinct schemas (deduplicated by the JSON a client sees), so any
+ * value some member accepts passes the family's own parse; the member's own
+ * schema then applies its constraint at dispatch. Where they agree, the one
+ * shared schema is listed as is. The longest member description is listed,
+ * prefixed with the actions that use the property when not all of them do.
  */
 export function familyInputShape(family: WriteFamily, members: Members): z.ZodRawShape {
   const seen = new Map<string, { action: string; type: z.ZodTypeAny }[]>();
@@ -97,15 +98,19 @@ export function familyInputShape(family: WriteFamily, members: Members): z.ZodRa
     action: z.enum(family.actions as [string, ...string[]]),
   };
   for (const [key, uses] of seen) {
-    const loosest = uses
-      .map((u) => ({ ...u, key: typeKey(u.type) }))
-      .sort((a, b) => a.key.length - b.key.length)[0]!;
+    const distinct = new Map<string, z.ZodTypeAny>();
+    for (const u of uses) {
+      const k = typeKey(u.type);
+      if (!distinct.has(k)) distinct.set(k, u.type instanceof z.ZodOptional ? (u.type.unwrap() as z.ZodTypeAny) : u.type);
+    }
+    const types = [...distinct.values()];
+    const accepted: z.ZodTypeAny = types.length === 1 ? types[0]! : z.union(types as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
     const description = uses
       .map((u) => u.type.description ?? "")
       .sort((a, b) => b.length - a.length)[0]!;
     const prefix = uses.length < family.actions.length ? `${uses.map((u) => u.action).join("/")}: ` : "";
     const text = prefix + description;
-    const optional = loosest.type.isOptional() ? loosest.type : loosest.type.optional();
+    const optional = accepted.isOptional() ? accepted : accepted.optional();
     shape[key] = text.length > 0 ? optional.describe(text) : optional;
   }
   return shape;

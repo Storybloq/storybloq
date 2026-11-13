@@ -1,6 +1,8 @@
 /**
  * T-538 S5a C4: a setup interrupted at a seam, met by the newest published
- * CLI (old-dists.json `latestPublished`, 1.15.9). Each state is built by an
+ * CLI that every capability fence must refuse (old-dists.json
+ * `preCapability`, 1.15.9; not `latestPublished`, which moves at every
+ * publish and from 1.16.0 on reads these ledgers). Each state is built by an
  * eval-bundle child that SIGKILLs itself at the seam, at one fixed absolute
  * root (the ledger journal records absolute targets, so a copy elsewhere
  * would recover against the wrong tree). The oracle snapshots the tree, runs
@@ -32,11 +34,11 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LATEST_PUBLISHED, requireOldDists } from "./old-dists.js";
+import { PRE_CAPABILITY, requireOldDists } from "./old-dists.js";
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 300_000 });
 
-const { dists, skip } = requireOldDists([LATEST_PUBLISHED]);
+const { dists, skip } = requireOldDists([PRE_CAPABILITY]);
 const OLD_BIN = dists[0] ? dirname(dists[0].bin) : "";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -283,7 +285,7 @@ async function oracle(oldCommands: string[][], newHome = homes.new): Promise<Ora
 
 const read = (m: ByteMap, rel: string) => m.get(rel)?.bytes?.toString("utf-8");
 
-describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${LATEST_PUBLISHED}${skip ? ` (${skip})` : ""}`, () => {
+describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${PRE_CAPABILITY}${skip ? ` (${skip})` : ""}`, () => {
   beforeAll(async () => {
     setRunBudget(280_000);
     if (!existsSync(NEW_CLI)) throw new Error("dist/ is not built: run npm run build first");
@@ -310,7 +312,7 @@ describe.skipIf(skip !== null)(`a setup interrupted at a seam, met by ${LATEST_P
 
   it("is the pinned version, and the driver refuses the real HOME", async () => {
     const v = await oldClient(["--version"]);
-    expect(v.out.trim()).toBe(LATEST_PUBLISHED);
+    expect(v.out.trim()).toBe(PRE_CAPABILITY);
     expect(() => scratchHome(homedir())).toThrow(/refusing to run with the real HOME/);
     await expect(run(process.execPath, [NEW_CLI, "--version"], scratch, { HOME: userInfo().homedir, PATH: BARE_PATH })).rejects.toThrow(/real HOME/);
   });

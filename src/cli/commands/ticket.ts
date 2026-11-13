@@ -77,6 +77,7 @@ import {
   setMetadata,
   unsetMetadata,
 } from "./metadata.js";
+import { LANDING_APPEND_AUTHORITY } from "../../core/receipts-guard.js";
 
 // Re-export for register.ts
 export { TICKET_STATUSES, TICKET_TYPES };
@@ -120,6 +121,11 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   "priority",
   "waitingOn",
   "updatedDate",
+  // C-v4.1 3.4: the append-only fields are never metadata; they change only
+  // through receipt add, land and resolve --receipt.
+  "receipts",
+  "landings",
+  "receiptResolutions",
 ]);
 
 // --- Read Handlers ---
@@ -1078,13 +1084,14 @@ export async function appendTicketLanding(
     if (!existing || displayIdOf(existing) !== target.displayId || ticketFilePath(root, existing.id) !== target.path) {
       throw new CliValidationError("conflict", "item changed since preflight");
     }
-    const prior = getMetadata(existing as Record<string, unknown>, "landings", TICKET_CORE_METADATA_KEYS);
-    if (prior.found && !Array.isArray(prior.value)) {
+    const record = existing as Record<string, unknown>;
+    const prior = Object.prototype.hasOwnProperty.call(record, "landings") ? record.landings : undefined;
+    if (prior !== undefined && !Array.isArray(prior)) {
       throw new CliValidationError("invalid_input", "existing landings is not an array");
     }
-    const landings = prior.found ? [...(prior.value as unknown[]), entry] : [entry];
-    const updated = setMetadata(existing as Record<string, unknown>, "landings", landings, TICKET_CORE_METADATA_KEYS) as Ticket;
+    const landings = prior === undefined ? [entry] : [...prior, entry];
+    const updated = { ...record, landings } as unknown as Ticket;
     validatePostWriteState(updated, state, false);
-    await writeTicketUnlocked(updated, root);
+    await writeTicketUnlocked(updated, root, { receiptsAuthority: LANDING_APPEND_AUTHORITY });
   });
 }

@@ -74,6 +74,7 @@ import {
   setMetadata,
   unsetMetadata,
 } from "./metadata.js";
+import { LANDING_APPEND_AUTHORITY } from "../../core/receipts-guard.js";
 
 export type { IssueCreateInput };
 
@@ -123,6 +124,11 @@ const ISSUE_CORE_METADATA_KEYS = new Set([
   "priority",
   "waitingOn",
   "updatedDate",
+  // C-v4.1 3.4: the append-only fields are never metadata; they change only
+  // through receipt add, land and resolve --receipt.
+  "receipts",
+  "landings",
+  "receiptResolutions",
 ]);
 
 function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {
@@ -894,13 +900,14 @@ export async function appendIssueLanding(
     if (!existing || displayIdOf(existing) !== target.displayId || issueFilePath(root, existing.id) !== target.path) {
       throw new CliValidationError("conflict", "item changed since preflight");
     }
-    const prior = getMetadata(existing as Record<string, unknown>, "landings", ISSUE_CORE_METADATA_KEYS);
-    if (prior.found && !Array.isArray(prior.value)) {
+    const record = existing as Record<string, unknown>;
+    const prior = Object.prototype.hasOwnProperty.call(record, "landings") ? record.landings : undefined;
+    if (prior !== undefined && !Array.isArray(prior)) {
       throw new CliValidationError("invalid_input", "existing landings is not an array");
     }
-    const landings = prior.found ? [...(prior.value as unknown[]), entry] : [entry];
-    const updated = setMetadata(existing as Record<string, unknown>, "landings", landings, ISSUE_CORE_METADATA_KEYS) as Issue;
+    const landings = prior === undefined ? [entry] : [...prior, entry];
+    const updated = { ...record, landings } as unknown as Issue;
     validatePostWriteIssueState(updated, state, false);
-    await writeIssueUnlocked(updated, root);
+    await writeIssueUnlocked(updated, root, { receiptsAuthority: LANDING_APPEND_AUTHORITY });
   });
 }

@@ -47,6 +47,7 @@ import { sanitizeDisplayText } from "./display-text.js";
 import { ProjectLoaderError } from "./errors.js";
 import { buildTermReferenceIndex, checkTerms, glossaryCatalog, type CapabilityScan } from "./glossary.js";
 import { CAPABILITIES_PATH, GLOSSARY_PATH, readLedgerSnapshot, type LedgerSnapshot, type SnapshotGitRunner } from "./ledger-snapshot.js";
+import { appendOnlyDrops, assertReceiptsWriteAllowed } from "./receipts-guard.js";
 import { assertPreparedWritesCurrent, atomicWrite, guardPath, resolutionWriteContextFor, withProjectLock } from "./project-loader.js";
 import { assertResolutionMetadataWrite } from "./resolution-write-guard.js";
 import { claimsAcceptance, isEffectivelyAccepted } from "./ruling-lifecycle.js";
@@ -413,6 +414,33 @@ async function restoreSingleRecord(
       if (projectionOf(current) === projectionOf(sourceJson)) {
         result = { outcome: "unchanged", target: label };
         return;
+      }
+      // C-v4.1 3.4 (issues only: tickets are never restored): a restore never
+      // drops a receipt, landing or resolution history entry, and never
+      // changes an append-only field at all.
+      if (record.family === "issues") {
+        const prior = current.present && typeof current.value === "object" && current.value !== null && !Array.isArray(current.value)
+          ? (current.value as Record<string, unknown>)
+          : null;
+        if (current.present && prior === null) {
+          throw new RestoreUnsafe(label, "invariant", "receipts_unpreservable", "the current record is not an object, so its receipts cannot be shown to be kept");
+        }
+        const next = json as Record<string, unknown>;
+        const { dropped, unpreservable } = appendOnlyDrops(prior, next);
+        if (unpreservable.length > 0) {
+          throw new RestoreUnsafe(label, "invariant", "receipts_unpreservable", `${unpreservable.join(", ")} cannot be compared or kept as they stand; repair them by hand first`);
+        }
+        if (dropped.length > 0) {
+          throw new RestoreUnsafe(label, "invariant", "restore_would_drop_receipts", `the record at --from lacks ${dropped.join(", ")}; receipts, landings and resolution history are append-only and never restored away`);
+        }
+        try {
+          assertReceiptsWriteAllowed(prior, next);
+        } catch (err) {
+          if (err instanceof ProjectLoaderError && err.code === "conflict") {
+            throw new RestoreUnsafe(label, "invariant", "receipts_immutable", err.message);
+          }
+          throw err;
+        }
       }
       // T-486 2c: restore writes outside prepareIssueWrite, so it runs the
       // same resolution-metadata boundary, against the record it replaces,

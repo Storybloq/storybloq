@@ -302,7 +302,9 @@ export function receiptsNamingBoard(records: readonly Record<string, unknown>[],
   const out: string[] = [];
   for (const record of records) {
     const receipts = record.receipts;
-    if (!Array.isArray(receipts)) continue;
+    if (receipts === undefined) continue;
+    // A present value that is not an array is refused, never read as no receipts.
+    if (!Array.isArray(receipts)) throw new Error(`receipts is not an array on ${String(record.id)}; it cannot be inspected for receipts naming ${boardId}`);
     for (const r of receipts) {
       if (r === null || typeof r !== "object") continue;
       const e = r as Record<string, unknown>;

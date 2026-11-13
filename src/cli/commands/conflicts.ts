@@ -629,8 +629,8 @@ export async function handleResolve(
       result = resolveReceiptConflict(mutable, {
         receipt: options.receipt, receiptConflict: options.receiptConflict, keep: String(options.keep), actor, label,
       }, MERGE_RESOLUTION_AUTHORITY);
-      if (target.kind === "ticket") await writeTicketUnlocked(mutable as never, root, { touch: false });
-      else await writeIssueUnlocked(mutable as never, root, { touch: false });
+      if (target.kind === "ticket") await writeTicketUnlocked(mutable as never, root, { touch: false, receiptsAuthority: MERGE_RESOLUTION_AUTHORITY });
+      else await writeIssueUnlocked(mutable as never, root, { touch: false, receiptsAuthority: MERGE_RESOLUTION_AUTHORITY });
     } else {
       const mutable = { ...target.entity };
       const before = ((target.entity as Record<string, unknown>)._conflicts ?? []) as ConflictEntry[];

@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { assertBoardIdWriteAllowed, type BOARD_ID_AUTHORITY } from "./board-id.js";
-import { existsSync, lstatSync, realpathSync, constants as fsConstants } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, constants as fsConstants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
 import { recordBoardTarget } from "./board-write-recorder.js";
@@ -50,6 +50,8 @@ import { listHandovers } from "./handover-parser.js";
 import { assertTeamWriteCapabilities, isTeamModeConfig } from "./team-capabilities.js";
 import { validateProject } from "./validation.js";
 import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthority } from "./checkpoint-guard.js";
+import { assertReceiptsPreservable, assertReceiptsWriteAllowed, type ReceiptsWriteAuthority } from "./receipts-guard.js";
+import { APPEND_ONLY_FIELDS } from "./append-only-merge.js";
 import { assertVerificationWriteAllowed, type VerificationWriteAuthority } from "./setup-verification-guard.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { applyTicketIdentityPolicy, type TicketIdentityReport } from "./ticket-counts.js";
@@ -518,7 +520,7 @@ function refuseMisnamedClaimants(claimants: readonly string[], dir: MisnamedDir,
   throw new ProjectLoaderError("conflict", misnamedCollisionMessage(id, dir, files));
 }
 
-type PrepareTicketOptions = { authority?: CheckpointWriteAuthority; verificationAuthority?: VerificationWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption };
+type PrepareTicketOptions = { authority?: CheckpointWriteAuthority; verificationAuthority?: VerificationWriteAuthority; receiptsAuthority?: ReceiptsWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption };
 
 export async function prepareTicketWrite(
   ticket: Ticket,
@@ -551,10 +553,14 @@ async function prepareTicketWriteChecked(
   const parsed = date === null ? unstamped : touchUpdated(unstamped, prior, date);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
   assertVerificationWriteAllowed(prior, parsed, options?.verificationAuthority);
+  // C-v4.1 3.4: the append-only fields change only under their authorities.
+  assertReceiptsWriteAllowed(prior, parsed, options?.receiptsAuthority);
   // As for issues (Codex F1): nothing awaits between obtaining the context
   // and the decision.
   const ctx = heldResolutionContext(root, options?.resolutionContext);
   const content = serializeJSON(parsed);
+  assertReceiptsPreservable(parsed, content);
+  recordReceiptsAuthority(target, content, options?.receiptsAuthority);
   const decision = assertTicketResolutionWrite(ctx, `.story/tickets/${parsed.id}.json`, prior ?? {}, parsed);
   ctx.recordPrepared(target, content, decision.dependsOnBoard, decision.withdrawalGated);
   return { target, content };
@@ -617,9 +623,9 @@ async function readIfExists(path: string): Promise<string | null> {
 export async function writeTicketUnlocked(
   ticket: Ticket,
   root: string,
-  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority; touch?: TouchOption } & PreparedContentValidation,
+  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority; receiptsAuthority?: ReceiptsWriteAuthority; touch?: TouchOption } & PreparedContentValidation,
 ): Promise<void> {
-  const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority, touch: options?.touch });
+  const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority, receiptsAuthority: options?.receiptsAuthority, touch: options?.touch });
   assertPreparedWritesCurrent(root, [{ target, content }]);
   await assertWithdrawalLedgerCurrent(root, [{ op: "write", target, content }]);
   await options?.validatePreparedContent?.(content);
@@ -716,7 +722,7 @@ export async function writeTicket(
 export async function prepareIssueWrite(
   issue: Issue,
   root: string,
-  options?: { resolutionContext?: ResolutionWriteContext; touch?: TouchOption },
+  options?: { resolutionContext?: ResolutionWriteContext; receiptsAuthority?: ReceiptsWriteAuthority; touch?: TouchOption },
 ): Promise<{ target: string; content: string }> {
   const date = touchDate(options?.touch);
   const unstamped = IssueSchema.parse(issue);
@@ -738,8 +744,13 @@ export async function prepareIssueWrite(
   const parsed = date === null || priorText === null
     ? unstamped
     : touchUpdated(unstamped, prior === "unknown" ? {} : prior, date);
+  // C-v4.1 3.4: an unparseable prior that may hold append-only content is
+  // never replaced; otherwise the fields change only under their authorities.
+  assertReceiptsWriteAllowed(guardPrior(priorText, prior, `issues/${unstamped.id}.json`), parsed, options?.receiptsAuthority);
   const ctx = heldResolutionContext(root, options?.resolutionContext);
   const content = serializeJSON(parsed);
+  assertReceiptsPreservable(parsed, content);
+  recordReceiptsAuthority(target, content, options?.receiptsAuthority);
   ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed));
   return { target, content };
 }
@@ -862,7 +873,10 @@ export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<
   const contexts = (resolutionContextChain.getStore() ?? []).filter((c) => c.root === absRoot);
   for (const { target, content } of writes) {
     const verdicts = contexts.map((c) => c.preparedVerdict(target, content));
-    if (verdicts.includes("current")) continue;
+    if (verdicts.includes("current")) {
+      assertReceiptsBytesAllowed(absRoot, target, content);
+      continue;
+    }
     const verdict = verdicts.find((v) => v !== "missing") ?? "missing";
     const why = verdict === "released"
       ? "the lock it was prepared under was released or no longer owns .story/.lock"
@@ -873,6 +887,46 @@ export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<
         : "nothing prepared it under this lock (ticket and issue writes go through prepareTicketWrite and prepareIssueWrite)";
     throw new ProjectLoaderError("conflict", `Refusing the write to ${relative(absRoot, resolve(target))}: ${why}; prepare it again`);
   }
+}
+
+/**
+ * C-v4.1 3.4: the authority each prepared ticket or issue write was checked
+ * under, keyed by target and exact bytes, so byte authorisation re-runs the
+ * receipts guard against the bytes on disk at commit time.
+ */
+const preparedReceiptsAuthority = new Map<string, ReceiptsWriteAuthority>();
+const receiptsKey = (target: string, content: string) => `${resolve(target)}\0${content}`;
+
+function recordReceiptsAuthority(target: string, content: string, authority: ReceiptsWriteAuthority | undefined): void {
+  const key = receiptsKey(target, content);
+  if (authority === undefined) preparedReceiptsAuthority.delete(key);
+  else preparedReceiptsAuthority.set(key, authority);
+}
+
+/** The prior the receipts guard reads: refuses an unparseable file that names an append-only field. */
+function guardPrior(text: string | null, prior: Readonly<Record<string, unknown>> | "unknown", rel: string): Readonly<Record<string, unknown>> | null {
+  if (text === null) return null;
+  if (prior !== "unknown") return prior;
+  if (APPEND_ONLY_FIELDS.some((f) => text.includes(`"${f}"`))) {
+    throw new ProjectLoaderError("conflict", `receipts_unpreservable: ${rel} does not parse and may hold receipts, landings or resolution history; it is never overwritten as it stands. Repair it by hand first.`);
+  }
+  return null;
+}
+
+/** Byte authorisation: the bytes about to be committed against the record on disk now. */
+function assertReceiptsBytesAllowed(absRoot: string, target: string, content: string): void {
+  const abs = resolve(target);
+  const rel = relative(join(absRoot, ".story"), abs);
+  if (!/^(tickets|issues)[\\/]/.test(rel)) return;
+  let text: string | null;
+  try {
+    text = readFileSync(abs, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    text = null;
+  }
+  const next = JSON.parse(content) as Record<string, unknown>;
+  assertReceiptsWriteAllowed(guardPrior(text, priorRecord(text), rel), next, preparedReceiptsAuthority.get(receiptsKey(target, content)));
 }
 
 /** The record a write replaces: `{}` when absent, "unknown" when unparseable. */
@@ -919,9 +973,9 @@ function heldResolutionContext(root: string, given: ResolutionWriteContext | und
 export async function writeIssueUnlocked(
   issue: Issue,
   root: string,
-  options?: { createOnly?: boolean; touch?: TouchOption } & PreparedContentValidation,
+  options?: { createOnly?: boolean; receiptsAuthority?: ReceiptsWriteAuthority; touch?: TouchOption } & PreparedContentValidation,
 ): Promise<void> {
-  const { target, content } = await prepareIssueWrite(issue, root, { touch: options?.touch });
+  const { target, content } = await prepareIssueWrite(issue, root, { receiptsAuthority: options?.receiptsAuthority, touch: options?.touch });
   assertPreparedWritesCurrent(root, [{ target, content }]);
   await options?.validatePreparedContent?.(content);
   if (options?.createOnly) {

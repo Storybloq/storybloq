@@ -232,7 +232,7 @@ describe("the append path", () => {
 
   it("an id already on the record is regenerated, and after three retries refused", async () => {
     const root = await project({}, { receipts: [A, B] });
-    const seq = [A.id, B.id, "rc-cccccccccccccccc"];
+    const seq: string[] = [A.id as string, B.id as string, "rc-cccccccccccccccc"];
     const added = await appendReceipt(root, { kind: "issue", id: "ISS-001" }, body, { mintId: () => seq.shift()! });
     expect(added.id).toBe("rc-cccccccccccccccc");
     const before = raw(root, "issues/ISS-001.json");

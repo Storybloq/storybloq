@@ -391,7 +391,7 @@ describe("rules 9 and 10: the memo and the reply", () => {
     expect(r.md).toContain("Absorbed by 2026-11-14-01-l3.md.");
   });
 
-  it("at against HEAD: commits since in a clone with the commit, not in this clone without it", async () => {
+  it("at against HEAD: commits since in a clone with the commit, not in this clone for a full id git has no object by", async () => {
     const p = await project(() => {});
     git(p.root, "init", "-q");
     git(p.root, "config", "user.email", "t@x.y");
@@ -401,13 +401,60 @@ describe("rules 9 and 10: the memo and the reply", () => {
     git(p.root, "commit", "-q", "--allow-empty", "-m", "two");
     git(p.root, "commit", "-q", "--allow-empty", "-m", "three");
     put(p.hdir, "2026-11-12-01-a.md", linked(`role="pen" at="${at}"`));
-    put(p.hdir, "2026-11-12-02-b.md", linked('role="pen" at="abcdef1234"'));
+    put(p.hdir, "2026-11-12-02-b.md", linked('role="pen" at="0123456789abcdef0123456789abcdef01234567"'));
     const a = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
     expect(a.json.data).toMatchObject({ at, atState: "counted", commitsSince: 2 });
     expect(a.md).toContain(`Written at ${at}: 2 commits since.`);
     const b = await cont(p.root, ["2026-11-12-02-b.md", "--as", TASK]);
-    expect(b.json.data).toMatchObject({ at: "abcdef1234", atState: "not_in_clone", commitsSince: null });
-    expect(b.md).toContain("Written at abcdef1234: that commit is not in this clone.");
+    expect(b.json.data).toMatchObject({ at: "0123456789abcdef0123456789abcdef01234567", atState: "not_in_clone", commitsSince: null });
+    expect(b.md).toContain("Written at 0123456789abcdef0123456789abcdef01234567: that commit is not in this clone.");
+  });
+
+  it("an abbreviation git does not resolve is unavailable, never not in this clone", async () => {
+    const p = await project(() => {});
+    git(p.root, "init", "-q");
+    git(p.root, "config", "user.email", "t@x.y");
+    git(p.root, "config", "user.name", "T");
+    git(p.root, "commit", "-q", "--allow-empty", "-m", "one");
+    put(p.hdir, "2026-11-12-01-a.md", linked('role="pen" at="abcdef1234"'));
+    const r = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
+    expect(r.json.data).toMatchObject({ at: "abcdef1234", atState: "unavailable", commitsSince: null });
+    expect(r.md).not.toContain("not in this clone");
+  });
+
+  it("an ambiguous abbreviation is unavailable, never not in this clone", async () => {
+    const p = await project(() => {});
+    git(p.root, "init", "-q");
+    // Two root commits whose ids share the 7-character prefix 625c18d (found offline; sha1 is deterministic).
+    for (const msg of ["c3671", "c24696"]) {
+      const body = `tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor T <t@x.y> 1700000000 +0000\ncommitter T <t@x.y> 1700000000 +0000\n\n${msg}\n`;
+      const w = spawnSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], { cwd: p.root, input: body, encoding: "utf8" });
+      expect(w.status, w.stderr).toBe(0);
+    }
+    expect(git(p.root, "rev-parse", "--verify", "--quiet", "625c18dc2edd7696ac6e389218438d782392aa50^{commit}")).toBe("625c18dc2edd7696ac6e389218438d782392aa50");
+    expect(git(p.root, "rev-parse", "--verify", "--quiet", "625c18d5b16a60460669d95249e01f415eeb9d6b^{commit}")).toBe("625c18d5b16a60460669d95249e01f415eeb9d6b");
+    put(p.hdir, "2026-11-12-01-a.md", linked('role="pen" at="625c18d"'));
+    const r = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
+    expect(r.exit).toBe(0);
+    expect(r.json.data).toMatchObject({ at: "625c18d", atState: "unavailable", commitsSince: null });
+    expect(r.md).not.toContain("not in this clone");
+  });
+
+  it("a full id naming a tree is unavailable, never not in this clone", async () => {
+    const p = await project(() => {});
+    git(p.root, "init", "-q");
+    git(p.root, "config", "user.email", "t@x.y");
+    git(p.root, "config", "user.name", "T");
+    writeFileSync(join(p.root, "f.txt"), "x\n");
+    git(p.root, "add", "f.txt");
+    git(p.root, "commit", "-q", "-m", "one");
+    const tree = git(p.root, "rev-parse", "HEAD^{tree}");
+    expect(git(p.root, "cat-file", "-t", tree)).toBe("tree");
+    put(p.hdir, "2026-11-12-01-a.md", linked(`role="pen" at="${tree}"`));
+    const r = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
+    expect(r.exit).toBe(0);
+    expect(r.json.data).toMatchObject({ at: tree, atState: "unavailable", commitsSince: null });
+    expect(r.md).not.toContain("not in this clone");
   });
 
   it("a commit that exists but cannot be counted against HEAD is unavailable, never not in this clone", async () => {
@@ -416,7 +463,7 @@ describe("rules 9 and 10: the memo and the reply", () => {
     git(p.root, "config", "user.email", "t@x.y");
     git(p.root, "config", "user.name", "T");
     git(p.root, "commit", "-q", "--allow-empty", "-m", "one");
-    const at = git(p.root, "rev-parse", "--short", "HEAD");
+    const at = git(p.root, "rev-parse", "HEAD");
     // HEAD now names a branch with no commit: the commit resolves, the range does not.
     writeFileSync(join(p.root, ".git", "HEAD"), "ref: refs/heads/unborn\n");
     put(p.hdir, "2026-11-12-01-a.md", linked(`role="pen" at="${at}"`));
@@ -435,7 +482,7 @@ describe("rules 9 and 10: the memo and the reply", () => {
     git(p.root, "config", "user.name", "T");
     git(p.root, "commit", "-q", "--allow-empty", "-m", "one");
     const full = git(p.root, "rev-parse", "HEAD");
-    const at = full.slice(0, 10);
+    const at = full;
     // Corrupt the commit's loose object: the presence check fails with 128, not 1.
     const obj = join(p.root, ".git", "objects", full.slice(0, 2), full.slice(2));
     chmodSync(obj, 0o644);

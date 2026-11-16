@@ -226,9 +226,10 @@ export type ContinueResult =
       readonly absorbedBy: readonly string[];
       readonly at: string | null;
       /**
-       * `counted`: `commitsSince` is set; `not_in_clone`: git positively does
-       * not know `at`; `unavailable`: git could not answer; `none`: no `at`
-       * or no git.
+       * `counted`: `commitsSince` is set; `not_in_clone`: `at` is a full
+       * object id and git has no object by it; `unavailable`: anything git
+       * could not settle (an abbreviation, a non-commit object, a failed
+       * check or count); `none`: no `at` or no git.
        */
       readonly atState: "counted" | "not_in_clone" | "unavailable" | "none";
       readonly commitsSince: number | null;

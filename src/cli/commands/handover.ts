@@ -122,20 +122,32 @@ function runGit(cwd: string, args: readonly string[]): Promise<GitRun> {
   });
 }
 
+/** A full object id for this repository's hash: 40 hex for sha1. Slice A caps `at` at 40, so a sha256 repository never has one. */
+const FULL_ID_LENGTH: Record<string, number> = { sha1: 40, sha256: 64 };
+
 /**
- * Rule 10: the tip's `at` against HEAD. `not_in_clone` only when git
- * positively says the commit does not resolve here (`rev-parse --verify
- * --quiet` exits 1); any other failure, of that check or of the count, is
- * `unavailable`, never a claim that the commit is absent.
+ * Rule 10: the tip's `at` against HEAD. `not_in_clone` only when `at` is a
+ * full object id for this repository, `rev-parse --verify --quiet` exits 1
+ * and `cat-file -t` also fails: the object truly is not here. An
+ * abbreviation (perhaps ambiguous), a full id naming another kind of object,
+ * and any other failure of a check or of the count are `unavailable`, never
+ * a claim that the commit is absent. The count uses the full commit id
+ * rev-parse printed, never the raw `at`.
  */
 async function atAgainstHead(root: string, at: string | null): Promise<Pick<Extract<ContinueResult, { action: "continue" }>, "atState" | "commitsSince">> {
   if (at === null) return { atState: "none", commitsSince: null };
   const tree = await runGit(root, ["rev-parse", "--is-inside-work-tree"]);
   if (tree.code !== 0 || tree.stdout !== "true") return { atState: "none", commitsSince: null };
+  const unavailable = { atState: "unavailable", commitsSince: null } as const;
   const present = await runGit(root, ["rev-parse", "--verify", "--quiet", `${at}^{commit}`]);
-  if (present.code === 1) return { atState: "not_in_clone", commitsSince: null };
-  if (present.code !== 0) return { atState: "unavailable", commitsSince: null };
-  const count = await runGit(root, ["rev-list", "--count", `${at}..HEAD`]);
+  if (present.code === 1) {
+    const format = await runGit(root, ["rev-parse", "--show-object-format"]);
+    if (format.code !== 0 || at.length !== FULL_ID_LENGTH[format.stdout]) return unavailable;
+    const kind = await runGit(root, ["cat-file", "-t", at]);
+    return kind.code !== null && kind.code !== 0 ? { atState: "not_in_clone", commitsSince: null } : unavailable;
+  }
+  if (present.code !== 0) return unavailable;
+  const count = await runGit(root, ["rev-list", "--count", `${present.stdout}..HEAD`]);
   const n = count.code === 0 ? Number(count.stdout) : NaN;
   return Number.isInteger(n) ? { atState: "counted", commitsSince: n } : { atState: "unavailable", commitsSince: null };
 }

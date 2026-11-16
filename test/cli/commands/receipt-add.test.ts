@@ -260,6 +260,31 @@ describe.each(CLIENTS)("receipt add through the %s client", (client) => {
       expect(raw(root)).toBe(before);
     });
 
+  it.each([
+    ["one level up, missing leaf", "ev/link", "ev/link/result.txt", "ev/link"],
+    ["two levels up", "a/link", "a/link/b/c.txt", "a/link"],
+  ])("refuses evidence under a dangling directory symlink (%s)", async (_l, link, evidence, named) => {
+    const { root, sha } = await landed();
+    mkdirSync(join(root, link, ".."), { recursive: true });
+    symlinkSync(join(tempDir("gone"), "nowhere"), join(root, link));
+    const before = raw(root);
+    const r = await add(root, { ...base(sha), evidence });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain(`is under a symlink that does not resolve (${named})`);
+    expect(raw(root)).toBe(before);
+  });
+
+  it("refuses evidence under a dangling symlink whose target would be inside the repo", async () => {
+    const { root, sha } = await landed();
+    mkdirSync(join(root, "ev"));
+    symlinkSync(join(root, "ev", "not-yet"), join(root, "ev", "link"));
+    const before = raw(root);
+    const r = await add(root, { ...base(sha), evidence: "ev/link/x.txt" });
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/under a symlink that does not resolve \(ev\/link\)/);
+    expect(raw(root)).toBe(before);
+  });
+
   it("accepts a missing evidence file under a directory inside the repo", async () => {
     const { root, sha } = await landed();
     mkdirSync(join(root, "ev"));
@@ -630,3 +655,54 @@ describe("legacy records keep main's get JSON (fixups 2 and 3)", () => {
     expect(asked.data.receipts).toMatchObject({ pageNumber: 1, totalPages: 1 });
   });
 });
+
+describe("the registry is read again under the lock (finding B)", () => {
+  const device = (f: { nodeSha: string }) => ({ target: "T-001", kind: "device", sha: f.nodeSha, result: "pass", repo: "api", unitRef: "T-001", covers: ["api:T-001"], attestation: { builtFromSha: f.nodeSha, builtClean: true }, data: { deviceClass: "real" } });
+  async function underLock(hook: () => void, run: () => Promise<Reply>): Promise<Reply> {
+    const prior = receiptAddSeams.beforeLock;
+    receiptAddSeams.beforeLock = async () => hook();
+    try { return await run(); } finally { receiptAddSeams.beforeLock = prior; }
+  }
+
+  it("a node registered before the lock carrying this board's id is refused, nothing appended", async () => {
+    const { root, sha } = await landed();
+    const r = await underLock(() => { registerCopyStandalone(root); }, () => clients.mcp!(root, base(sha)));
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/board_id_duplicate: this board/);
+    expect(ticket(root).receipts).toBeUndefined();
+  });
+
+  it("the repo alias rebound to another board before the lock is refused, nothing appended", async () => {
+    const f = await federation();
+    const r = await underLock(() => {
+      const other = tempDir("other");
+      git(other, "init", "-q", "-b", "main");
+      mkdirSync(join(other, ".story"), { recursive: true });
+      writeFileSync(join(other, ".story", "config.json"), JSON.stringify({ version: 2, schemaVersion: 2, project: "other", type: "project", language: "typescript", boardId: mintBoardId() }, null, 2) + "\n");
+      const p = join(f.orch, ".story", "config.json");
+      const cfg = readJson(p);
+      writeFileSync(p, JSON.stringify({ ...cfg, nodes: { api: { ...((cfg.nodes as Json).api as Json), path: other } } }, null, 2) + "\n");
+    }, () => clients.mcp!(f.orch, device(f)));
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/board_id_changed: the repo alias api/);
+    expect(ticket(f.orch).receipts).toBeUndefined();
+  });
+
+  it("a duplicate of a covers ref's board registered before the lock is refused, nothing appended", async () => {
+    const f = await federation();
+    const r = await underLock(() => { registerCopy(f.orch, boardOf(f.node)); }, () => clients.mcp!(f.orch, device(f)));
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/board_id_duplicate/);
+    expect(ticket(f.orch).receipts).toBeUndefined();
+  });
+});
+
+/** Turns a standalone board into an orchestrator whose one node is a copy carrying the same board id. */
+function registerCopyStandalone(root: string): void {
+  const copy = tempDir("copy");
+  git(copy, "init", "-q", "-b", "main");
+  mkdirSync(join(copy, ".story"), { recursive: true });
+  writeFileSync(join(copy, ".story", "config.json"), JSON.stringify({ version: 2, schemaVersion: 2, project: "copy", type: "project", language: "typescript", boardId: boardOf(root) }, null, 2) + "\n");
+  const p = join(root, ".story", "config.json");
+  writeFileSync(p, JSON.stringify({ ...readJson(p), nodes: { copy: { path: copy, health: "grey", dependsOn: [], stack: "", role: "", summary: "" } } }, null, 2) + "\n");
+}

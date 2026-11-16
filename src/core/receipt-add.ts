@@ -116,12 +116,6 @@ function checkEvidence(repoTop: string, evidence: string): void {
   if (posix.normalize(evidence) !== evidence) refuse(`invalid_evidence: evidence ${JSON.stringify(evidence)} is not normalised (${posix.normalize(evidence)}).`);
   const top = realpathSync(repoTop);
   const full = join(repoTop, evidence);
-  let leafIsLink = false;
-  try {
-    leafIsLink = lstatSync(full).isSymbolicLink();
-  } catch (e) {
-    if (!absent(e)) refuse(`invalid_evidence: evidence ${evidence} could not be checked (${errCode(e)}).`);
-  }
   let probe = full;
   let real: string | undefined;
   while (real === undefined) {
@@ -129,7 +123,18 @@ function checkEvidence(repoTop: string, evidence: string): void {
       real = realpathSync(probe);
     } catch (e) {
       if (!absent(e)) return refuse(`invalid_evidence: evidence ${evidence} could not be checked (${errCode(e)}).`);
-      if (probe === full && leafIsLink) return refuse(`invalid_evidence: evidence ${evidence} is a symlink that does not resolve.`);
+      // A dangling symlink exists: only a probe that lstat also says is absent may be climbed past.
+      let isLink = false;
+      try {
+        isLink = lstatSync(probe).isSymbolicLink();
+      } catch (le) {
+        if (!absent(le)) return refuse(`invalid_evidence: evidence ${evidence} could not be checked (${errCode(le)}).`);
+      }
+      if (isLink) {
+        return refuse(probe === full
+          ? `invalid_evidence: evidence ${evidence} is a symlink that does not resolve.`
+          : `invalid_evidence: evidence ${evidence} is under a symlink that does not resolve (${relative(repoTop, probe)}).`);
+      }
       const up = dirname(probe);
       if (up === probe) return refuse(`invalid_evidence: evidence ${evidence} has no existing ancestor.`);
       probe = up;
@@ -340,12 +345,21 @@ export async function addReceipt(root: string, raw: Record<string, unknown>): Pr
   // Async resolution cannot run inside the synchronous build callback, so it runs first against the
   // outer state; same-board refs are then re-read from the locked state inside build.
   await resolveAll(outer as unknown as StateWithRefs);
+  // Every board id the receipt uses, checked again for duplicates under the lock.
+  const usedBoards = [...new Set([ownBoard, repo, ...[...preparedRefs.values()].map((r) => r.boardId)])];
 
   await receiptAddSeams.beforeLock();
   return appendReceipt(root, { kind: targetHit.kind, id: targetId }, (id, record, state) => {
     // The identities read before the lock still hold under it.
     if (landedBoardId(root) !== ownBoard) refuse(`board_id_changed: this board's landed id is no longer ${ownBoard}.`);
     if (repoRoot !== root && landedBoardId(repoRoot) !== repo) refuse(`board_id_changed: the landed id of ${repoRoot} is no longer ${repo}.`);
+    // The registry as it is now: no new duplicate of a used id, and the repo alias still names the same board.
+    const lockedRegistry = boardRegistry(root);
+    for (const b of usedBoards) refuseDuplicate(lockedRegistry, b, b === ownBoard ? "this board" : `board ${b}`);
+    if (input.repo !== undefined) {
+      const again = resolveAlias(lockedRegistry, input.repo);
+      if (again.state !== "ok" || again.entry.path !== repoRoot) refuse(`board_id_changed: the repo alias ${input.repo} no longer names ${repoRoot}.`);
+    }
     checkSupersedesOnRecord(record, input.kind, input.supersedes, id);
     const s = state as StateWithRefs;
     const fresh = (r: ResolvedRef, field: string): ResolvedRef => {

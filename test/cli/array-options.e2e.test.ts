@@ -384,6 +384,19 @@ function seedNodes(dir: string, ...names: string[]): void {
  * `.story/` directory. Standalone temp repo (ISS-1220), never a linked
  * worktree: a fixture's git config writes reach the shared `.git/config`.
  */
+/** Tickets, a commit, and the board id landed on origin/main (the default branch) so `receipt add` can append. */
+function landReceiptBoard(dir: string, tickets: number): string {
+  seedTickets(dir, tickets);
+  gitify(dir);
+  fixtureGit(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  fixtureGit(dir, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+  return String(fixtureGit(dir, ["rev-parse", "HEAD"])).trim();
+}
+
+function readBoardId(dir: string): string {
+  return String((JSON.parse(readFileSync(join(dir, ".story", "config.json"), "utf-8")) as { boardId?: unknown }).boardId);
+}
+
 function gitify(dir: string): void {
   mkdirSync(join(dir, "src", "core"), { recursive: true });
   writeFileSync(join(dir, "src", "core", "thing.ts"), "export const a = 1;\n");
@@ -812,6 +825,43 @@ const MATRIX: Coverage[] = [
       const res = run(dir, "capability", "update", "cap-thing", "--clear", "example");
       expect(res.code, res.out).toBe(0);
       expect("example" in capabilities(dir)[0]!).toBe(false);
+    },
+  },
+  {
+    key: "receipt add --covers",
+    check: (dir) => {
+      const sha = landReceiptBoard(dir, 3);
+      const board = readBoardId(dir);
+      const ref = (id: string) => `${board}:${String(byDisplayId(dir, "tickets", id).id)}`;
+      const device = ["receipt", "add", "T-001", "--kind", "device", "--sha", sha, "--result", "pass", "--unit", "T-001",
+        "--built-from", sha, "--built-clean", "--data", '{"deviceClass":"real"}', "--format", "json"];
+      // The comma form and the repeated flag store the same two children.
+      const comma = run(dir, ...device, "--covers", "T-002,T-003");
+      expect(comma.code, comma.out).toBe(0);
+      const repeated = run(dir, ...device, "--covers", "T-002", "--covers", "T-003");
+      expect(repeated.code, repeated.out).toBe(0);
+      const receipts = byDisplayId(dir, "tickets", "T-001").receipts as Array<{ covers: string[] }>;
+      expect(receipts.map((r) => r.covers)).toEqual([[ref("T-002"), ref("T-003")], [ref("T-002"), ref("T-003")]]);
+    },
+  },
+  {
+    key: "receipt add --supersedes",
+    check: (dir) => {
+      const sha = landReceiptBoard(dir, 1);
+      const test = ["receipt", "add", "T-001", "--kind", "test", "--sha", sha, "--result", "pass", "--command", "npm test",
+        "--built-from", sha, "--built-clean", "--data", '{"passed":1,"failed":0}', "--format", "json"];
+      const idOf = (out: string) => (JSON.parse(out) as { data: { receipt: { id: string } } }).data.receipt.id;
+      const first = run(dir, ...test);
+      expect(first.code, first.out).toBe(0);
+      const second = run(dir, ...test);
+      expect(second.code, second.out).toBe(0);
+      const [a, b] = [idOf(first.out), idOf(second.out)];
+      const comma = run(dir, ...test, "--supersedes", `${a},${b}`);
+      expect(comma.code, comma.out).toBe(0);
+      const repeated = run(dir, ...test, "--supersedes", a, "--supersedes", b);
+      expect(repeated.code, repeated.out).toBe(0);
+      const receipts = byDisplayId(dir, "tickets", "T-001").receipts as Array<{ supersedes?: string[] }>;
+      expect(receipts.slice(2).map((r) => r.supersedes)).toEqual([[a, b], [a, b]]);
     },
   },
   {

@@ -661,6 +661,10 @@ describe("A13b scan failures in create", () => {
     }
   });
 
+  // Explicit timeout: the write's board git report runs git discovery from
+  // this folder, and git discovery from a folder with no read permission can
+  // take 6 to 14 s on macOS on first use (ISS-1502). This row tests the
+  // lineage scan, not git timing, so it asserts nothing about the git entry.
   it.skipIf(process.getuid?.() === 0)("a folder without read permission still writes and reports only scan_failed", async () => {
     const root = await project(false);
     chmodSync(hdir(root), 0o300);
@@ -674,7 +678,7 @@ describe("A13b scan failures in create", () => {
     } finally {
       chmodSync(hdir(root), 0o755);
     }
-  });
+  }, 30_000);
 
   it("U1, X, U2 with X a symlink: continuing U2 reports no fork", async () => {
     const root = await project(false);

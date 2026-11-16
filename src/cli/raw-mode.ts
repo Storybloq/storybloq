@@ -99,7 +99,10 @@ export function transformForRawMode(text: string): string {
   if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
     const keys = Object.keys(parsed).sort();
     const version = (parsed as Record<string, unknown>).version;
-    if (version === 1 && (sameKeys(keys, ["data", "version"]) || sameKeys(keys, ["data", "version", "warnings"]))) {
+    // C-v4.1 commit 4 (pen ruling on Q5): ticket list carries gitCounts on the
+    // envelope beside data; --raw is the data payload alone, as before.
+    const envelopeKeys = keys.filter((k) => k !== "gitCounts");
+    if (version === 1 && (sameKeys(envelopeKeys, ["data", "version"]) || sameKeys(envelopeKeys, ["data", "version", "warnings"]))) {
       return JSON.stringify((parsed as Record<string, unknown>).data, null, 2);
     }
     if (version === 1 && sameKeys(keys, ["error", "version"])) {

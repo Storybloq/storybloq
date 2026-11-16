@@ -120,6 +120,8 @@ import { handleBlockerList } from "../cli/commands/blocker.js";
 import {
   handleTicketList,
   handleTicketGet,
+  handleTicketGetWithGit,
+  handleTicketListWithGit,
   handleTicketNext,
   handleTicketBlocked,
   handleTicketCreate,
@@ -131,6 +133,7 @@ import {
 import {
   handleIssueList,
   handleIssueGet,
+  handleIssueGetWithGit,
   handleIssueCreate,
   handleIssueUpdate,
   handleIssueMetaGet,
@@ -818,7 +821,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           };
         }
       }
-      return handleTicketList(
+      return handleTicketListWithGit(
         { status: args.status, phase: args.phase, type: args.type, priority: args.priority, waitingOn: args.waitingOn },
         ctx,
       );
@@ -839,7 +842,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleTicketGet(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
+      (ctx) => handleTicketGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );
@@ -905,7 +908,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleIssueGet(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
+      (ctx) => handleIssueGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );

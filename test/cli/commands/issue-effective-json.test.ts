@@ -17,7 +17,7 @@ import { initProject } from "../../../src/core/init.js";
 import { loadProject } from "../../../src/core/project-loader.js";
 import { validateProject } from "../../../src/core/validation.js";
 import {
-  handleIssueGet,
+  handleIssueGet, handleIssueGetWithGit,
   handleIssueList,
   handleIssueMetaSet,
   handleIssueUpdate,
@@ -95,7 +95,8 @@ const firstPhase = (root: string): string =>
  */
 async function surfaces(root: string, id: string): Promise<Record<string, Record<string, unknown>>> {
   const call = mcp(root);
-  const get = data(handleIssueGet(id, await ctx(root)).output) as Record<string, unknown>;
+  // C-v4.1 commit 4: the CLI's get entry, which adds gitState and lastChanged like MCP.
+  const get = data((await handleIssueGetWithGit(id, await ctx(root))).output) as Record<string, unknown>;
   const list = rowOf(data(handleIssueList({}, await ctx(root)).output) as Record<string, unknown>[], id);
   const mcpGet = (await call("storybloq_issue_get", { id })) as Record<string, unknown>;
   const mcpList = rowOf((await call("storybloq_issue_list", {})) as Record<string, unknown>[], id);
@@ -159,8 +160,16 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     const all = await surfaces(root, "ISS-001");
     expect(Object.keys(all)).toContain("phaseExportRow");
     for (const [surface, body] of Object.entries(all)) {
-      const { effective, citedRulings, ...stored } = body;
+      const { effective, citedRulings, gitState, lastChanged, ...stored } = body;
       void citedRulings;
+      // C-v4.1 commit 4 (pen ruling Q4): both get clients always carry the git facts; lists and export do not.
+      if (surface === "get" || surface === "mcpGet") {
+        expect(gitState, surface).toEqual({ state: "unknown", reason: "not a git repository" });
+        expect(lastChanged, surface).toBeNull();
+      } else {
+        expect(gitState, surface).toBeUndefined();
+        expect(lastChanged, surface).toBeUndefined();
+      }
       const expected = EXPORT_SURFACES.has(surface)
         ? Object.fromEntries(Object.entries(loaded(issue)).filter(([k]) => EXPORT_LEAN_KEYS.has(k)))
         : loaded(issue);

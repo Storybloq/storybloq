@@ -175,7 +175,7 @@ function fullShaPattern(hexLength: number): RegExp {
 }
 
 /** Word-boundary, non-anchored: finds ticket/issue-shaped tokens anywhere in free text. */
-const REF_TOKEN_RE = new RegExp(
+export const REF_TOKEN_RE = new RegExp(
   `\\b(?:T-\\d+[a-z]?|t-${CROCKFORD_CLASS}{16}|ISS-\\d+|i-${CROCKFORD_CLASS}{16})\\b`,
   "g",
 );

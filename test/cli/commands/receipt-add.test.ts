@@ -396,7 +396,9 @@ describe("receipts paging (Q6)", () => {
     const { state } = await loadProject(root);
     const expected = formatTicket(state.ticketByID("T-001")!, state, "md");
     const r = await captureTools(root).call("storybloq_ticket_get", { id: "T-001" });
-    expect(r.text).toBe(expected);
+    // C-v4.1 commit 4 (pen ruling Q4): get adds one git state line; the rest is unchanged.
+    expect(r.text).toMatch(/\n\nGit state: [^\n]*$/);
+    expect(r.text.replace(/\n\nGit state: [^\n]*$/, "")).toBe(expected);
     expect(r.text).not.toMatch(/Receipts/);
   });
 
@@ -626,7 +628,13 @@ describe("legacy records keep main's get JSON (fixups 2 and 3)", () => {
     const { state } = await loadProject(root);
     const expected = formatTicket(state.ticketByID("T-001")!, state, "json");
     const r = await captureTools(root).call("storybloq_ticket_get", { id: "T-001", format: "json" });
-    expect(r.text).toBe(expected);
+    // C-v4.1 commit 4 (pen ruling Q4): get always adds gitState and lastChanged; without them the bytes are main's.
+    const parsed = JSON.parse(r.text) as { data: Json };
+    expect(parsed.data).toHaveProperty("gitState");
+    expect(parsed.data).toHaveProperty("lastChanged");
+    delete parsed.data.gitState;
+    delete parsed.data.lastChanged;
+    expect(JSON.stringify(parsed, null, 2)).toBe(expected);
     expect((JSON.parse(r.text) as { data: Json }).data).not.toHaveProperty("receipts");
   });
 
@@ -640,7 +648,13 @@ describe("legacy records keep main's get JSON (fixups 2 and 3)", () => {
     const { formatIssue } = await import("../../../src/core/output-formatter.js");
     const expected = formatIssue(state.issueByID("ISS-001")!, "json", state);
     const r = await captureTools(root).call("storybloq_issue_get", { id: "ISS-001", format: "json" });
-    expect(r.text).toBe(expected);
+    // C-v4.1 commit 4 (pen ruling Q4): get always adds gitState and lastChanged; without them the bytes are main's.
+    const parsed = JSON.parse(r.text) as { data: Json };
+    expect(parsed.data).toHaveProperty("gitState");
+    expect(parsed.data).toHaveProperty("lastChanged");
+    delete parsed.data.gitState;
+    delete parsed.data.lastChanged;
+    expect(JSON.stringify(parsed, null, 2)).toBe(expected);
     expect((JSON.parse(r.text) as { data: Json }).data).not.toHaveProperty("receipts");
   });
 

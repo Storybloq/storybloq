@@ -55,9 +55,17 @@ export type RecommendCategory =
   | "debt_trend"
   | "checkpoint_reassess"
   | "unphased_ticket"
-  | "cross_node_withdrawn";
+  | "cross_node_withdrawn"
+  /** C-v4.1 commit 4: an open item whose commit is landed or released. */
+  | "landed_open";
 
 export interface RecommendOptions {
+  /**
+   * C-v4.1 commit 4: ids of open or in-progress items whose attributed
+   * commit is landed or released. Listed first and labelled. Absent (the git
+   * facts are unknown) keeps today's order.
+   */
+  readonly landedOpen?: ReadonlySet<string>;
   /** Successfully-read handovers, last 10 intended, newest first. Replaces `latestHandoverContent`. */
   readonly recentHandovers?: readonly { filename: string; content: string }[];
   /** `0` = window fully read; positive = that many intended files failed to read; `null` = the directory itself could not be listed. */
@@ -348,6 +356,7 @@ const CATEGORY_PRIORITY: Record<RecommendCategory, number> = {
   checkpoint_reassess: 16,
   unphased_ticket: 17,
   cross_node_withdrawn: 18,
+  landed_open: 0,
 };
 
 /**
@@ -403,6 +412,7 @@ export function recommend(
     () => generateDebtTrend(state, options),
     () => generateUnphasedTickets(state, crossNodeStatuses),
     () => generateCrossNodeRetargets(state, options?.crossNodeObservation),
+    () => generateLandedOpen(state, options?.landedOpen),
   ];
 
   if (options?.federationState && state.config.type === "orchestrator") {
@@ -489,6 +499,9 @@ export function recommend(
   const annotated = applyClaimAnnotations([...dedup.values()], claims, options?.currentUser ?? null);
 
   const all = annotated.sort((a, b) => {
+    // C-v4.1 commit 4: landed-but-open items come first whatever the penalties.
+    const landedDiff = Number(b.category === "landed_open") - Number(a.category === "landed_open");
+    if (landedDiff !== 0) return landedDiff;
     if (b.score !== a.score) return b.score - a.score;
     const catDiff =
       CATEGORY_PRIORITY[a.category] - CATEGORY_PRIORITY[b.category];
@@ -724,6 +737,21 @@ function generateInProgressTickets(
     reason: "In-progress -- finish what's started",
     score: 800 - Math.min(index, 99),
   }));
+}
+
+/** C-v4.1 commit 4: open items whose work already landed; close them or say why not. */
+function generateLandedOpen(state: ProjectState, landedOpen: ReadonlySet<string> | undefined): Recommendation[] {
+  if (landedOpen === undefined || landedOpen.size === 0) return [];
+  const out: Recommendation[] = [];
+  for (const t of state.tickets) {
+    if (!landedOpen.has(t.id) || (t.status !== "open" && t.status !== "inprogress")) continue;
+    out.push({ id: t.id, displayId: t.displayId ?? undefined, kind: "ticket", title: t.title, category: "landed_open", reason: "Landed but still open -- its commit is on the default branch; close it or record what is left", score: 1100 - Math.min(out.length, 99), phase: t.phase ?? null });
+  }
+  for (const i of state.issues) {
+    if (!landedOpen.has(i.id) || (i.status !== "open" && i.status !== "inprogress")) continue;
+    out.push({ id: i.id, displayId: i.displayId ?? undefined, kind: "issue", title: i.title, category: "landed_open", reason: "Landed but still open -- its commit is on the default branch; resolve it or record what is left", score: 1100 - Math.min(out.length, 99), severity: i.severity });
+  }
+  return out;
 }
 
 function generateHighImpactUnblocks(state: ProjectState, crossNodeStatuses?: Record<string, string>): Recommendation[] {

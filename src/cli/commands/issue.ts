@@ -1,5 +1,6 @@
 import { displayIdOf } from "../../core/resolver.js";
 import { receiptsGetView } from "../../core/receipts-page.js";
+import { gitGetFields, gitMarkdownLine, type GitGetFields } from "../../core/git-facts/facts.js";
 import {
   type IssueCreateInput,
   validateIssueCreateSeverity,
@@ -226,8 +227,8 @@ export function handleIssueList(
   return { output: formatIssueList(issues, ctx.format, citationMapFor(issues, loadCitationContext(ctx.root))) };
 }
 
-export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number): CommandResult;
-export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number): CommandResult | Promise<CommandResult>;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number, git?: GitGetFields): CommandResult;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number, git?: GitGetFields): CommandResult | Promise<CommandResult>;
 /** T-486 U2-4: async only with actionability (the shared targeted lookup). */
 export function handleIssueGet(
   id: string,
@@ -235,6 +236,8 @@ export function handleIssueGet(
   withActionability = false,
   /** C-v4.1 commit 3 (Q6): one page of the record's receipts; omitted, the summary only. */
   receiptsPage?: number,
+  /** C-v4.1 commit 4: gitState and lastChanged, read by the async client entry. */
+  git?: GitGetFields,
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveIssueRef(id);
   if (result.kind === "ambiguous") {
@@ -260,11 +263,20 @@ export function handleIssueGet(
   const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
     // Pen ruling on plan line 423: a legacy record with no receipts field, read without receiptsPage, keeps main's JSON.
     const withReceipts = receiptsPage !== undefined || Object.prototype.hasOwnProperty.call(item, "receipts");
-    const extraJsonFields = withReceipts ? { ...actionability, receipts: receipts.json } : { ...actionability };
+    const gitJson = git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {};
+    const extraJsonFields = withReceipts ? { ...actionability, ...gitJson, receipts: receipts.json } : { ...actionability, ...gitJson };
     const text = formatIssue(item, ctx.format, ctx.state, resolveEntityCitations(item, rulingCtx), extraJsonFields);
-    return { output: ctx.format === "json" || receipts.lines.length === 0 ? text : `${text}\n\n${receipts.lines.join("\n")}` };
+    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines];
+    return { output: ctx.format === "json" || mdExtra.length === 0 ? text : `${text}\n\n${mdExtra.join("\n")}` };
   };
   return withActionability ? computeTargetedActionability(ctx, "issue", item).then(render) : render();
+}
+
+/** C-v4.1 commit 4: the get both clients call; reads git facts, then the shared handler. */
+export async function handleIssueGetWithGit(id: string, ctx: CommandContext, withActionability = false, receiptsPage?: number): Promise<CommandResult> {
+  const found = ctx.state.resolveIssueRef(id);
+  const git = found.kind === "found" ? await gitGetFields(ctx.root, ctx.state, found.item.id, issueFilePath(ctx.root, found.item.id)) : undefined;
+  return handleIssueGet(id, ctx, withActionability, receiptsPage, git);
 }
 
 export function handleIssueMetaGet(

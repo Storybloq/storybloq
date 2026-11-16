@@ -93,7 +93,8 @@ import {
 import { handleBlockerList, handleBlockerAdd, handleBlockerClear } from "./commands/blocker.js";
 import {
   handleTicketList,
-  handleTicketGet,
+  handleTicketGetWithGit,
+  handleTicketListWithGit,
   handleTicketNext,
   handleTicketBlocked,
   handleTicketCreate,
@@ -107,7 +108,7 @@ import {
 } from "./commands/ticket.js";
 import {
   handleIssueList,
-  handleIssueGet,
+  handleIssueGetWithGit,
   handleIssueCreate,
   handleIssueUpdate,
   handleIssueMetaGet,
@@ -1355,11 +1356,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
               const eff = resolveRootWithNode(orchRoot, nodeName, false, format);
               if (!eff.ok) { writeOutput(eff.output, format); process.exitCode = ExitCode.USER_ERROR; return; }
               await runReadCommandWithRoot(format, eff.root, (ctx) =>
-                handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined, priority: argv.priority as string | undefined, waitingOn: argv["waiting-on"] as string | undefined }, ctx),
+                handleTicketListWithGit({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined, priority: argv.priority as string | undefined, waitingOn: argv["waiting-on"] as string | undefined }, ctx),
               );
             } else {
               await runReadCommand(format, (ctx) =>
-                handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined, priority: argv.priority as string | undefined, waitingOn: argv["waiting-on"] as string | undefined }, ctx),
+                handleTicketListWithGit({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined, priority: argv.priority as string | undefined, waitingOn: argv["waiting-on"] as string | undefined }, ctx),
               );
             }
           },
@@ -1378,7 +1379,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
-            await runReadCommand(format, (ctx) => handleTicketGet(id, ctx));
+            await runReadCommand(format, (ctx) => handleTicketGetWithGit(id, ctx));
           },
         )
         .command(
@@ -2169,7 +2170,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseIssueId(argv.id as string);
-            await runReadCommand(format, (ctx) => handleIssueGet(id, ctx));
+            await runReadCommand(format, (ctx) => handleIssueGetWithGit(id, ctx));
           },
         )
         .command(

@@ -7,6 +7,7 @@ import { loadFederationState } from "../../federation/recommend-loader.js";
 import { loadClassificationContext } from "../../core/classification-context.js";
 import { crossNodeStatusRecord, observeProject } from "../../federation/cross-node-observation.js";
 import type { CommandContext, CommandResult } from "../types.js";
+import { readGitFacts, landedOpenIds } from "../../core/git-facts/facts.js";
 
 export async function handleRecommend(
   ctx: CommandContext,
@@ -18,6 +19,9 @@ export async function handleRecommend(
   const classification = loadClassificationContext(ctx.root, ctx.handoversDir);
   // T-486 U2-4: one live observation; the federation cache is not read here.
   const observation = await observeProject(ctx.state, ctx.root);
+
+  // C-v4.1 commit 4: unknown facts give undefined, which keeps today's order.
+  const landedOpen = landedOpenIds(await readGitFacts(ctx.root, ctx.state), ctx.state);
 
   let currentUser: string | undefined;
   try {
@@ -33,6 +37,7 @@ export async function handleRecommend(
     crossNodeRefStatuses: crossNodeStatusRecord(observation),
     crossNodeObservation: observation,
     ...(currentUser ? { currentUser } : {}),
+    ...(landedOpen !== undefined ? { landedOpen } : {}),
   };
   const result = recommend(ctx.state, count, options);
   return { output: formatRecommendations(result, ctx.state, ctx.format, withActionability) };

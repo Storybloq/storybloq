@@ -131,6 +131,34 @@ export const HealthCheckConfigSchema = z.object({
 
 export type HealthCheckConfigInput = z.infer<typeof HealthCheckConfigSchema>;
 
+/**
+ * C-v4.1 commit 4, plan 4.2 and 4.3: git facts settings. Every key is
+ * optional; an invalid value is refused at load with its path, and a default
+ * is never applied in its place. 0 for maxGraphCommits means "do not scan".
+ * The two patterns are user input matched on a read path: at most 200
+ * characters and they must compile (snapshot.ts matches only bounded strings).
+ */
+function compilesBounded(v: string): boolean {
+  if (v.length > 200) return false;
+  try {
+    new RegExp(v);
+    return true;
+  } catch {
+    return false;
+  }
+}
+const BoundedPatternSchema = z.string().min(1).refine(compilesBounded, { message: "must be a regular expression of at most 200 characters that compiles" });
+
+export const GitStateConfigSchema = z.object({
+  maxGraphCommits: z.number().int().nonnegative().optional(),       // default 200000; 0 = scan disabled
+  maxRefs: z.number().int().positive().optional(),                  // default 10000
+  subjectPattern: BoundedPatternSchema.optional(),                  // default: the landings matcher
+  releaseTagPattern: BoundedPatternSchema.optional(),               // default ^v?\d+\.\d+\.\d+
+  defaultBranch: z.string().min(1).regex(/^[^\s~^:?*\[\\]+$/, "must be a branch name").optional(), // default: origin/HEAD, then init.defaultBranch
+}).passthrough();
+
+export type GitStateConfig = z.infer<typeof GitStateConfigSchema>;
+
 export const ConfigSchema = z
   .object({
     version: z.number().int().min(1),
@@ -147,6 +175,7 @@ export const ConfigSchema = z
     statusWriter: StatusWriterConfigSchema.optional(),
     sessionIntel: SessionIntelConfigSchema.optional(),
     healthCheck: HealthCheckConfigSchema.optional(),
+    gitState: GitStateConfigSchema.optional(),
     recipe: z.string().optional(),  // default "coding" applied in guide.ts handleStart
     // ISS-730: opt-in continuous cross-reference integrity check. When true,
     // loadProject runs a full validateProject pass and surfaces ERROR-level

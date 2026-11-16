@@ -1,5 +1,6 @@
 import { displayIdOf } from "../../core/resolver.js";
 import { receiptsGetView } from "../../core/receipts-page.js";
+import { gitCounts, gitCountsLine, gitGetFields, gitMarkdownLine, readGitFacts, type GitCounts, type GitGetFields } from "../../core/git-facts/facts.js";
 import { nextTicket, nextTickets, blockedTickets, currentPhase, waitingInventory } from "../../core/queries.js";
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
@@ -172,8 +173,36 @@ export function handleTicketList(
   return { output: formatTicketList(tickets, ctx.format, citationMapFor(tickets, rulingCtx)) };
 }
 
-export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number): CommandResult;
-export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number): CommandResult | Promise<CommandResult>;
+/**
+ * C-v4.1 commit 4: ticket list with the board's git counts. JSON carries
+ * `gitCounts` on the envelope beside `data` (the rows are unchanged);
+ * Markdown gets one line when there is something to say.
+ */
+export async function handleTicketListWithGit(
+  filters: { status?: string; phase?: string; type?: string; priority?: string; waitingOn?: string },
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  const result = handleTicketList(filters, ctx);
+  if (result.exitCode !== undefined && result.exitCode !== 0) return result;
+  let counts: GitCounts;
+  try {
+    counts = gitCounts(await readGitFacts(ctx.root, ctx.state), ctx.state);
+  } catch {
+    return result;
+  }
+  if (ctx.format === "json") {
+    try {
+      const env = JSON.parse(result.output) as Record<string, unknown>;
+      if (env !== null && typeof env === "object" && !Array.isArray(env)) return { ...result, output: JSON.stringify({ ...env, gitCounts: counts }, null, 2) };
+    } catch { /* not an envelope: leave it */ }
+    return result;
+  }
+  const line = gitCountsLine(counts);
+  return line === null ? result : { ...result, output: `${result.output}\n\n${line}` };
+}
+
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number, git?: GitGetFields): CommandResult;
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number, git?: GitGetFields): CommandResult | Promise<CommandResult>;
 /** T-486 U2-4: async only with actionability, which reads the live cross-node observation. */
 export function handleTicketGet(
   id: string,
@@ -181,6 +210,8 @@ export function handleTicketGet(
   withActionability = false,
   /** C-v4.1 commit 3 (Q6): one page of the record's receipts; omitted, the summary only. */
   receiptsPage?: number,
+  /** C-v4.1 commit 4: gitState and lastChanged, read by the async client entry. */
+  git?: GitGetFields,
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveTicketRef(id);
   if (result.kind === "ambiguous") {
@@ -206,11 +237,20 @@ export function handleTicketGet(
   const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
     // Pen ruling on plan line 423: a legacy record with no receipts field, read without receiptsPage, keeps main's JSON.
     const withReceipts = receiptsPage !== undefined || Object.prototype.hasOwnProperty.call(item, "receipts");
-    const extraJsonFields = withReceipts ? { ...actionability, receipts: receipts.json } : { ...actionability };
+    const gitJson = git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {};
+    const extraJsonFields = withReceipts ? { ...actionability, ...gitJson, receipts: receipts.json } : { ...actionability, ...gitJson };
     const text = formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields);
-    return { output: ctx.format === "json" || receipts.lines.length === 0 ? text : `${text}\n\n${receipts.lines.join("\n")}` };
+    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines];
+    return { output: ctx.format === "json" || mdExtra.length === 0 ? text : `${text}\n\n${mdExtra.join("\n")}` };
   };
   return withActionability ? computeTargetedActionability(ctx, "ticket", item).then(render) : render();
+}
+
+/** C-v4.1 commit 4: the get both clients call; reads git facts, then the shared handler. */
+export async function handleTicketGetWithGit(id: string, ctx: CommandContext, withActionability = false, receiptsPage?: number): Promise<CommandResult> {
+  const found = ctx.state.resolveTicketRef(id);
+  const git = found.kind === "found" ? await gitGetFields(ctx.root, ctx.state, found.item.id, ticketFilePath(ctx.root, found.item.id)) : undefined;
+  return handleTicketGet(id, ctx, withActionability, receiptsPage, git);
 }
 
 export function handleTicketMetaGet(

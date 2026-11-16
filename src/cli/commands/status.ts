@@ -25,6 +25,7 @@ import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../../models/ticket.js";
 import { resolveNodeRoot } from "../../mcp/node-resolution.js";
 import { loadProject } from "../../core/project-loader.js";
+import { gitCounts, gitCountsLine, readGitFacts } from "../../core/git-facts/facts.js";
 
 /**
  * T-473: builds the active-only, status-display projection of arrangements,
@@ -279,7 +280,7 @@ export async function handleStatus(
     }
 
     return {
-      output: await withBoardUncommitted(formatFederatedStatus(
+      output: await withBoardUncommitted(await withGitCounts(formatFederatedStatus(
         fedState,
         config,
         ctx.format,
@@ -291,7 +292,7 @@ export async function handleStatus(
         expiredLeaseSessions,
         arrangements,
         roster,
-      ), ctx.format, opts.compact === true, ctx.root),
+      ), ctx.format, opts.compact === true, ctx), ctx.format, opts.compact === true, ctx.root),
     };
   }
 
@@ -311,7 +312,25 @@ export async function handleStatus(
     opts.compact ?? false,
     roster,
   );
-  return { output: await withBoardUncommitted(withGlossaryCounts(output, ctx.format, opts.compact === true, ctx.root), ctx.format, opts.compact === true, ctx.root) };
+  // C-v4.1 commit 4: the git counts line goes before the board section, which stays last (ISS-1107 reads it as the tail).
+  return { output: await withBoardUncommitted(await withGitCounts(withGlossaryCounts(output, ctx.format, opts.compact === true, ctx.root), ctx.format, opts.compact === true, ctx), ctx.format, opts.compact === true, ctx.root) };
+}
+
+/**
+ * C-v4.1 commit 4: git counts for the board's own repository. JSON gets
+ * `data.gitCounts`; Markdown gets one line when there is something to say.
+ * Compact status is untouched (T-320 pinned that payload). Never throws.
+ */
+export async function withGitCounts(output: string, format: string, compact: boolean, ctx: CommandContext): Promise<string> {
+  if (compact) return output;
+  try {
+    const counts = gitCounts(await readGitFacts(ctx.root, ctx.state), ctx.state);
+    if (format === "json") return withSectionJson(output, "gitCounts", counts);
+    const line = gitCountsLine(counts);
+    return line === null ? output : `${output}\n\n${line}`;
+  } catch {
+    return output;
+  }
 }
 
 /**

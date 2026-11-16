@@ -15,6 +15,7 @@ import { classifyLifecycle, isEffectivelyAccepted } from "./ruling-lifecycle.js"
 import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, dispositionRefForm, effectiveResolutionKind, resolutionKindView, ticketResolutionKindView } from "./resolution-kind.js";
 import { hasOwnerCheckpoint, parseEvidenceMode } from "./owner-checkpoint.js";
 import { RULING_CANONICAL_ID_REGEX } from "../models/types.js";
+import { buildLineageGraph, type LineageScan, type ScannedFile } from "./handover-lineage.js";
 
 const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
 
@@ -87,6 +88,12 @@ export interface ValidationAux {
    * never sets this, regardless of its heading content.
    */
   readonly handoverNewestMarkedWithoutCarriedForward?: boolean;
+  /**
+   * ISS-1499 slice A: the lineage scan of the handovers folder (plan 3.2a),
+   * pre-computed by the CLI/MCP boundary like the field above. Absent means
+   * no lineage findings at all.
+   */
+  readonly handoverLineageScan?: LineageScan;
 }
 
 /**
@@ -809,6 +816,8 @@ export function validateProject(
     });
   }
 
+  if (aux.handoverLineageScan !== undefined) findings.push(...lineageFindings(aux.handoverLineageScan));
+
   const errorCount = findings.filter((f) => f.level === "error").length;
   const warningCount = findings.filter((f) => f.level === "warning").length;
   const infoCount = findings.filter((f) => f.level === "info").length;
@@ -820,6 +829,65 @@ export function validateProject(
     infoCount,
     findings,
   };
+}
+
+/**
+ * ISS-1499 slice A: lineage findings (plan section 7). Pure.
+ *
+ * The opt-in gate: nothing at all unless at least one handover is `linked`,
+ * so a project that never wrote a valid lineage line sees no change,
+ * whatever its handovers end with. None is an error. Per file in listing
+ * order: malformed, parent missing, loop (on a loop's first member), fork,
+ * missing references, inert absorbs. `absorb_inert` needs a complete scan.
+ */
+export function lineageFindings(scan: LineageScan): ValidationFinding[] {
+  if (!scan.files.some((f) => f.state === "linked")) return [];
+  const graph = buildLineageGraph(scan);
+  const byName = new Map<string, ScannedFile>();
+  for (const f of scan.files) if (!byName.has(f.name)) byName.set(f.name, f);
+  const tips = new Set(graph.tips);
+  const loopAt = new Map(graph.loops.map((l) => [l[0]!, l]));
+  const forkAt = new Map(graph.forks.map((f) => [f.parent, f.children]));
+  const out: ValidationFinding[] = [];
+  const add = (level: ValidationLevel, code: string, entity: string, message: string) => out.push({ level, code, message, entity });
+
+  for (const f of scan.files) {
+    if (byName.get(f.name) !== f) continue;
+    const n = f.name;
+    if (f.state === "linked" && f.lineage!.dropped.length > 0) {
+      const list = f.lineage!.dropped.map((d) => `${d.attribute} (${d.reason})`).join(", ");
+      add("warning", "handover_lineage_malformed", n, `${n}: the lineage line had attributes that were ignored: ${list}.`);
+    } else if (f.state === "unlinked" && f.nearMiss === true) {
+      add("warning", "handover_lineage_malformed", n, `${n}: the final line starts like a storybloq-lineage v1 line but does not match its grammar, so the handover is read as unlinked.`);
+    }
+    const p = graph.parent.get(n);
+    if (f.state === "linked" && p !== undefined && p.kind === "broken") {
+      const msg = p.reason === "invalid" ? `${n} has a continues value that is not a valid handover filename (invalid).`
+        : p.reason === "self" ? `${n} continues itself (self).`
+        : p.reason === "unreadable" ? `${n} continues ${p.target}, which could not be read (unreadable).`
+        : `${n} continues ${p.target}, which is not in the handovers folder (missing).`;
+      add("warning", "handover_lineage_parent_missing", n, msg);
+    }
+    const loop = loopAt.get(n);
+    if (loop !== undefined) add("warning", "handover_lineage_loop", n, `Lineage loop: ${loop.join(", ")}.`);
+    const children = forkAt.get(n);
+    if (children !== undefined) add("info", "handover_lineage_fork", n, `${n} is continued by more than one handover: ${children.join(", ")}.`);
+    if (f.state !== "linked") continue;
+    const l = f.lineage!.lineage;
+    const refs: [string, string][] = [];
+    if (l.from !== null) refs.push(["from", l.from]);
+    for (const a of l.absorbs) refs.push(["absorbs", a]);
+    for (const [attr, t] of refs) {
+      if (!byName.has(t)) add("info", "handover_lineage_reference_missing", n, `${n}: ${attr} ${t} is not in the handovers folder.`);
+    }
+    if (!scan.complete) continue;
+    for (const a of l.absorbs) {
+      if (!byName.has(a)) continue;
+      if (a === n) add("info", "handover_lineage_absorb_inert", n, `${n}: absorbs itself, which has no effect.`);
+      else if (!tips.has(a)) add("info", "handover_lineage_absorb_inert", n, `${n}: absorbs ${a} has no effect, because ${a} is not the end of a line.`);
+    }
+  }
+  return out;
 }
 
 /**

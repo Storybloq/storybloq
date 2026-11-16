@@ -36,7 +36,9 @@ import { HANDOVER_TEMPLATE_MARKER, hasCarriedForwardHeading } from "../../core/h
 import { isFilenameAdmitted } from "../../core/handover-brief.js";
 import { verifyContainment } from "../../core/readdir-safe.js";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { scanHandoverLineage } from "../../core/handover-lineage-scan.js";
+import type { LineageScan } from "../../core/handover-lineage.js";
 
 /** The coding recipe's default. Named here so the fallback is not a literal. */
 const DEFAULT_REVIEW_BACKENDS: readonly string[] = ["codex", "agent"];
@@ -169,6 +171,18 @@ function handoverCarriedForwardAux(ctx: CommandContext): boolean {
   return !hasCarriedForwardHeading(content);
 }
 
+/**
+ * ISS-1499 slice A: the lineage scan validate needs (plan section 7). Sync,
+ * never throws, never follows a symlink, never blocks on a special file
+ * (the scan module). Uses the loader's listing; a folder the loader could
+ * not list gives an empty, unenumerated scan, so no lineage finding.
+ */
+function handoverLineageAux(ctx: CommandContext): LineageScan {
+  const dir = relative(ctx.root, ctx.handoversDir);
+  const enumerated = !ctx.warnings.some((w) => w.type === "parse_error" && w.file === dir);
+  return scanHandoverLineage(ctx.handoversDir, enumerated ? ctx.state.handoverFilenames : [], enumerated);
+}
+
 function validateWithRulings(ctx: CommandContext): ValidationResult {
   const { rulings, warnings, unavailableIds, scanCompleteness, hasUnrecoverableEntries } = loadRulingsSafe(ctx.root);
   // T-494: the SECOND half of the reachability condition. `loadProjectUnlocked`
@@ -213,6 +227,7 @@ function validateWithRulings(ctx: CommandContext): ValidationResult {
     rulingHasUnrecoverableEntries: hasUnrecoverableEntries,
     citingEntityLoadComplete,
     handoverNewestMarkedWithoutCarriedForward: handoverCarriedForwardAux(ctx),
+    handoverLineageScan: handoverLineageAux(ctx),
   });
   const merged = mergeValidation(baseResult, ctx.warnings);
   // loadRulingsSafe's own per-file warnings (unreadable/invalid JSON/schema

@@ -656,7 +656,18 @@ describe("legacy records keep main's get JSON (fixups 2 and 3)", () => {
   });
 });
 
-describe("the registry is read again under the lock (finding B)", () => {
+describe.each(["mcp", "registered cli"])("the registry is read again under the lock (finding B, %s)", (via) => {
+  const viaCli = via === "registered cli";
+  const toArgs = (input: Json): string[] => {
+    const a = input.attestation as { builtFromSha: string };
+    const out = [String(input.target), "--kind", String(input.kind), "--sha", String(input.sha), "--result", String(input.result), "--built-from", a.builtFromSha, "--built-clean", "--data", JSON.stringify(input.data)];
+    if (input.command !== undefined) out.push("--command", String(input.command));
+    if (input.repo !== undefined) out.push("--repo", String(input.repo));
+    if (input.unitRef !== undefined) out.push("--unit", String(input.unitRef));
+    if (input.covers !== undefined) out.push("--covers", (input.covers as string[]).join(","));
+    return out;
+  };
+  const send = (root: string, input: Json): Promise<Reply> => (viaCli ? registeredCli(root, toArgs(input)) : clients.mcp!(root, input));
   const device = (f: { nodeSha: string }) => ({ target: "T-001", kind: "device", sha: f.nodeSha, result: "pass", repo: "api", unitRef: "T-001", covers: ["api:T-001"], attestation: { builtFromSha: f.nodeSha, builtClean: true }, data: { deviceClass: "real" } });
   async function underLock(hook: () => void, run: () => Promise<Reply>): Promise<Reply> {
     const prior = receiptAddSeams.beforeLock;
@@ -666,7 +677,7 @@ describe("the registry is read again under the lock (finding B)", () => {
 
   it("a node registered before the lock carrying this board's id is refused, nothing appended", async () => {
     const { root, sha } = await landed();
-    const r = await underLock(() => { registerCopyStandalone(root); }, () => clients.mcp!(root, base(sha)));
+    const r = await underLock(() => { registerCopyStandalone(root); }, () => send(root, base(sha)));
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/board_id_duplicate: this board/);
     expect(ticket(root).receipts).toBeUndefined();
@@ -682,7 +693,7 @@ describe("the registry is read again under the lock (finding B)", () => {
       const p = join(f.orch, ".story", "config.json");
       const cfg = readJson(p);
       writeFileSync(p, JSON.stringify({ ...cfg, nodes: { api: { ...((cfg.nodes as Json).api as Json), path: other } } }, null, 2) + "\n");
-    }, () => clients.mcp!(f.orch, device(f)));
+    }, () => send(f.orch, device(f)));
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/board_id_changed: the repo alias api/);
     expect(ticket(f.orch).receipts).toBeUndefined();
@@ -690,7 +701,7 @@ describe("the registry is read again under the lock (finding B)", () => {
 
   it("a duplicate of a covers ref's board registered before the lock is refused, nothing appended", async () => {
     const f = await federation();
-    const r = await underLock(() => { registerCopy(f.orch, boardOf(f.node)); }, () => clients.mcp!(f.orch, device(f)));
+    const r = await underLock(() => { registerCopy(f.orch, boardOf(f.node)); }, () => send(f.orch, device(f)));
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/board_id_duplicate/);
     expect(ticket(f.orch).receipts).toBeUndefined();

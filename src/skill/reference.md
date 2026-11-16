@@ -89,7 +89,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **ruling propose** (--text, --attribution, --date, --scope-tag?, --for?, --proposes-to-supersede?, --client-task-id?, --context?, --alternatives?, --consequences?, --reconsider-when?, --format?, --commit?) - Propose a ruling. A proposal binds nothing until accepted; drafting a replacement revokes nothing. --for names the items that gain the citation at accept
 - **ruling accept <id>** (--revision, --attribution, --date, --branch?, --client-task-id?, --format?, --commit?) - Accept a proposed ruling: records a claim of authority and cites it from every --for item in one transaction. --revision is the digest of what was reviewed, not proof of who approved
 - **ruling withdraw <id>** (--reason?, --client-task-id?, --format?, --commit?) - Withdraw a proposed ruling; proposed records only, an accepted ruling is superseded instead
-- **duet spawn** (--name?, --pen?, --bounds?, --arrangement?, --model?, --dir?, --role?, --permission-mode?, --terminal?, --auto-load?, --pen-task-id?, --print?, --recover?, --format?) - Start a visible duet worker: mints its task id, creates arrangement and coordination (--arrangement auto, needs --bounds), writes role and handshake in .story/spawn/, opens the window on /story. Permission mode: auto (bypassPermissions under a bypass pen); --model defaults to opus (the hands tier). A --dir without .story uses the pen's board. --name and --pen launch or --print; --recover lists interrupted spawns read-only
+- **duet spawn** (--name?, --pen?, --bounds?, --arrangement?, --model?, --dir?, --role?, --permission-mode?, --terminal?, --auto-load?, --pen-task-id?, --print?, --recover?, --format?) - Start a visible duet worker: mints its task id, creates arrangement and coordination (--arrangement auto needs --bounds), writes role and handshake in .story/spawn/, opens /story. Permission mode auto (bypass under a bypass pen); --model defaults to opus. A --dir without .story uses the pen's board. --name and --pen launch or --print; --recover lists interrupted spawns
 - **arrangement compact <id>** (--client-task-id?, --format?, --commit?) - Compact a duet arrangement's coordination checkpoint: resolved assignments keep their last event, overflow moves to an archive list. Pen only
 - **arrangement rotate <id>** (--client-task-id?, --format?, --commit?) - Close a duet arrangement at capacity and carry its open assignments, verified session and earmarks into a fresh successor. Pen only
 - **arrangement rebind <id>** (--role, --to, --client?, --evidence, --client-task-id?, --format?, --commit?) - Owner-authorized succession: a successor with one party replaced carries the checkpoint and earmarks, never the nonce, receipts or session; the original is closed. An attributed claim; liveness is machine-local
@@ -121,6 +121,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **board-id adopt** (--ref?, --format?) - Take the default branch's board id
 - **receipt add <target>** (--kind, --sha, --result, --base?, --unit?, --covers?, --built-from?, --built-clean?, --built-dirty?, --supersedes?, --data?, --command?, --evidence?, --repo?, --commit?, --format?) - Append a proof receipt
 - **receipts <id>** (--page?, --format?) - Page an item's receipts
+- **proof <ref>** (--page?) | **proof non-code add <ref>** (--reason, --commit?, --format?) - Item proof and evidence; proof non-code add|remove|list edits the non-code list
 - **merge-driver <ancestor> <ours> <theirs> <pathname>** (--protocol?) | **merge-driver** (--protocol?, --capabilities) - Git merge driver for .story/ JSON files (registered via team setup)
 - **team init** (--claim-staleness-hours?, --id-allocator?, --format?) - Enable team mode on this project
 - **team setup** (--format?) - Install the git merge driver and .gitattributes for team mode
@@ -208,12 +209,12 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_phase_current** - First non-complete phase
 - **storybloq_phase_tickets** (phaseId, node?) - Leaf tickets for a specific phase
 - **storybloq_ticket_list** (status?, phase?, type?, priority?, waitingOn?, node?) - List leaf tickets with optional filters
-- **storybloq_ticket_get** (id, format?, withActionability?, receiptsPage?, node?) - Get a ticket by ID
+- **storybloq_ticket_get** (id, format?, withActionability?, receiptsPage?, proofPage?, node?) - Get a ticket by ID
 - **storybloq_ticket_meta_get** (id, path?) - Get custom passthrough metadata from a ticket
 - **storybloq_ticket_next** (count?, node?) - Highest-priority unblocked ticket(s)
 - **storybloq_ticket_blocked** (node?) - All blocked tickets with dependencies
 - **storybloq_issue_list** (status?, severity?, component?, phase?, disposition?, actionable?, resolutionKind?, priority?, waitingOn?, format?, node?) - List issues with optional filters
-- **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, node?) - Get an issue by ID
+- **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, proofPage?, node?) - Get an issue by ID
 - **storybloq_issue_meta_get** (id, path?) - Get custom passthrough metadata from an issue
 - **storybloq_handover_list** - List handover filenames (newest first)
 - **storybloq_handover_latest** (count?, brief?, priming?, format?) - Content of most recent handover
@@ -352,7 +353,7 @@ Creates issues automatically when storybloq MCP tools or CLI are available. Chec
 
 Drive a federation or large backlog with a persistent ledger, lower-tier implementation agents where available, and independent review gates. Read `orchestrator-mode.md` for enrichment, sizing, the six-stage pipeline, workflow scripts, and rules.
 
-`/story orchestrate` needs explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Needs callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend it for a capable client with a substantial actionable backlog; selection still needs opt-in.
+`/story orchestrate` needs explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. Needs callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend it for a large backlog; selection still needs opt-in.
 
 ## /story triage
 

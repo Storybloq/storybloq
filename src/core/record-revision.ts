@@ -9,7 +9,7 @@ import { RECEIPT_CONFLICT_KINDS } from "./receipt-resolve.js";
  * receipt `revisions` field; proof (commit 5) imports it from here.
  */
 
-const BOOKKEEPING = [
+export const BOOKKEEPING = [
   "receipts", "landings",
   // Pen ruling (w15-a6, deviation from the 5.2 list): the resolution history
   // is appended by every `resolve --receipt`, so it is bookkeeping like the
@@ -22,7 +22,7 @@ const BOOKKEEPING = [
   "displayId", "previousDisplayIds",
 ] as const;
 
-const COMPLETION: Record<"ticket" | "issue", readonly string[]> = {
+export const COMPLETION: Record<"ticket" | "issue", readonly string[]> = {
   ticket: ["status", "completedDate", "lifecycle", "checkpointEvidence", "resolutionKind"],
   issue: ["status", "resolvedDate", "resolution", "resolutionKind", "lifecycle"],
 };

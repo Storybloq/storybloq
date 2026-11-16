@@ -91,8 +91,8 @@ export type ItemGitState = ({ readonly state: GitState } & Omit<ItemGitFacts, "s
 
 const ORDER: readonly GitState[] = ["released", "landed", "built", "none"];
 
-/** Canonical id -> facts, resolved now against `state`. */
-export function itemFacts(snap: OkSnapshot, state: ProjectState, subjectPattern?: RegExp): Map<string, ItemGitFacts> {
+/** Canonical id -> every attributed code commit, uncapped (proof rule 5 reads the full list). */
+export function attributedCommits(snap: OkSnapshot, state: ProjectState, subjectPattern?: RegExp): Map<string, Set<string>> {
   const byItem = new Map<string, Set<string>>();
   for (const [token, shas] of tokenCommits(snap, subjectPattern)) {
     const t = state.resolveTicketRef(token);
@@ -103,6 +103,12 @@ export function itemFacts(snap: OkSnapshot, state: ProjectState, subjectPattern?
     if (set === undefined) byItem.set(id, (set = new Set()));
     for (const s of shas) set.add(s);
   }
+  return byItem;
+}
+
+/** Canonical id -> facts, resolved now against `state`. */
+export function itemFacts(snap: OkSnapshot, state: ProjectState, subjectPattern?: RegExp, commits?: Map<string, Set<string>>): Map<string, ItemGitFacts> {
+  const byItem = commits ?? attributedCommits(snap, state, subjectPattern);
   const out = new Map<string, ItemGitFacts>();
   for (const [id, set] of byItem) {
     const buckets: Record<GitState, string[]> = { released: [], landed: [], built: [], none: [] };

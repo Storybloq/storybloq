@@ -10,11 +10,13 @@ import type { ProjectState } from "../project-state.js";
 import { runGitFacts } from "./runner.js";
 import { PatternTimeoutError } from "./pattern-sandbox.js";
 import { compileBoundedPattern, takeGitSnapshot, type GitSnapshot, type UnknownReason } from "./snapshot.js";
-import { itemFacts, itemGitState, type ItemGitFacts, type ItemGitState } from "./attribution.js";
+import { attributedCommits, itemFacts, itemGitState, type ItemGitFacts, type ItemGitState } from "./attribution.js";
 
 export interface GitFactsView {
   readonly snapshot: GitSnapshot;
   readonly items: Map<string, ItemGitFacts> | undefined;
+  /** C-v4.1 commit 5: canonical id -> every attributed code commit; undefined when the facts are unknown. */
+  readonly commits: Map<string, Set<string>> | undefined;
   stateOf(id: string): ItemGitState;
 }
 
@@ -52,14 +54,17 @@ export async function readGitFacts(root: string, state: ProjectState): Promise<G
   const pattern = s.subjectPattern !== undefined ? compileBoundedPattern("gitState.subjectPattern", s.subjectPattern) : undefined;
   let view: GitSnapshot = snapshot;
   let items: Map<string, ItemGitFacts> | undefined;
+  let commits: Map<string, Set<string>> | undefined;
   try {
-    items = snapshot.status === "ok" ? itemFacts(snapshot, state, pattern) : undefined;
+    commits = snapshot.status === "ok" ? attributedCommits(snapshot, state, pattern) : undefined;
+    items = snapshot.status === "ok" ? itemFacts(snapshot, state, pattern, commits) : undefined;
   } catch (e) {
     // Codex finding 1: a configured pattern that runs past its deadline makes the facts unknown, never a hang.
     if (!(e instanceof PatternTimeoutError)) throw e;
     view = { status: "unknown", reason: "pattern timeout", detail: e.field };
+    commits = undefined;
   }
-  return { snapshot: view, items, stateOf: (id) => itemGitState(view, items, id) };
+  return { snapshot: view, items, commits, stateOf: (id) => itemGitState(view, items, id) };
 }
 
 const OPEN = new Set(["open", "inprogress"]);

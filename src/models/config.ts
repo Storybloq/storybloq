@@ -159,6 +159,16 @@ export const GitStateConfigSchema = z.object({
 
 export type GitStateConfig = z.infer<typeof GitStateConfigSchema>;
 
+// C-v4.1 5.4 (pen ruling Q4): the only way an item is non-code is an explicit
+// entry here, by canonical ref, with a reason of at most 200 bytes. Written
+// only by `storybloq proof non-code add|remove`.
+export const ProofConfigSchema = z.object({
+  nonCodeItems: z.array(z.object({
+    ref: z.string().min(1),
+    reason: z.string().min(1).refine((s) => Buffer.byteLength(s, "utf8") <= 200, { message: "at most 200 bytes" }),
+  }).strict()).optional(),
+}).passthrough();
+
 export const ConfigSchema = z
   .object({
     version: z.number().int().min(1),
@@ -176,6 +186,7 @@ export const ConfigSchema = z
     sessionIntel: SessionIntelConfigSchema.optional(),
     healthCheck: HealthCheckConfigSchema.optional(),
     gitState: GitStateConfigSchema.optional(),
+    proof: ProofConfigSchema.optional(),
     recipe: z.string().optional(),  // default "coding" applied in guide.ts handleStart
     // ISS-730: opt-in continuous cross-reference integrity check. When true,
     // loadProject runs a full validateProject pass and surfaces ERROR-level

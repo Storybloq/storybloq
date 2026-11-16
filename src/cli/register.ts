@@ -745,6 +745,59 @@ export function registerReceiptCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// proof (C-v4.1 commit 5, ISS-1433)
+// ---------------------------------------------------------------------------
+
+export function registerProofCommand(yargs: Argv): Argv {
+  const run = async (argv: Record<string, unknown>, fn: (root: string, format: "md" | "json") => Promise<{ output: string; exitCode?: number }>) => {
+    const format = (argv.format as "md" | "json") ?? "md";
+    const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+    if (!root) { writeOutput(noProjectFoundOutput(argv.format as never, "ok"), outputFormatOf(argv.format as never)); process.exitCode = ExitCode.USER_ERROR; return; }
+    try {
+      const result = await fn(root, format);
+      writeOutput(result.output, format);
+      if (result.exitCode) process.exitCode = result.exitCode;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeOutput(format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message, format);
+      process.exitCode = ExitCode.USER_ERROR;
+    }
+  };
+  const fmt = 'an {"ok", "data"} object (or {"ok", "error"} on failure)';
+  return yargs.command(
+    "proof <ref> [sub] [target]",
+    "Whether a ticket or issue is proven by real-device receipts, with one page of evidence",
+    (y) =>
+      addFormatOption(y
+        .positional("ref", { type: "string", demandOption: true, describe: "ID, <alias>:ID or <boardId>:ID; or non-code to edit the non-code list" })
+        .positional("sub", { type: "string", describe: "With ref non-code: add, remove or list" })
+        .positional("target", { type: "string", describe: "With non-code add or remove: the ticket or issue" })
+        .option("page", { type: "number", describe: "Evidence page, from 1" })
+        .option("reason", { type: "string", describe: "non-code add: why the item holds no code (at most 200 bytes)" })
+        .option("commit", { type: "boolean", default: false, describe: "non-code add/remove: commit only config.json" }), fmt),
+    async (argv) => {
+      const ref = String(argv.ref);
+      const { handleProofCommand, handleNonCodeAdd, handleNonCodeList, handleNonCodeRemove } = await import("./commands/proof.js");
+      if (ref !== "non-code") {
+        await run(argv, (root, format) => handleProofCommand(root, ref, argv.page as number | undefined, format));
+        return;
+      }
+      const sub = argv.sub as string | undefined;
+      const target = argv.target as string | undefined;
+      if (sub === "list") await run(argv, async (root, format) => handleNonCodeList(root, format));
+      else if ((sub === "add" || sub === "remove") && target !== undefined) {
+        await run(argv, (root, format) => (sub === "add"
+          ? handleNonCodeAdd(root, target, argv.reason as string | undefined, argv.commit === true, format)
+          : handleNonCodeRemove(root, target, argv.commit === true, format)));
+      } else {
+        writeOutput("Usage: storybloq proof non-code add <ref> --reason <text> | remove <ref> | list", "md");
+        process.exitCode = ExitCode.USER_ERROR;
+      }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // team
 // ---------------------------------------------------------------------------
 

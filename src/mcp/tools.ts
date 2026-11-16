@@ -835,6 +835,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       format: z.enum(["md", "json"]).optional().describe("default: md"),
       withActionability: z.boolean().optional(),
       receiptsPage: z.number().optional().describe("Receipts page, 20 per page"),
+      proofPage: z.number().optional().describe("Proof evidence page"),
       node: nodeParam,
     },
   }, (args) => {
@@ -842,7 +843,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleTicketGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
+      (ctx) => handleTicketGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage, args.proofPage),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );
@@ -901,6 +902,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       format: z.enum(["md", "json"]).optional().describe("default: md"),
       withActionability: z.boolean().optional(),
       receiptsPage: z.number().optional().describe("Receipts page, 20 per page"),
+      proofPage: z.number().optional().describe("Proof evidence page"),
       node: nodeParam,
     },
   }, (args) => {
@@ -908,7 +910,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleIssueGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage),
+      (ctx) => handleIssueGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage, args.proofPage),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );

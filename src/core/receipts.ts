@@ -185,3 +185,33 @@ export function readReceipts(record: Record<string, unknown>): ReceiptsRead {
   });
   return { state: "ok", entries };
 }
+
+// --- 3.7 current attempts: the one place attempt order is decided ---
+
+export type AttemptOutcome = "none" | "concurrent" | "failing" | "pass";
+
+export interface CurrentAttempts {
+  readonly outcome: AttemptOutcome;
+  /** The current set itself; callers never read `pass` without it (A1). */
+  readonly current: Receipt[];
+}
+
+/**
+ * C-v4.1 3.7, shared by landing-ready (7) and proof (5.5). `inScope` is the
+ * caller's scope tuple. Current attempts are the in-scope `ok` receipts that
+ * no in-scope receipt supersedes; a superseder counts whatever its result or
+ * device class (fail closed), and one outside the scope does not count. Ids,
+ * array order and timestamps never decide.
+ */
+export function currentAttempts(receipts: readonly Receipt[], inScope: (r: Receipt) => boolean): CurrentAttempts {
+  const scoped = receipts.filter(inScope);
+  const superseded = new Set<string>();
+  for (const r of scoped) for (const s of r.supersedes ?? []) superseded.add(s);
+  const current = scoped.filter((r) => !superseded.has(r.id));
+  if (current.length === 0) return { outcome: "none", current };
+  const passes = current.some((r) => r.result === "pass");
+  const fails = current.some((r) => r.result !== "pass");
+  if (passes && fails) return { outcome: "concurrent", current };
+  if (fails) return { outcome: "failing", current };
+  return { outcome: "pass", current };
+}

@@ -132,6 +132,7 @@ async function runCli(taskLocal = false): Promise<void> {
     registerResolveCommand,
     registerBoardIdCommand,
     registerReceiptCommand,
+    registerProofCommand,
     registerGcCommand,
     registerMergeDriverCommand,
     registerTeamCommand,
@@ -295,6 +296,7 @@ async function runCli(taskLocal = false): Promise<void> {
   cli = registerResolveCommand(cli);
   cli = registerBoardIdCommand(cli);
   cli = registerReceiptCommand(cli);
+  cli = registerProofCommand(cli);
   cli = registerGcCommand(cli);
   cli = registerMergeDriverCommand(cli);
   cli = registerTeamCommand(cli);

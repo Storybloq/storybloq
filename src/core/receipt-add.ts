@@ -170,12 +170,12 @@ interface ResolvedRef {
   readonly kind: "ticket" | "issue";
 }
 
-type StateWithRefs = ProjectStateLike & {
+export type StateWithRefs = ProjectStateLike & {
   resolveTicketRef(ref: string): { kind: string; item?: { id: string } };
   resolveIssueRef(ref: string): { kind: string; item?: { id: string } };
 };
 
-function findItem(state: StateWithRefs, id: string): { record: Record<string, unknown>; kind: "ticket" | "issue" } | "ambiguous" | undefined {
+export function findItem(state: StateWithRefs, id: string): { record: Record<string, unknown>; kind: "ticket" | "issue" } | "ambiguous" | undefined {
   const t = state.resolveTicketRef(id);
   if (t.kind === "ambiguous") return "ambiguous";
   if (t.kind === "found") return { record: t.item as unknown as Record<string, unknown>, kind: "ticket" };

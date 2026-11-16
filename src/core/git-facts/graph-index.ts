@@ -98,6 +98,18 @@ export class GraphIndex {
     return "none";
   }
 
+  /** C-v4.1 commit 5: whether the commit is reachable from the default branch (proof rule 4). */
+  onDefault(sha: string): boolean {
+    const i = this.num.get(sha);
+    return i !== undefined && this.landed[i] === 1;
+  }
+
+  /** Topological position (parents first), or -1 when the commit is not in the graph; orders proof evidence. */
+  position(sha: string): number {
+    const i = this.num.get(sha);
+    return i === undefined ? -1 : this.pos[i]!;
+  }
+
   touchesCode(sha: string): boolean {
     return this.code.has(sha);
   }

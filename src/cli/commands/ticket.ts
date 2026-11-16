@@ -1,5 +1,6 @@
 import { displayIdOf } from "../../core/resolver.js";
 import { receiptsGetView } from "../../core/receipts-page.js";
+import { proofView, type ProofView } from "../../core/proof-view.js";
 import { gitCounts, gitCountsLine, gitGetFields, gitMarkdownLine, readGitFacts, type GitCounts, type GitGetFields } from "../../core/git-facts/facts.js";
 import { nextTicket, nextTickets, blockedTickets, currentPhase, waitingInventory } from "../../core/queries.js";
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
@@ -201,8 +202,8 @@ export async function handleTicketListWithGit(
   return line === null ? result : { ...result, output: `${result.output}\n\n${line}` };
 }
 
-export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number, git?: GitGetFields): CommandResult;
-export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number, git?: GitGetFields): CommandResult | Promise<CommandResult>;
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number, git?: GitGetFields, proof?: ProofView): CommandResult;
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number, git?: GitGetFields, proof?: ProofView): CommandResult | Promise<CommandResult>;
 /** T-486 U2-4: async only with actionability, which reads the live cross-node observation. */
 export function handleTicketGet(
   id: string,
@@ -212,6 +213,8 @@ export function handleTicketGet(
   receiptsPage?: number,
   /** C-v4.1 commit 4: gitState and lastChanged, read by the async client entry. */
   git?: GitGetFields,
+  /** C-v4.1 commit 5 (Q1): present only when the caller passed proofPage. */
+  proof?: ProofView,
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveTicketRef(id);
   if (result.kind === "ambiguous") {
@@ -237,20 +240,21 @@ export function handleTicketGet(
   const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
     // Pen ruling on plan line 423: a legacy record with no receipts field, read without receiptsPage, keeps main's JSON.
     const withReceipts = receiptsPage !== undefined || Object.prototype.hasOwnProperty.call(item, "receipts");
-    const gitJson = git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {};
+    const gitJson = { ...(git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {}), ...(proof !== undefined ? { proof: proof.json } : {}) };
     const extraJsonFields = withReceipts ? { ...actionability, ...gitJson, receipts: receipts.json } : { ...actionability, ...gitJson };
     const text = formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields);
-    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines];
+    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines, ...(proof !== undefined ? proof.lines : [])];
     return { output: ctx.format === "json" || mdExtra.length === 0 ? text : `${text}\n\n${mdExtra.join("\n")}` };
   };
   return withActionability ? computeTargetedActionability(ctx, "ticket", item).then(render) : render();
 }
 
 /** C-v4.1 commit 4: the get both clients call; reads git facts, then the shared handler. */
-export async function handleTicketGetWithGit(id: string, ctx: CommandContext, withActionability = false, receiptsPage?: number): Promise<CommandResult> {
+export async function handleTicketGetWithGit(id: string, ctx: CommandContext, withActionability = false, receiptsPage?: number, proofPage?: number): Promise<CommandResult> {
   const found = ctx.state.resolveTicketRef(id);
   const git = found.kind === "found" ? await gitGetFields(ctx.root, ctx.state, found.item.id, ticketFilePath(ctx.root, found.item.id)) : undefined;
-  return handleTicketGet(id, ctx, withActionability, receiptsPage, git);
+  const proof = found.kind === "found" && proofPage !== undefined ? await proofView(ctx.root, found.item.id, proofPage) : undefined;
+  return handleTicketGet(id, ctx, withActionability, receiptsPage, git, proof);
 }
 
 export function handleTicketMetaGet(

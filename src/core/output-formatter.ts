@@ -3864,7 +3864,7 @@ export function formatReference(
   lines.push("");
   lines.push("Drive a federation or large backlog with a persistent ledger, lower-tier implementation agents where available, and independent review gates. Read `orchestrator-mode.md` for enrichment, sizing, the six-stage pipeline, workflow scripts, and rules.");
   lines.push("");
-  lines.push("`/story orchestrate` needs explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Needs callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend it for a capable client with a substantial actionable backlog; selection still needs opt-in.");
+  lines.push("`/story orchestrate` needs explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. Needs callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend it for a large backlog; selection still needs opt-in.");
   lines.push("");
   lines.push("## /story triage");
   lines.push("");

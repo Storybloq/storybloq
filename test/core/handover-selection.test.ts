@@ -5,7 +5,7 @@
  * block run in a child process under an external deadline of 10 seconds.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -149,6 +149,8 @@ describe("B13 reader rows: never blocks (child process, 10 second deadline)", ()
     const r = inChild("dir.md", "dir-to-fifo");
     expect(r.timedOut).toBe(false);
     expect(r).toMatchObject({ ok: false, value: "EISDIR: illegal operation on a directory, read" });
+    // The swap really happened: the seam ran and the name is now a FIFO.
+    expect(lstatSync(join(hdir, "dir.md")).isFIFO()).toBe(true);
   });
 
   it("a regular file replaced by a FIFO after the open still returns the file's bytes", () => {
@@ -156,6 +158,7 @@ describe("B13 reader rows: never blocks (child process, 10 second deadline)", ()
     const r = inChild("a.md", "file-to-fifo");
     expect(r.timedOut).toBe(false);
     expect(r).toMatchObject({ ok: true, value: "# A\n\nbody\n" });
+    expect(lstatSync(join(hdir, "a.md")).isFIFO()).toBe(true);
   });
 
   it("the child harness itself reads a regular file", () => {

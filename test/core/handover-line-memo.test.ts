@@ -4,7 +4,7 @@
  * and `telemetrySubdirState`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -225,13 +225,21 @@ describe("resolving: active and stale", () => {
     expect(t.observation.seen).toBe(true);
   });
 
-  it("a read never writes the memo", () => {
+  it("a read never writes the memo, even when it adopts the intent", () => {
     handover("2026-11-10-01-a.md", "# A\n");
-    const text = memoJson(good({ writing: { file: "2026-11-11-01-b.md", sha256: sha("x") } }));
-    writeMemo(text);
-    const before = execFileSync("ls", ["-lT", mdir], { encoding: "utf8" });
-    resolveLineMemo(root, TASK, tails());
-    expect(execFileSync("ls", ["-lT", mdir], { encoding: "utf8" })).toBe(before);
+    handover("2026-11-11-01-b.md", "# B\n");
+    // A matching intent: resolution adopts it, the case most tempted to persist.
+    writeMemo(memoJson(good({ writing: { file: "2026-11-11-01-b.md", sha256: sha("# B\n") } })));
+    const path = join(mdir, memoFileName(TASK));
+    const snap = () => {
+      const st = statSync(path);
+      return { bytes: readFileSync(path), mtimeMs: st.mtimeMs, ino: st.ino, size: st.size };
+    };
+    const before = snap();
+    const names = readdirSync(mdir);
+    expect(resolveLineMemo(root, TASK, tails())).toEqual({ kind: "active", tip: "2026-11-11-01-b.md" });
+    expect(snap()).toEqual(before);
+    expect(readdirSync(mdir)).toEqual(names);
   });
 });
 

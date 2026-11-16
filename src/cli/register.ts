@@ -1000,7 +1000,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
           "Create a new handover document",
           (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
-              y2
+              arrayOption(y2
                 .option("content", {
                   type: "string",
                   describe: "Handover content (markdown string)",
@@ -1029,10 +1029,17 @@ export function registerHandoverCommand(yargs: Argv): Argv {
                 .option("from", {
                   type: "string",
                   describe: "Handover a new line starts from",
-                })
-                .option("absorbs", {
-                  type: "string",
-                  array: true,
+                }), "absorbs", {
+                  // A handover file name never holds a comma, so split is safe.
+                  // Empty values are preserved, not dropped: an absorbs value the
+                  // parser dropped silently would leave open a tip the author
+                  // believes closed, so a malformed value must reach the handler,
+                  // which names it.
+                  comma: "split",
+                  emptyAfterSplit: "reject",
+                  empty: "preserve",
+                  trim: "segments",
+                  requireValue: "Name the handover file whose line this one closes.",
                   describe: "End of another line this handover closes (repeatable)",
                 })
                 .conflicts("content", "stdin")

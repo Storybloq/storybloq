@@ -865,6 +865,46 @@ const MATRIX: Coverage[] = [
     },
   },
   {
+    key: "handover create --absorbs",
+    check: (dir) => {
+      const handovers = join(dir, ".story", "handovers");
+      const tip = (n: number) => `2026-01-0${n}-01-tip${n}.md`;
+      // Four open tips: an absorbed tip is no longer open, so each form gets its own two.
+      for (const n of [2, 3, 4, 5]) {
+        writeFileSync(join(handovers, tip(n)), "# Tip\n\nwork\n\n<!-- storybloq-lineage v1 -->\n");
+      }
+      const create = (...flags: string[]) =>
+        run(dir, "handover", "create", "--content", "# A\n\nx\n", "--slug", "abs", "--new-line", "--format", "json", ...flags);
+      const absorbsOf = (out: string) =>
+        (JSON.parse(out) as { data: { lineage: { absorbs: string[] } } }).data.lineage.absorbs;
+      // The comma form and the repeated flag close the same kind of pair.
+      const comma = create("--absorbs", `${tip(2)},${tip(3)}`);
+      expect(comma.code, comma.out).toBe(0);
+      expect(absorbsOf(comma.out)).toEqual([tip(2), tip(3)]);
+      const repeated = create("--absorbs", tip(4), "--absorbs", tip(5));
+      expect(repeated.code, repeated.out).toBe(0);
+      expect(absorbsOf(repeated.out)).toEqual([tip(4), tip(5)]);
+      // Loud, never silent. A bare flag is refused before anything is written.
+      const count = () => readdirSync(handovers).length;
+      const before = count();
+      expectRejected(create("--absorbs"), "--absorbs requires at least one value");
+      expect(count()).toBe(before);
+      // Empty values are preserved, so they reach the handler, which names
+      // each one, instead of being dropped by the parser: an empty value, and
+      // each empty segment of a separator-only value.
+      const warningsOf = (out: string) =>
+        (JSON.parse(out) as { data: { lineage: { warnings: Array<{ code: string; target: string | null; detail: string | null }> } } })
+          .data.lineage.warnings;
+      const invalid = { code: "absorb_dropped", target: null, detail: "invalid" };
+      const empty = create("--absorbs", "");
+      expect(empty.code, empty.out).toBe(0);
+      expect(warningsOf(empty.out)).toEqual([invalid]);
+      const separators = create("--absorbs", ",");
+      expect(separators.code, separators.out).toBe(0);
+      expect(warningsOf(separators.out)).toEqual([invalid, invalid]);
+    },
+  },
+  {
     key: "resolve --rename",
     check: (dir) => {
       seedWordCollision(dir);

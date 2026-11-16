@@ -2,8 +2,9 @@
  * ISS-1499 slice B: the session memo, which line this session is on (plan
  * section 4). One file per identity at
  * `.story/telemetry/handover-lines/<sha256 of the id>.json`, read only
- * through `readBoundedNoFollow`. Nothing here throws, and no path is built
- * from memo content before `decodeLineMemo` accepted it.
+ * through `readBoundedNoFollow`, written only by `writeLineMemo` and removed
+ * only by `removeLineMemo`. Nothing here throws, and no path is built from
+ * memo content before `decodeLineMemo` accepted it.
  */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -11,7 +12,14 @@ import { join } from "node:path";
 import { isFilenameAdmitted } from "./handover-brief.js";
 import { isLineageFileValue } from "./handover-lineage.js";
 import type { TailReader } from "./handover-selection.js";
-import { readBoundedNoFollow, telemetrySubdirIfPresent } from "../presence/io.js";
+import {
+  atomicWriteInDir,
+  ensureTelemetrySubdir,
+  readBoundedNoFollow,
+  removeRegularFile,
+  telemetrySubdirIfPresent,
+  telemetrySubdirState,
+} from "../presence/io.js";
 
 export const LINE_MEMO_SUBDIR = "handover-lines";
 export const LINE_MEMO_MAX_BYTES = 2048;
@@ -152,3 +160,73 @@ export function resolveLineMemo(root: string, taskId: string | null, tails: Tail
   if (st.state === "unknown") return { kind: "stale", tip, reason: "unreadable" };
   return { kind: "active", tip };
 }
+
+/** The memo's bytes: exactly the four keys, in the documented order. */
+export function serializeLineMemo(memo: LineMemo): string {
+  const writing = memo.writing === null ? null : { file: memo.writing.file, sha256: memo.writing.sha256 };
+  return `${JSON.stringify({ v: 1, task: memo.task, tip: memo.tip, writing })}\n`;
+}
+
+/**
+ * Writes the caller's memo through the validated telemetry chain. False on
+ * any failure, including a folder that could not be made safely.
+ */
+export function writeLineMemo(root: string, memo: LineMemo): boolean {
+  const dir = ensureTelemetrySubdir(root, LINE_MEMO_SUBDIR);
+  if (dir === null) return false;
+  return atomicWriteInDir(dir, join(dir, memoFileName(memo.task)), serializeLineMemo(memo));
+}
+
+/** The memo path for messages; never used to open anything. */
+export function lineMemoDisplayPath(taskId: string): string {
+  return join(".story", "telemetry", LINE_MEMO_SUBDIR, memoFileName(taskId));
+}
+
+export type RemoveMemoOutcome = "absent" | "removed" | "failed";
+
+/**
+ * Plan section 5, rule 4. `absent` only when the memo is positively known
+ * not to exist; a folder that cannot be inspected, a memo that cannot be
+ * inspected and anything but a regular file in the memo's place are
+ * `failed`, never followed and never reported as gone.
+ */
+export function removeLineMemo(root: string, taskId: string): RemoveMemoOutcome {
+  const folder = telemetrySubdirState(root, LINE_MEMO_SUBDIR);
+  if (folder.state === "absent") return "absent";
+  if (folder.state === "unsafe") return "failed";
+  const path = join(folder.dir, memoFileName(taskId));
+  try {
+    lstatSync(path);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "failed";
+  }
+  return removeRegularFile(folder.dir, path, null) ? "removed" : "failed";
+}
+
+/** Design section 6: the four-line pickup statement, given as advice. */
+export const PICKUP_PROMPT =
+  "State your pickup in four lines: what you continue, the next step, what waits on the owner, what changed since.";
+
+/** What `handover continue` reports. Keys are never omitted; null where there is no value. */
+export type ContinueResult =
+  | {
+      readonly action: "default";
+      /** Whether a memo was removed, or none existed. */
+      readonly memo: "absent" | "removed";
+      /** The default line's head, or null when the default line has no handover. */
+      readonly head: string | null;
+    }
+  | {
+      readonly action: "continue";
+      readonly tip: string;
+      readonly role: string | null;
+      readonly by: string | null;
+      /** Handovers on the line, the tip included, walking to its end. */
+      readonly length: number;
+      readonly absorbedBy: readonly string[];
+      readonly at: string | null;
+      /** `counted`: `commitsSince` is set; `not_in_clone`: git does not know `at`; `none`: no `at` or no git. */
+      readonly atState: "counted" | "not_in_clone" | "none";
+      readonly commitsSince: number | null;
+      readonly pickup: string;
+    };

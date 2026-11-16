@@ -88,6 +88,7 @@ import {
   handleHandoverCreate,
   handleHandoverTemplate,
   handleHandoverLines,
+  handleHandoverContinue,
   lineageFlagsFromArgv,
 } from "./commands/handover.js";
 import { handleBlockerList, handleBlockerAdd, handleBlockerClear } from "./commands/blocker.js";
@@ -1210,6 +1211,30 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const all = argv.all === true;
             await runReadCommand(format, (ctx) => handleHandoverLines(ctx, { all }));
+          },
+        )
+        .command(
+          "continue [file]",
+          // Hidden until ISS-1499 slice B commit 8 documents it in the reference
+          // (and funds that text); the reference parity test exempts hidden leaves.
+          // Shown text: "Put this session on a handover line (its memo), or back on the default line".
+          false,
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("file", { type: "string", describe: "The tip handover to continue" })
+                .option("default", { type: "boolean", describe: "Return to the default line" })
+                .option("fork", { type: "boolean", describe: "Continue a handover that is not a tip, or with an incomplete scan" })
+                .option("as", { type: "string", describe: "Client task id to continue for" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) => handleHandoverContinue(ctx, {
+              file: argv.file as string | undefined,
+              toDefault: argv.default === true,
+              fork: argv.fork === true,
+              as: argv.as as string | undefined,
+            }));
           },
         )
         .demandCommand(1, "Specify a handover subcommand: list, latest, get, create, template, lines")

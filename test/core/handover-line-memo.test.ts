@@ -4,7 +4,7 @@
  * and `telemetrySubdirState`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -235,6 +235,9 @@ describe("resolving: active and stale", () => {
       const st = statSync(path);
       return { bytes: readFileSync(path), mtimeMs: st.mtimeMs, ino: st.ino, size: st.size };
     };
+    // A fixed past mtime, so a same-byte rewrite changes it at any timestamp resolution.
+    const past = new Date("2026-01-01T00:00:00Z");
+    utimesSync(path, past, past);
     const before = snap();
     const names = readdirSync(mdir);
     expect(resolveLineMemo(root, TASK, tails())).toEqual({ kind: "active", tip: "2026-11-11-01-b.md" });

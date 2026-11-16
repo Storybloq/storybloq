@@ -12,7 +12,8 @@ import type { ProjectState } from "../core/project-state.js";
 import type { LoadWarning } from "../core/errors.js";
 
 /** Error codes that can appear on a handler result (narrowed from ErrorCode). */
-export type ResultErrorCode = "not_found" | "invalid_input" | "io_error" | "project_corrupt" | "version_mismatch" | "restore_unsafe";
+export type ResultErrorCode = "not_found" | "invalid_input" | "io_error" | "project_corrupt" | "version_mismatch" | "restore_unsafe"
+  | "no_identity" | "scan_incomplete" | "not_a_tip";
 
 /** Context provided to every command handler. */
 export interface CommandContext {

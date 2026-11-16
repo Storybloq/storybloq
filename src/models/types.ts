@@ -230,6 +230,12 @@ export const ERROR_CODES = [
   // project; the lock is not re-entrant, so this is refused at once.
   "nested_lock",
   "setup_bootstrapping",
+  // ISS-1499 slice B: `handover continue` refusals, one code per remedy
+  // (resolve an identity or pass --as; rerun when every handover reads, or
+  // --fork; continue a listed tip, or --fork).
+  "no_identity",
+  "scan_incomplete",
+  "not_a_tip",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

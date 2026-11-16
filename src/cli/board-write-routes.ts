@@ -40,6 +40,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleFeedbackList: "read",
   handleGateAckGet: "read",
   handleGateAckList: "read",
+  handleHandoverContinue: "writes only this session's line memo (gitignored telemetry)",
   handleHandoverGet: "read",
   handleHandoverLatest: "read",
   handleHandoverLines: "read",

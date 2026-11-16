@@ -26,6 +26,7 @@ import { isHandoverWindowIncomplete } from "./recommend.js";
 import { describeRepeatInterval } from "./session-intel/sampler.js";
 import type { HandoverBriefResult, HandoverBriefEntry } from "./handover-brief.js";
 import type { CreateLineageResult, LineageWarning, LinesRow, LinesView } from "./handover-lineage.js";
+import type { ContinueResult } from "./handover-line-memo.js";
 import type { SectionRecord, TrajectoryEntry } from "./markdown-sections.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
@@ -3099,6 +3100,25 @@ export function formatHandoverLines(view: LinesView, dateOf: (name: string) => s
   section("Unreadable", view.unreadable.map((u) => `${esc(u.file)} (${u.reason})`));
   if (rows.length === 0 && sections.length === 0) return "No handovers found.";
   return [rows.join("\n"), ...sections].filter((b) => b.length > 0).join("\n\n");
+}
+
+/** ISS-1499 slice B: the `handover continue` reply (plan section 5, rule 10). */
+export function formatHandoverContinue(result: ContinueResult, format: OutputFormat): string {
+  if (format === "json") return JSON.stringify(successEnvelope(result), null, 2);
+  const esc = escapeMarkdownInline;
+  if (result.action === "default") {
+    const memo = result.memo === "removed" ? "Line memo removed" : "No line memo was set";
+    const head = result.head === null ? "The default line has no handover yet." : `Default head: ${esc(result.head)}.`;
+    return `${memo}; this session is on the default line. ${head}`;
+  }
+  const label: string[] = [];
+  if (result.role !== null) label.push(`role ${esc(result.role)}`);
+  if (result.by !== null) label.push(`by ${esc(result.by)}`);
+  const rows = [`Continuing ${esc(result.tip)}${label.length > 0 ? ` (${label.join(", ")})` : ""}, a line of ${plural(result.length, "handover")}.`];
+  if (result.absorbedBy.length > 0) rows.push(`Absorbed by ${result.absorbedBy.map(esc).join(", ")}.`);
+  if (result.at !== null && result.atState === "counted") rows.push(`Written at ${esc(result.at)}: ${plural(result.commitsSince ?? 0, "commit")} since.`);
+  if (result.at !== null && result.atState === "not_in_clone") rows.push(`Written at ${esc(result.at)}: that commit is not in this clone.`);
+  return `${rows.join("\n")}\n\n${result.pickup}`;
 }
 
 // --- Snapshot / Recap / Export ---

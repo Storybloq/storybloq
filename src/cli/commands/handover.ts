@@ -22,6 +22,7 @@ import {
   isLineageRoleValue,
   serializeLineage,
   splitLineage,
+  walkLine,
   type AbsorbDropReason,
   type ContinuesState,
   type CreateLineageResult,
@@ -29,6 +30,15 @@ import {
   type LineageWarningCode,
 } from "../../core/handover-lineage.js";
 import { scanHandoverLineage } from "../../core/handover-lineage-scan.js";
+import {
+  PICKUP_PROMPT,
+  isMemoFile,
+  lineMemoDisplayPath,
+  removeLineMemo,
+  writeLineMemo,
+  type ContinueResult,
+} from "../../core/handover-line-memo.js";
+import { currentClientTaskId, normalizeClientTaskId } from "../../autonomous/client-profile.js";
 import { extractHandoverHeading } from "../../federation/handover-utils.js";
 import type { LoadWarning } from "../../core/errors.js";
 import { execFile } from "node:child_process";
@@ -44,6 +54,7 @@ import {
   formatHandoverTemplate,
   formatHandoverCreateResult,
   formatHandoverLines,
+  formatHandoverContinue,
   formatError,
   ExitCode,
   type HandoverStampFailure,
@@ -81,6 +92,128 @@ export async function handleHandoverLines(ctx: CommandContext, opts: { readonly 
     output: formatHandoverLines(view, extractHandoverDate, ctx.format),
     exitCode: enumerated ? ExitCode.OK : ExitCode.PARTIAL,
   };
+}
+
+export interface HandoverContinueOptions {
+  readonly file?: string;
+  readonly toDefault?: boolean;
+  readonly fork?: boolean;
+  /** `--as`: the identity to continue for, instead of the environment's. */
+  readonly as?: string;
+}
+
+/** Up to ten names and the full count, for a refusal message. */
+function listSome(names: readonly string[]): string {
+  const shown = names.slice(0, 10).join(", ");
+  return names.length > 10 ? `${shown} and ${names.length - 10} more` : shown;
+}
+
+function runGit(cwd: string, args: readonly string[]): Promise<string | null> {
+  return new Promise((done) => {
+    execFile("git", [...args], { cwd, timeout: 3000 }, (err, stdout) => done(err ? null : stdout.trim()));
+  });
+}
+
+/** Rule 10: the tip's `at` against HEAD, or that git does not know it, or nothing. */
+async function atAgainstHead(root: string, at: string | null): Promise<Pick<Extract<ContinueResult, { action: "continue" }>, "atState" | "commitsSince">> {
+  if (at === null || (await runGit(root, ["rev-parse", "--is-inside-work-tree"])) !== "true") return { atState: "none", commitsSince: null };
+  // Inside a work tree, a range git cannot resolve means this clone lacks the commit.
+  const count = await runGit(root, ["rev-list", "--count", `${at}..HEAD`]);
+  const n = count === null ? NaN : Number(count);
+  return Number.isInteger(n) ? { atState: "counted", commitsSince: n } : { atState: "not_in_clone", commitsSince: null };
+}
+
+/**
+ * ISS-1499 slice B: `handover continue <file> | --default` (plan section 5).
+ * Puts this session on a line by writing its memo, or back on the default
+ * line by removing it. The rules run in the plan's order; a refusal writes
+ * nothing. The only lineage command that refuses for want of an identity.
+ */
+export async function handleHandoverContinue(ctx: CommandContext, opts: HandoverContinueOptions): Promise<CommandResult> {
+  const hasFile = typeof opts.file === "string";
+  if (hasFile === (opts.toDefault === true)) {
+    throw new CliValidationError("invalid_input", "Name exactly one of a handover file or --default.");
+  }
+  if (opts.as !== undefined && normalizeClientTaskId(opts.as) === null) {
+    throw new CliValidationError("invalid_input", "--as is not a valid client task id.");
+  }
+  const taskId = currentClientTaskId(opts.as);
+  if (taskId === null) {
+    throw new CliValidationError("no_identity", "No session identity resolved; pass --as <clientTaskId>.");
+  }
+  const root = resolve(ctx.root);
+  const memoPath = lineMemoDisplayPath(taskId);
+  let result: ContinueResult | null = null;
+  let at: string | null = null;
+
+  await withProjectLock(root, { strict: false }, async () => {
+    const listWarnings: LoadWarning[] = [];
+    const names = await listHandovers(ctx.handoversDir, root, listWarnings);
+    const enumerated = !listWarnings.some((w) => w.type === "parse_error");
+    const scan = scanHandoverLineage(ctx.handoversDir, enumerated ? names : [], enumerated);
+    const graph = buildLineageGraph(scan);
+
+    const toDefault = (): void => {
+      const outcome = removeLineMemo(root, taskId);
+      if (outcome === "failed") {
+        throw new CliValidationError("io_error", `Could not remove the line memo ${memoPath}; this session is still on its previous line.`);
+      }
+      result = { action: "default", memo: outcome, head: graph.head };
+    };
+    if (!hasFile) return toDefault();
+
+    const file = opts.file as string;
+    if (!isMemoFile(file)) throw new CliValidationError("invalid_input", "Not a handover file name.");
+    const entry = scan.files.find((f) => f.name === file);
+    if (entry === undefined) {
+      throw new CliValidationError("not_found", `Handover not found: ${file}${enumerated ? "" : " (the handovers folder could not be listed)"}`);
+    }
+    if (entry.state === "unknown") throw new CliValidationError("invalid_input", `Not a regular readable handover: ${file}`);
+    if (file === graph.head) return toDefault();
+
+    if (!scan.complete && opts.fork !== true) {
+      const unread = scan.files.filter((f) => f.state === "unknown").map((f) => f.name);
+      throw new CliValidationError("scan_incomplete", `${unread.length} handover(s) could not be read, so ${file} cannot be confirmed as a tip: ${listSome(unread)}. Pass --fork to continue it anyway.`);
+    }
+    if ((graph.children.get(file) ?? []).length > 0 && opts.fork !== true) {
+      const open = new Set(graph.openTips);
+      const tips: string[] = [];
+      const visited = new Set<string>([file]);
+      const queue = [...(graph.children.get(file) ?? [])];
+      for (let i = 0; i < queue.length && i <= scan.files.length; i++) {
+        const n = queue[i]!;
+        if (visited.has(n)) continue;
+        visited.add(n);
+        if (open.has(n)) tips.push(n);
+        queue.push(...(graph.children.get(n) ?? []));
+      }
+      const listed = tips.length > 0 ? `; its open tips: ${listSome(tips)}` : "";
+      throw new CliValidationError("not_a_tip", `${file} is not a tip: it has a newer handover on its line${listed}. Continue a tip, or pass --fork to branch from it.`);
+    }
+
+    if (!writeLineMemo(root, { v: 1, task: taskId, tip: file, writing: null })) {
+      throw new CliValidationError("io_error", `Could not write the line memo ${memoPath}.`);
+    }
+    const lineage = entry.state === "linked" ? entry.lineage?.lineage ?? null : null;
+    at = lineage?.at ?? null;
+    result = {
+      action: "continue",
+      tip: file,
+      role: lineage?.role ?? null,
+      by: lineage?.by ?? null,
+      length: walkLine(graph, file).files.length,
+      absorbedBy: [...(graph.absorbedBy.get(file) ?? [])],
+      at,
+      atState: "none",
+      commitsSince: null,
+      pickup: PICKUP_PROMPT,
+    };
+  });
+
+  let final = result as ContinueResult | null;
+  if (final === null) throw new Error("handover continue produced no result");
+  if (final.action === "continue") final = { ...final, ...(await atAgainstHead(root, at)) };
+  return { output: formatHandoverContinue(final, ctx.format) };
 }
 
 export interface HandoverLatestOptions {

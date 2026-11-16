@@ -91,7 +91,8 @@ export class GraphCache {
         e.memoBytes = 0;
       }
     }
-    while (this.totalBytes() > this.maxBytes && this.entries.size > 1) this.evictOldest();
+    // Codex finding 2: never retain an entry larger than the cap, the newest included; the caller still uses it.
+    while (this.totalBytes() > this.maxBytes && this.entries.size > 0) this.evictOldest();
   }
 
   private evictOldest(): void {

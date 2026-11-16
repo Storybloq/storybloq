@@ -8,6 +8,7 @@ import { statSync } from "node:fs";
 import { relative } from "node:path";
 import type { ProjectState } from "../project-state.js";
 import { runGitFacts } from "./runner.js";
+import { PatternTimeoutError } from "./pattern-sandbox.js";
 import { compileBoundedPattern, takeGitSnapshot, type GitSnapshot, type UnknownReason } from "./snapshot.js";
 import { itemFacts, itemGitState, type ItemGitFacts, type ItemGitState } from "./attribution.js";
 
@@ -49,8 +50,16 @@ export async function readGitFacts(root: string, state: ProjectState): Promise<G
     ...(s.releaseTagPattern !== undefined ? { releaseTagPattern: s.releaseTagPattern } : {}),
   });
   const pattern = s.subjectPattern !== undefined ? compileBoundedPattern("gitState.subjectPattern", s.subjectPattern) : undefined;
-  const items = snapshot.status === "ok" ? itemFacts(snapshot, state, pattern) : undefined;
-  return { snapshot, items, stateOf: (id) => itemGitState(snapshot, items, id) };
+  let view: GitSnapshot = snapshot;
+  let items: Map<string, ItemGitFacts> | undefined;
+  try {
+    items = snapshot.status === "ok" ? itemFacts(snapshot, state, pattern) : undefined;
+  } catch (e) {
+    // Codex finding 1: a configured pattern that runs past its deadline makes the facts unknown, never a hang.
+    if (!(e instanceof PatternTimeoutError)) throw e;
+    view = { status: "unknown", reason: "pattern timeout", detail: e.field };
+  }
+  return { snapshot: view, items, stateOf: (id) => itemGitState(view, items, id) };
 }
 
 const OPEN = new Set(["open", "inprogress"]);
@@ -94,7 +103,7 @@ export type LastChanged =
  */
 export async function lastChanged(root: string, recordPath: string): Promise<LastChanged> {
   const rel = relative(root, recordPath);
-  const status = await runGitFacts({ cwd: root, args: ["status", "--porcelain", "--", rel] });
+  const status = await runGitFacts({ cwd: root, args: ["status", "--porcelain", "--untracked-files=all", "--", rel] });
   if (status.kind !== "ok") return null;
   if (status.stdout.toString("utf8").trim().length > 0) {
     try {

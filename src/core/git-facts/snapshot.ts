@@ -15,6 +15,7 @@
 import { runGitFacts, type GitFactsResult } from "./runner.js";
 import { GraphIndex } from "./graph-index.js";
 import { graphCache, graphKey, type GraphEntry } from "./cache.js";
+import { PatternTimeoutError, sandboxTests } from "./pattern-sandbox.js";
 
 export const DEFAULT_MAX_GRAPH_COMMITS = 200_000;
 export const DEFAULT_MAX_REFS = 10_000;
@@ -29,6 +30,7 @@ export type GitState = "released" | "landed" | "built" | "none";
 
 export type UnknownReason =
   | "scan disabled"
+  | "pattern timeout"
   | "not a git repository"
   | "shallow repository"
   | "missing default"
@@ -213,22 +215,45 @@ async function walk(root: string, tips: readonly string[], maxGraph: number): Pr
   return { parents, subjects, code };
 }
 
+/** Test seam: runs after the walk, before the inputs are read again. */
+export const snapshotSeams: { afterWalk: () => Promise<void> } = { afterWalk: async () => {} };
+
+interface Inputs {
+  readonly toplevel: string;
+  readonly commonDir: string;
+  readonly shallow: string;
+  readonly format: string;
+  readonly defaultName: string;
+}
+
+async function readInputs(root: string, configured: string | undefined): Promise<Inputs | Unknown> {
+  const id = await git(root, ["rev-parse", "--show-toplevel", "--git-common-dir", "--is-shallow-repository", "--show-object-format"]);
+  // No detail: git's own message adds nothing a caller can act on.
+  if (id.kind === "failed") return { status: "unknown", reason: "not a git repository" };
+  const [toplevel = "", commonDir = "", shallowRaw = "", format = ""] = id.stdout.toString("utf8").split("\n");
+  const shallow = shallowRaw.trim();
+  if (shallow === "true") return { status: "unknown", reason: "shallow repository" };
+  const defaultName = await readDefaultName(root, configured);
+  if (defaultName === null) return { status: "unknown", reason: "missing default" };
+  return { toplevel, commonDir, shallow, format, defaultName };
+}
+
+function sameInputs(a: Inputs, b: Inputs): boolean {
+  return a.toplevel === b.toplevel && a.commonDir === b.commonDir && a.shallow === b.shallow && a.format === b.format && a.defaultName === b.defaultName;
+}
+
 export async function takeGitSnapshot(root: string, opts: SnapshotOptions = {}): Promise<GitSnapshot> {
   const maxGraph = opts.maxGraphCommits ?? DEFAULT_MAX_GRAPH_COMMITS;
   const maxRefs = opts.maxRefs ?? DEFAULT_MAX_REFS;
   if (maxGraph === 0) return { status: "unknown", reason: "scan disabled" };
   const releaseRe = compileBoundedPattern("gitState.releaseTagPattern", opts.releaseTagPattern ?? DEFAULT_RELEASE_TAG_PATTERN);
 
-  const id = await git(root, ["rev-parse", "--show-toplevel", "--git-common-dir", "--is-shallow-repository", "--show-object-format"]);
-  // No detail: git's own message adds nothing a caller can act on.
-  if (id.kind === "failed") return { status: "unknown", reason: "not a git repository" };
-  const [toplevel = "", commonDir = "", shallow = "", format = ""] = id.stdout.toString("utf8").split("\n");
-  if (shallow.trim() === "true") return { status: "unknown", reason: "shallow repository" };
-
-  const defaultName = await readDefaultName(root, opts.defaultBranch);
-  if (defaultName === null) return { status: "unknown", reason: "missing default" };
-
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Codex finding 4: identity, shallow state and the resolved default are captured inside each attempt
+    // and read again with HEAD and the refs before the walk is accepted.
+    const inputs = await readInputs(root, opts.defaultBranch);
+    if ("status" in inputs) return inputs;
+    const { toplevel, commonDir, shallow, format, defaultName } = inputs;
     const diagnostics: string[] = [];
     const surface = await readSurface(root, defaultName, maxRefs);
     if ("status" in surface) return surface;
@@ -237,12 +262,24 @@ export async function takeGitSnapshot(root: string, opts: SnapshotOptions = {}):
 
     const branchTips = surface.refs.filter((r) => (r.ref.startsWith("refs/heads/") || r.ref.startsWith("refs/remotes/")) && r.type === "commit").map((r) => r.oid);
     if (surface.head !== null) branchTips.push(surface.head);
-    const releaseTips = tags.filter((t) => t.kind === "commit" && boundedTest(releaseRe, t.ref.slice("refs/tags/".length))).map((t) => t.commit!);
+    const commitTags = tags.filter((t) => t.kind === "commit");
+    let releaseHits: boolean[];
+    if (opts.releaseTagPattern === undefined) releaseHits = commitTags.map((t) => boundedTest(releaseRe, t.ref.slice("refs/tags/".length)));
+    else {
+      // Codex finding 1: a configured pattern runs in the sandbox with a deadline.
+      try {
+        releaseHits = sandboxTests("gitState.releaseTagPattern", releaseRe, commitTags.map((t) => t.ref.slice("refs/tags/".length)));
+      } catch (e) {
+        if (e instanceof PatternTimeoutError) return { status: "unknown", reason: "pattern timeout", detail: e.field };
+        throw e;
+      }
+    }
+    const releaseTips = commitTags.filter((_, i) => releaseHits[i]).map((t) => t.commit!);
     const allTips = [...new Set([...branchTips, ...tags.filter((t) => t.kind === "commit").map((t) => t.commit!), surface.defaultTip])].sort();
 
     const key = graphKey({
       repo: `${toplevel}\0${commonDir}\0${format}`,
-      shallow: shallow.trim(),
+      shallow,
       head: surface.head ?? "",
       refs: surface.refs.map((r) => `${r.ref}=${r.oid}`),
       peeled: tags.map((t) => `${t.ref}=${t.commit ?? t.kind}`),
@@ -254,9 +291,15 @@ export async function takeGitSnapshot(root: string, opts: SnapshotOptions = {}):
     if (entry === undefined) {
       const w = await walk(root, allTips, maxGraph);
       if ("status" in w) return w;
-      const again = await readSurface(root, defaultName, maxRefs);
+      await snapshotSeams.afterWalk();
+      const inputsAgain = await readInputs(root, opts.defaultBranch);
+      if ("status" in inputsAgain) {
+        if (attempt === 0) continue;
+        return inputsAgain;
+      }
+      const again = await readSurface(root, inputsAgain.defaultName, maxRefs);
       if ("status" in again) return again;
-      if (!sameSurface(surface, again)) {
+      if (!sameInputs(inputs, inputsAgain) || !sameSurface(surface, again)) {
         if (attempt === 0) continue;
         return { status: "unknown", reason: "incomplete-history", detail: "refs moved" };
       }

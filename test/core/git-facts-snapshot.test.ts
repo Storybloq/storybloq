@@ -11,7 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { takeGitSnapshot, type GitSnapshot } from "../../src/core/git-facts/snapshot.js";
+import { snapshotSeams, takeGitSnapshot, type GitSnapshot } from "../../src/core/git-facts/snapshot.js";
 import { git as fixtureGit } from "../helpers/git-fixture.js";
 
 function git(cwd: string, args: string[]): string {
@@ -197,4 +197,41 @@ describe("git facts snapshot (C-v4.1 commit 4, section 4.2 and 4.4)", () => {
       expect(s.isAncestor(a, b), `${a} -> ${b}`).toBe(expected);
     }
   }, 120_000);
+
+  describe("inputs read again inside each attempt (Codex finding 4)", () => {
+    const original = snapshotSeams.afterWalk;
+    afterEach(() => {
+      snapshotSeams.afterWalk = original;
+    });
+    const once = (fn: () => void) => {
+      let done = false;
+      snapshotSeams.afterWalk = async () => {
+        if (!done) {
+          done = true;
+          fn();
+        }
+      };
+    };
+
+    it("origin/HEAD retargeted during the walk restarts the attempt on the new default", async () => {
+      commit(root, "T-001 base");
+      git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      git(root, ["checkout", "-q", "-b", "dev"]);
+      const ahead = commit(root, "T-002 only on dev");
+      git(root, ["update-ref", "refs/remotes/origin/dev", "HEAD"]);
+      git(root, ["checkout", "-q", "main"]);
+      git(root, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+      once(() => git(root, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev"]));
+      const s = ok(await takeGitSnapshot(root, { noCache: true }));
+      expect(s.stateOf(ahead)).toBe("landed");
+    });
+
+    it("a repository turning shallow with unchanged tips is not accepted", async () => {
+      const first = commit(root, "T-001 base");
+      commit(root, "T-002 next");
+      once(() => writeFileSync(join(root, ".git", "shallow"), `${first}\n`));
+      const s = await takeGitSnapshot(root, { defaultBranch: "main", noCache: true });
+      expect(s).toMatchObject({ status: "unknown", reason: "shallow repository" });
+    });
+  });
 });

@@ -78,6 +78,14 @@ describe("get carries gitState and lastChanged on both clients (Q4)", () => {
     expect(data.lastChanged).toMatchObject({ uncommitted: true });
   });
 
+  it("an untracked record reads uncommitted even when the repo hides untracked files (Codex finding 3)", async () => {
+    const { root } = await board();
+    git(root, "config", "status.showUntrackedFiles", "no");
+    writeFileSync(join(root, ".story", "tickets", "T-009.json"), JSON.stringify(ticket("T-009", "open"), null, 2) + "\n");
+    const data = (JSON.parse((await handleTicketGetWithGit("T-009", await ctx(root, "json"))).output) as { data: Json }).data;
+    expect(data.lastChanged).toMatchObject({ uncommitted: true });
+  });
+
   it("unknown facts are reported, never dropped", async () => {
     const { root } = await board();
     git(root, "symbolic-ref", "-d", "refs/remotes/origin/HEAD");

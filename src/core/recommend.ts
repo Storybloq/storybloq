@@ -968,7 +968,7 @@ function sortByPhaseAndOrder(
 
 const HANDOVER_CONTEXT_SCORE = 675;
 
-interface HandoverBoostContext {
+export interface HandoverBoostContext {
   readonly crossNodeRefStatuses?: Record<string, string>;
   readonly latestDispositionById: ReadonlyMap<string, TrajectoryDisposition>;
   readonly windowIncomplete: boolean;
@@ -981,7 +981,8 @@ interface HandoverBoostContext {
  * incomplete -- promotion is the one purely additive/optimistic step, so it
  * alone is withheld under incomplete evidence.
  */
-function applyHandoverBoost(
+/** Exported as a test seam (Codex finding 5): the demotion it guards cannot reach recommend's ten-item output. */
+export function applyHandoverBoost(
   state: ProjectState,
   dedup: Map<string, Recommendation>,
   continuationMentionCount: ReadonlyMap<string, number>,
@@ -994,7 +995,8 @@ function applyHandoverBoost(
 
     const existing = dedup.get(id);
     if (existing) {
-      if (existing.actionability?.status === "actionable" && existing.score < HANDOVER_CONTEXT_SCORE) {
+      // Codex finding 5: landed-but-open keeps its label and its first place; a handover mention never demotes it.
+      if (existing.category !== "landed_open" && existing.actionability?.status === "actionable" && existing.score < HANDOVER_CONTEXT_SCORE) {
         dedup.set(id, {
           ...existing,
           category: "handover_context",

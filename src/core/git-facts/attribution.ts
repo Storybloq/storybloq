@@ -15,6 +15,7 @@
  */
 import { REF_TOKEN_RE } from "../landings.js";
 import type { ProjectState } from "../project-state.js";
+import { sandboxTokens } from "./pattern-sandbox.js";
 import { MAX_MATCH_INPUT_LENGTH, type GitSnapshot, type GitState, type UnknownReason } from "./snapshot.js";
 
 export const ITEM_SHAS_PER_STATE = 5;
@@ -54,9 +55,18 @@ export function tokenCommits(snap: OkSnapshot, subjectPattern?: RegExp): Readonl
     return hit;
   }
   const map = new Map<string, string[]>();
+  const shas: string[] = [];
+  const subjects: string[] = [];
   for (const [sha, subject] of snap.graph.subjects) {
     if (!snap.touchesCode(sha)) continue;
-    for (const t of tokensOf(subject, re)) {
+    shas.push(sha);
+    subjects.push(subject);
+  }
+  // A configured pattern runs in the sandbox with a deadline (Codex finding 1); the built-in matcher runs natively.
+  const tokens = subjectPattern === undefined ? subjects.map((s) => tokensOf(s, re)) : sandboxTokens("gitState.subjectPattern", re, subjects);
+  for (let i = 0; i < shas.length; i += 1) {
+    const sha = shas[i]!;
+    for (const t of tokens[i]!) {
       const list = map.get(t);
       if (list === undefined) map.set(t, [sha]);
       else list.push(sha);

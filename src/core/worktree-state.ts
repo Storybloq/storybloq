@@ -46,9 +46,10 @@ export function worktreeState(cwd: string): WorktreeState {
     // 1: 8 fields then the path; 2: 9 then the path, and the original path in the next token; u: 10 then the path.
     const before = type === "1" ? 8 : type === "2" ? 9 : type === "u" ? 10 : -1;
     if (before < 0) return "unavailable";
-    if (type === "2") i++;
     const path = fields.slice(before).join(" ");
-    if (!counted(path)) continue;
+    // A rename or copy counts when either side is outside `.story/` (a move into `.story/` still changes the tree).
+    const original = type === "2" ? tokens[++i] ?? "" : undefined;
+    if (!counted(path) && (original === undefined || !counted(original))) continue;
     const xy = fields[1] ?? "";
     const sub = fields[2] ?? "";
     if (xy[0] !== ".") counts.staged++;

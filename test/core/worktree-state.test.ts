@@ -46,6 +46,18 @@ describe("worktreeState", () => {
     expect(worktreeState(root)).toEqual(CLEAN);
   });
 
+  it("a staged rename from outside .story/ into it counts as staged", () => {
+    const root = repo();
+    git(root, "mv", "a.txt", ".story/a.txt");
+    expect(worktreeState(root)).toEqual({ ...CLEAN, staged: 1 });
+  });
+
+  it("a staged rename inside .story/ is not counted", () => {
+    const root = repo();
+    git(root, "mv", ".story/x.json", ".story/z.json");
+    expect(worktreeState(root)).toEqual(CLEAN);
+  });
+
   it("user config cannot hide untracked files or submodule changes", () => {
     const root = repo();
     git(root, "config", "status.showUntrackedFiles", "no");

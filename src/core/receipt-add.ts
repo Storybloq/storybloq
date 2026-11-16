@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, join, posix, relative, sep } from "node:path";
-import { boardRegistry, canonicalRef, checkBoardIdLanded, isBoardId, resolveAlias, resolveBoardRef } from "./board-id.js";
+import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
+import { boardRegistry, canonicalRef, checkBoardIdLanded, isBoardId, resolveAlias, resolveBoardRef, type BoardEntry } from "./board-id.js";
 import { DEFAULT_HYGIENE_PATTERNS } from "./command-hygiene.js";
 import { resolveDefaultBranch } from "./default-branch.js";
 import { ProjectLoaderError } from "./errors.js";
@@ -96,21 +96,49 @@ function checkCommit(root: string, field: "sha" | "base", value: string): void {
   }
 }
 
-/** 3.1 evidence: a normalised repo-relative path with no `..` whose symlink stays inside the repo, or a sha256. */
+/** Only these lstat/realpath errors mean "this path does not exist"; any other error refuses. */
+const absent = (e: unknown): boolean => {
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+const errCode = (e: unknown): string => (e as NodeJS.ErrnoException | undefined)?.code ?? String(e);
+
+/**
+ * 3.1 evidence: a normalised repo-relative path with no `..`, or a sha256. The
+ * deepest existing ancestor of the path (the path itself when it exists) must
+ * resolve inside the repository, so a symlinked directory cannot carry the
+ * path out, whether or not the file under it exists.
+ */
 function checkEvidence(repoTop: string, evidence: string): void {
   if (/^[0-9a-f]{64}$/.test(evidence)) return;
   if (isAbsolute(evidence) || evidence.includes("\\")) refuse(`invalid_evidence: evidence ${JSON.stringify(evidence)} is not a repo-relative path or a sha256.`);
   if (evidence.split("/").includes("..")) refuse(`invalid_evidence: evidence ${JSON.stringify(evidence)} has a .. segment.`);
   if (posix.normalize(evidence) !== evidence) refuse(`invalid_evidence: evidence ${JSON.stringify(evidence)} is not normalised (${posix.normalize(evidence)}).`);
+  const top = realpathSync(repoTop);
   const full = join(repoTop, evidence);
-  let isLink = false;
-  try { isLink = lstatSync(full).isSymbolicLink(); } catch { /* an absent path is a plain reference */ }
-  if (!isLink) return;
-  let target: string;
-  try { target = realpathSync(full); } catch { return refuse(`invalid_evidence: evidence ${evidence} is a symlink that does not resolve.`); }
-  const rel = relative(realpathSync(repoTop), target);
-  if (rel === "" || rel.startsWith(`..${sep}`) || rel === ".." || isAbsolute(rel)) {
-    refuse(`invalid_evidence: evidence ${evidence} is a symlink that resolves outside the repository.`);
+  let leafIsLink = false;
+  try {
+    leafIsLink = lstatSync(full).isSymbolicLink();
+  } catch (e) {
+    if (!absent(e)) refuse(`invalid_evidence: evidence ${evidence} could not be checked (${errCode(e)}).`);
+  }
+  let probe = full;
+  let real: string | undefined;
+  while (real === undefined) {
+    try {
+      real = realpathSync(probe);
+    } catch (e) {
+      if (!absent(e)) return refuse(`invalid_evidence: evidence ${evidence} could not be checked (${errCode(e)}).`);
+      if (probe === full && leafIsLink) return refuse(`invalid_evidence: evidence ${evidence} is a symlink that does not resolve.`);
+      const up = dirname(probe);
+      if (up === probe) return refuse(`invalid_evidence: evidence ${evidence} has no existing ancestor.`);
+      probe = up;
+    }
+  }
+  const rel = relative(top, real);
+  const outside = rel.startsWith(`..${sep}`) || rel === ".." || isAbsolute(rel);
+  if (outside || (rel === "" && probe === full)) {
+    refuse(`invalid_evidence: evidence ${evidence} resolves outside the repository.`);
   }
 }
 
@@ -122,6 +150,12 @@ function checkSupersedesShape(supersedes: readonly string[] | undefined): void {
     if (seen.has(id)) refuse(`invalid_supersedes: supersedes names ${id} twice.`);
     seen.add(id);
   }
+}
+
+/** 2.2: a board id two registered boards carry resolves to `duplicate` wherever the handler uses it. */
+function refuseDuplicate(registry: readonly BoardEntry[], boardId: string, what: string): void {
+  const r = resolveBoardRef(registry, boardId);
+  if (r.state === "duplicate") refuse(`board_id_duplicate: ${what} names board ${boardId}, which ${r.paths.join(" and ")} both carry.`);
 }
 
 interface ResolvedRef {
@@ -151,7 +185,7 @@ function findItem(state: StateWithRefs, id: string): { record: Record<string, un
  * This board's records come from the state reloaded under the append lock.
  */
 async function resolveItemRef(
-  root: string, ownBoard: string, state: StateWithRefs, field: string, ref: string,
+  registry: readonly BoardEntry[], ownBoard: string, state: StateWithRefs, field: string, ref: string,
 ): Promise<ResolvedRef> {
   const colon = ref.lastIndexOf(":");
   const prefix = colon > 0 ? ref.slice(0, colon) : undefined;
@@ -159,7 +193,6 @@ async function resolveItemRef(
   let boardId = ownBoard;
   let boardPath: string | undefined;
   if (prefix !== undefined && prefix !== ownBoard) {
-    const registry = boardRegistry(root);
     if (isBoardId(prefix)) {
       const r = resolveBoardRef(registry, prefix);
       if (r.state !== "ok") refuse(`${field}_unresolved: ${ref}: ${r.state === "duplicate" ? `board ${prefix} is carried by ${r.paths.join(", ")}` : r.reason}.`);
@@ -171,6 +204,8 @@ async function resolveItemRef(
       else if (r.entry.boardId !== ownBoard) { boardId = r.entry.boardId; boardPath = r.entry.path; }
     }
   }
+  // 2.2: whether it came from an id prefix, an alias or no prefix at all.
+  refuseDuplicate(registry, boardId, `${field} ${ref}`);
   // 2.4: every referenced board carries a landed board id.
   if (boardPath !== undefined && landedBoardId(boardPath) !== boardId) {
     refuse(`${field}_unresolved: ${ref}: the board at ${boardPath} has not landed ${boardId}.`);
@@ -246,10 +281,11 @@ export async function addReceipt(root: string, raw: Record<string, unknown>): Pr
   }
 
   // The repo the sha belongs to (3.1): the cwd board, or the board a registry alias names.
+  const registry = boardRegistry(root);
   let repoRoot = root;
   if (input.repo !== undefined) {
     if (typeof input.repo !== "string" || input.repo.length === 0) refuse("invalid_repo: repo is a registry alias.");
-    const r = resolveAlias(boardRegistry(root), input.repo);
+    const r = resolveAlias(registry, input.repo);
     if (r.state === "missing") refuse(`board_id_missing: ${input.repo} (${r.path}). Run \`storybloq board-id init\` in that board, land it, then retry.`);
     else if (r.state !== "ok") refuse(`repo_unresolved: ${input.repo}: ${r.state === "unresolved" ? r.reason : "mismatched"}.`);
     else repoRoot = r.entry.path;
@@ -271,6 +307,8 @@ export async function addReceipt(root: string, raw: Record<string, unknown>): Pr
   // Board identity (2.1, 2.4): the target board and the repo board each have a landed id.
   const ownBoard = landedBoardId(root);
   const repo = repoRoot === root ? ownBoard : landedBoardId(repoRoot);
+  refuseDuplicate(registry, ownBoard, "this board");
+  if (repo !== ownBoard) refuseDuplicate(registry, repo, `repo ${input.repo}`);
 
   // The target, resolved before the lock to its canonical id; the record itself is reloaded under the lock.
   const { state: outer } = await loadProject(root);
@@ -294,7 +332,7 @@ export async function addReceipt(root: string, raw: Record<string, unknown>): Pr
   const resolveAll = async (state: StateWithRefs): Promise<void> => {
     for (const [field, ref] of refsToResolve) {
       if (preparedRefs.has(`${field}\u0000${ref}`)) continue;
-      const r = await resolveItemRef(root, ownBoard, state, field, ref);
+      const r = await resolveItemRef(registry, ownBoard, state, field, ref);
       if (field === "covers" && r.boardId !== repo) refuse(`covers_other_repo: ${ref} belongs to board ${r.boardId}, not ${repo}.`);
       preparedRefs.set(`${field}\u0000${ref}`, r);
     }
@@ -305,6 +343,9 @@ export async function addReceipt(root: string, raw: Record<string, unknown>): Pr
 
   await receiptAddSeams.beforeLock();
   return appendReceipt(root, { kind: targetHit.kind, id: targetId }, (id, record, state) => {
+    // The identities read before the lock still hold under it.
+    if (landedBoardId(root) !== ownBoard) refuse(`board_id_changed: this board's landed id is no longer ${ownBoard}.`);
+    if (repoRoot !== root && landedBoardId(repoRoot) !== repo) refuse(`board_id_changed: the landed id of ${repoRoot} is no longer ${repo}.`);
     checkSupersedesOnRecord(record, input.kind, input.supersedes, id);
     const s = state as StateWithRefs;
     const fresh = (r: ResolvedRef, field: string): ResolvedRef => {
@@ -320,9 +361,9 @@ export async function addReceipt(root: string, raw: Record<string, unknown>): Pr
     if (input.unitRef !== undefined) {
       const u = fresh(preparedRefs.get(`unit\u0000${input.unitRef}`)!, "unit");
       unitRef = u.ref;
-      revisions[u.ref] = revisionOf(u, "unit");
+      revisions.unit = revisionOf(u, "unit");
     } else {
-      revisions[target] = revisionOf({ ref: target, boardId: ownBoard, record: record as Record<string, unknown>, kind: targetHit.kind }, "target");
+      revisions.unit = revisionOf({ ref: target, boardId: ownBoard, record: record as Record<string, unknown>, kind: targetHit.kind }, "target");
     }
     let covers: string[] | undefined;
     if (input.covers !== undefined) {

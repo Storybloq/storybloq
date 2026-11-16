@@ -204,7 +204,9 @@ export function handleTicketGet(
     return { output: formatError("invalid_input", receipts.message, ctx.format), exitCode: ExitCode.USER_ERROR, errorCode: "invalid_input" };
   }
   const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
-    const extraJsonFields = { ...actionability, receipts: receipts.json };
+    // Pen ruling on plan line 423: a legacy record with no receipts field, read without receiptsPage, keeps main's JSON.
+    const withReceipts = receiptsPage !== undefined || Object.prototype.hasOwnProperty.call(item, "receipts");
+    const extraJsonFields = withReceipts ? { ...actionability, receipts: receipts.json } : { ...actionability };
     const text = formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields);
     return { output: ctx.format === "json" || receipts.lines.length === 0 ? text : `${text}\n\n${receipts.lines.join("\n")}` };
   };

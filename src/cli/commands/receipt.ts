@@ -37,7 +37,7 @@ export async function handleReceiptAddCommand(
   root: string, target: string, flags: Record<string, unknown>, format: Format,
 ): Promise<CommandResult> {
   const input: Record<string, unknown> = { target };
-  for (const k of ["kind", "sha", "result", "base", "command", "evidence"] as const) {
+  for (const k of ["kind", "sha", "result", "base", "command", "evidence", "repo"] as const) {
     if (flags[k] !== undefined) input[k] = flags[k];
   }
   if (flags.unit !== undefined) input.unitRef = flags.unit;

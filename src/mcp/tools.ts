@@ -1137,7 +1137,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       base: z.string().optional().describe("review: full base id of the range"),
       unitRef: z.string().optional().describe("device: the unit proved"),
       covers: z.array(z.string()).optional().describe("device: children proved"),
-      attestation: z.object({ builtFromSha: z.string(), builtClean: z.boolean() }).optional().describe("test, device: required"),
+      attestation: z.object({ builtFromSha: z.string(), builtClean: z.boolean() }).strict().optional().describe("test, device: required"),
       supersedes: z.array(z.string()).optional().describe("Receipt ids this replaces (same record and kind)"),
       data: z.record(z.unknown()).optional().describe("Per-kind counts or review details"),
       command: z.string().optional(),

@@ -590,47 +590,47 @@
     "isError": false
   },
   "socket/latest/brief/3/cli-json": {
-    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\"\n  }\n}\n",
+    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: <SOCKET_OPEN_ERROR>\"\n  }\n}\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/brief/3/cli-md": {
-    "out": "Error [io_error]: Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\n",
+    "out": "Error [io_error]: Cannot read handover: <SOCKET_OPEN_ERROR>\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/priming/3/cli-json": {
-    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\"\n  }\n}\n",
+    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: <SOCKET_OPEN_ERROR>\"\n  }\n}\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/priming/3/cli-md": {
-    "out": "Error [io_error]: Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\n",
+    "out": "Error [io_error]: Cannot read handover: <SOCKET_OPEN_ERROR>\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/raw/1/cli-json": {
-    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\"\n  }\n}\n",
+    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: <SOCKET_OPEN_ERROR>\"\n  }\n}\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/raw/1/cli-md": {
-    "out": "Error [io_error]: Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\n",
+    "out": "Error [io_error]: Cannot read handover: <SOCKET_OPEN_ERROR>\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/raw/1/mcp-md": {
-    "out": "[io_error] Error [io_error]: Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'",
+    "out": "[io_error] Error [io_error]: Cannot read handover: <SOCKET_OPEN_ERROR>",
     "exitCode": null,
     "isError": true
   },
   "socket/latest/raw/3/cli-json": {
-    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\"\n  }\n}\n",
+    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Cannot read handover: <SOCKET_OPEN_ERROR>\"\n  }\n}\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/latest/raw/3/cli-md": {
-    "out": "Error [io_error]: Cannot read handover: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\n",
+    "out": "Error [io_error]: Cannot read handover: <SOCKET_OPEN_ERROR>\n",
     "exitCode": 1,
     "isError": false
   },
@@ -640,12 +640,12 @@
     "isError": false
   },
   "socket/template/cli-json": {
-    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\"\n  }\n}\n",
+    "out": "{\n  \"version\": 1,\n  \"error\": {\n    \"code\": \"io_error\",\n    \"message\": \"<SOCKET_OPEN_ERROR>\"\n  }\n}\n",
     "exitCode": 1,
     "isError": false
   },
   "socket/template/cli-md": {
-    "out": "Error [io_error]: Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/2026-11-16-01-special.md'\n",
+    "out": "Error [io_error]: <SOCKET_OPEN_ERROR>\n",
     "exitCode": 1,
     "isError": false
   },

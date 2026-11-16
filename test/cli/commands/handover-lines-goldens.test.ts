@@ -55,7 +55,14 @@ interface Golden { out: string | { sha256: string; bytes: number; head: string }
 
 let env: IsolatedEnv;
 let servers: Server[] = [];
-beforeEach(() => { env = isolateEnv(); servers = []; phantom.dir = null; phantom.name = null; });
+/**
+ * The platform's own text for opening a socket, probed live with main's call
+ * (root normalised). The socket rows store the token in its place, so the
+ * goldens hold on any platform while the text around it stays pinned.
+ */
+let socketText: string | null = null;
+const SOCKET_TOKEN = "<SOCKET_OPEN_ERROR>";
+beforeEach(() => { env = isolateEnv(); servers = []; socketText = null; phantom.dir = null; phantom.name = null; });
 afterEach(async () => {
   for (const s of servers) await new Promise<void>((r) => s.close(() => r()));
   env.restore();
@@ -66,7 +73,8 @@ afterEach(async () => {
 const goldens: Record<string, Golden> = !UPDATE && existsSync(GOLDENS) ? JSON.parse(readFileSync(GOLDENS, "utf8")) as Record<string, Golden> : {};
 
 function pin(text: string, root: string): Golden["out"] {
-  const n = text.split(root).join("<ROOT>");
+  let n = text.split(root).join("<ROOT>");
+  if (socketText !== null) n = n.split(socketText).join(SOCKET_TOKEN);
   const bytes = Buffer.byteLength(n);
   if (bytes <= INLINE_MAX) return n;
   return { sha256: createHash("sha256").update(n).digest("hex"), bytes, head: n.slice(0, 400) };
@@ -160,8 +168,21 @@ async function special(kind: "dir" | "socket" | "symlink"): Promise<string> {
     } finally {
       process.chdir(prev);
     }
+    socketText = probeSocketText(root);
   }
   return root;
+}
+
+/** Main's own read of the socket must throw; its message, root normalised, is the platform text. */
+function probeSocketText(root: string): string {
+  let message: string | null = null;
+  try {
+    readFileSync(join(root, ".story", "handovers", SPECIAL), "utf-8");
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  expect(message, "reading a socket must throw").not.toBeNull();
+  return message!.split(root).join("<ROOT>");
 }
 
 /** Listing positions are 1-based, newest first, as `listHandovers` orders dated names. */
@@ -340,13 +361,20 @@ describe("B13 goldens: special entries sorting newest", () => {
   }
 });
 
+describe("B13 socket text on the capture platform", () => {
+  it.runIf(process.platform === "darwin")("the probed text is the literal the goldens were captured with", async () => {
+    await special("socket");
+    expect(socketText).toBe(`Unknown system error -102: Unknown system error -102, open '<ROOT>/.story/handovers/${SPECIAL}'`);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // B14 goldens: failure order of raw latest --count 500 over 260 handovers
 // ---------------------------------------------------------------------------
 
 const runsAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
-describe.skipIf(runsAsRoot)("B14 goldens: failure order, raw latest --count 500 over 260 files", () => {
+describe("B14 goldens: failure order, raw latest --count 500 over 260 files", () => {
   const FILES = many(260);
 
   for (const who of WHO) {
@@ -363,7 +391,8 @@ describe.skipIf(runsAsRoot)("B14 goldens: failure order, raw latest --count 500 
       }
     });
 
-    it(`an unreadable file at position 250 alone: its error and no body (identity ${who})`, async () => {
+    // Only this row needs permissions enforced; under root the others still hold.
+    it.skipIf(runsAsRoot)(`an unreadable file at position 250 alone: its error and no body (identity ${who})`, async () => {
       as(who);
       const root = await project(FILES);
       chmodSync(join(root, ".story", "handovers", nameAt(FILES, 250)), 0o000);

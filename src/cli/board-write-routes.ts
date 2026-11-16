@@ -42,6 +42,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleGateAckList: "read",
   handleHandoverGet: "read",
   handleHandoverLatest: "read",
+  handleHandoverLines: "read",
   handleHandoverTemplate: "read",
   handleHealth: "read",
   handleHookStatus: "read",

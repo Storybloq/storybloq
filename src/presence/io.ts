@@ -201,6 +201,38 @@ export function telemetrySubdirIfPresent(root: string, name: string): string | n
   return levels[2]!;
 }
 
+export type TelemetrySubdirState =
+  | { readonly state: "present"; readonly dir: string }
+  | { readonly state: "absent" }
+  | { readonly state: "unsafe" };
+
+/**
+ * ISS-1499 slice B: the state of `.story/telemetry/<name>` without creating
+ * anything, for a caller that must tell "not there" from "could not be
+ * inspected". Walks `.story`, `telemetry`, `<name>` in order with `lstat`:
+ * the first level that reports ENOENT gives `absent`; any other error, or a
+ * level that is a symlink or not a directory, gives `unsafe`; three real
+ * directories give `present`. `telemetrySubdirIfPresent` is unchanged.
+ */
+export function telemetrySubdirState(root: string, name: string): TelemetrySubdirState {
+  if (!TELEMETRY_SUBDIR_NAME.test(name)) return { state: "unsafe" };
+  const levels = [
+    join(root, ".story"),
+    join(root, ".story", "telemetry"),
+    join(root, ".story", "telemetry", name),
+  ];
+  for (const dir of levels) {
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(dir);
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "ENOENT" ? { state: "absent" } : { state: "unsafe" };
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) return { state: "unsafe" };
+  }
+  return { state: "present", dir: levels[2]! };
+}
+
 /** Presence directory path without creating anything. Null if it is not a real directory. */
 export function presenceDirIfPresent(root: string): string | null {
   const dir = join(root, ".story", "telemetry", "presence");

@@ -410,6 +410,43 @@ describe("rules 9 and 10: the memo and the reply", () => {
     expect(b.md).toContain("Written at abcdef1234: that commit is not in this clone.");
   });
 
+  it("a commit that exists but cannot be counted against HEAD is unavailable, never not in this clone", async () => {
+    const p = await project(() => {});
+    git(p.root, "init", "-q");
+    git(p.root, "config", "user.email", "t@x.y");
+    git(p.root, "config", "user.name", "T");
+    git(p.root, "commit", "-q", "--allow-empty", "-m", "one");
+    const at = git(p.root, "rev-parse", "--short", "HEAD");
+    // HEAD now names a branch with no commit: the commit resolves, the range does not.
+    writeFileSync(join(p.root, ".git", "HEAD"), "ref: refs/heads/unborn\n");
+    put(p.hdir, "2026-11-12-01-a.md", linked(`role="pen" at="${at}"`));
+    const r = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
+    expect(r.exit).toBe(0);
+    expect(r.json.data).toMatchObject({ at, atState: "unavailable", commitsSince: null });
+    expect(r.md).not.toContain("Written at");
+    expect(r.md).not.toContain("not in this clone");
+    expect(memoTip(p)).toBe("2026-11-12-01-a.md");
+  });
+
+  it("a commit object git cannot read is unavailable, never not in this clone", async () => {
+    const p = await project(() => {});
+    git(p.root, "init", "-q");
+    git(p.root, "config", "user.email", "t@x.y");
+    git(p.root, "config", "user.name", "T");
+    git(p.root, "commit", "-q", "--allow-empty", "-m", "one");
+    const full = git(p.root, "rev-parse", "HEAD");
+    const at = full.slice(0, 10);
+    // Corrupt the commit's loose object: the presence check fails with 128, not 1.
+    const obj = join(p.root, ".git", "objects", full.slice(0, 2), full.slice(2));
+    chmodSync(obj, 0o644);
+    writeFileSync(obj, "garbage");
+    put(p.hdir, "2026-11-12-01-a.md", linked(`role="pen" at="${at}"`));
+    const r = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
+    expect(r.exit).toBe(0);
+    expect(r.json.data).toMatchObject({ at, atState: "unavailable", commitsSince: null });
+    expect(r.md).not.toContain("not in this clone");
+  });
+
   it("outside git, an at is reported as nothing", async () => {
     const p = await project((h) => put(h, "2026-11-12-01-a.md", linked('role="pen" at="abcdef1234"')));
     const r = await cont(p.root, ["2026-11-12-01-a.md", "--as", TASK]);
@@ -437,4 +474,27 @@ describe("rules 9 and 10: the memo and the reply", () => {
     expect(r.json.error?.code).toBe("io_error");
     expect(readFileSync(p.mdir, "utf8")).toBe("a file in the folder's place");
   });
+});
+
+describe("a refusal leaves the caller's existing memo untouched", () => {
+  const cases: readonly [string, (h: string) => void, readonly string[]][] = [
+    ["invalid arguments", chain, ["2026-11-12-01-l2.md", "--default"]],
+    ["an invalid name", chain, ["notes.txt"]],
+    ["a directory target", (h) => { chain(h); mkdirSync(join(h, "2026-11-13-01-dir.md")); }, ["2026-11-13-01-dir.md"]],
+    ["scan_incomplete", (h) => { chain(h); mkdirSync(join(h, "2026-11-13-01-dir.md")); }, ["2026-11-12-01-l2.md"]],
+    ["not_a_tip", chain, ["2026-11-11-01-l1.md"]],
+  ];
+  for (const [label, seed, args] of cases) {
+    it(label, async () => {
+      const p = await project(seed);
+      seedMemo(p, "2026-11-10-01-u.md");
+      const past = new Date("2026-01-01T00:00:00Z");
+      utimesSync(memoPath(p), past, past);
+      const snap = () => ({ bytes: readFileSync(memoPath(p)), mtimeMs: statSync(memoPath(p)).mtimeMs, ino: statSync(memoPath(p)).ino });
+      const before = snap();
+      const r = await cont(p.root, [...args, "--as", TASK]);
+      expect(r.exit).toBe(1);
+      expect(snap()).toEqual(before);
+    });
+  }
 });

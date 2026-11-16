@@ -108,19 +108,36 @@ function listSome(names: readonly string[]): string {
   return names.length > 10 ? `${shown} and ${names.length - 10} more` : shown;
 }
 
-function runGit(cwd: string, args: readonly string[]): Promise<string | null> {
+interface GitRun { readonly code: number | null; readonly stdout: string }
+
+/** `code` is the exit status, or null when git did not run to completion (a timeout, a spawn failure). */
+function runGit(cwd: string, args: readonly string[]): Promise<GitRun> {
   return new Promise((done) => {
-    execFile("git", [...args], { cwd, timeout: 3000 }, (err, stdout) => done(err ? null : stdout.trim()));
+    execFile("git", [...args], { cwd, timeout: 3000 }, (err, stdout) => {
+      if (!err) return done({ code: 0, stdout: stdout.trim() });
+      const code = (err as { code?: unknown }).code;
+      const killed = (err as { killed?: boolean }).killed === true;
+      done({ code: !killed && typeof code === "number" ? code : null, stdout: "" });
+    });
   });
 }
 
-/** Rule 10: the tip's `at` against HEAD, or that git does not know it, or nothing. */
+/**
+ * Rule 10: the tip's `at` against HEAD. `not_in_clone` only when git
+ * positively says the commit does not resolve here (`rev-parse --verify
+ * --quiet` exits 1); any other failure, of that check or of the count, is
+ * `unavailable`, never a claim that the commit is absent.
+ */
 async function atAgainstHead(root: string, at: string | null): Promise<Pick<Extract<ContinueResult, { action: "continue" }>, "atState" | "commitsSince">> {
-  if (at === null || (await runGit(root, ["rev-parse", "--is-inside-work-tree"])) !== "true") return { atState: "none", commitsSince: null };
-  // Inside a work tree, a range git cannot resolve means this clone lacks the commit.
+  if (at === null) return { atState: "none", commitsSince: null };
+  const tree = await runGit(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (tree.code !== 0 || tree.stdout !== "true") return { atState: "none", commitsSince: null };
+  const present = await runGit(root, ["rev-parse", "--verify", "--quiet", `${at}^{commit}`]);
+  if (present.code === 1) return { atState: "not_in_clone", commitsSince: null };
+  if (present.code !== 0) return { atState: "unavailable", commitsSince: null };
   const count = await runGit(root, ["rev-list", "--count", `${at}..HEAD`]);
-  const n = count === null ? NaN : Number(count);
-  return Number.isInteger(n) ? { atState: "counted", commitsSince: n } : { atState: "not_in_clone", commitsSince: null };
+  const n = count.code === 0 ? Number(count.stdout) : NaN;
+  return Number.isInteger(n) ? { atState: "counted", commitsSince: n } : { atState: "unavailable", commitsSince: null };
 }
 
 /**

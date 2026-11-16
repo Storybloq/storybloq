@@ -225,8 +225,12 @@ export type ContinueResult =
       readonly length: number;
       readonly absorbedBy: readonly string[];
       readonly at: string | null;
-      /** `counted`: `commitsSince` is set; `not_in_clone`: git does not know `at`; `none`: no `at` or no git. */
-      readonly atState: "counted" | "not_in_clone" | "none";
+      /**
+       * `counted`: `commitsSince` is set; `not_in_clone`: git positively does
+       * not know `at`; `unavailable`: git could not answer; `none`: no `at`
+       * or no git.
+       */
+      readonly atState: "counted" | "not_in_clone" | "unavailable" | "none";
       readonly commitsSince: number | null;
       readonly pickup: string;
     };

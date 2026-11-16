@@ -16,11 +16,13 @@ import { isolateEnv, runCli, type IsolatedEnv } from "../../fixtures/handover-li
 
 // A passthrough of node:fs/promises whose readdir fails with EACCES for one
 // chosen folder, so "the folder cannot be listed" is tested as any user.
-const denied = vi.hoisted(() => ({ dir: null as string | null }));
+// `passes` lets that many listings of the folder succeed first, so the
+// project loader's listing can succeed while the handler's own one fails.
+const denied = vi.hoisted(() => ({ dir: null as string | null, passes: 0 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const readdir = ((path: unknown, ...rest: unknown[]) => {
-    if (denied.dir !== null && String(path) === denied.dir) {
+    if (denied.dir !== null && String(path) === denied.dir && denied.passes-- <= 0) {
       return Promise.reject(Object.assign(new Error(`EACCES: permission denied, scandir '${denied.dir}'`), { code: "EACCES" }));
     }
     return (real.readdir as (...a: unknown[]) => Promise<unknown>)(path, ...rest);
@@ -35,6 +37,7 @@ let env: IsolatedEnv;
 beforeEach(() => { env = isolateEnv(); });
 afterEach(() => {
   denied.dir = null;
+  denied.passes = 0;
   env.restore();
   rmSync(env.base, { recursive: true, force: true });
 });
@@ -307,6 +310,24 @@ describe("A13 handover lines", () => {
     expect(r.json).toEqual({ enumerated: false, complete: false, defaultLine: null, lines: [], ...none });
   });
 
+  it("the loader lists the folder but the command's own listing fails: enumerated false and exit 3, from the command itself", async () => {
+    const { root, dir } = await project((d) => {
+      write(d, "2026-11-13-01-a.md", linked(""));
+    });
+    for (const format of ["md", "json"] as const) {
+      denied.dir = dir;
+      denied.passes = 1;
+      const r = await runCli(root, ["handover", "lines", "--format", format]);
+      expect(denied.passes, "the loader's listing ran and succeeded, the command's was refused").toBe(-1);
+      expect(r.exitCode).toBe(3);
+      if (format === "json") {
+        expect((JSON.parse(r.stdout) as { data: unknown }).data).toEqual({ enumerated: false, complete: false, defaultLine: null, lines: [], ...none });
+      } else {
+        expect(r.stdout).toBe("Could not list the handovers folder, so no lines can be shown.\n");
+      }
+    }
+  });
+
   it("an incomplete scan (symlink inside, symlink outside, a directory x.md, a FIFO y.md) returns without blocking (child process, external deadline)", async () => {
     const base = realpathSync(mkdtempSync(join(env.base, "fifo-")));
     const root = join(base, "proj");
@@ -328,12 +349,14 @@ describe("A13 handover lines", () => {
         `const root = ${JSON.stringify(root)};\n` +
         "const md = await runCli(root, [\"handover\", \"lines\"]);\n" +
         "const js = await runCli(root, [\"handover\", \"lines\", \"--format\", \"json\"]);\n" +
-        "process.stdout.write(JSON.stringify({ md: md.stdout, json: JSON.parse(js.stdout).data }));\n",
+        "process.stdout.write(JSON.stringify({ md: md.stdout, json: JSON.parse(js.stdout).data, exits: [md.exitCode ?? 0, js.exitCode ?? 0] }));\n",
     );
     const r = spawnSync(process.execPath, ["--import", "tsx", script], { cwd: pkgRoot, timeout: 20_000, encoding: "utf8", env: process.env });
     expect(r.error, "the command blocked past the deadline").toBeUndefined();
     expect(r.status, r.stderr).toBe(0);
-    const out = JSON.parse(r.stdout) as { md: string; json: unknown };
+    const out = JSON.parse(r.stdout) as { md: string; json: unknown; exits: number[] };
+    // A full listing with an incomplete scan is not PARTIAL: the view says complete false.
+    expect(out.exits).toEqual([0, 0]);
     expect(out.md).toBe(
       "Incomplete scan: 4 files could not be read, so tips, open states and lengths below may be incomplete.\n" +
         "Default line: 2026-11-13-01-u.md (2026-11-13), 1 handover, continued by 2026-11-13-02-l.md\n" +

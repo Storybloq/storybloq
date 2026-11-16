@@ -65,7 +65,10 @@ export function handleHandoverList(ctx: CommandContext): CommandResult {
 /**
  * ISS-1499 slice A: `handover lines` (plan section 6). Read-only: lists the
  * folder itself (so a listing failure is known), one tail read per
- * handover through the scan, no cache, no writes.
+ * handover through the scan, no cache, no writes. The exit code comes from
+ * the same listing as the view: PARTIAL when this listing failed, whatever
+ * the loader's own earlier listing did. An incomplete scan of a full
+ * listing stays OK; the view says complete false.
  */
 export async function handleHandoverLines(ctx: CommandContext, opts: { readonly all?: boolean } = {}): Promise<CommandResult> {
   const listWarnings: LoadWarning[] = [];
@@ -73,7 +76,10 @@ export async function handleHandoverLines(ctx: CommandContext, opts: { readonly 
   const enumerated = !listWarnings.some((w) => w.type === "parse_error");
   const scan = scanHandoverLineage(ctx.handoversDir, enumerated ? names : [], enumerated);
   const view = buildLinesView(scan, opts.all === true, extractHandoverDate);
-  return { output: formatHandoverLines(view, extractHandoverDate, ctx.format) };
+  return {
+    output: formatHandoverLines(view, extractHandoverDate, ctx.format),
+    exitCode: enumerated ? ExitCode.OK : ExitCode.PARTIAL,
+  };
 }
 
 export interface HandoverLatestOptions {

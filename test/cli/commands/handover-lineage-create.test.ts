@@ -748,6 +748,25 @@ describe("clarification 9: a singleton lineage flag given twice", () => {
     expect(r.stdout).not.toContain("evil");
   });
 
+  it("clarification 11: --new-line twice starts one line, names nothing, exits 0", async () => {
+    const root = await project(false);
+    const r = await create(root, "# A\n\nx\n", ["--new-line", "--new-line"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.lineage).toMatchObject({ linked: true, continues: null });
+    expect(r.lineage?.warnings).toEqual([]);
+    expect(r.bytes).toBe(appendLineage("# A\n\nx\n", lineOf("")));
+  });
+
+  it("clarification 11: --new-line then --no-new-line behaves exactly as no flag", async () => {
+    const root = await project(false);
+    const r = await create(root, "# A\n\nx\n", ["--new-line", "--no-new-line"]);
+    const plain = await create(root, "# A\n\nx\n");
+    expect(r.exitCode).toBe(0);
+    expect(r.bytes).toBe("# A\n\nx\n");
+    expect(r.lineage).toBeUndefined();
+    expect(r.stdout.split(r.file).join("<FILE>")).toBe(plain.stdout.split(plain.file).join("<FILE>"));
+  });
+
   it("the markdown reply names the ignored occurrence", async () => {
     const root = await project(false);
     const r = await create(root, "# A\n\nx\n", ["--continues", OLD, "--role", "first", "--role", "second"], true);

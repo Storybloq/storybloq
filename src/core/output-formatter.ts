@@ -3012,7 +3012,7 @@ function lineageWarningLine(w: LineageWarning, linked: boolean): string {
     case "new_line_ignored": return "Ignored --new-line: --continues was given.";
     case "modifier_ignored":
       // A linked write ignores a flag only when it was given again later (clarification 9).
-      return linked || w.target !== null || w.detail === "--continues" || w.detail === "--new-line"
+      return linked || w.target !== null || w.detail === "--continues"
         ? `Ignored ${w.detail ?? "a flag"}${t === null ? "" : ` ${t}`}: given again later, the last one applies.`
         : `Ignored ${w.detail ?? "a flag"}: the handover is not linked.`;
     case "from_dropped": return `Dropped from${t === null ? "" : ` ${t}`}: from is kept only on a new line.`;

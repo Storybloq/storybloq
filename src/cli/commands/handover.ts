@@ -321,33 +321,33 @@ export interface HandoverCreateLineage {
    * Earlier occurrences of a singleton flag given more than once (plan
    * clarification 9): the last occurrence applies, each earlier one is named.
    */
-  readonly ignoredRepeats?: readonly { readonly flag: string; readonly value: string | null }[];
+  readonly ignoredRepeats?: readonly { readonly flag: string; readonly value: string }[];
 }
 
 /**
  * Turns the parsed yargs values of the lineage flags into one
- * HandoverCreateLineage. yargs gives an array for a flag given twice; for
- * the singletons the last occurrence applies and every earlier one is kept
- * in `ignoredRepeats`. Never throws. `--absorbs` is the only repeatable flag.
+ * HandoverCreateLineage. yargs gives an array for a string flag given twice;
+ * for `--continues`, `--role` and `--from` the last occurrence applies and
+ * every earlier one is kept in `ignoredRepeats`. `--new-line` is a boolean,
+ * which yargs folds to one value, and a repeat drops no value, so it is
+ * never named (plan clarification 11). Never throws. `--absorbs` is the only
+ * repeatable flag.
  */
 export function lineageFlagsFromArgv(argv: Readonly<Record<string, unknown>>): HandoverCreateLineage {
-  const ignoredRepeats: { flag: string; value: string | null }[] = [];
+  const ignoredRepeats: { flag: string; value: string }[] = [];
   const single = (flag: string, raw: unknown): string | undefined => {
     if (raw === undefined || raw === null) return undefined;
     const all = (Array.isArray(raw) ? raw : [raw]).map((v) => String(v));
     for (const v of all.slice(0, -1)) ignoredRepeats.push({ flag, value: v });
     return all[all.length - 1];
   };
-  const rawNewLine = argv["new-line"];
-  const newLines = rawNewLine === undefined ? [] : Array.isArray(rawNewLine) ? rawNewLine : [rawNewLine];
-  for (let i = 0; i < newLines.length - 1; i++) ignoredRepeats.push({ flag: "--new-line", value: null });
   const rawAbsorbs = argv.absorbs;
   const absorbs = rawAbsorbs === undefined || rawAbsorbs === null
     ? undefined
     : (Array.isArray(rawAbsorbs) ? rawAbsorbs : [rawAbsorbs]).map((v) => String(v));
   return {
     continues: single("--continues", argv.continues),
-    newLine: newLines.length > 0 && newLines[newLines.length - 1] === true,
+    newLine: argv["new-line"] === true,
     role: single("--role", argv.role),
     from: single("--from", argv.from),
     absorbs,
@@ -356,8 +356,7 @@ export function lineageFlagsFromArgv(argv: Readonly<Record<string, unknown>>): H
 }
 
 /** A repeated flag's ignored value is echoed only when it passes that flag's value rule. */
-function echoableRepeat(flag: string, value: string | null): string | null {
-  if (value === null) return null;
+function echoableRepeat(flag: string, value: string): string | null {
   if (flag === "--role") return isLineageRoleValue(value) ? value : null;
   return isLineageFileValue(value) ? value : null;
 }

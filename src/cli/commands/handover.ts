@@ -1,4 +1,4 @@
-import { listHandovers, readHandover } from "../../core/handover-parser.js";
+import { extractHandoverDate, listHandovers, readHandover } from "../../core/handover-parser.js";
 import { buildHandoverBrief, isFilenameAdmitted } from "../../core/handover-brief.js";
 import {
   HANDOVER_TEMPLATE_MARKER,
@@ -14,6 +14,7 @@ import { parseHandoverMarkdown, type TrajectoryEntry } from "../../core/markdown
 import {
   appendLineage,
   buildLineageGraph,
+  buildLinesView,
   isLineageAtValue,
   isLineageByValue,
   isLineageFileValue,
@@ -41,6 +42,7 @@ import {
   formatHandoverBrief,
   formatHandoverTemplate,
   formatHandoverCreateResult,
+  formatHandoverLines,
   formatError,
   ExitCode,
   type HandoverStampFailure,
@@ -58,6 +60,20 @@ import type { OutputFormat } from "../../models/types.js";
 
 export function handleHandoverList(ctx: CommandContext): CommandResult {
   return { output: formatHandoverList(ctx.state.handoverFilenames, ctx.format) };
+}
+
+/**
+ * ISS-1499 slice A: `handover lines` (plan section 6). Read-only: lists the
+ * folder itself (so a listing failure is known), one tail read per
+ * handover through the scan, no cache, no writes.
+ */
+export async function handleHandoverLines(ctx: CommandContext, opts: { readonly all?: boolean } = {}): Promise<CommandResult> {
+  const listWarnings: LoadWarning[] = [];
+  const names = await listHandovers(ctx.handoversDir, ctx.root, listWarnings);
+  const enumerated = !listWarnings.some((w) => w.type === "parse_error");
+  const scan = scanHandoverLineage(ctx.handoversDir, enumerated ? names : [], enumerated);
+  const view = buildLinesView(scan, opts.all === true, extractHandoverDate);
+  return { output: formatHandoverLines(view, extractHandoverDate, ctx.format) };
 }
 
 export interface HandoverLatestOptions {

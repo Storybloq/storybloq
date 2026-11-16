@@ -25,7 +25,7 @@ import type { RecommendResult } from "./recommend.js";
 import { isHandoverWindowIncomplete } from "./recommend.js";
 import { describeRepeatInterval } from "./session-intel/sampler.js";
 import type { HandoverBriefResult, HandoverBriefEntry } from "./handover-brief.js";
-import type { CreateLineageResult, LineageWarning } from "./handover-lineage.js";
+import type { CreateLineageResult, LineageWarning, LinesRow, LinesView } from "./handover-lineage.js";
 import type { SectionRecord, TrajectoryEntry } from "./markdown-sections.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
@@ -3051,6 +3051,54 @@ function formatCreateLineageBlock(l: CreateLineageResult): string {
   out.push(...by(["new_line_ignored", "modifier_ignored", "from_dropped", "content_line_discarded", "absorb_dropped", "attribute_dropped"]));
   out.push(...by(["continues_invalid", "parser_check_failed"]));
   return out.join("\n");
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function linesRowText(r: LinesRow): string {
+  const esc = escapeMarkdownInline;
+  let t = `Line: ${esc(r.tip)} (${r.date ?? "-"})`;
+  if (r.role !== null) t += `, role ${esc(r.role)}`;
+  if (r.by !== null) t += `, by ${esc(r.by)}`;
+  t += `, ${plural(r.length, "handover")}`;
+  if (r.forkedAt.length > 0) t += `, forked at ${r.forkedAt.map(esc).join(", ")}`;
+  if (r.end === "broken") {
+    t += r.brokenTarget === null
+      ? `, ends at a broken link (${r.brokenReason})`
+      : `, ends at a broken link to ${esc(r.brokenTarget)} (${r.brokenReason})`;
+  }
+  if (r.absorbedBy.length > 0) t += `, absorbed by ${r.absorbedBy.map(esc).join(", ")}`;
+  return t;
+}
+
+/** ISS-1499 slice A: `handover lines` (plan section 6). */
+export function formatHandoverLines(view: LinesView, dateOf: (name: string) => string | null, format: OutputFormat): string {
+  if (format === "json") return JSON.stringify(successEnvelope(view), null, 2);
+  if (!view.enumerated) return "Could not list the handovers folder, so no lines can be shown.";
+  const esc = escapeMarkdownInline;
+  const rows: string[] = [];
+  if (!view.complete) {
+    const n = view.unreadable.length;
+    rows.push(`Incomplete scan: ${plural(n, "file")} could not be read, so tips, open states and lengths below may be incomplete.`);
+  }
+  const d = view.defaultLine;
+  if (d !== null) {
+    let t = `Default line: ${esc(d.head)} (${dateOf(d.head) ?? "-"}), ${plural(d.length, "handover")}`;
+    if (d.provisional) t += ", provisional";
+    if (d.continuedBy.length > 0) t += `, continued by ${d.continuedBy.map(esc).join(", ")}`;
+    rows.push(t);
+  }
+  rows.push(...view.lines.map(linesRowText));
+  const sections: string[] = [];
+  const section = (title: string, items: readonly string[]) => {
+    if (items.length > 0) sections.push([`${title}:`, ...items.map((i) => `- ${i}`)].join("\n"));
+  };
+  section("Forks", view.forks.map((f) => `${esc(f.parent)}: ${f.children.map(esc).join(", ")}`));
+  section("Broken links", view.brokenLinks.map((b) => `${esc(b.file)} ${b.attribute}${b.target === null ? "" : ` ${esc(b.target)}`} (${b.reason})`));
+  section("Loops", view.loops.map((l) => l.map(esc).join(", ")));
+  section("Unreadable", view.unreadable.map((u) => `${esc(u.file)} (${u.reason})`));
+  if (rows.length === 0 && sections.length === 0) return "No handovers found.";
+  return [rows.join("\n"), ...sections].filter((b) => b.length > 0).join("\n\n");
 }
 
 // --- Snapshot / Recap / Export ---

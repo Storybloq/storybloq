@@ -635,3 +635,137 @@ export interface CreateLineageResult {
   readonly forkChildren: readonly string[];
   readonly warnings: readonly LineageWarning[];
 }
+
+// ---------------------------------------------------------------------------
+// What `handover lines` reports (plan 6)
+// ---------------------------------------------------------------------------
+
+export interface LinesDefaultLine {
+  readonly head: string;
+  readonly length: number;
+  /** True when any edge of the default chain crosses an unreadable entry. */
+  readonly provisional: boolean;
+  /** Linked handovers that continue the head, in listing order. */
+  readonly continuedBy: readonly string[];
+}
+
+export interface LinesRow {
+  readonly tip: string;
+  readonly role: string | null;
+  readonly by: string | null;
+  readonly date: string | null;
+  readonly length: number;
+  readonly open: boolean;
+  readonly absorbedBy: readonly string[];
+  readonly forkedAt: readonly string[];
+  readonly end: "root" | "broken";
+  readonly brokenTarget: string | null;
+  readonly brokenReason: BrokenReason | "repeat" | null;
+}
+
+export interface LinesBrokenLink {
+  readonly file: string;
+  readonly attribute: "continues" | "from" | "absorbs";
+  readonly target: string | null;
+  readonly reason: BrokenReason;
+}
+
+/** The `handover lines` view. Keys are never omitted; null where there is no value. */
+export interface LinesView {
+  readonly enumerated: boolean;
+  readonly complete: boolean;
+  readonly defaultLine: LinesDefaultLine | null;
+  readonly lines: readonly LinesRow[];
+  readonly forks: readonly { readonly parent: string; readonly children: readonly string[] }[];
+  readonly brokenLinks: readonly LinesBrokenLink[];
+  readonly loops: readonly (readonly string[])[];
+  readonly unreadable: readonly { readonly file: string; readonly reason: UnknownReason }[];
+}
+
+/**
+ * Builds the lines view from a scan. Pure: `dateOf` gives a handover's date
+ * from its filename, or null. Rows: each open linked tip, and with `all`
+ * every absorbed tip, in listing order. The default line's head is shown by
+ * the default line itself, never as a row of its own while it is open.
+ */
+export function buildLinesView(
+  scan: LineageScan,
+  all: boolean,
+  dateOf: (name: string) => string | null,
+): LinesView {
+  if (!scan.enumerated) {
+    return { enumerated: false, complete: false, defaultLine: null, lines: [], forks: [], brokenLinks: [], loops: [], unreadable: [] };
+  }
+  const graph = buildLineageGraph(scan);
+  const byName = new Map<string, ScannedFile>();
+  for (const f of scan.files) if (!byName.has(f.name)) byName.set(f.name, f);
+  const forkParents = new Set(graph.forks.map((f) => f.parent));
+
+  let defaultLine: LinesDefaultLine | null = null;
+  if (graph.head !== null) {
+    const provisional = graph.defaultLine.some((n) => {
+      const p = graph.parent.get(n);
+      return p !== undefined && p.kind === "file" && !p.certain;
+    });
+    const continuedBy = (graph.children.get(graph.head) ?? []).filter((c) => byName.get(c)?.state === "linked");
+    defaultLine = { head: graph.head, length: graph.defaultLine.length, provisional, continuedBy };
+  }
+
+  const open = new Set(graph.openTips);
+  const lines: LinesRow[] = [];
+  for (const tip of graph.tips) {
+    const f = byName.get(tip)!;
+    const isOpen = open.has(tip);
+    if (isOpen ? f.state !== "linked" : !all) continue;
+    const walk = walkLine(graph, tip);
+    const l = f.state === "linked" ? f.lineage!.lineage : null;
+    lines.push({
+      tip,
+      role: l?.role ?? null,
+      by: l?.by ?? null,
+      date: dateOf(tip),
+      length: walk.files.length,
+      open: isOpen,
+      absorbedBy: [...(graph.absorbedBy.get(tip) ?? [])],
+      forkedAt: walk.files.slice(1).filter((n) => forkParents.has(n)),
+      end: walk.end,
+      brokenTarget: walk.brokenTarget,
+      brokenReason: walk.brokenReason,
+    });
+  }
+
+  const reference = (owner: string, target: string): BrokenReason | null => {
+    if (target === owner) return "self";
+    const t = byName.get(target);
+    if (t === undefined) return "missing";
+    return t.state === "unknown" ? "unreadable" : null;
+  };
+  const brokenLinks: LinesBrokenLink[] = [];
+  for (const f of scan.files) {
+    if (f.state !== "linked" || byName.get(f.name) !== f) continue;
+    const p = graph.parent.get(f.name);
+    if (p !== undefined && p.kind === "broken") {
+      brokenLinks.push({ file: f.name, attribute: "continues", target: p.target, reason: p.reason });
+    }
+    const l = f.lineage!.lineage;
+    if (l.from !== null) {
+      const r = reference(f.name, l.from);
+      if (r !== null) brokenLinks.push({ file: f.name, attribute: "from", target: l.from, reason: r });
+    }
+    for (const a of l.absorbs) {
+      const r = reference(f.name, a);
+      if (r !== null) brokenLinks.push({ file: f.name, attribute: "absorbs", target: a, reason: r });
+    }
+  }
+
+  return {
+    enumerated: true,
+    complete: scan.complete,
+    defaultLine,
+    lines,
+    forks: graph.forks.map((f) => ({ parent: f.parent, children: [...f.children] })),
+    brokenLinks,
+    loops: graph.loops.map((l) => [...l]),
+    unreadable: scan.files.filter((f) => f.state === "unknown").map((f) => ({ file: f.name, reason: f.reason! })),
+  };
+}

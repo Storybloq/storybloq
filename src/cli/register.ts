@@ -87,6 +87,7 @@ import {
   handleHandoverGet,
   handleHandoverCreate,
   handleHandoverTemplate,
+  handleHandoverLines,
   lineageFlagsFromArgv,
 } from "./commands/handover.js";
 import { handleBlockerList, handleBlockerAdd, handleBlockerClear } from "./commands/blocker.js";
@@ -1126,7 +1127,23 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             );
           },
         )
-        .demandCommand(1, "Specify a handover subcommand: list, latest, get, create, template")
+        .command(
+          "lines",
+          "Show handover lines: the default line, open tips, forks and broken links",
+          (y2) =>
+            addFormatOption(
+              y2.option("all", {
+                type: "boolean",
+                describe: "Also show tips absorbed by another handover",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const all = argv.all === true;
+            await runReadCommand(format, (ctx) => handleHandoverLines(ctx, { all }));
+          },
+        )
+        .demandCommand(1, "Specify a handover subcommand: list, latest, get, create, template, lines")
         .strict(),
     () => {},
   );

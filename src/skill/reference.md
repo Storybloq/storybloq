@@ -41,11 +41,12 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **phase rename <id>** (--name?, --label?, --description?, --summary?, --format?, --commit?) - Rename/update phase metadata
 - **phase move <id>** (--after?, --at-start?, --format?, --commit?) - Move a phase to a new position
 - **phase delete <id>** (--reassign?, --format?, --commit?) - Delete a phase
-- **handover list** (--format?) - List handover filenames (newest first)
-- **handover latest** (--count?, --brief?, --priming?, --format?) - Content of most recent handover
-- **handover get <filename>** (--format?) - Content of a specific handover
-- **handover create** (--content?, --stdin?, --slug?, --format?, --commit?) - Create a new handover document
-- **handover template** (--override?, --format?) - Scaffold a new handover document (category headings, Carried forward, marker)
+- **handover list** (--format?) - Handover filenames, newest first
+- **handover latest** (--count?, --brief?, --priming?, --format?) - Newest handovers
+- **handover get <filename>** (--format?) - One handover
+- **handover create** (--content?, --stdin?, --slug?, --format?, --commit?, --continues?, --new-line?, --role?, --from?, --absorbs?) - Create a handover
+- **handover template** (--override?, --format?) - Scaffold a handover document
+- **handover lines** (--all?, --format?) - Tips, forks and broken links
 - **blocker list** (--format?) - List all roadmap blockers
 - **blocker add** (--name, --note?, --format?, --commit?) - Add a new blocker
 - **blocker clear** (--name, --note?, --format?, --commit?) - Clear (resolve) a blocker
@@ -171,7 +172,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **gate-ack create** (--arrangement, --gate, --ticket, --plan-file?, --from-staged?, --codex-session-id?, --verdict?, --rounds?, --deltas?, --format?, --commit?) - Create a gate-ack
 - **gate-ack contest <id>** (--reason, --format?, --commit?) - Mark a gate-ack contested (record + surfaced flag only)
 - **land <sha>** (--remote?, --branch?, --repo?, --item?, --secrets-scan?, --trailer-pattern?, --hygiene-pattern?, --format?) - Push one reviewed commit after checks (CLI-only)
-- **landings** (--since?, --limit?, --format?) - Commits that touched tickets/issues, with review coverage (CLI-only; no MCP tool)
+- **landings** (--since?, --limit?, --format?) - Commits that touched tickets/issues, with review coverage (CLI-only)
 - **node list** (--format?) - List configured nodes
 - **review-stats** (--fleet?, --open-window?, --close-window?, --contract?, --format?) - Review efficiency metrics over review verdict artifacts
 - **session compact-prepare** (--client?) - Prepare session for compaction (PreCompact hook)

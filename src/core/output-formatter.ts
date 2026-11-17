@@ -27,6 +27,7 @@ import { describeRepeatInterval } from "./session-intel/sampler.js";
 import type { HandoverBriefResult, HandoverBriefEntry } from "./handover-brief.js";
 import type { CreateLineageResult, LineageWarning, LinesRow, LinesView } from "./handover-lineage.js";
 import type { ContinueResult } from "./handover-line-memo.js";
+import type { HandoverLinesAddition } from "./handover-selection.js";
 import type { SectionRecord, TrajectoryEntry } from "./markdown-sections.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
@@ -2770,12 +2771,27 @@ export function formatHandoverContent(
   filename: string,
   content: string,
   format: OutputFormat,
+  /** ISS-1499 slice B: added as a key of this envelope's `data` (the last envelope of a raw read). JSON only. */
+  lines?: HandoverLinesAddition,
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope({ filename, content }), null, 2);
+    return JSON.stringify(successEnvelope({ filename, content, ...(lines ? { lines } : {}) }), null, 2);
   }
   // MD mode: raw content as-is (it's already markdown)
   return content;
+}
+
+/** ISS-1499 slice B: a raw read whose default selection is empty. */
+export function formatHandoverEmptyDefault(lines: HandoverLinesAddition, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ filename: null, content: null, lines }), null, 2);
+  }
+  return formatHandoverLinesMd(lines);
+}
+
+/** ISS-1499 slice B: the `lines` addition as the last Markdown part of a reader result. */
+export function formatHandoverLinesMd(lines: HandoverLinesAddition): string {
+  return lines.notices.join("\n");
 }
 
 export function formatHandoverTemplate(content: string, format: OutputFormat): string {
@@ -2848,9 +2864,11 @@ function formatTrajectoryMd(trajectory: readonly TrajectoryEntry[]): string {
 export function formatHandoverBrief(
   result: HandoverBriefResult,
   format: OutputFormat,
+  /** ISS-1499 slice B: a key of the result in JSON, the last section in Markdown. */
+  lines?: HandoverLinesAddition,
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(result), null, 2);
+    return JSON.stringify(successEnvelope(lines ? { ...result, lines } : result), null, 2);
   }
   const sections = result.handovers.map(formatHandoverBriefEntryMd);
   const trajectorySection = formatTrajectoryMd(result.trajectory);
@@ -2861,6 +2879,7 @@ export function formatHandoverBrief(
   if (result.missingHandovers > 0) {
     sections.push(`(${result.missingHandovers} handover(s) skipped: no longer on disk)`);
   }
+  if (lines) sections.push(formatHandoverLinesMd(lines));
   return sections.join("\n\n");
 }
 

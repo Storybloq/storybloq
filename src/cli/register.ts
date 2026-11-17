@@ -1021,7 +1021,8 @@ export function registerHandoverCommand(yargs: Argv): Argv {
                   type: "boolean",
                   describe:
                     "T-320/T-497: full body at or under 12,000 bytes per handover, else the same structured digest as --brief",
-                }),
+                })
+                .option("as", { type: "string", describe: "Client task id whose handover line to read" }),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
@@ -1034,8 +1035,9 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             // for a window this small. The plain default path (neither flag)
             // is untouched: it never had a count cap and must stay that way.
             if (brief || priming) count = Math.min(10, count);
+            const as = argv.as as string | undefined;
             await runReadCommand(format, (ctx) =>
-              handleHandoverLatest(ctx, count, { brief, priming, ledger: true }),
+              handleHandoverLatest(ctx, count, { brief, priming, ledger: true, as }),
             );
           },
         )
@@ -1183,17 +1185,26 @@ export function registerHandoverCommand(yargs: Argv): Argv {
           "Scaffold a new handover document (category headings, Carried forward, marker)",
           (y2) =>
             addFormatOption(
-              y2.option("override", {
-                type: "string",
-                describe:
-                  "Override line body: recommended=<id> worked=<id> because=<text>",
-              }),
+              y2
+                .option("override", {
+                  type: "string",
+                  describe:
+                    "Override line body: recommended=<id> worked=<id> because=<text>",
+                })
+                .option("as", { type: "string", describe: "Client task id whose handover line to scaffold from" })
+                .option("new-line", { type: "boolean", describe: "Start a new handover line; nothing is carried forward" })
+                .option("role", { type: "string", describe: "With --new-line: the line's role label" })
+                .option("from", { type: "string", describe: "With --new-line: the handover the line branches from" }),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const override = argv.override as string | undefined;
+            const as = argv.as as string | undefined;
+            const newLine = argv.newLine as boolean | undefined;
+            const role = argv.role as string | undefined;
+            const from = argv.from as string | undefined;
             await runReadCommand(format, (ctx) =>
-              handleHandoverTemplate(ctx, { override }),
+              handleHandoverTemplate(ctx, { override, as, newLine, role, from }),
             );
           },
         )

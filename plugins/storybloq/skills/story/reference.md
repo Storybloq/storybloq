@@ -42,10 +42,10 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **phase move <id>** (--after?, --at-start?, --format?, --commit?) - Move a phase to a new position
 - **phase delete <id>** (--reassign?, --format?, --commit?) - Delete a phase
 - **handover list** (--format?) - Handover filenames, newest first
-- **handover latest** (--count?, --brief?, --priming?, --format?) - Newest handovers
+- **handover latest** (--count?, --brief?, --priming?, --as?, --format?) - Newest handovers
 - **handover get <filename>** (--format?) - One handover
 - **handover create** (--content?, --stdin?, --slug?, --format?, --commit?, --continues?, --new-line?, --role?, --from?, --absorbs?) - Create a handover
-- **handover template** (--override?, --format?) - Scaffold a handover document
+- **handover template** (--override?, --as?, --new-line?, --role?, --from?, --format?) - Scaffold a handover
 - **handover lines** (--all?, --format?) - Tips, forks and broken links
 - **blocker list** (--format?) - List all roadmap blockers
 - **blocker add** (--name, --note?, --format?, --commit?) - Add a new blocker
@@ -217,9 +217,9 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, proofPage?, candidate?, node?) - Get an issue by ID
 - **storybloq_issue_meta_get** (id, path?) - Get custom passthrough metadata from an issue
 - **storybloq_handover_list** - List handover filenames (newest first)
-- **storybloq_handover_latest** (count?, brief?, priming?, format?) - Content of most recent handover
-- **storybloq_handover_get** (filename, format?) - Content of a specific handover
-- **storybloq_handover_create** (content, slug?, commit?) - Create a handover from markdown content
+- **storybloq_handover_latest** (count?, brief?, priming?, format?) - Newest handovers
+- **storybloq_handover_get** (filename, format?) - One handover
+- **storybloq_handover_create** (content, slug?, commit?) - Create a handover
 - **storybloq_blocker_list** - All roadmap blockers with status
 - **storybloq_validate** (format?, integrityOnly?) - Reference, schema, source-provenance, and loader-independent JSON checks
 - **storybloq_recap** - Session diff: changes since last snapshot

@@ -21,6 +21,7 @@ import {
   isLineageFileValue,
   isLineageRoleValue,
   serializeLineage,
+  readLineage,
   splitLineage,
   walkLine,
   type AbsorbDropReason,
@@ -36,8 +37,18 @@ import {
   lineMemoDisplayPath,
   removeLineMemo,
   writeLineMemo,
+  resolveLineMemo,
   type ContinueResult,
+  type MemoResolution,
 } from "../../core/handover-line-memo.js";
+import {
+  TailReader,
+  readHandoverBody,
+  selectHandovers,
+  selectionNotices,
+  type HandoverLinesAddition,
+  type HandoverSelection,
+} from "../../core/handover-selection.js";
 import { currentClientTaskId, normalizeClientTaskId } from "../../autonomous/client-profile.js";
 import { extractHandoverHeading } from "../../federation/handover-utils.js";
 import type { LoadWarning } from "../../core/errors.js";
@@ -50,6 +61,8 @@ import { join, resolve } from "node:path";
 import {
   formatHandoverList,
   formatHandoverContent,
+  formatHandoverEmptyDefault,
+  formatHandoverLinesMd,
   formatHandoverBrief,
   formatHandoverTemplate,
   formatHandoverCreateResult,
@@ -250,6 +263,50 @@ export interface HandoverLatestOptions {
   readonly priming?: boolean;
   /** C-v4.1 commit 7: the ledger-state line per handover, full mode only. Set by the CLI and MCP gets, not the guide. */
   readonly ledger?: boolean;
+  /** ISS-1499 slice B: the identity whose line to read, instead of the environment's. */
+  readonly as?: string;
+}
+
+/** Uncached tail reads a `latest` or `template` selection may make, and bodies the raw fill may skip. */
+const READER_MAX_READS = 200;
+
+/** The template's window: the standing `count: 10, brief: true` read. */
+const TEMPLATE_WINDOW = 10;
+
+/** `--as`, when given, must be a valid client task id. */
+function readerIdentity(as: string | undefined): string | null {
+  if (as !== undefined && normalizeClientTaskId(as) === null) {
+    throw new CliValidationError("invalid_input", "--as is not a valid client task id.");
+  }
+  return currentClientTaskId(as);
+}
+
+interface ReaderSelection {
+  readonly tails: TailReader;
+  readonly memo: MemoResolution;
+  readonly selection: HandoverSelection;
+}
+
+/** Plan sections 4 and 7: the caller's memo, then the one selection. */
+function selectForReader(ctx: CommandContext, taskId: string | null, count: number): ReaderSelection {
+  const listing = ctx.state.handoverFilenames;
+  const tails = new TailReader(ctx.handoversDir, listing);
+  const memo = resolveLineMemo(resolve(ctx.root), taskId, tails);
+  const selection = selectHandovers({ listing, tails, memo, count, maxReads: READER_MAX_READS });
+  return { tails, memo, selection };
+}
+
+/**
+ * Amendment C2's assertion: with no lineage observed the selection is the
+ * listing's own slice. A difference is a bug, and the slice wins.
+ */
+function compatibleFiles(listing: readonly string[], count: number, files: readonly string[]): readonly string[] {
+  const slice = listing.slice(0, count);
+  return isDeepStrictEqual([...files], slice) ? files : slice;
+}
+
+function linesAddition(notices: readonly string[]): HandoverLinesAddition | undefined {
+  return notices.length > 0 ? { notices } : undefined;
 }
 
 export async function handleHandoverLatest(
@@ -257,6 +314,7 @@ export async function handleHandoverLatest(
   count: number = 1,
   opts: HandoverLatestOptions = {},
 ): Promise<CommandResult> {
+  const taskId = readerIdentity(opts.as);
   if (ctx.state.handoverFilenames.length === 0) {
     return {
       output: formatError("not_found", "No handovers found", ctx.format),
@@ -265,11 +323,16 @@ export async function handleHandoverLatest(
     };
   }
 
-  const filenames = ctx.state.handoverFilenames.slice(0, count);
+  const listing = ctx.state.handoverFilenames;
+  const { tails, memo, selection } = selectForReader(ctx, taskId, count);
 
   // T-320 commit 2: brief/priming are additive -- omitting both keeps the
   // default path below byte-identical to today (always the full raw body).
   if (opts.brief || opts.priming) {
+    const observed = tails.observation.seen;
+    // The read limit cannot leave positions open at a count of ten or
+    // fewer; should it, the selection stops there (a fill is raw only).
+    const filenames = observed ? selection.files : compatibleFiles(listing, count, selection.files);
     // T-320: the admission gate runs BEFORE any filesystem validation -- an
     // oversized filename must be skippable (and counted) without ever
     // reaching parseHandoverFilename's lstat, which throws on a symlink and
@@ -284,6 +347,10 @@ export async function handleHandoverLatest(
         brief: opts.brief ?? false,
         priming: opts.priming ?? false,
       });
+      const empty = filenames.length === 0;
+      const lines = observed
+        ? linesAddition(selectionNotices(memo, selection, selection.limited || selection.fill !== null, empty, listing.length))
+        : undefined;
       // buildHandoverBrief drops a listed-but-missing file (ENOENT) from the
       // window itself rather than failing the whole request -- matching the
       // default path's own tolerance for a missing file when count > 1.
@@ -292,15 +359,16 @@ export async function handleHandoverLatest(
       // rejected for an oversized name (skippedHandovers > 0), that is a
       // real, observable result (the files exist) and must render through
       // formatHandoverBrief's own skipped-count message, not collapse into
-      // a misleading "not found".
-      if (result.handovers.length === 0 && result.skippedHandovers === 0) {
+      // a misleading "not found". An empty default line (ISS-1499 slice B)
+      // is a success that carries its notice.
+      if (result.handovers.length === 0 && result.skippedHandovers === 0 && !(empty && observed)) {
         return {
           output: formatError("not_found", "No handovers found", ctx.format),
           exitCode: ExitCode.USER_ERROR,
           errorCode: "not_found",
         };
       }
-      return { output: formatHandoverBrief(result, ctx.format) };
+      return { output: formatHandoverBrief(result, ctx.format, lines) };
     } catch (err: unknown) {
       return {
         output: formatError("io_error", `Cannot read handover: ${(err as Error).message}`, ctx.format),
@@ -310,19 +378,19 @@ export async function handleHandoverLatest(
     }
   }
 
-  const parts: string[] = [];
-  const ledger = opts.ledger ? await ledgerStates(ctx.root, filenames.map((f) => join(ctx.handoversDir, f)), ledgerOptions(ctx.state.config)) : undefined;
-
-  for (const filename of filenames) {
+  // The raw body pass (plan section 9): one ordered loop over the selected
+  // names and then the fill's, each name validated and read exactly as
+  // main does, with main's early return. No fill name is touched until
+  // every selected name has passed.
+  const bodies: Array<{ readonly filename: string; readonly content: string }> = [];
+  const readOne = async (filename: string): Promise<CommandResult | "missing" | string> => {
     await parseHandoverFilename(filename, ctx.handoversDir);
     try {
-      const content = await readHandover(ctx.handoversDir, filename);
-      const rendered = formatHandoverContent(filename, content, ctx.format);
-      parts.push(ledger ? withLedgerState(rendered, ctx.format, ledger.get(join(ctx.handoversDir, filename)) ?? null) : rendered);
+      return readHandoverBody(ctx.handoversDir, filename);
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         // Skip missing files silently when loading multiple
-        if (count > 1) continue;
+        if (count > 1) return "missing";
         return {
           output: formatError("not_found", `Handover file not found: ${filename}`, ctx.format),
           exitCode: ExitCode.USER_ERROR,
@@ -335,9 +403,63 @@ export async function handleHandoverLatest(
         errorCode: "io_error",
       };
     }
+  };
+
+  const readAll = async (names: readonly string[], into: Array<{ filename: string; content: string }>): Promise<CommandResult | null> => {
+    for (const filename of names) {
+      const got = await readOne(filename);
+      if (got === "missing") continue;
+      if (typeof got !== "string") return got;
+      into.push({ filename, content: got });
+    }
+    return null;
+  };
+  const failed = await readAll(selection.files, bodies);
+  if (failed !== null) return failed;
+
+  // The fill (plan section 7): positions the read limit left open, with no
+  // linked state seen. A body read here is classified on its own bytes; a
+  // linked one is skipped, never returned, and marks lineage as seen. A
+  // body that cannot be read takes its position, as on main.
+  const selected = [...selection.files];
+  let fillLimited = false;
+  let walked = selection.walked;
+  let endReached = selection.endReached;
+  if (selection.fill !== null) {
+    let open = selection.fill.open;
+    let skipped = 0;
+    let j = selection.fill.from;
+    for (; j < listing.length && open > 0; j++) {
+      const filename = listing[j]!;
+      const got = await readOne(filename);
+      if (typeof got !== "string") return got;
+      if (got !== "missing" && readLineage(got).kind === "linked") {
+        tails.observation.seen = true;
+        if (++skipped >= READER_MAX_READS) { j++; fillLimited = true; break; }
+        continue;
+      }
+      selected.push(filename);
+      if (got !== "missing") bodies.push({ filename, content: got });
+      open--;
+    }
+    walked = j;
+    endReached = !fillLimited && j >= listing.length;
   }
 
-  if (parts.length === 0) {
+  const observed = tails.observation.seen;
+  if (!observed && !isDeepStrictEqual(selected, listing.slice(0, count))) {
+    // Amendment C2's assertion (see compatibleFiles): the slice wins.
+    bodies.length = 0;
+    const again = await readAll(listing.slice(0, count), bodies);
+    if (again !== null) return again;
+  }
+  const empty = selection.source === "default" && selected.length === 0;
+  const lines = observed
+    ? linesAddition(selectionNotices(memo, { ...selection, walked, endReached }, selection.limited || fillLimited, empty, listing.length))
+    : undefined;
+
+  if (bodies.length === 0) {
+    if (empty && lines !== undefined) return { output: formatHandoverEmptyDefault(lines, ctx.format) };
     return {
       output: formatError("not_found", "No handovers found", ctx.format),
       exitCode: ExitCode.USER_ERROR,
@@ -345,6 +467,18 @@ export async function handleHandoverLatest(
     };
   }
 
+  // C-v4.1 commit 7: the ledger-state line per handover, full mode only.
+  const ledger = opts.ledger ? await ledgerStates(ctx.root, bodies.map((b) => join(ctx.handoversDir, b.filename)), ledgerOptions(ctx.state.config)) : undefined;
+  const parts = bodies.map((b, i) => {
+    const rendered = formatHandoverContent(
+      b.filename,
+      splitLineage(b.content).body,
+      ctx.format,
+      i === bodies.length - 1 ? lines : undefined,
+    );
+    return ledger ? withLedgerState(rendered, ctx.format, ledger.get(join(ctx.handoversDir, b.filename)) ?? null) : rendered;
+  });
+  if (lines !== undefined && ctx.format !== "json") parts.push(formatHandoverLinesMd(lines));
   const separator = ctx.format === "json" ? "\n" : "\n\n---\n\n";
   return { output: parts.join(separator) };
 }
@@ -381,6 +515,14 @@ export async function handleHandoverGet(
 export interface HandoverTemplateOptions {
   /** Body of an `Override:` line, without the `Override: ` prefix (e.g. "recommended=T-1 worked=T-2 because=owner said so"). */
   readonly override?: string;
+  /** ISS-1499 slice B: the identity whose line to scaffold from. */
+  readonly as?: string;
+  /** ISS-1499 slice B: start a new line; nothing is carried forward. */
+  readonly newLine?: boolean;
+  /** With `newLine`: the new line's role label. */
+  readonly role?: string;
+  /** With `newLine`: the handover the new line branches from. */
+  readonly from?: string;
 }
 
 /**
@@ -407,7 +549,37 @@ export async function handleHandoverTemplate(
     }
   }
 
-  const filenames = ctx.state.handoverFilenames;
+  // Branch 1: the line attributes belong to --new-line only.
+  if ((opts.role !== undefined || opts.from !== undefined) && opts.newLine !== true) {
+    throw new CliValidationError("invalid_input", "--role and --from need --new-line.");
+  }
+  const taskId = readerIdentity(opts.as);
+
+  // Branch 2: an explicit new line, decided before the memo is read. The
+  // first-handover scaffold, with the trailer slice A's serializer makes.
+  if (opts.newLine === true) {
+    const ser = serializeLineage({ role: opts.role ?? null, from: opts.from ?? null });
+    if (ser.dropped.length > 0) {
+      throw new CliValidationError("invalid_input", `Invalid --${ser.dropped[0]!.attribute} value.`);
+    }
+    const content = appendLineage(renderHandoverTemplate({ carriedForward: [], override }), ser.line);
+    return { output: formatHandoverTemplate(content, ctx.format) };
+  }
+
+  // Branches 3 to 5: the selection decides the window.
+  const listing = ctx.state.handoverFilenames;
+  let filenames: readonly string[] = listing;
+  let trailer: string | null = null;
+  if (listing.length > 0) {
+    const { tails, memo, selection } = selectForReader(ctx, taskId, TEMPLATE_WINDOW);
+    if (!tails.observation.seen) {
+      filenames = compatibleFiles(listing, TEMPLATE_WINDOW, selection.files);
+    } else {
+      filenames = selection.files;
+      if (memo.kind === "active") trailer = serializeLineage({ continues: memo.tip }).line;
+    }
+  }
+
   let previousCarried: CarriedForwardEntry[] = [];
   let trajectory: readonly TrajectoryEntry[] = [];
   const currentLabels = new Map<string, string>();
@@ -422,7 +594,7 @@ export async function handleHandoverTemplate(
     if (isFilenameAdmitted(newest)) {
       await parseHandoverFilename(newest, ctx.handoversDir);
       try {
-        const raw = await readHandover(ctx.handoversDir, newest);
+        const raw = splitLineage(readHandoverBody(ctx.handoversDir, newest)).body;
         if (raw.includes(HANDOVER_TEMPLATE_MARKER)) {
           previousCarried = parseCarriedForwardSection(raw);
         }
@@ -436,7 +608,7 @@ export async function handleHandoverTemplate(
       }
     }
 
-    const windowFilenames = filenames.slice(0, 10);
+    const windowFilenames = filenames.slice(0, TEMPLATE_WINDOW);
     for (const filename of windowFilenames) {
       if (isFilenameAdmitted(filename)) {
         await parseHandoverFilename(filename, ctx.handoversDir);
@@ -460,7 +632,8 @@ export async function handleHandoverTemplate(
   }
 
   const carriedForward = computeCarriedForward(trajectory, previousCarried, currentLabels);
-  const content = renderHandoverTemplate({ carriedForward, override });
+  const scaffold = renderHandoverTemplate({ carriedForward, override });
+  const content = trailer === null ? scaffold : appendLineage(scaffold, trailer);
   return { output: formatHandoverTemplate(content, ctx.format) };
 }
 

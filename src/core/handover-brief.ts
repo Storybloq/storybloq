@@ -22,7 +22,8 @@
  * more precise, and its numbers are already load-bearing in shipped commit-1
  * code).
  */
-import { readHandover } from "./handover-parser.js";
+import { splitLineage } from "./handover-lineage.js";
+import { readHandoverBody } from "./handover-selection.js";
 import {
   parseHandoverMarkdown,
   selectBoundedRecords,
@@ -210,7 +211,9 @@ export async function buildHandoverBrief(
   for (const filename of admitted) {
     let body: string;
     try {
-      body = await readHandover(handoversDir, filename);
+      // ISS-1499 slice B: the one body reader, and the lineage line removed
+      // before anything is measured, parsed or returned.
+      body = splitLineage(readHandoverBody(handoversDir, filename)).body;
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         missingHandovers++;

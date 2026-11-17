@@ -218,8 +218,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "handover latest",
     description: "Newest handovers",
-    usage: "storybloq handover latest [--count <number>] [--brief] [--priming] [--format <json|md>]",
-    flags: ["--count", "--brief", "--priming", "--format"],
+    usage: "storybloq handover latest [--count <number>] [--brief] [--priming] [--as <id>] [--format <json|md>]",
+    flags: ["--count", "--brief", "--priming", "--as", "--format"],
   },
   {
     name: "handover get",
@@ -235,9 +235,9 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "handover template",
-    description: "Scaffold a handover document",
-    usage: "storybloq handover template [--override <body>] [--format json|md]",
-    flags: ["--override", "--format"],
+    description: "Scaffold a handover",
+    usage: "storybloq handover template [--override <body>] [--as <id>] [--new-line [--role <label>] [--from <file>]] [--format json|md]",
+    flags: ["--override", "--as", "--new-line", "--role", "--from", "--format"],
   },
   {
     name: "handover lines",
@@ -1157,9 +1157,9 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_issue_get", description: "Get an issue by ID", params: ["id","format?","withActionability?","receiptsPage?","proofPage?","candidate?","node?"] },
   { name: "storybloq_issue_meta_get", description: "Get custom passthrough metadata from an issue", params: ["id","path?"] },
   { name: "storybloq_handover_list", description: "List handover filenames (newest first)", params: [] },
-  { name: "storybloq_handover_latest", description: "Content of most recent handover", params: ["count?","brief?","priming?","format?"] },
-  { name: "storybloq_handover_get", description: "Content of a specific handover", params: ["filename","format?"] },
-  { name: "storybloq_handover_create", description: "Create a handover from markdown content", params: ["content","slug?","commit?"] },
+  { name: "storybloq_handover_latest", description: "Newest handovers", params: ["count?","brief?","priming?","format?"] },
+  { name: "storybloq_handover_get", description: "One handover", params: ["filename","format?"] },
+  { name: "storybloq_handover_create", description: "Create a handover", params: ["content","slug?","commit?"] },
   { name: "storybloq_blocker_list", description: "All roadmap blockers with status", params: [] },
   { name: "storybloq_validate", description: "Reference, schema, source-provenance, and loader-independent JSON checks", params: ["format?","integrityOnly?"] },
   { name: "storybloq_recap", description: "Session diff: changes since last snapshot", params: [] },

@@ -8,8 +8,8 @@
  * caches.
  */
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
-import { tryReadFile } from "../cli/util/file-io.js";
+import { splitLineage } from "./handover-lineage.js";
+import { readHandoverBody } from "./handover-selection.js";
 import { computeActionability, buildHandoverClassificationInputs, type Actionability } from "./recommend.js";
 import { crossNodeStatusRecord, observeProject } from "../federation/cross-node-observation.js";
 import type { Ticket } from "../models/ticket.js";
@@ -39,12 +39,17 @@ export function loadClassificationContext(root: string, handoversDir: string): C
     const newestFirst = files.slice(-HANDOVER_WINDOW).reverse();
     let failures = 0;
     for (const filename of newestFirst) {
-      const result = tryReadFile(join(handoversDir, filename));
-      if (result.ok) {
-        recentHandovers.push({ filename, content: result.content });
-      } else {
+      // ISS-1499 slice B: the one body reader, the lineage line removed.
+      // The window stays the ten newest across every line: classification
+      // is a project-wide read.
+      let content: string;
+      try {
+        content = splitLineage(readHandoverBody(handoversDir, filename)).body;
+      } catch {
         failures++;
+        continue;
       }
+      recentHandovers.push({ filename, content });
     }
     unreadableHandoverCount = failures;
   } catch {

@@ -136,7 +136,6 @@ import { ARRANGEMENT_LIFECYCLE, ARRANGEMENT_ROLES, type ArrangementParty } from 
 import { handleDuetCoordinate, parseDuetOperation } from "./commands/duet.js";
 import {
   handleRulingList,
-  handleRulingGet,
   handleRulingGetWithLedger,
   handleRulingCreate,
   handleRulingSupersede,

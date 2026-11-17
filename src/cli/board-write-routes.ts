@@ -67,7 +67,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleRepair: "read",
   handleReviewStats: "read",
   handleRosterList: "read",
-  handleRulingGet: "read",
+  handleRulingGetWithLedger: "read",
   handleRulingList: "read",
   handleSessionHealth: "read",
   handleSessionList: "read",

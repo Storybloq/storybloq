@@ -163,7 +163,6 @@ import { handleDuetCoordinate } from "../cli/commands/duet.js";
 // verbs on MCP (`storybloq_ruling_{create,get,list,supersede}`) -- citation
 // resolution is meant to be discoverable without shelling out to the CLI.
 import {
-  handleRulingGet,
   handleRulingGetWithLedger,
   handleRulingList,
   handleRulingCreate,

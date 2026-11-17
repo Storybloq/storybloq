@@ -66,6 +66,8 @@ export interface SpawnWorkerOptions {
   readonly autoLoad?: boolean;
   /** Handshake facts for the role; present only when the handler created the arrangement and started coordination. */
   readonly handshake?: SpawnHandshake;
+  /** T-575 section 10: a manual spawn's generated role carries the handover-line advice. */
+  readonly lineAdvice?: boolean;
   /** The pen's project root (where the arrangement lives). */
   readonly penProjectRoot: string;
   /** The worker's working directory, resolved by `resolveWorkerDir`. */
@@ -321,7 +323,12 @@ export interface WorkerRoleContext {
   readonly workerProjectRoot: string | null;
   readonly workerTaskId: string;
   readonly handshake?: SpawnHandshake;
+  /** T-575 section 10: a manual arrangement's generated role carries the line advice. */
+  readonly lineAdvice?: boolean;
 }
+
+/** T-575 section 10: the one line a manual spawn prints, and its generated role carries. */
+export const WORKER_LINE_ADVICE = "Handover line: to give this worker its own line, its first handover is `storybloq handover create --new-line --role worker`.";
 
 function sameRoot(a: string, b: string | null): boolean {
   if (b === null) return false;
@@ -367,7 +374,7 @@ export function defaultWorkerRole(pen: string, name: string, ctx: WorkerRoleCont
     `You are a WORKER session in a storybloq duet. Your session display name is \`${name}\`; it is how the pen addresses you. Keep it.`,
     "",
     `- The pen is the Claude Code session named \`${pen}\`. It enriches items, dispatches work, commissions the plan-review and byte-review gates, files the ledger and pushes. You never push, never write to the arrangement, and never edit CLAUDE.md, RULES.md or permission settings.`,
-    ledgerParagraph(ctx),
+    ctx.lineAdvice ? `${ledgerParagraph(ctx)} ${WORKER_LINE_ADVICE}` : ledgerParagraph(ctx),
     handshake,
     "- Every message to the pen carries the assignment id. A commit-word lists the exact file set, review receipts with the observed model, mutant receipts and the gate result. Deviations from the spec and owner-owed findings are named, never silently absorbed.",
     "- Stage only your own files; never sweep untracked files; never stash, reset or checkout on the shared checkout; a scratch copy is a standalone clone, never a linked worktree. Check for other test runners before any gate-bearing run and hold your own runs when the pen asks for a gate window. Build only after a commit.",
@@ -555,7 +562,7 @@ export function prepareWorkerArtifacts(root: string, opts: SpawnWorkerOptions, d
   if (!(PERMISSION_MODES as readonly string[]).includes(permissionMode)) {
     throw new Error(`Unknown permission mode "${permissionMode}"; one of ${PERMISSION_MODES.join(", ")}.`);
   }
-  const ctx: WorkerRoleContext = { workerDir: opts.workerDir, penProjectRoot: opts.penProjectRoot, workerProjectRoot: opts.workerProjectRoot, workerTaskId: opts.workerTaskId, ...(handshake ? { handshake } : {}) };
+  const ctx: WorkerRoleContext = { workerDir: opts.workerDir, penProjectRoot: opts.penProjectRoot, workerProjectRoot: opts.workerProjectRoot, workerTaskId: opts.workerTaskId, ...(handshake ? { handshake } : {}), ...(opts.lineAdvice ? { lineAdvice: true } : {}) };
 
   let rolePath: string;
   let roleSource: SpawnWorkerResult["roleSource"];

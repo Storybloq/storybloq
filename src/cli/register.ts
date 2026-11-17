@@ -3771,6 +3771,7 @@ export function registerDuetCommand(yargs: Argv): Argv {
               .option("terminal", { type: "string", describe: "macOS: open with this terminal app instead of the default handler" })
               .option("auto-load", { type: "boolean", default: true, describe: "Start the window with /story as its first prompt; --no-auto-load leaves the prompt empty" })
               .option("pen-task-id", { type: "string", describe: "The pen's client task id when the environment does not carry it (CLAUDE_CODE_SESSION_ID)" })
+              .option("continue", { type: "string", describe: "A replacement worker: continue this handover line on the worker's board (a file name from `storybloq handover lines`)" })
               .option("print", { type: "boolean", default: false, describe: "Print the command and the role it would write; creates nothing and writes nothing" })
               .option("recover", { type: "boolean", default: false, describe: "List interrupted spawns under .story/spawn/ with their reconciled state; launches nothing" })
               .option("open-line", { type: "string", describe: "With --recover: finish the worker's handover line for this worker task id; launches nothing" })
@@ -3803,6 +3804,7 @@ export function registerDuetCommand(yargs: Argv): Argv {
                 penTaskId: argv["pen-task-id"] as string | undefined,
                 recover: argv.recover as boolean,
                 openLine: argv["open-line"] as string | undefined,
+                continue: argv.continue as string | undefined,
               }, format, root);
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;

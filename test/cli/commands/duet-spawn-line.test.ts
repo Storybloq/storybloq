@@ -16,7 +16,7 @@ import { initProject } from "../../../src/core/init.js";
 import { memoFileName, readLineMemo } from "../../../src/core/handover-line-memo.js";
 import { splitLineage } from "../../../src/core/handover-lineage.js";
 import { readOpeningRecord, serializeOpeningRecord } from "../../../src/core/duet-spawn-line.js";
-import { readSpawnJournal, writeSpawnJournal, type Launcher } from "../../../src/core/duet-spawn.js";
+import { readSpawnJournal, writeSpawnJournal, WORKER_LINE_ADVICE, type Launcher } from "../../../src/core/duet-spawn.js";
 import { CliValidationError } from "../../../src/cli/helpers.js";
 import { runCli } from "../../fixtures/handover-lineage/harness.js";
 
@@ -322,5 +322,128 @@ describe("T-575 section 9: duet spawn --recover --open-line", () => {
         expect(mdFiles(dir), label).toEqual([]);
       }
     });
+  });
+});
+
+describe("T-575 C11b: a manual arrangement prints the advice and writes nothing", () => {
+  it("the advice is printed and in the generated role; handovers and telemetry unchanged; mode none, no record", async () => {
+    const dir = await newProject();
+    const snap = (p: string) => (existsSync(p) ? readdirSync(p, { recursive: true }).map(String).sort() : null);
+    const before = { h: snap(hdir(dir)), t: snap(join(dir, ".story", "telemetry")) };
+    const out = (await handleDuetSpawn({ name: "w", pen: "p", arrangement: "none" }, "md", dir, deps())).output;
+    expect(out).toContain(WORKER_LINE_ADVICE);
+    const j = onlyJournal(dir);
+    const role = readFileSync(readSpawnJournal(j)!.rolePath as string, "utf8");
+    expect(role).toContain(WORKER_LINE_ADVICE);
+    expect({ h: snap(hdir(dir)), t: snap(join(dir, ".story", "telemetry")) }).toEqual(before);
+    expect(readSpawnJournal(j)!.opening).toMatchObject({ mode: "none" });
+    expect(existsSync(recordOf(j))).toBe(false);
+  });
+
+  it("--print shows the advice line and the role carrying it; a custom role does not get it", async () => {
+    const dir = await newProject();
+    const out = (await handleDuetSpawn({ name: "w", pen: "p", arrangement: "none", print: true }, "md", dir, deps())).output;
+    expect(out.split(WORKER_LINE_ADVICE).length).toBe(3);
+    const custom = join(dir, "role.md");
+    writeFileSync(custom, "# Custom role\n");
+    await handleDuetSpawn({ name: "w2", pen: "p", arrangement: "none", role: custom }, "md", dir, deps());
+    const j = readdirSync(join(dir, ".story", "spawn")).filter((d) => d.startsWith("w2.")).map((d) => join(dir, ".story", "spawn", d, "w2.json"))[0]!;
+    expect(readFileSync(readSpawnJournal(j)!.rolePath as string, "utf8")).not.toContain(WORKER_LINE_ADVICE);
+    expect(existsSync(join(dir, ".story", "spawn"))).toBe(true);
+  });
+
+  it("an automatic spawn's role does not carry the advice", async () => {
+    const dir = await newProject();
+    await handleDuetSpawn(auto(), "md", dir, deps());
+    expect(readFileSync(readSpawnJournal(onlyJournal(dir))!.rolePath as string, "utf8")).not.toContain(WORKER_LINE_ADVICE);
+  });
+});
+
+describe("T-575 C13: duet spawn --continue <file>", () => {
+  const A = "2026-11-10-01-a.md";
+  const B = "2026-11-10-02-b.md";
+  const U = "2026-11-11-01-u.md";
+  async function chain(dir: string): Promise<void> {
+    const { appendLineage, serializeLineage } = await import("../../../src/core/handover-lineage.js");
+    mkdirSync(hdir(dir), { recursive: true });
+    writeFileSync(join(hdir(dir), A), appendLineage(body("A"), serializeLineage({ role: "worker" }).line));
+    writeFileSync(join(hdir(dir), B), appendLineage(body("B"), serializeLineage({ continues: A }).line));
+    writeFileSync(join(hdir(dir), U), body("U"));
+  }
+
+  it("a tip: the worker reads that line, the manager's memo is unchanged, the line prints", async () => {
+    const dir = await newProject();
+    await chain(dir);
+    const mgr = memoPath(dir, PEN);
+    mkdirSync(join(mgr, ".."), { recursive: true });
+    writeFileSync(mgr, JSON.stringify({ v: 1, task: PEN, tip: U, writing: null }) + "\n");
+    const mgrBytes = readFileSync(mgr, "utf8");
+    const res = await handleDuetSpawn(auto({ continue: B }), "json", dir, deps());
+    const data = jsonData(res.output);
+    expect(data.line).toEqual({ outcome: "continued", file: B, from: null, board: dir, note: null });
+    expect(readLineMemo(dir, data.workerTaskId)?.tip).toBe(B);
+    expect(readFileSync(mgr, "utf8")).toBe(mgrBytes);
+    expect(readSpawnJournal(onlyJournal(dir))!.opening).toEqual({ mode: "continue", board: dir, continueFile: B });
+    const md = await runCli(dir, ["handover", "latest", "--as", data.workerTaskId]);
+    expect(md.stdout).toContain("carry on with B");
+  });
+
+  it("a non-tip and a missing target each stop before the launch, naming the board; the non-tip lists the tips", async () => {
+    const dir = await newProject();
+    await chain(dir);
+    for (const [i, target, needle] of [[1, A, `descendant tips: ${B}`], [2, "2026-11-12-01-z.md", "not_found"]] as const) {
+      let launched = 0;
+      const err = await handleDuetSpawn(auto({ name: `w${i}`, continue: target }), "json", dir, deps({ launcher: () => { launched++; return "x"; } })).then(() => null, (e: Error) => e);
+      expect(launched, target).toBe(0);
+      expect(err?.message, target).toContain(`on ${dir} for worker`);
+      expect(err?.message, target).toContain(needle);
+    }
+  });
+
+  it("the default head: no memo, printed as continuing the default line", async () => {
+    const dir = await newProject();
+    await chain(dir);
+    const res = await handleDuetSpawn(auto({ continue: U }), "md", dir, deps());
+    expect(res.output).toContain("Worker handover line: continues the default line");
+    const W = /Worker task id: (\S+)/.exec(res.output)![1]!;
+    expect(existsSync(memoPath(dir, W))).toBe(false);
+  });
+
+  it("works in manual mode; refuses a bad name and --recover; --print says what it would do and writes nothing", async () => {
+    const dir = await newProject();
+    await chain(dir);
+    const data = jsonData((await handleDuetSpawn({ name: "w", pen: "p", arrangement: "none", continue: B }, "json", dir, deps())).output);
+    expect(data.line).toMatchObject({ outcome: "continued", file: B });
+    expect(readFileSync(readSpawnJournal(onlyJournal(dir))!.rolePath as string, "utf8")).not.toContain(WORKER_LINE_ADVICE);
+    expect((await refusal(handleDuetSpawn(auto({ name: "w2", continue: "../x.md" }), "md", dir, deps()))).code).toBe("invalid_input");
+    expect((await refusal(handleDuetSpawn({ recover: true, continue: B }, "md", dir))).code).toBe("invalid_input");
+    const dir2 = await newProject();
+    const out = (await handleDuetSpawn(auto({ continue: B, print: true }), "md", dir2, deps())).output;
+    expect(out).toContain(`Would continue ${B} on ${dir2}`);
+    expect(existsSync(join(dir2, ".story", "spawn"))).toBe(false);
+  });
+
+  it("two boards holding the same filename: --continue resolves the node's file, and the node's opening has no from", async () => {
+    const dir = await newProject();
+    await chain(dir);
+    const node = realpathSync(mkdtempSync(join(tmpdir(), "duet-line-node-")));
+    dirs.push(node);
+    await initProject(node, { name: "node" });
+    mkdirSync(hdir(node), { recursive: true });
+    writeFileSync(join(hdir(node), B), body("node B"));
+    const res = jsonData((await handleDuetSpawn(auto({ dir: node, continue: B }), "json", dir, deps())).output);
+    expect(res.line).toMatchObject({ outcome: "continued", file: B, board: node, note: "the default line" });
+    const opened = jsonData((await handleDuetSpawn(auto({ name: "w2", dir: node }), "json", dir, deps())).output);
+    expect(opened.line).toMatchObject({ outcome: "opened", from: null, board: node });
+  });
+
+  it("a --continue spawn that crashed after artifacts is completed by the replay, which prints the script", async () => {
+    const dir = await newProject();
+    await chain(dir);
+    await handleDuetSpawn(auto({ continue: B }), "json", dir, deps({ journal: crashAfter("artifacts") })).catch(() => null);
+    const entry = readSpawnJournal(onlyJournal(dir))!;
+    const out = (await replay(dir, entry.workerTaskId as string)).output;
+    expect(out).toContain(`Worker handover line: continues ${B}`);
+    expect(out).toContain(`Start the worker with: ${entry.scriptPath}`);
   });
 });

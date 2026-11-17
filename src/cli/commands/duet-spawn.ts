@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  prepareWorkerArtifacts, launchWorker, prepareSpawnDir, writeSpawnJournal, readSpawnJournal, mintWorkerTaskId, resolveWorkerDir, resolvePermissionMode,
+  prepareWorkerArtifacts, launchWorker, prepareSpawnDir, WORKER_LINE_ADVICE, writeSpawnJournal, readSpawnJournal, mintWorkerTaskId, resolveWorkerDir, resolvePermissionMode,
   permissionModeReason, buildWorkerCommand, defaultWorkerRole, validateWorkerName, detectPenPermissionMode, osLauncher, PERMISSION_MODES, shellQuote,
   handshakeSection, ledgerParagraph, SPAWN_STAGES, validateWorkerTaskId, resolveWorkerModel, workerModelReason, launchProjectRoot, launchEnvPrefix,
   type Launcher, type PenModeDetector, type SpawnHandshake, type SpawnStage, type SpawnWorkerResult,
@@ -13,6 +13,7 @@ import {
   type OpeningDeps, type OpeningOutcome, type OpeningPlan, type OpeningResult,
 } from "../../core/duet-spawn-line.js";
 import { readBoundedNoFollow } from "../../presence/io.js";
+import { isMemoFile } from "../../core/handover-line-memo.js";
 import { z } from "zod";
 import { ArrangementIdSchema, CLIENT_TASK_ID_PATTERN, IssueRefSchema, TicketRefSchema } from "../../models/types.js";
 import { NodeQualifiedBoundRefSchema } from "../../models/arrangement.js";
@@ -55,6 +56,8 @@ export interface DuetSpawnArgs {
   readonly recover?: boolean;
   /** T-575 section 9: with --recover, replay the opening stage of the spawn whose worker task id this is. */
   readonly openLine?: string;
+  /** T-575 section 8: the replacement worker continues this line (a MemoFile on the worker's board). */
+  readonly continue?: string;
 }
 
 export interface DuetSpawnDeps {
@@ -150,6 +153,10 @@ async function validate(args: DuetSpawnArgs, root: string, penTaskId: string | n
 
 export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat, root: string, deps: DuetSpawnDeps = {}): Promise<CommandResult> {
   if (args.openLine !== undefined && !args.recover) refuse("--open-line is a replay: pass it with --recover");
+  if (args.continue !== undefined) {
+    if (args.recover) refuse("--continue starts a worker; it does not combine with --recover");
+    if (!isMemoFile(args.continue)) refuse(`--continue ${args.continue}: not a handover file name (a bare name in .story/handovers/)`);
+  }
   if (args.recover) return args.openLine !== undefined ? replayOpening(root, format, args.openLine) : recover(root, format);
   const client = deps.client ?? currentStorybloqClient();
   const penTaskId = currentClientTaskId(args.penTaskId ?? null);
@@ -170,7 +177,9 @@ export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat,
   const workerTaskId = mintWorkerTaskId();
   const proposedCoordinationSessionId = randomUUID();
   // T-575 section 4: the plan, written with the first stage and never changed.
-  const opening: OpeningPlan = { mode: v.decision.mode === "none" ? "none" : "new-line", board: realpathSync(v.workerProjectRoot ?? root), continueFile: null };
+  const opening: OpeningPlan = args.continue !== undefined
+    ? { mode: "continue", board: realpathSync(v.workerProjectRoot ?? root), continueFile: args.continue }
+    : { mode: v.decision.mode === "none" ? "none" : "new-line", board: realpathSync(v.workerProjectRoot ?? root), continueFile: null };
   const base: Record<string, unknown> = { name, pen, workerTaskId, penTaskId, penClient: client, workerDir: v.workerDir, bounds, arrangementMode: v.decision.mode, proposedCoordinationSessionId: v.decision.mode === "auto" ? proposedCoordinationSessionId : null, arrangementId: null, createdAt: new Date().toISOString(), opening };
   let last: SpawnStage | null = null;
   const journal = (stage: SpawnStage, extra: Record<string, unknown> = {}) => {
@@ -207,6 +216,7 @@ export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat,
     const prepared = prepareWorkerArtifacts(root, {
       name, pen, model: args.model, dir: args.dir, role: args.role, terminal: args.terminal, permissionMode: args.permissionMode,
       workerTaskId, autoLoad, ...(handshake ? { handshake } : {}), penProjectRoot: root, workerDir: v.workerDir, workerProjectRoot: v.workerProjectRoot, spawnDir, journal,
+      ...(opening.mode === "none" ? { lineAdvice: true } : {}),
     }, detect);
     // T-575 section 5: after the role and script, before the launch. A stop throws and nothing launches.
     let line: SpawnLineView | null = null;
@@ -414,7 +424,7 @@ function render(r: SpawnResultView, format: OutputFormat): string {
     `Script: ${r.scriptPath}`,
     `Journal: ${r.journalPath}`,
   ];
-  if (r.line !== null) lines.push(lineText(r.line));
+  lines.push(r.line !== null ? lineText(r.line) : WORKER_LINE_ADVICE);
   if (r.workerProjectRoot === null) lines.push(`Worker ledger: the pen's board at ${realpathOrSelf(r.penProjectRoot)}; ${r.workerDir} carries no ledger`);
   else if (r.workerProjectRoot !== realpathOrSelf(r.penProjectRoot)) lines.push(`Worker ledger: ${r.workerProjectRoot}`);
   if (r.arrangement.mode === "auto" && r.handshake) {
@@ -543,7 +553,10 @@ function renderPrint(args: DuetSpawnArgs, root: string, v: Awaited<ReturnType<ty
   const placeholderHandshake: SpawnHandshake | undefined = auto ? { penTaskId: penTaskId!, penClient: "claude", arrangementId: "<created at launch>", coordinationSessionId: "<started at launch>", nonce: "<nonce issued at launch>" } : undefined;
   const rolePath = `<${name}-role.md, written at launch>`;
   const command = `cd ${shellQuote(v.workerDir)} && ${launchEnvPrefix(launchProjectRoot(root, v.workerProjectRoot))}claude -n ${shellQuote(name)} --session-id '<minted at launch>' --model ${shellQuote(model)} --permission-mode ${shellQuote(mode)} --append-system-prompt-file '${rolePath}'${autoLoad ? " '/story'" : ""}`;
-  const ctx = { workerDir: v.workerDir, penProjectRoot: root, workerProjectRoot: v.workerProjectRoot, workerTaskId: "<minted at launch>", ...(placeholderHandshake ? { handshake: placeholderHandshake } : {}) };
+  const manual = args.continue === undefined && !auto;
+  const ctx = { workerDir: v.workerDir, penProjectRoot: root, workerProjectRoot: v.workerProjectRoot, workerTaskId: "<minted at launch>", ...(placeholderHandshake ? { handshake: placeholderHandshake } : {}), ...(manual ? { lineAdvice: true } : {}) };
+  const board = realpathOrSelf(v.workerProjectRoot ?? root);
+  const lineLine = args.continue !== undefined ? `Would continue ${args.continue} on ${board}` : manual ? WORKER_LINE_ADVICE : null;
   let role: string;
   if (args.role) {
     const custom = readFileSync(isAbsolute(args.role) ? args.role : resolve(root, args.role), "utf-8").replace(/\s+$/, "");
@@ -554,7 +567,7 @@ function renderPrint(args: DuetSpawnArgs, root: string, v: Awaited<ReturnType<ty
   const data = {
     name, workerTaskId: "<minted at launch>", command, model, modelSource, modelReason: workerModelReason(modelSource), permissionMode: mode, permissionModeSource: source, permissionModeReason: permissionModeReason(source), autoLoad, launch: "printed" as const, launcher: null,
     arrangement: auto ? { mode: "auto" as const, status: "skipped (--print)", bounds } : { mode: "none" as const, reason: v.decision.reason ?? "" },
-    workerDir: v.workerDir, workerProjectRoot: v.workerProjectRoot, role,
+    workerDir: v.workerDir, workerProjectRoot: v.workerProjectRoot, role, line: lineLine,
   };
   if (format === "json") return { output: JSON.stringify({ version: 1, data }, null, 2), exitCode: ExitCode.OK };
   const lines = [
@@ -565,6 +578,7 @@ function renderPrint(args: DuetSpawnArgs, root: string, v: Awaited<ReturnType<ty
     `Model: ${model} (${workerModelReason(modelSource)})`,
     `Permission mode: ${mode} (${permissionModeReason(source)})`,
     auto ? `Arrangement: auto (skipped in --print). Bounds: ${bounds.join(", ")}` : `Arrangement: none (${v.decision.reason})`,
+    ...(lineLine !== null ? [lineLine] : []),
     "",
     "Role the worker would receive:",
     "",

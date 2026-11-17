@@ -181,6 +181,7 @@ describe("T-575 section 9: duet spawn --recover --open-line", () => {
     const dir = await newProject();
     expect((await refusal(handleDuetSpawn({ name: "w", pen: "p", openLine: PEN }, "md", dir))).code).toBe("invalid_input");
     expect((await refusal(replay(dir, "not an id"))).code).toBe("invalid_input");
+    for (const bad of [".x", "-x", "..", "task.1"]) expect((await refusal(replay(dir, bad))).code, bad).toBe("invalid_input");
     expect((await refusal(replay(dir, "22222222-2222-4333-8444-555555555555"))).code).toBe("not_found");
   });
 
@@ -299,6 +300,12 @@ describe("T-575 section 9: duet spawn --recover --open-line", () => {
         ["name differs from the file", (e) => { e.name = "x"; }],
         ["workerDir missing", (e) => { e.workerDir = join(tmpdir(), "duet-line-missing-dir"); }],
         ["workerDir a file", (e, dir) => { e.workerDir = join(dir, ".story", "config.json"); }],
+        ["pen task id with a leading dot", (e) => { e.penTaskId = ".pen"; }],
+        ["pen task id with a leading dash", (e) => { e.penTaskId = "-pen"; }],
+        ["arrangement id with a leading dot", (e) => { e.arrangementId = ".a"; }],
+        ["arrangement id with a leading dash", (e) => { e.arrangementId = "-a"; }],
+        ["a bound with a leading dot", (e) => { e.bounds = [".T-001"]; }],
+        ["a bound with a leading dash", (e) => { e.bounds = ["-T-001"]; }],
       ];
       for (const [label, f] of cases) {
         const { dir, j, id } = await crashed();

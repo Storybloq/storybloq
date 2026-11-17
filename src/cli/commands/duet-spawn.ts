@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import {
   prepareWorkerArtifacts, launchWorker, prepareSpawnDir, writeSpawnJournal, readSpawnJournal, mintWorkerTaskId, resolveWorkerDir, resolvePermissionMode,
   permissionModeReason, buildWorkerCommand, defaultWorkerRole, validateWorkerName, detectPenPermissionMode, osLauncher, PERMISSION_MODES, shellQuote,
-  handshakeSection, ledgerParagraph, SPAWN_STAGES, resolveWorkerModel, workerModelReason, launchProjectRoot, launchEnvPrefix,
+  handshakeSection, ledgerParagraph, SPAWN_STAGES, validateWorkerTaskId, resolveWorkerModel, workerModelReason, launchProjectRoot, launchEnvPrefix,
   type Launcher, type PenModeDetector, type SpawnHandshake, type SpawnStage, type SpawnWorkerResult,
 } from "../../core/duet-spawn.js";
 import { ExitCode } from "../../core/output-formatter.js";
@@ -13,7 +13,9 @@ import {
   type OpeningDeps, type OpeningOutcome, type OpeningPlan, type OpeningResult,
 } from "../../core/duet-spawn-line.js";
 import { readBoundedNoFollow } from "../../presence/io.js";
-import { normalizeClientTaskId } from "../../autonomous/client-profile.js";
+import { z } from "zod";
+import { ArrangementIdSchema, CLIENT_TASK_ID_PATTERN, IssueRefSchema, TicketRefSchema } from "../../models/types.js";
+import { NodeQualifiedBoundRefSchema } from "../../models/arrangement.js";
 import { basename, dirname } from "node:path";
 import { lstatSync } from "node:fs";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
@@ -334,6 +336,9 @@ export function reconcileSpawnJournal(root: string, journal: Record<string, unkn
   return { name, workerTaskId, stage, launch, coordination, arrangementId, cleanup, opening, recommendation };
 }
 
+/** A journal bound, validated as the arrangement validates its bounds. */
+const BOUND_REF = z.union([TicketRefSchema, IssueRefSchema, NodeQualifiedBoundRefSchema]);
+
 /** Stages at which the role and the script exist. */
 const ARTIFACT_STAGES: readonly string[] = ["artifacts", "launch-attempted", "launched", "launch-manual"];
 
@@ -446,7 +451,7 @@ export function lineText(l: SpawnLineView): string {
  * replays the opening stage. Launches nothing and never writes the journal.
  */
 async function replayOpening(root: string, format: OutputFormat, id: string): Promise<CommandResult> {
-  if (normalizeClientTaskId(id) !== id) refuse("--open-line takes a worker task id.");
+  try { validateWorkerTaskId(id); } catch { refuse("--open-line takes a worker task id (the uuid the spawn minted)."); }
   const penRoot = realpathSync(root);
   const found = findJournalsSafely(penRoot).filter((j) => j.entry !== null && j.entry.workerTaskId === id);
   if (found.length === 0) throw new CliValidationError("not_found", `No spawn journal for worker ${id} under .story/spawn/.`);
@@ -460,9 +465,9 @@ async function replayOpening(root: string, format: OutputFormat, id: string): Pr
   const e = entry as Record<string, unknown>;
   const pen = typeof e.pen === "string" ? e.pen : "";
   try { validateWorkerName(pen); } catch { bad("its pen name is not valid"); }
-  const penTaskId = e.penTaskId === null || e.penTaskId === undefined ? null : typeof e.penTaskId === "string" && normalizeClientTaskId(e.penTaskId) === e.penTaskId ? e.penTaskId : bad("its pen task id is not valid");
-  const arrangementId = e.arrangementId === null || e.arrangementId === undefined ? null : typeof e.arrangementId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(e.arrangementId) ? e.arrangementId : bad("its arrangement id is not valid");
-  const bounds = Array.isArray(e.bounds) && e.bounds.every((b) => typeof b === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(b)) ? e.bounds as string[] : bad("its bounds are not valid");
+  const penTaskId = e.penTaskId === null || e.penTaskId === undefined ? null : typeof e.penTaskId === "string" && CLIENT_TASK_ID_PATTERN.test(e.penTaskId) ? e.penTaskId : bad("its pen task id is not valid");
+  const arrangementId = e.arrangementId === null || e.arrangementId === undefined ? null : ArrangementIdSchema.safeParse(e.arrangementId).success ? e.arrangementId as string : bad("its arrangement id is not valid");
+  const bounds = Array.isArray(e.bounds) && e.bounds.every((b) => BOUND_REF.safeParse(b).success) ? e.bounds as string[] : bad("its bounds are not valid");
   let board: string;
   try {
     const w = resolveWorkerDir(penRoot, decoded.workerDir);

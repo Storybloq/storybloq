@@ -524,6 +524,26 @@ export function readSpawnJournal(path: string): Record<string, unknown> | null {
  * have opened the window, so recovery treats that stage as an unknown outcome.
  */
 export function spawnWorker(root: string, opts: SpawnWorkerOptions, launcher: Launcher = osLauncher, detect: PenModeDetector = detectPenPermissionMode): SpawnWorkerResult {
+  return launchWorker(prepareWorkerArtifacts(root, opts, detect), launcher);
+}
+
+/** T-575 plan section 3, refactor 3: everything `spawnWorker` does up to and including the `artifacts` stage. */
+export interface PreparedWorker {
+  readonly opts: SpawnWorkerOptions;
+  readonly scriptPath: string;
+  readonly rolePath: string;
+  readonly roleSource: SpawnWorkerResult["roleSource"];
+  readonly command: string;
+  readonly projectRoot: string | null;
+  readonly autoLoad: boolean;
+  readonly handshake: SpawnHandshake | null;
+  readonly permissionMode: string;
+  readonly permissionModeSource: SpawnWorkerResult["permissionModeSource"];
+  readonly model: string;
+  readonly modelSource: SpawnWorkerResult["modelSource"];
+}
+
+export function prepareWorkerArtifacts(root: string, opts: SpawnWorkerOptions, detect: PenModeDetector = detectPenPermissionMode): PreparedWorker {
   validateWorkerName(opts.name);
   validateWorkerName(opts.pen);
   if (opts.name === opts.pen) throw new Error("The worker name must differ from the pen name.");
@@ -566,7 +586,12 @@ export function spawnWorker(root: string, opts: SpawnWorkerOptions, launcher: La
   writeFileSync(scriptPath, buildSpawnScript({ name: opts.name, pen: opts.pen, dir: opts.workerDir, command, projectRoot }), { encoding: "utf-8", flag: "wx" });
   chmodSync(scriptPath, 0o755);
   opts.journal("artifacts", { rolePath, scriptPath, roleSource });
+  return { opts, scriptPath, rolePath, roleSource, command, projectRoot, autoLoad, handshake, permissionMode, permissionModeSource, model, modelSource };
+}
 
+/** T-575 plan section 3, refactor 3: `launch-attempted`, the launcher, `launched` or `launch-manual`, and the result. */
+export function launchWorker(prepared: PreparedWorker, launcher: Launcher = osLauncher): SpawnWorkerResult {
+  const { opts, scriptPath, rolePath, roleSource, command, projectRoot, autoLoad, handshake, permissionMode, permissionModeSource, model, modelSource } = prepared;
   opts.journal("launch-attempted");
   const used = launcher(scriptPath, opts.terminal);
   const launch: "opened" | "printed" = used === null ? "printed" : "opened";

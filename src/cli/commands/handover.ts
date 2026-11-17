@@ -175,6 +175,95 @@ async function atAgainstHead(root: string, at: string | null): Promise<Pick<Extr
   return Number.isInteger(n) ? { atState: "counted", commitsSince: n } : { atState: "unavailable", commitsSince: null };
 }
 
+/** T-575 plan section 3, refactor 2: why `continueLineUnlocked` refused. Nothing was written. */
+export type ContinueRefusal =
+  | { readonly code: "not_found" | "invalid_input" | "io_error"; readonly message: string }
+  | { readonly code: "scan_incomplete"; readonly message: string; readonly unread: readonly string[] }
+  | { readonly code: "not_a_tip"; readonly message: string; readonly tips: readonly string[] };
+
+export type ContinueCoreOutcome =
+  | { readonly ok: true; readonly result: ContinueResult; readonly at: string | null }
+  | { readonly ok: false; readonly refusal: ContinueRefusal };
+
+/**
+ * T-575 plan section 3, refactor 2: rules 5 to 10 of slice B section 5 for
+ * `handover continue <file>` (and the `--default` removal when `file` is
+ * null). The caller holds `withProjectLock(root, { strict: false })` and has
+ * resolved the identity. A refusal is returned, never thrown, and writes
+ * nothing; `at` is the tip's `at` for the caller's HEAD comparison.
+ */
+export async function continueLineUnlocked(
+  root: string,
+  taskId: string,
+  file: string | null,
+  opts: { readonly fork?: boolean; readonly handoversDir?: string } = {},
+): Promise<ContinueCoreOutcome> {
+  const absRoot = resolve(root);
+  const handoversDir = opts.handoversDir ?? join(absRoot, ".story", "handovers");
+  const memoPath = lineMemoDisplayPath(taskId);
+  const refuse = (code: "not_found" | "invalid_input" | "io_error", message: string): ContinueCoreOutcome => ({ ok: false, refusal: { code, message } });
+  const listWarnings: LoadWarning[] = [];
+  const names = await listHandovers(handoversDir, absRoot, listWarnings);
+  const enumerated = !listWarnings.some((w) => w.type === "parse_error");
+  const scan = scanHandoverLineage(handoversDir, enumerated ? names : [], enumerated);
+  const graph = buildLineageGraph(scan);
+
+  const toDefault = (): ContinueCoreOutcome => {
+    const outcome = removeLineMemo(absRoot, taskId);
+    if (outcome === "failed") return refuse("io_error", `Could not remove the line memo ${memoPath}; this session is still on its previous line.`);
+    return { ok: true, result: { action: "default", memo: outcome, head: graph.head }, at: null };
+  };
+  if (file === null) return toDefault();
+
+  if (!isMemoFile(file)) return refuse("invalid_input", "Not a handover file name.");
+  const entry = scan.files.find((f) => f.name === file);
+  if (entry === undefined) return refuse("not_found", `Handover not found: ${file}${enumerated ? "" : " (the handovers folder could not be listed)"}`);
+  if (entry.state === "unknown") return refuse("invalid_input", `Not a regular readable handover: ${file}`);
+  if (file === graph.head) return toDefault();
+
+  if (!scan.complete && opts.fork !== true) {
+    const unread = scan.files.filter((f) => f.state === "unknown").map((f) => f.name);
+    return { ok: false, refusal: { code: "scan_incomplete", unread, message: `${unread.length} handover(s) could not be read, so ${file} cannot be confirmed as a tip: ${listSome(unread)}. Pass --fork to continue it anyway.` } };
+  }
+  if ((graph.children.get(file) ?? []).length > 0 && opts.fork !== true) {
+    const open = new Set(graph.openTips);
+    const tips: string[] = [];
+    const visited = new Set<string>([file]);
+    const queue = [...(graph.children.get(file) ?? [])];
+    for (let i = 0; i < queue.length && i <= scan.files.length; i++) {
+      const n = queue[i]!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      if (open.has(n)) tips.push(n);
+      queue.push(...(graph.children.get(n) ?? []));
+    }
+    const listed = tips.length > 0 ? `; its open tips: ${listSome(tips)}` : "";
+    return { ok: false, refusal: { code: "not_a_tip", tips, message: `${file} is not a tip: it has a newer handover on its line${listed}. Continue a tip, or pass --fork to branch from it.` } };
+  }
+
+  if (!writeLineMemo(absRoot, { v: 1, task: taskId, tip: file, writing: null })) {
+    return refuse("io_error", `Could not write the line memo ${memoPath}.`);
+  }
+  const lineage = entry.state === "linked" ? entry.lineage?.lineage ?? null : null;
+  const at = lineage?.at ?? null;
+  return {
+    ok: true,
+    at,
+    result: {
+      action: "continue",
+      tip: file,
+      role: lineage?.role ?? null,
+      by: lineage?.by ?? null,
+      length: walkLine(graph, file).files.length,
+      absorbedBy: [...(graph.absorbedBy.get(file) ?? [])],
+      at,
+      atState: "none",
+      commitsSince: null,
+      pickup: PICKUP_PROMPT,
+    },
+  };
+}
+
 /**
  * ISS-1499 slice B: `handover continue <file> | --default` (plan section 5).
  * Puts this session on a line by writing its memo, or back on the default
@@ -194,72 +283,14 @@ export async function handleHandoverContinue(ctx: CommandContext, opts: Handover
     throw new CliValidationError("no_identity", "No session identity resolved; pass --as <clientTaskId>.");
   }
   const root = resolve(ctx.root);
-  const memoPath = lineMemoDisplayPath(taskId);
   let result: ContinueResult | null = null;
   let at: string | null = null;
 
   await withProjectLock(root, { strict: false }, async () => {
-    const listWarnings: LoadWarning[] = [];
-    const names = await listHandovers(ctx.handoversDir, root, listWarnings);
-    const enumerated = !listWarnings.some((w) => w.type === "parse_error");
-    const scan = scanHandoverLineage(ctx.handoversDir, enumerated ? names : [], enumerated);
-    const graph = buildLineageGraph(scan);
-
-    const toDefault = (): void => {
-      const outcome = removeLineMemo(root, taskId);
-      if (outcome === "failed") {
-        throw new CliValidationError("io_error", `Could not remove the line memo ${memoPath}; this session is still on its previous line.`);
-      }
-      result = { action: "default", memo: outcome, head: graph.head };
-    };
-    if (!hasFile) return toDefault();
-
-    const file = opts.file as string;
-    if (!isMemoFile(file)) throw new CliValidationError("invalid_input", "Not a handover file name.");
-    const entry = scan.files.find((f) => f.name === file);
-    if (entry === undefined) {
-      throw new CliValidationError("not_found", `Handover not found: ${file}${enumerated ? "" : " (the handovers folder could not be listed)"}`);
-    }
-    if (entry.state === "unknown") throw new CliValidationError("invalid_input", `Not a regular readable handover: ${file}`);
-    if (file === graph.head) return toDefault();
-
-    if (!scan.complete && opts.fork !== true) {
-      const unread = scan.files.filter((f) => f.state === "unknown").map((f) => f.name);
-      throw new CliValidationError("scan_incomplete", `${unread.length} handover(s) could not be read, so ${file} cannot be confirmed as a tip: ${listSome(unread)}. Pass --fork to continue it anyway.`);
-    }
-    if ((graph.children.get(file) ?? []).length > 0 && opts.fork !== true) {
-      const open = new Set(graph.openTips);
-      const tips: string[] = [];
-      const visited = new Set<string>([file]);
-      const queue = [...(graph.children.get(file) ?? [])];
-      for (let i = 0; i < queue.length && i <= scan.files.length; i++) {
-        const n = queue[i]!;
-        if (visited.has(n)) continue;
-        visited.add(n);
-        if (open.has(n)) tips.push(n);
-        queue.push(...(graph.children.get(n) ?? []));
-      }
-      const listed = tips.length > 0 ? `; its open tips: ${listSome(tips)}` : "";
-      throw new CliValidationError("not_a_tip", `${file} is not a tip: it has a newer handover on its line${listed}. Continue a tip, or pass --fork to branch from it.`);
-    }
-
-    if (!writeLineMemo(root, { v: 1, task: taskId, tip: file, writing: null })) {
-      throw new CliValidationError("io_error", `Could not write the line memo ${memoPath}.`);
-    }
-    const lineage = entry.state === "linked" ? entry.lineage?.lineage ?? null : null;
-    at = lineage?.at ?? null;
-    result = {
-      action: "continue",
-      tip: file,
-      role: lineage?.role ?? null,
-      by: lineage?.by ?? null,
-      length: walkLine(graph, file).files.length,
-      absorbedBy: [...(graph.absorbedBy.get(file) ?? [])],
-      at,
-      atState: "none",
-      commitsSince: null,
-      pickup: PICKUP_PROMPT,
-    };
+    const out = await continueLineUnlocked(root, taskId, hasFile ? opts.file as string : null, { fork: opts.fork === true, handoversDir: ctx.handoversDir });
+    if (!out.ok) throw new CliValidationError(out.refusal.code, out.refusal.message);
+    result = out.result;
+    at = out.at;
   });
 
   let final = result as ContinueResult | null;
@@ -1047,40 +1078,62 @@ export const createMemoSeams: {
   beforeFinalMemo: ((file: string) => void) | null;
 } = { afterIntent: null, beforeFinalMemo: null };
 
+/** ISS-1499 slice B2 (T-575): what a create writes, before the lock. */
+export interface HandoverCreateInput {
+  readonly content: string;
+  readonly slug: string;
+  /** The caller's identity when no `--as` is given (`intel.clientTaskId`). */
+  readonly clientTaskId?: string | null;
+  /** The CLI lineage flags; MCP passes none. */
+  readonly lineage?: HandoverCreateLineage | null;
+}
+
 /**
- * Creates a handover markdown file.
- * Runs inside withProjectLock for atomic filename allocation + write.
+ * T-575 plan section 3, refactor 1: called once per candidate write attempt,
+ * after its filename is allocated and its final bytes are composed, before its
+ * memo intent and its file are written. A throw writes nothing for that
+ * candidate, is not retried, and is rethrown by the core.
  */
-export async function handleHandoverCreate(
-  content: string,
-  slugRaw: string,
-  format: OutputFormat,
-  root: string,
-  /** T-499: the caller's identity for the handover stamp; `stamp: false` skips it (tests, batch tooling). */
-  intel: {
-    readonly clientTaskId?: string | null;
-    readonly stamp?: boolean;
-    readonly now?: number;
-    readonly projectsDir?: string;
-    /**
-     * ISS-1214: which surface is asking. It decides which skips are worth
-     * reporting (a terminal is never a Claude session; an MCP caller always
-     * should be) and whether a server-staleness claim can be made at all.
-     */
-    readonly surface?: "mcp" | "cli";
-  } = {},
-  /** ISS-1499: the CLI lineage flags. MCP passes none; a content line still applies. */
-  lineage: HandoverCreateLineage | null = null,
-): Promise<CommandResult> {
+export interface HandoverCreateHooks {
+  readonly beforeWrite?: (planned: { readonly file: string; readonly sha256: string }) => void;
+}
+
+export interface HandoverCreateCoreResult {
+  readonly filename: string;
+  readonly lineage: CreateLineageResult | null;
+}
+
+/** The part of a create that runs before the project lock: validation, the lineage plan, `at` and `by`. */
+export interface HandoverCreatePrep {
+  readonly content: string;
+  readonly slug: string;
+  readonly date: string;
+  readonly absRoot: string;
+  readonly lineageFlags: HandoverCreateLineage | null;
+  readonly plan: LineagePlan;
+  readonly lineageResult: CreateLineageResult | null;
+  readonly taskId: string | null;
+  readonly memoSource: boolean;
+  readonly consultMemo: boolean;
+  readonly asInvalid: boolean;
+  readonly toWrite: string;
+  readonly at: string | null;
+  readonly by: string | null;
+}
+
+export async function prepareHandoverCreate(root: string, input: HandoverCreateInput): Promise<HandoverCreatePrep> {
+  const content = input.content;
+  const lineage = input.lineage ?? null;
+  const slugRaw = input.slug;
+  const intel = { clientTaskId: input.clientTaskId };
   if (!content.trim()) {
     throw new CliValidationError("invalid_input", "Handover content is empty");
   }
 
   const slug = normalizeSlug(slugRaw);
   const date = handoverFilenameDate(new Date(), false);
-  let filename: string | undefined;
   const absRoot = resolve(root);
-  let plan = planLineage(content, lineage);
+  const plan = planLineage(content, lineage);
   let lineageResult: CreateLineageResult | null = null;
   // Slice B, plan section 6: the identity whose memo this create reads and
   // advances. An invalid --as is no identity, named, and the write goes on.
@@ -1089,9 +1142,6 @@ export async function handleHandoverCreate(
   const memoSource = plan.kind === "none" || (plan.kind === "unlinked" && plan.noSource === true);
   const consultMemo = taskId !== null && (memoSource || plan.kind === "linked");
   const memoMayLink = consultMemo && memoSource && readLineMemo(absRoot, taskId) !== null;
-  const lateWarnings: LineageWarning[] = asInvalid ? [warn("identity_invalid")] : [];
-  let resolution: MemoResolution = { kind: "none" };
-  let intentWritten = false;
   let toWrite = content;
   if (plan.kind === "unlinked") {
     toWrite = plan.bytes;
@@ -1106,7 +1156,45 @@ export async function handleHandoverCreate(
     [at, by] = await Promise.all([gitShortHead(absRoot), gitUserEmail(absRoot)]);
   }
 
-  await withProjectLock(root, { strict: false }, async () => {
+  return { content, slug, date, absRoot, lineageFlags: lineage, plan, lineageResult, taskId, memoSource, consultMemo, asInvalid, toWrite, at, by };
+}
+
+/**
+ * T-575 plan section 3, refactor 1: the body `handleHandoverCreate` runs
+ * inside `withProjectLock(root, { strict: false })`. The caller holds that
+ * lock. Without `prep` it prepares first (still unlocked work, run under the
+ * caller's lock); without hooks it writes exactly what the handler writes.
+ */
+export async function createHandoverUnlocked(
+  root: string,
+  input: HandoverCreateInput,
+  hooks: HandoverCreateHooks = {},
+  prep?: HandoverCreatePrep,
+): Promise<HandoverCreateCoreResult> {
+  const p = prep ?? await prepareHandoverCreate(root, input);
+  const { content, slug, date, absRoot, taskId, memoSource, consultMemo, at, by } = p;
+  const lineage = p.lineageFlags;
+  let plan = p.plan;
+  let lineageResult = p.lineageResult;
+  let toWrite = p.toWrite;
+  let filename: string | undefined;
+  let resolution: MemoResolution = { kind: "none" };
+  let intentWritten = false;
+  const lateWarnings: LineageWarning[] = p.asInvalid ? [warn("identity_invalid")] : [];
+  // A throw from the hook is never an EEXIST retry, whatever its code.
+  const hookFailed = new WeakSet<object>();
+  const beforeWrite = (candidate: string): void => {
+    if (!hooks.beforeWrite) return;
+    try {
+      hooks.beforeWrite({ file: candidate, sha256: digestBytes(Buffer.from(toWrite, "utf-8")) });
+    } catch (err) {
+      if (err !== null && typeof err === "object") hookFailed.add(err);
+      throw err;
+    }
+  };
+
+  // The locked body: the caller holds `withProjectLock(root, { strict: false })`.
+  {
     const handoversDir = join(absRoot, ".story", "handovers");
     await mkdir(handoversDir, { recursive: true });
     const wrapDir = join(absRoot, ".story");
@@ -1152,6 +1240,7 @@ export async function handleHandoverCreate(
         try {
           await parseHandoverFilename(candidate, handoversDir);
           await guardPath(candidatePath, wrapDir);
+          beforeWrite(candidate);
           writeIntent(candidate);
           writeFileSync(tmpPath, toWrite, "utf-8");
           tmpCreated = true;
@@ -1162,7 +1251,7 @@ export async function handleHandoverCreate(
           tmpCreated = false;
           break;
         } catch (err: unknown) {
-          if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+          if ((err as NodeJS.ErrnoException).code === "EEXIST" && !(err !== null && typeof err === "object" && hookFailed.has(err))) {
             attempt++;
             continue;
           }
@@ -1212,6 +1301,7 @@ export async function handleHandoverCreate(
 
       await parseHandoverFilename(candidate, handoversDir);
       await guardPath(candidatePath, wrapDir);
+      beforeWrite(candidate);
       writeIntent(candidate);
       await atomicWrite(candidatePath, toWrite);
       filename = candidate;
@@ -1223,12 +1313,47 @@ export async function handleHandoverCreate(
       const finalWritten = writeLineMemo(absRoot, { v: 1, task: memoTask, tip: filename, writing: null });
       if (!intentWritten && !finalWritten) lateWarnings.push(warn("memo_not_written", filename));
     }
-  });
+  }
 
   if (lateWarnings.length > 0) {
     const base = lineageResult ?? { ...UNLINKED, warnings: [] };
     lineageResult = { ...base, warnings: [...base.warnings, ...lateWarnings] };
   }
+  return { filename: filename!, lineage: lineageResult };
+}
+
+/**
+ * Creates a handover markdown file.
+ * Runs inside withProjectLock for atomic filename allocation + write.
+ */
+export async function handleHandoverCreate(
+  content: string,
+  slugRaw: string,
+  format: OutputFormat,
+  root: string,
+  /** T-499: the caller's identity for the handover stamp; `stamp: false` skips it (tests, batch tooling). */
+  intel: {
+    readonly clientTaskId?: string | null;
+    readonly stamp?: boolean;
+    readonly now?: number;
+    readonly projectsDir?: string;
+    /**
+     * ISS-1214: which surface is asking. It decides which skips are worth
+     * reporting (a terminal is never a Claude session; an MCP caller always
+     * should be) and whether a server-staleness claim can be made at all.
+     */
+    readonly surface?: "mcp" | "cli";
+  } = {},
+  /** ISS-1499: the CLI lineage flags. MCP passes none; a content line still applies. */
+  lineage: HandoverCreateLineage | null = null,
+): Promise<CommandResult> {
+  const prep = await prepareHandoverCreate(root, { content, slug: slugRaw, clientTaskId: intel.clientTaskId, lineage });
+  let created: HandoverCreateCoreResult | null = null;
+  await withProjectLock(root, { strict: false }, async () => {
+    created = await createHandoverUnlocked(root, { content, slug: slugRaw, clientTaskId: intel.clientTaskId, lineage }, {}, prep);
+  });
+  const { filename, lineage: lineageResult } = created as unknown as HandoverCreateCoreResult;
+  const absRoot = prep.absRoot;
 
   // T-499: the handover is on disk; record it against the caller's current
   // compaction boundary so imperative pressure is held at advisory until the

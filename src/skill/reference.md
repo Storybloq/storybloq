@@ -4,7 +4,7 @@
 
 ### JSON output envelope
 
-`--format json` returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, keeps error envelopes, drops partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` have their own text/json shapes; Bus commands use their versioned wire format. These reject `--raw` at argument validation, before execution. `--help` names each command's shape. Round-trip description/impact/content via JSON: markdown fences grow through `update --stdin`; updates strip them and warn.
+`--format json` returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, keeps error envelopes, drops partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list/show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` have their own text/json shapes; Bus commands use their versioned wire format. These reject `--raw` at argument validation, before execution. `--help` names each command's shape. Round-trip description/impact/content via JSON: markdown fences grow through `update --stdin`; updates strip them and warn.
 
 Run `storybloq <command>`. Positionals follow the command; ? marks optional flags. `<command> --help` gives value types and choices; `storybloq reference --format json` gives full usage strings.
 
@@ -47,6 +47,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **handover create** (--content?, --stdin?, --slug?, --format?, --commit?, --continues?, --new-line?, --role?, --from?, --absorbs?, --as?) - Create a handover
 - **handover template** (--override?, --as?, --new-line?, --role?, --from?, --format?) - Scaffold a handover
 - **handover lines** (--all?, --format?) - Tips, forks and broken links
+- **handover continue [<file>]** (--default?, --fork?, --as?, --format?) - Set this session's handover line
 - **blocker list** (--format?) - List all roadmap blockers
 - **blocker add** (--name, --note?, --format?, --commit?) - Add a new blocker
 - **blocker clear** (--name, --note?, --format?, --commit?) - Clear (resolve) a blocker
@@ -217,9 +218,9 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, proofPage?, candidate?, node?) - Get an issue by ID
 - **storybloq_issue_meta_get** (id, path?) - Get custom passthrough metadata from an issue
 - **storybloq_handover_list** - List handover filenames (newest first)
-- **storybloq_handover_latest** (count?, brief?, priming?, format?) - Newest handovers
+- **storybloq_handover_latest** (count?, brief?, priming?, format?, clientTaskId?) - Newest handovers
 - **storybloq_handover_get** (filename, format?) - One handover
-- **storybloq_handover_create** (content, slug?, commit?) - Create a handover
+- **storybloq_handover_create** (content, slug?, commit?, clientTaskId?) - Create a handover
 - **storybloq_blocker_list** - All roadmap blockers with status
 - **storybloq_validate** (format?, integrityOnly?) - Reference, schema, source-provenance, and loader-independent JSON checks
 - **storybloq_recap** - Session diff: changes since last snapshot
@@ -296,7 +297,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_checkpoint_write** (action, id?, owner?, kind?, question?, criteria?, evidenceRefs?, actor?, evidenceMode?, commit?, generation?, revision?, digest?, title?, phase?, description?, blockedBy?, parentTicket?, reason?, response?, artifactRef?, rulingAttribution?, rulingScopeTags?, clientTaskId?) - Owner checkpoints, write side: action attach|change|create|reopen|resolve|retire; the former storybloq_checkpoint_<action> names still work. attach: Make an open, unclaimed ticket a checkpoint; change: Change what a checkpoint asks; voids its answer; create: Create an owner checkpoint ticket. Needs `checkpoint enable` first.; reopen: Withdraw a checkpoint's answer; resolve: Answer a checkpoint. An acceptance needs artifactRef.; retire: Retire a checkpoint, releasing dependents
 - **storybloq_checkpoint_evidence** (id, generation, revision, digest, actor?, file, commit?) - Add an evidence revision to an immutable checkpoint; voids its answer
 - **storybloq_earmark_get** (ref, node?) - Get the pick-exclusion earmark (if any) on a ticket or issue
-- **storybloq_earmark_write** (action, ref?, role?, arrangement?, clientTaskId?, node?, commit?, to?) - Earmarks, write side: action reserve|assign|release; the former storybloq_earmark_<action> names still work. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active arrangements cover the item.; assign: Place or convert an earmark to a live session matching the arrangement role. Reserved-to-assigned conversion requires the reserver or the arrangement pen.; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.
+- **storybloq_earmark_write** (action, ref?, role?, arrangement?, clientTaskId?, node?, commit?, to?) - Earmarks, write side: action reserve|assign|release; the former storybloq_earmark_<action> names still work. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active ones cover the item; assign: Place or convert an earmark to a live session matching the arrangement role. Converting a reservation requires the reserver or the arrangement pen; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.
 
 ### MCP Tools (degraded mode)
 
@@ -340,14 +341,14 @@ Fields are optional. Missing means unrecorded, not measured-empty or old: curren
 Evaluate frontend code against platform-specific design best practices.
 
 ```
-/story design                    # Auto-detect platform, evaluate frontend
-/story design web                # Evaluate against web best practices
-/story design ios                # Evaluate against iOS HIG
-/story design macos              # Evaluate against macOS HIG
-/story design android            # Evaluate against Material Design
+/story design          # Auto-detect platform, evaluate frontend
+/story design web      # Evaluate against web best practices
+/story design ios      # Evaluate against iOS HIG
+/story design macos    # Evaluate against macOS HIG
+/story design android  # Evaluate against Material Design
 ```
 
-Creates issues automatically when storybloq MCP tools or CLI are available. Checks for existing design issues to avoid duplicates on repeated runs. Outputs markdown checklist as fallback when neither MCP nor CLI is available.
+Creates issues automatically when storybloq MCP tools or CLI are available, skipping existing design issues so repeated runs add no duplicates; with neither, outputs a markdown checklist.
 
 ## /story orchestrate
 
@@ -396,4 +397,4 @@ Coordinate an owner-paired manager and worker with a proved return route and per
 - **MCP not connected:** Run `storybloq setup --client all`
 - **CLI not found:** Run `npm install -g @storybloq/storybloq@latest`
 - **Stale data:** Run `storybloq validate` to check integrity
-- **Storybloq skill not available:** Run `storybloq setup --client all` to install the skill
+- **Storybloq skill not available:** Run `storybloq setup --client all`

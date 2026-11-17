@@ -720,11 +720,13 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     inputSchema: {
       count: z.number().int().min(1).max(10).optional().describe("default: 1"),
       brief: z.boolean().optional().describe(
-        "T-320: return a structured record digest (continuation/blocked/owner-gated/carried items plus a trajectory list) instead of full bodies, for every handover in the window",
+        "A structured record digest (continuation/blocked/owner-gated/carried items plus a trajectory list) instead of full bodies, for every handover in the window",
       ),
       priming: z.boolean().optional().describe(
-        "T-320/T-497: return each handover's full body when it is at or under 12,000 bytes, otherwise the same structured digest brief uses. Combined with brief, brief wins",
+        "Each handover's full body when it is at most 12,000 bytes, else brief's digest. With brief, brief wins",
       ),
+      // ISS-1499 slice B: whose handover line to read (`--as`); omitted, the inherited identity.
+      clientTaskId: z.string().optional(),
       // T-498: brief/priming's structured fields (records, index,
       // continuationCandidates, trajectory) have no Markdown rendering for
       // continuationCandidates -- a caller that needs to walk it (or wants
@@ -734,7 +736,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       format: z.enum(["md", "json"]).optional().describe("default: md"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
-    handleHandoverLatest(ctx, args.count ?? 1, { brief: args.brief, priming: args.priming, ledger: true }),
+    handleHandoverLatest(ctx, args.count ?? 1, { brief: args.brief, priming: args.priming, ledger: true, as: args.clientTaskId }),
     undefined, args.format ?? "md",
   ));
 
@@ -1000,6 +1002,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     inputSchema: {
       content: z.string(),
       slug: z.string().optional().describe("Slug for filename (e.g. phase5b-wrapup). Default: session"),
+      // ISS-1499 slice B: whose handover line this create continues (`--as`).
+      clientTaskId: z.string().optional(),
     },
   }, (args) => {
     if (!args.content?.trim()) {
@@ -1012,7 +1016,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       // ISS-1214: naming the surface is what lets the reply report an unbound
       // MCP caller (never silent here) and assert a stale server only when
       // one was actually established.
-      handleHandoverCreate(args.content, args.slug ?? "session", "md", root, { surface: "mcp" }),
+      handleHandoverCreate(args.content, args.slug ?? "session", "md", root, { surface: "mcp" },
+        args.clientTaskId === undefined ? null : { as: args.clientTaskId }),
     );
   });
 

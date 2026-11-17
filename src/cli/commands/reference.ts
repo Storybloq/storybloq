@@ -246,6 +246,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--all", "--format"],
   },
   {
+    name: "handover continue",
+    description: "Set this session's handover line",
+    usage: "storybloq handover continue [<file>] [--default] [--fork] [--as <id>] [--format <json|md>]",
+    flags: ["--default", "--fork", "--as", "--format"],
+  },
+  {
     name: "blocker list",
     description: "List all roadmap blockers",
     usage: "storybloq blocker list [--format <json|md>]",
@@ -1157,9 +1163,9 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_issue_get", description: "Get an issue by ID", params: ["id","format?","withActionability?","receiptsPage?","proofPage?","candidate?","node?"] },
   { name: "storybloq_issue_meta_get", description: "Get custom passthrough metadata from an issue", params: ["id","path?"] },
   { name: "storybloq_handover_list", description: "List handover filenames (newest first)", params: [] },
-  { name: "storybloq_handover_latest", description: "Newest handovers", params: ["count?","brief?","priming?","format?"] },
+  { name: "storybloq_handover_latest", description: "Newest handovers", params: ["count?","brief?","priming?","format?","clientTaskId?"] },
   { name: "storybloq_handover_get", description: "One handover", params: ["filename","format?"] },
-  { name: "storybloq_handover_create", description: "Create a handover", params: ["content","slug?","commit?"] },
+  { name: "storybloq_handover_create", description: "Create a handover", params: ["content","slug?","commit?","clientTaskId?"] },
   { name: "storybloq_blocker_list", description: "All roadmap blockers with status", params: [] },
   { name: "storybloq_validate", description: "Reference, schema, source-provenance, and loader-independent JSON checks", params: ["format?","integrityOnly?"] },
   { name: "storybloq_recap", description: "Session diff: changes since last snapshot", params: [] },
@@ -1236,7 +1242,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_checkpoint_write", description: "Owner checkpoints, write side: action attach|change|create|reopen|resolve|retire; the former storybloq_checkpoint_<action> names still work. attach: Make an open, unclaimed ticket a checkpoint; change: Change what a checkpoint asks; voids its answer; create: Create an owner checkpoint ticket. Needs `checkpoint enable` first.; reopen: Withdraw a checkpoint's answer; resolve: Answer a checkpoint. An acceptance needs artifactRef.; retire: Retire a checkpoint, releasing dependents", params: ["action","id?","owner?","kind?","question?","criteria?","evidenceRefs?","actor?","evidenceMode?","commit?","generation?","revision?","digest?","title?","phase?","description?","blockedBy?","parentTicket?","reason?","response?","artifactRef?","rulingAttribution?","rulingScopeTags?","clientTaskId?"] },
   { name: "storybloq_checkpoint_evidence", description: "Add an evidence revision to an immutable checkpoint; voids its answer", params: ["id","generation","revision","digest","actor?","file","commit?"] },
   { name: "storybloq_earmark_get", description: "Get the pick-exclusion earmark (if any) on a ticket or issue", params: ["ref","node?"] },
-  { name: "storybloq_earmark_write", description: "Earmarks, write side: action reserve|assign|release; the former storybloq_earmark_<action> names still work. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active arrangements cover the item.; assign: Place or convert an earmark to a live session matching the arrangement role. Reserved-to-assigned conversion requires the reserver or the arrangement pen.; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.", params: ["action","ref?","role?","arrangement?","clientTaskId?","node?","commit?","to?"] },
+  { name: "storybloq_earmark_write", description: "Earmarks, write side: action reserve|assign|release; the former storybloq_earmark_<action> names still work. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active ones cover the item; assign: Place or convert an earmark to a live session matching the arrangement role. Converting a reservation requires the reserver or the arrangement pen; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.", params: ["action","ref?","role?","arrangement?","clientTaskId?","node?","commit?","to?"] },
 ];
 
 export function handleReference(format: OutputFormat): string {

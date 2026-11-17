@@ -1230,10 +1230,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
         )
         .command(
           "continue [file]",
-          // Hidden until ISS-1499 slice B commit 8 documents it in the reference
-          // (and funds that text); the reference parity test exempts hidden leaves.
-          // Shown text: "Put this session on a handover line (its memo), or back on the default line".
-          false,
+          "Put this session on a handover line (its memo), or back on the default line",
           (y2) =>
             addFormatOption(
               y2
@@ -1252,7 +1249,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             }));
           },
         )
-        .demandCommand(1, "Specify a handover subcommand: list, latest, get, create, template, lines")
+        .demandCommand(1, "Specify a handover subcommand: list, latest, get, create, template, lines, continue")
         .strict(),
     () => {},
   );

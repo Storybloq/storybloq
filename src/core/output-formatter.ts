@@ -3855,7 +3855,7 @@ export function formatReference(
   lines.push("");
   lines.push("### JSON output envelope");
   lines.push("");
-  lines.push('`--format json` returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, keeps error envelopes, drops partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` have their own text/json shapes; Bus commands use their versioned wire format. These reject `--raw` at argument validation, before execution. `--help` names each command\'s shape. Round-trip description/impact/content via JSON: markdown fences grow through `update --stdin`; updates strip them and warn.');
+  lines.push('`--format json` returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, keeps error envelopes, drops partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list/show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` have their own text/json shapes; Bus commands use their versioned wire format. These reject `--raw` at argument validation, before execution. `--help` names each command\'s shape. Round-trip description/impact/content via JSON: markdown fences grow through `update --stdin`; updates strip them and warn.');
   lines.push("");
   lines.push("Run `storybloq <command>`. Positionals follow the command; ? marks optional flags. `<command> --help` gives value types and choices; `storybloq reference --format json` gives full usage strings.");
   lines.push("");
@@ -3930,14 +3930,14 @@ export function formatReference(
   lines.push("Evaluate frontend code against platform-specific design best practices.");
   lines.push("");
   lines.push("```");
-  lines.push("/story design                    # Auto-detect platform, evaluate frontend");
-  lines.push("/story design web                # Evaluate against web best practices");
-  lines.push("/story design ios                # Evaluate against iOS HIG");
-  lines.push("/story design macos              # Evaluate against macOS HIG");
-  lines.push("/story design android            # Evaluate against Material Design");
+  lines.push("/story design          # Auto-detect platform, evaluate frontend");
+  lines.push("/story design web      # Evaluate against web best practices");
+  lines.push("/story design ios      # Evaluate against iOS HIG");
+  lines.push("/story design macos    # Evaluate against macOS HIG");
+  lines.push("/story design android  # Evaluate against Material Design");
   lines.push("```");
   lines.push("");
-  lines.push("Creates issues automatically when storybloq MCP tools or CLI are available. Checks for existing design issues to avoid duplicates on repeated runs. Outputs markdown checklist as fallback when neither MCP nor CLI is available.");
+  lines.push("Creates issues automatically when storybloq MCP tools or CLI are available, skipping existing design issues so repeated runs add no duplicates; with neither, outputs a markdown checklist.");
   lines.push("");
   lines.push("## /story orchestrate");
   lines.push("");
@@ -3986,7 +3986,7 @@ export function formatReference(
   lines.push("- **MCP not connected:** Run `storybloq setup --client all`");
   lines.push("- **CLI not found:** Run `npm install -g @storybloq/storybloq@latest`");
   lines.push("- **Stale data:** Run `storybloq validate` to check integrity");
-  lines.push("- **Storybloq skill not available:** Run `storybloq setup --client all` to install the skill");
+  lines.push("- **Storybloq skill not available:** Run `storybloq setup --client all`");
 
   return lines.join("\n");
 }

@@ -85,6 +85,22 @@ describe("T-575 refactor 1: createHandoverUnlocked and its beforeWrite hook", ()
     }
   });
 
+  it("team mode: a hook throwing null, or a function carrying code EEXIST, is rethrown unchanged once and writes nothing", async () => {
+    const callable = Object.assign(() => undefined, { code: "EEXIST" });
+    for (const thrown of [null, undefined, callable] as unknown[]) {
+      const p = await project({}, true);
+      const before = readdirSync(p.hdir);
+      let calls = 0;
+      const got = await locked(p.root, () => createHandoverUnlocked(p.root, NEW_LINE, { beforeWrite: () => { calls++; throw thrown; } }))
+        .then(() => ({ ok: true as const }), (e: unknown) => ({ ok: false as const, e }));
+      expect(got.ok, String(thrown)).toBe(false);
+      expect(got.ok ? null : got.e).toBe(thrown);
+      expect(calls).toBe(1);
+      expect(readdirSync(p.hdir)).toEqual(before);
+      expect(existsSync(p.memo)).toBe(false);
+    }
+  });
+
   it("team mode: a first candidate lost to EEXIST was not written, the hook runs again for the next candidate, one file", async () => {
     const taken = "2026-11-17-010101-aaaaaaaa-opened.md";
     const fresh = "2026-11-17-010101-bbbbbbbb-opened.md";

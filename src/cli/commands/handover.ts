@@ -1181,14 +1181,15 @@ export async function createHandoverUnlocked(
   let resolution: MemoResolution = { kind: "none" };
   let intentWritten = false;
   const lateWarnings: LineageWarning[] = p.asInvalid ? [warn("identity_invalid")] : [];
-  // A throw from the hook is never an EEXIST retry, whatever its code.
-  const hookFailed = new WeakSet<object>();
+  // A throw from the hook is never an EEXIST retry, whatever value it throws:
+  // set per attempt and checked before the thrown value is read.
+  let hookThrew = false;
   const beforeWrite = (candidate: string): void => {
     if (!hooks.beforeWrite) return;
     try {
       hooks.beforeWrite({ file: candidate, sha256: digestBytes(Buffer.from(toWrite, "utf-8")) });
     } catch (err) {
-      if (err !== null && typeof err === "object") hookFailed.add(err);
+      hookThrew = true;
       throw err;
     }
   };
@@ -1237,6 +1238,7 @@ export async function createHandoverUnlocked(
         const candidatePath = join(handoversDir, candidate);
         const tmpPath = join(handoversDir, `.tmp-${randomBytes(4).toString("hex")}`);
         let tmpCreated = false;
+        hookThrew = false;
         try {
           await parseHandoverFilename(candidate, handoversDir);
           await guardPath(candidatePath, wrapDir);
@@ -1251,7 +1253,8 @@ export async function createHandoverUnlocked(
           tmpCreated = false;
           break;
         } catch (err: unknown) {
-          if ((err as NodeJS.ErrnoException).code === "EEXIST" && !(err !== null && typeof err === "object" && hookFailed.has(err))) {
+          if (hookThrew) throw err;
+          if (err !== null && typeof err === "object" && (err as NodeJS.ErrnoException).code === "EEXIST") {
             attempt++;
             continue;
           }

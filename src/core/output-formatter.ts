@@ -3083,7 +3083,7 @@ function lineageWarningLine(w: LineageWarning, linked: boolean): string {
     case "parser_check_failed": return "Written unlinked: the lineage line would change what a reader finds in this handover.";
     case "memo_stale": return `Written unlinked, on the default line: this session's handover line could not be found (${t ?? "its tip"}: ${w.detail}). To pick a line: \`storybloq handover lines\`, then \`storybloq handover continue <file>\`.`;
     case "memo_not_written": return `This session's line was not recorded; run \`storybloq handover continue ${t ?? "<file>"}\` to stay on it.`;
-    case "identity_invalid": return "Ignored --as: it is not a valid client task id, so no session line was read or recorded.";
+    case "identity_invalid": return "Ignored the client task id (--as / clientTaskId): it is not a valid client task id, so no session line was read or recorded.";
   }
 }
 

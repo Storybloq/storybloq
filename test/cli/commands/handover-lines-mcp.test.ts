@@ -121,7 +121,7 @@ describe("B12: identity", () => {
     expect(cli.stdout).toContain("identity_invalid");
     const mcp = await callMcp(p.root, "storybloq_handover_create", { content: body("T-3"), slug: "mcp", clientTaskId: "bad id" });
     expect(mcp.isError).toBe(false);
-    expect(mcp.text).toContain("Ignored --as: it is not a valid client task id, so no session line was read or recorded.");
+    expect(mcp.text).toContain("Ignored the client task id (--as / clientTaskId): it is not a valid client task id, so no session line was read or recorded.");
     expect(readdirSync(p.hdir).filter((n) => !before.includes(n))).toHaveLength(2);
     expect(existsSync(memoDir(p))).toBe(false);
   });
@@ -240,7 +240,7 @@ describe("C7: budgets and the shipped variant", () => {
     expect(step).toContain("`count: 1, priming: true`");
     expect(step).toContain("`count: 10, brief: true`");
     expect(step).toContain("`clientTaskId` when resolved");
-    expect(step).toContain("`storybloq handover continue <file>`");
+    expect(step).toContain("`storybloq handover continue <file> --as <clientTaskId>`");
     const route = skill.split("\n").find((l) => l.startsWith("- `/story handover` ->"))!;
     expect(route).toContain("`storybloq_handover_create`");
     expect(route).toContain("`clientTaskId` when resolved");

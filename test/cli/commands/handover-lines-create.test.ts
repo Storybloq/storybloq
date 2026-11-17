@@ -203,7 +203,7 @@ describe("C6: create never fails because of the memo", () => {
     expect((JSON.parse(r.out) as Reply).data.lineage!.warnings).toEqual([{ code: "identity_invalid", target: null, detail: null }]);
     expect(existsSync(p.mdir)).toBe(false);
     const md = await create(p, ["--content", body("T-3"), "--as", "bad id"]);
-    expect(md.out).toContain("\n\nIgnored --as: it is not a valid client task id, so no session line was read or recorded.\n");
+    expect(md.out).toContain("\n\nIgnored the client task id (--as / clientTaskId): it is not a valid client task id, so no session line was read or recorded.\n");
   });
 
   it("an unlinked write with an identity and no memo makes no folder and replies as main does", async () => {

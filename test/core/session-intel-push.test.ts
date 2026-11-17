@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { writeLineMemo } from "../../src/core/handover-line-memo.js";
 import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, realpathSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -607,6 +608,21 @@ describe("ISS-1185: worktree fallback (push surfaces)", () => {
       expect(next.result?.pressure).toMatchObject({ state: "advisory", rawState: "imperative", suppressedBy: "handover" });
     });
   });
+
+  for (const mainMemo of ["different", "absent"] as const) {
+    it(`ISS-1428 commit 3: the guide's line hint is read where the owner's record was found (the worktree), the main checkout's memo ${mainMemo} (mutant: the original root)`, async () => {
+      await withWorktreeFixture(async (f) => {
+        const now = T0 + 5 * 60_000;
+        primedUnder(f, f.worktree, IMPERATIVE_TOKENS, now);
+        expect(writeLineMemo(f.worktree, { v: 1, task: SID, tip: "2026-11-17-02-wt.md", writing: null })).toBe(true);
+        if (mainMemo === "different") expect(writeLineMemo(f.main, { v: 1, task: SID, tip: "2026-11-17-01-main.md", writing: null })).toBe(true);
+        expect(readPresenceRecord(f.main, SID)).toBeNull();
+        const d = guideDirectiveFor(f.main, SID, now);
+        expect(d).toContain(" It continues the line this session is on (2026-11-17-02-wt.md).");
+        expect(d).not.toContain("2026-11-17-01-main.md");
+      });
+    });
+  }
 
   it("mutant-2 proof: a DIFFERENT session's record in the first-listed worktree is never mistaken for the bound session's own record in the second-listed worktree", async () => {
     const base = mkdtempSync(join(tmpdir(), "si-push-tri-wt-"));

@@ -538,7 +538,7 @@ export function guideDirectiveFor(root: string, ownerClaudeSessionId: string | n
     if (walkedIdentity && !revalidateCandidateIdentity(resolvedRoot, walkedIdentity)) return null;
     if (!claimNotice(resolvedRoot, ownerClaudeSessionId, noticeSeenOf(intel), candidate, final, now, cfg)) return null;
     if (final === "settle") return null;
-    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, arrangementRule, () => readLineMemoTip(root, ownerClaudeSessionId)));
+    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, arrangementRule, () => readLineMemoTip(resolvedRoot, ownerClaudeSessionId)));
   } catch {
     return null;
   }

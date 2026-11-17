@@ -155,6 +155,7 @@ export const GitStateConfigSchema = z.object({
   subjectPattern: BoundedPatternSchema.optional(),                  // default: the landings matcher
   releaseTagPattern: BoundedPatternSchema.optional(),               // default ^v?\d+\.\d+\.\d+
   defaultBranch: z.string().min(1).regex(/^[^\s~^:?*\[\\]+$/, "must be a branch name").optional(), // default: origin/HEAD, then init.defaultBranch
+  // requireCommitOnComplete (C-v4.1 commit 6, ISS-1433 (4)) is read raw by core/completion-check.ts: only `true` turns it on.
 }).passthrough();
 
 export type GitStateConfig = z.infer<typeof GitStateConfigSchema>;
@@ -187,6 +188,8 @@ export const ConfigSchema = z
     healthCheck: HealthCheckConfigSchema.optional(),
     gitState: GitStateConfigSchema.optional(),
     proof: ProofConfigSchema.optional(),
+    // C-v4.1 commit 6: receipts.landingPolicy is read raw by core/landing-ready.ts; an invalid value falls back with a note, never a throw.
+    receipts: z.object({}).passthrough().optional(),
     recipe: z.string().optional(),  // default "coding" applied in guide.ts handleStart
     // ISS-730: opt-in continuous cross-reference integrity check. When true,
     // loadProject runs a full validateProject pass and surfaces ERROR-level

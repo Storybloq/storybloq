@@ -836,6 +836,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       withActionability: z.boolean().optional(),
       receiptsPage: z.number().optional().describe("Receipts page, 20 per page"),
       proofPage: z.number().optional().describe("Proof evidence page"),
+      candidate: z.string().optional().describe("sha or base..head: landingReady"),
       node: nodeParam,
     },
   }, (args) => {
@@ -843,7 +844,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleTicketGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage, args.proofPage),
+      (ctx) => handleTicketGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage, args.proofPage, args.candidate),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );
@@ -903,6 +904,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       withActionability: z.boolean().optional(),
       receiptsPage: z.number().optional().describe("Receipts page, 20 per page"),
       proofPage: z.number().optional().describe("Proof evidence page"),
+      candidate: z.string().optional().describe("sha or base..head: landingReady"),
       node: nodeParam,
     },
   }, (args) => {
@@ -910,7 +912,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     if ("content" in eff) return eff;
     return runMcpReadTool(
       pinnedRoot,
-      (ctx) => handleIssueGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage, args.proofPage),
+      (ctx) => handleIssueGetWithGit(args.id, ctx, args.withActionability ?? false, args.receiptsPage, args.proofPage, args.candidate),
       eff.root,
       args.format ?? (args.withActionability ? "json" : "md"),
     );
@@ -1073,6 +1075,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           "Refused while a live ticket waits on it or on an umbrella above it. Without it, status complete on a withdrawn ticket makes it delivered, and reopening drops the withdrawal.",
       ),
       reason: z.string().min(1).optional().describe("Why the ticket is withdrawn. Only with resolutionKind."),
+      noGitCheck: z.boolean().optional().describe("Skip the completion git check"),
       priority: z.enum(PRIORITIES).optional().describe("How soon; unset reads as p2"),
       waitingOn: z.enum(WAITING_ON).optional().describe("Who it waits on; none removes it"),
       node: nodeParam,
@@ -1098,6 +1101,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           crossNodeBlockedBy: args.crossNodeBlockedBy,
           citesRuling: args.citesRuling,
           clearCitesRulings: args.clearCitesRulings,
+          ...(args.noGitCheck === true ? { noGitCheck: true } : {}),
           resolutionKind: args.resolutionKind,
           reason: args.reason,
           priority: args.priority,

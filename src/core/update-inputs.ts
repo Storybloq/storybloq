@@ -3,6 +3,8 @@ import type { IssueSourceRefInput } from "../models/issue.js";
 /** Canonical public update inputs, shared by handlers and typed adapters. */
 export interface TicketUpdateInput {
   status?: string;
+  /** C-v4.1 commit 6: skip the opt-in completion check (gitState.requireCommitOnComplete). */
+  noGitCheck?: boolean;
   title?: string;
   type?: string;
   phase?: string | null;

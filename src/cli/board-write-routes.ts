@@ -57,6 +57,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleNoteList: "read",
   handlePhaseTickets: "read",
   handleReceiptsCommand: "read",
+  handleReceiptsCheck: "read",
   handleProofCommand: "read",
   handleNonCodeList: "read",
   handleNonCodeAdd: "C-v4.1 5.4 proof non-code add: writes config.json under the project lock through the board-write recorder and reportBoardWrite inside the handler, honouring --commit",

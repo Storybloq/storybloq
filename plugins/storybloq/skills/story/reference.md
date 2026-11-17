@@ -15,7 +15,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
 - **ticket blocked** (--format?) - List blocked tickets with their blocking dependencies
 - **ticket create** (--title, --type, --phase?, --description?, --stdin?, --parent-ticket?, --blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --node?, --commit?) - Create a new ticket
-- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --keep-absent?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --add-blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --commit?) - Update a ticket
+- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --keep-absent?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --add-blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --git-check?, --format?, --commit?) - Update a ticket
 - **ticket meta <operation> <id> [path] [value]** (--format?, --commit?) - Get, set, or unset custom passthrough metadata on a ticket
 - **ticket delete <id>** (--force?, --hard?, --format?, --commit?) - Delete a ticket
 - **checkpoint enable** (--immutable-evidence?, --format?, --commit?) - Turn owner checkpoints on (schemaVersion 4; 5 with --immutable-evidence; a team ledger must merge them first)
@@ -120,8 +120,8 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **board-id init** (--format?) - Mint this board's id; commits only config.json
 - **board-id adopt** (--ref?, --format?) - Take the default branch's board id
 - **receipt add <target>** (--kind, --sha, --result, --base?, --unit?, --covers?, --built-from?, --built-clean?, --built-dirty?, --supersedes?, --data?, --command?, --evidence?, --repo?, --commit?, --format?) - Append a proof receipt
-- **receipts <id>** (--page?, --format?) - Page an item's receipts
-- **proof <ref>** (--page?) | **proof non-code add <ref>** (--reason, --commit?, --format?) - Item proof and evidence; proof non-code add|remove|list edits the non-code list
+- **receipts <id>** (--page?, --sha?, --range?, --format?) - Page receipts; check <id>: landing readiness
+- **proof <ref>** (--page?) | **proof non-code add <ref>** (--reason, --commit?, --format?) - Item proof; non-code add|remove|list edits that list
 - **merge-driver <ancestor> <ours> <theirs> <pathname>** (--protocol?) | **merge-driver** (--protocol?, --capabilities) - Git merge driver for .story/ JSON files (registered via team setup)
 - **team init** (--claim-staleness-hours?, --id-allocator?, --format?) - Enable team mode on this project
 - **team setup** (--format?) - Install the git merge driver and .gitattributes for team mode
@@ -132,13 +132,13 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **migrate** (--dry-run?, --format?) - Migrate config schema to the latest version
 - **dispatch [ids..]** (--format?, --recommend?, --all?, --count?, --yes?, --dry-run?) - Dispatch work to Agent View background sessions
 - **bus init** (--format?) - Low-level initializer: enable the local Storybloq Bus v2 for this project (prefer `storybloq bus setup`). Fresh v2 runtime only; a v1 runtime refuses with `upgrade_required`, and `bus setup` runs the guided drain/upgrade.
-- **bus setup** (--client?, --task-id?, --surface?, --delivery?, --wake?, --session-name?, --transport-address?, --replace?, --force-archive?, --format?) - Connect this task to the Bus (idempotent, resumable): inits or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks when hook delivery is on. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery only in a v1->v2 upgrade.
-- **bus auto-attach <state>** (--client?, --task-id?, --surface?, --force-archive?, --format?) - Turn per-session Bus auto-attach on or off (default off). `on` runs `bus setup` once and sets the flag; each new session then attaches at SessionStart, taking a proven-dead peer's slot and mail. `off` clears the flag, keeping runtime and endpoints.
+- **bus setup** (--client?, --task-id?, --surface?, --delivery?, --wake?, --session-name?, --transport-address?, --replace?, --force-archive?, --format?) - Connect this task to the Bus (idempotent, resumable): inits or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks under hook delivery. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery, v1->v2 upgrade only.
+- **bus auto-attach <state>** (--client?, --task-id?, --surface?, --force-archive?, --format?) - Turn per-session Bus auto-attach on or off (default off). `on` runs `bus setup` once and sets the flag; each new session then attaches at SessionStart, taking a proven-dead peer's slot and mail. `off` clears it, keeping runtime and endpoints.
 - **bus join [legacy-role]** (--client?, --task-id?, --surface?, --replace?, --format?) - Deprecated: roles are now per-message, so the legacy role argument is ignored. Use `storybloq bus setup`.
 - **bus leave** (--endpoint?, --client?, --task-id?, --format?) - Retire the Bus endpoint owned by this task
 - **bus endpoint retire <endpoint-id>** (--force, --reason, --format?) - Force-retire an endpoint with unknown liveness
 - **bus send** (--endpoint?, --client?, --task-id?, --thread?, --thread-kind?, --predecessor-thread?, --to?, --kind, --severity?, --body, --idempotency-key, --in-reply-to?, --issue?, --ticket?, --commit?, --ci-run?, --file?, --format?) - Create a Bus thread or send a reply. Routing always targets the sole peer; `--to` is deprecated and ignored.
-- **bus poll** (--endpoint?, --client?, --task-id?, --limit?, --wait?, --timeout?, --format?) - Poll unacknowledged messages for the task-bound endpoint. --limit caps returned messages, wait drain included. --wait blocks until a message or --timeout (v2 only); exit 0 = message delivered, 4 = timed out, 5 = another --wait owns this endpoint.
+- **bus poll** (--endpoint?, --client?, --task-id?, --limit?, --wait?, --timeout?, --format?) - Poll unacknowledged messages for the task-bound endpoint. --limit caps messages, wait drain included. --wait blocks until a message or --timeout (v2 only); exit 0 = message delivered, 4 = timed out, 5 = another --wait owns this endpoint.
 - **bus ack <message-id>** (--endpoint?, --client?, --task-id?, --disposition, --reason?, --format?) - Record delivery disposition for one Bus message
 - **bus status** (--format?) - Show concise Bus runtime state
 - **bus doctor** (--format?) - Validate Bus storage, endpoint, and mailbox integrity
@@ -209,12 +209,12 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_phase_current** - First non-complete phase
 - **storybloq_phase_tickets** (phaseId, node?) - Leaf tickets for a specific phase
 - **storybloq_ticket_list** (status?, phase?, type?, priority?, waitingOn?, node?) - List leaf tickets with optional filters
-- **storybloq_ticket_get** (id, format?, withActionability?, receiptsPage?, proofPage?, node?) - Get a ticket by ID
+- **storybloq_ticket_get** (id, format?, withActionability?, receiptsPage?, proofPage?, candidate?, node?) - Get a ticket by ID
 - **storybloq_ticket_meta_get** (id, path?) - Get custom passthrough metadata from a ticket
 - **storybloq_ticket_next** (count?, node?) - Highest-priority unblocked ticket(s)
 - **storybloq_ticket_blocked** (node?) - All blocked tickets with dependencies
 - **storybloq_issue_list** (status?, severity?, component?, phase?, disposition?, actionable?, resolutionKind?, priority?, waitingOn?, format?, node?) - List issues with optional filters
-- **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, proofPage?, node?) - Get an issue by ID
+- **storybloq_issue_get** (id, format?, withActionability?, receiptsPage?, proofPage?, candidate?, node?) - Get an issue by ID
 - **storybloq_issue_meta_get** (id, path?) - Get custom passthrough metadata from an issue
 - **storybloq_handover_list** - List handover filenames (newest first)
 - **storybloq_handover_latest** (count?, brief?, priming?, format?) - Content of most recent handover
@@ -231,7 +231,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_note_create** (content, title?, tags?, commit?) - Create note
 - **storybloq_note_update** (id, content?, mode?, confirmReplace?, title?, tags?, status?, commit?) - Update note
 - **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?, citesRuling?, priority?, waitingOn?, node?, commit?) - Create ticket
-- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, addBlockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, resolutionKind?, reason?, priority?, waitingOn?, node?, commit?) - Update ticket
+- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, addBlockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, resolutionKind?, reason?, priority?, waitingOn?, noGitCheck?, node?, commit?) - Update ticket
 - **storybloq_ticket_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on a ticket
 - **storybloq_ticket_meta_unset** (id, path, commit?) - Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, sourceRefs?, dedupeKey?, createdBy?, phase?, citesRuling?, priority?, waitingOn?, node?, commit?) - Create issue with optional persisted review provenance and retry deduplication
@@ -266,8 +266,8 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_setup_report** (setup, historical?) - Live or frozen setup report
 - **storybloq_setup_verify** (ticket, resolve?, argv?, drop?, ownerWords?, run?, reopen?) - Verify. First line [exit N]
 - **storybloq_review_lenses_prepare** (stage, diff, changedFiles, ticketDescription?, reviewRound?, priorDeferrals?, sessionId?, target?) - Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts
-- **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?, citedRulingsUndelivered?) - Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route
-- **storybloq_review_lenses_judge** (reviewVerdict?, convergenceHistory?) - Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap
+- **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?, citedRulingsUndelivered?) - Merge raw lens outputs into the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route
+- **storybloq_review_lenses_judge** (reviewVerdict?, convergenceHistory?) - Three-value verdict over synthesize's ReviewVerdict and the convergence history. Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap
 - **storybloq_autonomous_guide** (sessionId, action, clientTaskId?, takeover?, ownerGoneCandidateTakeover?, ownerGoneCandidateCancel?, mode?, reviewEffort?, ticketId?, targetWork?, report?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
 - **storybloq_session_guard** (clientTaskId?) - Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load
 - **storybloq_session_milestone** (kind, gateName?, note?, clientTaskId?) - Self-reported implementing/gate-hold/blocked-external/reviewing milestone on this session's presence, never a computed verdict. gate-hold requires gateName. Lock contention or write failure returns a retryable error.

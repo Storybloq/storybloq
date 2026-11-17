@@ -4,6 +4,7 @@
  */
 import { formatLandText, land, landExitCode, type LandOptions, type LandResult, type ReceiptWriter } from "../../core/land.js";
 import type { BoardWriteReport } from "../../core/board-git-state.js";
+import { landReadiness, type LandReadiness } from "../../core/landing-ready.js";
 import { successEnvelope } from "../../core/output-formatter.js";
 import type { OutputFormat } from "../../models/types.js";
 import { appendIssueLanding } from "./issue.js";
@@ -37,5 +38,15 @@ export function renderLand(result: LandResult, format: OutputFormat): string {
 
 export async function handleLand(opts: LandOptions, format: OutputFormat): Promise<HandleLandResult> {
   const result = await land({ writeReceipt: writeLandingReceipt, ...opts });
-  return { output: renderLand(result, format), exitCode: landExitCode(result), result };
+  // C-v4.1 commit 6 (pen ruling Q3): the advisory readiness line, never omitted, never changing the exit code.
+  let readiness: LandReadiness;
+  try {
+    readiness = await landReadiness(result.boardRoot, result.priorTip, result.sha);
+  } catch (err) {
+    readiness = { line: `Readiness (advisory pending ISS-1081): not computed (${err instanceof Error ? err.message : String(err)})`, items: [] };
+  }
+  const output = format === "json"
+    ? JSON.stringify(successEnvelope({ ...result, readiness }), null, 2)
+    : `${formatLandText(result)}\n${readiness.line}`;
+  return { output, exitCode: landExitCode(result), result };
 }

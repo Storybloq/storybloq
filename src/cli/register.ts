@@ -731,14 +731,22 @@ export function registerReceiptCommand(yargs: Argv): Argv {
       () => {},
     )
     .command(
-      "receipts <id>",
-      "One page of a ticket's or issue's receipts, 20 per page",
+      "receipts <id> [item]",
+      "One page of a ticket's or issue's receipts, 20 per page; receipts check <id> --sha|--range: is it ready to land there",
       (y) => addFormatOption(y
-        .positional("id", { type: "string", demandOption: true, describe: "Ticket or issue id" })
-        .option("page", { type: "number", describe: "Page number, from 1" })),
+        .positional("id", { type: "string", demandOption: true, describe: "Ticket or issue id, or check" })
+        .positional("item", { type: "string", describe: "With check: the ticket or issue id" })
+        .option("page", { type: "number", describe: "Page number, from 1" })
+        .option("sha", { type: "string", describe: "check: the full candidate sha" })
+        .option("range", { type: "string", describe: "check: the candidate <base>..<head>, full shas" })),
       async (argv) => {
         const format = parseOutputFormat(argv.format);
-        const { handleReceiptsCommand } = await import("./commands/receipt.js");
+        const { handleReceiptsCommand, handleReceiptsCheck } = await import("./commands/receipt.js");
+        if (argv.id === "check" && argv.item !== undefined) {
+          await runReadCommand(format, (ctx) => handleReceiptsCheck(ctx.root, String(argv.item), { sha: argv.sha as string | undefined, range: argv.range as string | undefined }, format as "md" | "json"));
+          return;
+        }
+        if (argv.item !== undefined) { writeOutput(formatError("invalid_input", `Unexpected argument ${String(argv.item)}: did you mean receipts check ${String(argv.item)}?`, format), format); process.exitCode = ExitCode.USER_ERROR; return; }
         await runReadCommand(format, (ctx) => handleReceiptsCommand(String(argv.id), argv.page as number | undefined, ctx));
       },
     );
@@ -1651,6 +1659,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Why the ticket is withdrawn (with --resolution-kind withdrawn)",
                 })
+                .option("git-check", {
+                  type: "boolean",
+                  describe: "--no-git-check completes without the gitState.requireCommitOnComplete check",
+                })
                 .conflicts("description", "stdin")
                 .conflicts("cites-ruling", "clear-cites-rulings"),
               {
@@ -1727,6 +1739,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   reason: argv.reason as string | undefined,
                   priority: argv.priority as string | undefined,
                   waitingOn: argv["waiting-on"] as string | undefined,
+                  ...(argv["git-check"] === false ? { noGitCheck: true } : {}),
                 },
                 format,
                 eff.root,

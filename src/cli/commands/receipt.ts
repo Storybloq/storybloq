@@ -6,6 +6,7 @@
  * MCP input shape first.
  */
 import { addReceipt } from "../../core/receipt-add.js";
+import { formatLandingReady, landingReady, parseCandidate, type LandingReadyResult } from "../../core/landing-ready.js";
 import { formatReceiptEntry, receiptsPage, RECEIPTS_PAGE_SIZE } from "../../core/receipts-page.js";
 import { ExitCode } from "../../core/output-formatter.js";
 import type { CommandContext, CommandResult } from "../types.js";
@@ -76,4 +77,19 @@ export function handleReceiptsCommand(id: string, page: number | undefined, ctx:
   const lines = [`Receipts on ${id}: ${p.summary.total} (page ${p.page} of ${p.totalPages}, ${RECEIPTS_PAGE_SIZE} per page)`];
   for (const e of p.entries) lines.push(`- ${formatReceiptEntry(e)}`);
   return { output: lines.join("\n") };
+}
+
+/** `storybloq receipts check <id> (--sha <full> | --range <b>..<h>)`: section 7 readiness. Exit 1 when not ready. */
+export async function handleReceiptsCheck(root: string, id: string, flags: { sha?: string; range?: string }, format: Format): Promise<CommandResult> {
+  if ((flags.sha === undefined) === (flags.range === undefined)) return fail(format, "receipts check takes exactly one of --sha <full sha> or --range <base>..<head>.");
+  const text = (flags.sha ?? flags.range)!;
+  const candidate = parseCandidate(text);
+  if (!candidate || (flags.sha !== undefined && candidate.base !== undefined) || (flags.range !== undefined && candidate.base === undefined)) {
+    return fail(format, flags.sha !== undefined ? `--sha takes a full 40- or 64-hex sha, not ${JSON.stringify(text)}.` : `--range takes <base>..<head> with full shas, not ${JSON.stringify(text)}.`);
+  }
+  let result: LandingReadyResult;
+  try { result = await landingReady(root, id, candidate); } catch (err) { return fail(format, err instanceof Error ? err.message : String(err)); }
+  const exitCode = result.ready ? undefined : ExitCode.USER_ERROR;
+  if (format === "json") return { output: JSON.stringify({ ok: true, data: { landingReady: result } }, null, 2), ...(exitCode !== undefined ? { exitCode } : {}) };
+  return { output: formatLandingReady(result), ...(exitCode !== undefined ? { exitCode } : {}) };
 }

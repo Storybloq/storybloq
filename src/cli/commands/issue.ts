@@ -1,4 +1,5 @@
 import { displayIdOf } from "../../core/resolver.js";
+import { readyView, type ReadyView } from "../../core/landing-ready.js";
 import { receiptsGetView } from "../../core/receipts-page.js";
 import { proofView, type ProofView } from "../../core/proof-view.js";
 import { gitGetFields, gitMarkdownLine, type GitGetFields } from "../../core/git-facts/facts.js";
@@ -228,8 +229,8 @@ export function handleIssueList(
   return { output: formatIssueList(issues, ctx.format, citationMapFor(issues, loadCitationContext(ctx.root))) };
 }
 
-export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number, git?: GitGetFields, proof?: ProofView): CommandResult;
-export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number, git?: GitGetFields, proof?: ProofView): CommandResult | Promise<CommandResult>;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false, receiptsPage?: number, git?: GitGetFields, proof?: ProofView, ready?: ReadyView): CommandResult;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean, receiptsPage?: number, git?: GitGetFields, proof?: ProofView, ready?: ReadyView): CommandResult | Promise<CommandResult>;
 /** T-486 U2-4: async only with actionability (the shared targeted lookup). */
 export function handleIssueGet(
   id: string,
@@ -241,6 +242,8 @@ export function handleIssueGet(
   git?: GitGetFields,
   /** C-v4.1 commit 5 (Q1): present only when the caller passed proofPage. */
   proof?: ProofView,
+  /** C-v4.1 commit 6: landingReady, present only when the caller passed candidate. */
+  ready?: ReadyView,
 ): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveIssueRef(id);
   if (result.kind === "ambiguous") {
@@ -266,21 +269,27 @@ export function handleIssueGet(
   const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
     // Pen ruling on plan line 423: a legacy record with no receipts field, read without receiptsPage, keeps main's JSON.
     const withReceipts = receiptsPage !== undefined || Object.prototype.hasOwnProperty.call(item, "receipts");
-    const gitJson = { ...(git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {}), ...(proof !== undefined ? { proof: proof.json } : {}) };
+    const gitJson = { ...(git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {}), ...(proof !== undefined ? { proof: proof.json } : {}), ...(ready !== undefined ? { landingReady: ready.json } : {}) };
     const extraJsonFields = withReceipts ? { ...actionability, ...gitJson, receipts: receipts.json } : { ...actionability, ...gitJson };
     const text = formatIssue(item, ctx.format, ctx.state, resolveEntityCitations(item, rulingCtx), extraJsonFields);
-    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines, ...(proof !== undefined ? proof.lines : [])];
+    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines, ...(proof !== undefined ? proof.lines : []), ...(ready !== undefined ? ready.lines : [])];
     return { output: ctx.format === "json" || mdExtra.length === 0 ? text : `${text}\n\n${mdExtra.join("\n")}` };
   };
   return withActionability ? computeTargetedActionability(ctx, "issue", item).then(render) : render();
 }
 
 /** C-v4.1 commit 4: the get both clients call; reads git facts, then the shared handler. */
-export async function handleIssueGetWithGit(id: string, ctx: CommandContext, withActionability = false, receiptsPage?: number, proofPage?: number): Promise<CommandResult> {
+export async function handleIssueGetWithGit(id: string, ctx: CommandContext, withActionability = false, receiptsPage?: number, proofPage?: number, candidate?: string): Promise<CommandResult> {
   const found = ctx.state.resolveIssueRef(id);
   const git = found.kind === "found" ? await gitGetFields(ctx.root, ctx.state, found.item.id, issueFilePath(ctx.root, found.item.id)) : undefined;
   const proof = found.kind === "found" && proofPage !== undefined ? await proofView(ctx.root, found.item.id, proofPage) : undefined;
-  return handleIssueGet(id, ctx, withActionability, receiptsPage, git, proof);
+  let ready: ReadyView | undefined;
+  if (found.kind === "found" && candidate !== undefined) {
+    const v = await readyView(ctx.root, found.item.id, candidate);
+    if (!v.ok) return { output: formatError("invalid_input", v.message, ctx.format), exitCode: ExitCode.USER_ERROR, errorCode: "invalid_input" };
+    ready = v;
+  }
+  return handleIssueGet(id, ctx, withActionability, receiptsPage, git, proof, ready);
 }
 
 export function handleIssueMetaGet(

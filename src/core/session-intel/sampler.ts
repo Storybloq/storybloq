@@ -30,6 +30,7 @@
 import type { SessionIntelPresence, TokenPressureState } from "../../presence/session-intel-fields.js";
 import type { SessionIntelConfig } from "./config.js";
 import { effectiveThresholds, emptyBandReason, eraCovered, ignoredOverrideReason } from "./policy.js";
+import type { EffectiveThresholds } from "./policy.js";
 import type { CeilingResolution, SampledBy, ScanResult, TokenPressureSample, UsageAdvisory, UsageAdvisoryInput } from "./types.js";
 
 export interface ComputeSampleInput {
@@ -91,6 +92,44 @@ export function usageAdvisoryFrom(
   return oneMillionFlag === true ? { kind: "model", nativeWindow: 1_000_000, recommendedMax } : null;
 }
 
+export interface BandDecision {
+  readonly rawState: TokenPressureState;
+  readonly state: TokenPressureState;
+  readonly suppressedBy: "handover" | "rule" | null;
+  readonly imperativeSince: string | null;
+}
+
+/**
+ * ISS-1428: the threshold-dependent step of a sample, the one source of the
+ * band logic. Measured facts in (tokens, the ceiling, whether the ceiling
+ * sources conflict), the effective thresholds and the record they apply to;
+ * the bands out. The sampler calls it on a fresh measurement, and an
+ * override write calls it to re-decide the stored sample in place.
+ */
+export function decideBand(i: { readonly tokens: number; readonly ceiling: number; readonly conflict: boolean; readonly th: EffectiveThresholds; readonly record: SessionIntelPresence | null; readonly previousSince: string | null; readonly sampledAt: string }): BandDecision {
+  const { tokens, th, record } = i;
+  let rawState: TokenPressureState = "ok";
+  if (tokens >= th.compactLine!) rawState = "compact-needed";
+  else if (tokens >= th.imperativeLine!) rawState = "imperative";
+  else if (tokens >= th.advisoryPct * i.ceiling || i.conflict) rawState = "advisory";
+
+  let state = rawState;
+  let suppressedBy: "handover" | "rule" | null = null;
+  const covered = record !== null && eraCovered(record, th);
+  if (record?.rule && (rawState === "imperative" || rawState === "compact-needed")) {
+    state = "advisory";
+    suppressedBy = "rule";
+  } else if (rawState === "imperative" && covered) {
+    state = "advisory";
+    suppressedBy = "handover";
+  }
+  // At compact-needed the imperative condition is satisfied too (the tokens
+  // alone already clear the higher line), so the stamp continues rather than
+  // being cleared and re-taken on the way past.
+  const imperativeSince = rawState === "imperative" || rawState === "compact-needed" ? i.previousSince ?? i.sampledAt : null;
+  return { rawState, state, suppressedBy, imperativeSince };
+}
+
 export function computeSample(input: ComputeSampleInput): TokenPressureSample {
   const { scan, ceiling, cfg, record } = input;
   const common = {
@@ -130,25 +169,7 @@ export function computeSample(input: ComputeSampleInput): TokenPressureSample {
   // goes from advisory straight to compact-needed.
   const th = effectiveThresholds(cfg, record, c);
   const headroomLimit = th.imperativeHeadroomTokens;
-  let rawState: TokenPressureState = "ok";
-  if (tokens >= th.compactLine!) rawState = "compact-needed";
-  else if (tokens >= th.imperativeLine!) rawState = "imperative";
-  else if (tokens >= th.advisoryPct * c || ceiling.conflict !== null) rawState = "advisory";
-
-  let state = rawState;
-  let suppressedBy: "handover" | "rule" | null = null;
-  const covered = record !== null && eraCovered(record, th);
-  if (record?.rule && (rawState === "imperative" || rawState === "compact-needed")) {
-    state = "advisory";
-    suppressedBy = "rule";
-  } else if (rawState === "imperative" && covered) {
-    state = "advisory";
-    suppressedBy = "handover";
-  }
-  // At compact-needed the imperative condition is satisfied too (the tokens
-  // alone already clear the higher line), so the stamp continues rather than
-  // being cleared and re-taken on the way past.
-  const imperativeSince = rawState === "imperative" || rawState === "compact-needed" ? previousSince ?? input.sampledAt : null;
+  const { rawState, state, suppressedBy, imperativeSince } = decideBand({ tokens, ceiling: c, conflict: ceiling.conflict !== null, th, record, previousSince, sampledAt: input.sampledAt });
   // Both clauses hold at an imperative. The reason names the one whose line
   // is HIGHER in tokens: the one that was reached last and so decided it. It
   // depends on the ceiling and the config only, so it never flips.

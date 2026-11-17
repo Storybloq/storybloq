@@ -21,6 +21,7 @@ import { readSessionIntelConfig, SESSION_INTEL_BOUNDS, type SessionIntelConfig }
 import { effectiveThresholds, emptyBandReason, eraCovered, ignoredOverrideReason, imperativePctFits, stampedThisEra, type EffectiveThresholds } from "../../core/session-intel/policy.js";
 import { readPresenceRecord, resolveCallerBinding, revalidateCandidateIdentity, stampIntoRecord, type HandoverStampObservation } from "../../core/session-intel/presence-bridge.js";
 import { stampModeFor } from "../../core/session-intel/push.js";
+import { decideBand } from "../../core/session-intel/sampler.js";
 import { isPresenceEnabled } from "../../presence/handler.js";
 import { MAX_COVERED_BY_BYTES, MAX_RULE_WHERE_BYTES, oneLineOrNull, type SessionIntelOverride, type SessionIntelOwed, type SessionIntelPresence } from "../../presence/session-intel-fields.js";
 import type { SessionPresence } from "../../presence/types.js";
@@ -167,13 +168,11 @@ export function handleSessionAlert(o: SessionAlertOptions = {}): SessionAlertRes
       if (r.refused !== null) { refused = r.refused; return base; }
       rec = r.next;
     }
-    // An override change invalidates the stored sample: its rawState was
-    // decided under the old thresholds, and a claim re-decides from the
-    // record's own sample, so no notice is due until a fresh sample is taken
-    // under the new ones (taken after the cover, which reads it).
-    if (plan.override !== undefined && rec.sessionIntel && rec.sessionIntel.lastSample !== null) {
-      rec = { ...rec, sessionIntel: { ...rec.sessionIntel, lastSample: null } };
-    }
+    // An override change re-decides the stored sample in place under the
+    // new thresholds (decideBand, the sampler's own step): every measured
+    // fact is kept, only the bands change, so a claim made from it before
+    // the next sample sees the band the new thresholds give.
+    if (plan.override !== undefined && rec.sessionIntel) rec = { ...rec, sessionIntel: redecideStoredSample(rec.sessionIntel, cfg) };
     written = rec.sessionIntel;
     return rec;
   }, () => new Date(now));
@@ -283,4 +282,20 @@ function renderState(record: SessionPresence, root: string, cfg: SessionIntelCon
     `- Handover rule: ${d.rule === null ? "none" : `elsewhere${d.rule.where ? ` (${d.rule.where})` : ""}, set on ${d.rule.source === "session" ? "this session" : `arrangement ${d.rule.arrangementId}`}`}`,
   ];
   return lines.join("\n");
+}
+
+/**
+ * ISS-1428: the stored sample re-decided under the record's current
+ * thresholds. A sample without tokens or a ceiling has no band to re-decide
+ * and is returned unchanged. The stored sample does not keep whether the
+ * ceiling sources conflicted; a conflict is read back from an advisory band
+ * below the advisory line, the only band it produces on its own.
+ */
+export function redecideStoredSample(intel: SessionIntelPresence, cfg: SessionIntelConfig): SessionIntelPresence {
+  const sample = intel.lastSample;
+  if (sample === null || sample.contextTokens === null || sample.ceiling === null) return intel;
+  const th = effectiveThresholds(cfg, intel, sample.ceiling);
+  const conflict = sample.rawState === "advisory" && sample.contextTokens < th.advisoryPct * sample.ceiling;
+  const band = decideBand({ tokens: sample.contextTokens, ceiling: sample.ceiling, conflict, th, record: intel, previousSince: sample.imperativeSince, sampledAt: sample.sampledAt });
+  return { ...intel, lastSample: { ...sample, ...band } };
 }

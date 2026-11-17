@@ -22,7 +22,7 @@ import { resolveSessionIntelConfig } from "../../src/core/session-intel/config.j
 import { decideFromRecord, effectiveThresholds, emptyBandReason, eraCovered, thresholdsForRecord, finalAllowed, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "../../src/core/session-intel/policy.js";
 import { applyBannerToMcpText, applyStatusPushesToMcpText, deliverBanner, guideDirectiveFor, stampHandoverForCaller, statusPushesFor, tokenPressureBannerFor } from "../../src/core/session-intel/push.js";
 import { handleSessionIntelPrompt } from "../../src/cli/commands/session-intel.js";
-import { handleSessionAlert, type SessionAlertOptions } from "../../src/cli/commands/session-alert.js";
+import { handleSessionAlert, redecideStoredSample, type SessionAlertOptions } from "../../src/cli/commands/session-alert.js";
 import { handleArrangementUpdate } from "../../src/cli/commands/arrangement.js";
 import { writeArrangementUnlocked, loadArrangementsSafe } from "../../src/core/arrangement-loader.js";
 import { coordinateDuet } from "../../src/core/duet-coordination.js";
@@ -1375,5 +1375,42 @@ describe("commit 2 fixup: an override change and the era check (Codex)", () => {
       expect(r.errorCode, JSON.stringify(o)).toBe("not_bound");
       expect(r.output).toMatch(/record era differs/);
     }
+  });
+});
+
+describe("commit 2 fixup 2: an override re-decides the stored sample in place (Codex)", () => {
+  it("(a) an override, then a separate --covered-by and a handover create before any new sample: real tokens are stamped and coverage is judged (mutant: clear instead of recompute)", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    at(s, 93);
+    expect(alert(s, { imperativeHeadroom: 10_000 }).errorCode).toBeNull();
+    expect(intelOf(s.f.root).lastSample!.contextTokens).toBe(tokensAt(s, 93));
+    const r = alert(s, { coveredBy: "ops/log" });
+    expect(r.errorCode).toBeNull();
+    expect(r.output).toBe("Recorded: this compaction is covered by ops/log.");
+    const out = handover(s);
+    expect(out).toMatchObject({ covers: true, tokens: tokensAt(s, 93) });
+    expect(intelOf(s.f.root).tokensAtHandover).toBe(tokensAt(s, 93));
+  });
+
+  it("(b) an unclaimed imperative sample, a same-value override, then a boundary before resampling: owed is still set (mutant: clear instead of recompute)", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    at(s, 91);
+    patchIntel(s.f.root, (i) => ({ ...i, lastImperativeEmittedAt: null, noticeTokens: null, policyGen: i.policyGen + 1 }));
+    expect(alert(s, { imperativePct: resolveSessionIntelConfig(null).imperativePct }).errorCode).toBeNull();
+    expect(intelOf(s.f.root).lastSample).toMatchObject({ rawState: "imperative", contextTokens: tokensAt(s, 91) });
+    boundary(s);
+    at(s, 30);
+    // The catch-up delivered is the owed mark acted on (delivery settles it).
+    expect(kinds(s)).toEqual(["ask@91", "catch-up@30"]);
+  });
+
+  it("decideBand is the sampler's step: the stored sample re-decided equals a fresh sample on the same facts", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    at(s, 91);
+    const fresh = intelOf(s.f.root).lastSample!;
+    expect(redecideStoredSample(intelOf(s.f.root), resolveSessionIntelConfig(null)).lastSample).toEqual(fresh);
   });
 });

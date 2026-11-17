@@ -161,6 +161,81 @@ export function resolveLineMemo(root: string, taskId: string | null, tails: Tail
   return { kind: "active", tip };
 }
 
+/**
+ * T-575 plan section 5: whether `file` in `handoversDir` holds exactly the
+ * bytes digested as `sha256`. `absent` only when `lstat` reports ENOENT;
+ * any other failure, a symlink and anything not a regular file are
+ * `unknown`, never read as absent.
+ */
+export function verifyHandoverDigest(handoversDir: string, file: string, sha256: string): "match" | "differs" | "absent" | "unknown" {
+  try {
+    lstatSync(join(handoversDir, file));
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown";
+  }
+  const digest = hashHandoverFile(handoversDir, file);
+  if (digest === null) return "unknown";
+  return digest === sha256 ? "match" : "differs";
+}
+
+export type StrictMemoRead =
+  | { readonly kind: "none" }
+  | { readonly kind: "unknown"; readonly why: string }
+  | { readonly kind: "memo"; readonly memo: LineMemo };
+
+/**
+ * T-575 plan section 5: the memo read that tells "no memo" from "could not
+ * be read". `unknown` when the memo folder is unsafe, or the memo's `lstat`
+ * fails with anything but ENOENT, or it is not a regular file, or it cannot
+ * be read. `none` when the folder or the file is absent, or the content
+ * (empty, oversized or not the memo shape) does not decode. Never writes.
+ */
+export function readLineMemoStrict(root: string, taskId: string): StrictMemoRead {
+  const folder = telemetrySubdirState(root, LINE_MEMO_SUBDIR);
+  if (folder.state === "unsafe") return { kind: "unknown", why: "the memo folder is not a real directory or cannot be inspected" };
+  if (folder.state === "absent") return { kind: "none" };
+  const path = join(folder.dir, memoFileName(taskId));
+  let size: number;
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile()) return { kind: "unknown", why: "the memo is not a regular file" };
+    size = st.size;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "unknown", why: "the memo cannot be inspected" };
+  }
+  if (size === 0 || size > LINE_MEMO_MAX_BYTES) return { kind: "none" };
+  const text = readBoundedNoFollow(path, LINE_MEMO_MAX_BYTES);
+  if (text === null) return { kind: "unknown", why: "the memo cannot be read" };
+  const memo = decodeLineMemo(text, taskId);
+  return memo === null ? { kind: "none" } : { kind: "memo", memo };
+}
+
+export type StrictMemoResolution = MemoResolution | { readonly kind: "unknown"; readonly why: string };
+
+/**
+ * T-575 plan section 5, "the worker's line now": `resolveLineMemo` over the
+ * strict read. A `writing` intent whose file cannot be verified is
+ * `unknown`; the effective tip (the intent's file on a digest match, else
+ * `tip`) is `active` when its tail state is linked or unlinked, `stale` when
+ * it is not in the listing (`missing`) or cannot be read (`unreadable`).
+ */
+export function resolveLineMemoStrict(root: string, taskId: string, tails: TailReader): StrictMemoResolution {
+  const read = readLineMemoStrict(root, taskId);
+  if (read.kind !== "memo") return read;
+  tails.observation.seen = true;
+  const memo = read.memo;
+  let tip = memo.tip;
+  if (memo.writing !== null) {
+    const v = verifyHandoverDigest(tails.handoversDir, memo.writing.file, memo.writing.sha256);
+    if (v === "unknown") return { kind: "unknown", why: `the memo's writing intent ${memo.writing.file} cannot be verified` };
+    if (v === "match") tip = memo.writing.file;
+  }
+  if (tip === null) return { kind: "none" };
+  if (!tails.has(tip)) return { kind: "stale", tip, reason: "missing" };
+  if (tails.state(tip).state === "unknown") return { kind: "stale", tip, reason: "unreadable" };
+  return { kind: "active", tip };
+}
+
 /** The memo's bytes: exactly the four keys, in the documented order. */
 export function serializeLineMemo(memo: LineMemo): string {
   const writing = memo.writing === null ? null : { file: memo.writing.file, sha256: memo.writing.sha256 };

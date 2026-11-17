@@ -2,14 +2,21 @@
  * ISS-1499 slice B, commit 6: `handover create` with the memo (plan section
  * 6; C6, B2 create side, B9, the create steps of B3 and B8).
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { initProject } from "../../../src/core/init.js";
 import { digestBytes, memoFileName, serializeLineMemo, type LineMemo } from "../../../src/core/handover-line-memo.js";
 import { appendLineage, serializeLineage, splitLineage, type LineageInput } from "../../../src/core/handover-lineage.js";
 import { createMemoSeams, handleHandoverCreate } from "../../../src/cli/commands/handover.js";
 import { isolateEnv, runCli, type IsolatedEnv } from "../../fixtures/handover-lineage/harness.js";
+import * as memoModule from "../../../src/core/handover-line-memo.js";
+
+// Pass-through spies: the create path's two memo reads, counted.
+vi.mock("../../../src/core/handover-line-memo.js", async (importOriginal) => {
+  const m = await importOriginal<typeof import("../../../src/core/handover-line-memo.js")>();
+  return { ...m, readLineMemo: vi.fn(m.readLineMemo), resolveLineMemo: vi.fn(m.resolveLineMemo) };
+});
 
 const TASK = "task-create.1";
 let env: IsolatedEnv;
@@ -220,6 +227,57 @@ describe("C6: create never fails because of the memo", () => {
     expect(intent!.tip).toBeNull();
     expect(intent!.writing).toEqual({ file: r.file, sha256: digestBytes(Buffer.from(r.bytes)) });
     expect(readMemo(p)).toEqual({ v: 1, task: TASK, tip: r.file, writing: null });
+  });
+});
+
+describe("Codex gate on commit 6: each memo write fails alone", () => {
+  it("the intent write fails and the final write lands: no memo_not_written, the memo ends finalised", async () => {
+    const p = await project({ [A]: linked("T-1", {}) });
+    mkdirSync(memoPath(p), { recursive: true });
+    createMemoSeams.afterIntent = () => {
+      expect(statSync(memoPath(p)).isDirectory()).toBe(true);
+      rmSync(memoPath(p), { recursive: true });
+    };
+    const r = await create(p, ["--content", body("T-2"), "--continues", A, "--as", TASK, "--format", "json"]);
+    expect(r.exit).toBe(0);
+    expect((JSON.parse(r.out) as Reply).data.lineage!.warnings).toEqual([]);
+    expect(readMemo(p)).toEqual({ v: 1, task: TASK, tip: r.file, writing: null });
+  });
+
+  it("the intent lands and the final write fails: no memo_not_written, and the next resolution heals to the new file", async () => {
+    const p = await project({ [A]: linked("T-1", {}) });
+    seedMemo(p, { tip: A, writing: null });
+    createMemoSeams.beforeFinalMemo = () => { chmodSync(p.mdir, 0o555); };
+    let r: Awaited<ReturnType<typeof create>>;
+    try {
+      r = await create(p, ["--content", body("T-2"), "--as", TASK, "--format", "json"]);
+    } finally {
+      chmodSync(p.mdir, 0o755);
+    }
+    expect(r.exit).toBe(0);
+    expect((JSON.parse(r.out) as Reply).data.lineage!.warnings).toEqual([]);
+    expect(readMemo(p)).toEqual({ v: 1, task: TASK, tip: A, writing: { file: r.file, sha256: digestBytes(Buffer.from(r.bytes)) } });
+    createMemoSeams.beforeFinalMemo = null;
+    const next = await create(p, ["--content", body("T-3"), "--as", TASK]);
+    expect(lineOf(next.bytes)?.continues).toEqual({ state: "valid", file: r.file });
+  });
+
+  it("an invalid --as with an active memo for the environment identity: unlinked, the memo untouched and never read", async () => {
+    const p = await project({ [A]: linked("T-1", {}) });
+    seedMemo(p, { tip: A, writing: null });
+    process.env.CLAUDE_CODE_SESSION_ID = TASK;
+    const before = readFileSync(memoPath(p));
+    const mtime = statSync(memoPath(p)).mtimeMs;
+    vi.mocked(memoModule.readLineMemo).mockClear();
+    vi.mocked(memoModule.resolveLineMemo).mockClear();
+    const r = await create(p, ["--content", body("T-2"), "--as", "bad id", "--format", "json"]);
+    expect(r.exit).toBe(0);
+    expect(r.bytes).toBe(body("T-2"));
+    expect((JSON.parse(r.out) as Reply).data.lineage!.linked).toBe(false);
+    expect(vi.mocked(memoModule.readLineMemo)).not.toHaveBeenCalled();
+    expect(vi.mocked(memoModule.resolveLineMemo)).not.toHaveBeenCalled();
+    expect(readFileSync(memoPath(p))).toEqual(before);
+    expect(statSync(memoPath(p)).mtimeMs).toBe(mtime);
   });
 });
 

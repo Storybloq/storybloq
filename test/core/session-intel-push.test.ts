@@ -484,7 +484,11 @@ describe("guide directive and handover stamp", () => {
       const pending = await handleHandoverCreate("# Pending", "pending", "md", f.root, { now: now + 2000, projectsDir: f.projects });
       // A pending compaction makes the size unknown: the exact unknown-size reply,
       // never a covering, a will-not-ask or a close-and-expected sentence.
-      expect(pending.output).toBe("Created handover: 2026-11-17-01-pending.md\n\nHandover recorded. The context size was not known when it was written, so the notice may still ask for one near the compaction point. Keep working in this same turn.");
+      // The filename's date is the local date of the write, not the injected now.
+      const [created, reply, ...rest] = (pending.output as string).split("\n\n");
+      expect(rest).toEqual([]);
+      expect(created).toMatch(/^Created handover: \d{4}-\d{2}-\d{2}-01-pending\.md$/);
+      expect(reply).toBe("Handover recorded. The context size was not known when it was written, so the notice may still ask for one near the compaction point. Keep working in this same turn.");
       expect(pending.output).not.toMatch(/covers this compaction|will not ask again|close and expected|held at advisory|\/compact|no further handovers/);
     });
   });

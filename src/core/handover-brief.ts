@@ -62,6 +62,9 @@ export function isFilenameAdmitted(filename: string): boolean {
  */
 const CROSS_HANDOVER_BUDGET_BYTES = 14_200;
 
+/** ISS-1499 slice B: the structured budget, for what is left after the caller's own window. */
+export const CROSS_HANDOVER_BUDGET = CROSS_HANDOVER_BUDGET_BYTES;
+
 const TRAJECTORY_CAP_BYTES = 1600;
 
 function byteLength(s: string): number {
@@ -113,6 +116,8 @@ export interface HandoverBriefResult {
 export interface HandoverBriefOptions {
   brief: boolean;
   priming: boolean;
+  /** ISS-1499 slice B: receives the bytes the cross-handover budget walk used. */
+  meter?: { used: number };
 }
 
 interface PreparedStructured {
@@ -139,7 +144,7 @@ function structuredEntryBytes(filename: string, form: "structured" | "index-only
  * older than it -- so a big handover near the front does not starve small
  * ones further back into a demotion they never needed.
  */
-function allocateCrossHandoverBudget(prepared: PreparedStructured[]): HandoverBriefEntry[] {
+function allocateCrossHandoverBudget(prepared: PreparedStructured[], meter?: { used: number }): HandoverBriefEntry[] {
   const fullBytes = prepared.map((p) => structuredEntryBytes(p.filename, "structured", p.full));
   const indexOnlyBytes = prepared.map((p) => structuredEntryBytes(p.filename, "index-only", { index: p.indexOnly }));
 
@@ -162,6 +167,7 @@ function allocateCrossHandoverBudget(prepared: PreparedStructured[]): HandoverBr
       running += indexOnlyBytes[i] as number;
     }
   }
+  if (meter) meter.used = running;
   return results;
 }
 
@@ -249,7 +255,7 @@ export async function buildHandoverBrief(
   const structuredPrepared = prepared
     .filter((p): p is Extract<Prepared, { kind: "structured" }> => p.kind === "structured")
     .map((p) => p.data);
-  const budgeted = allocateCrossHandoverBudget(structuredPrepared);
+  const budgeted = allocateCrossHandoverBudget(structuredPrepared, opts.meter);
   let budgetedIdx = 0;
 
   const firstPrepared = prepared[0];
@@ -272,4 +278,20 @@ export async function buildHandoverBrief(
   const trajectory = capTrajectory(buildTrajectory(trajectoryInputs));
 
   return { handovers, trajectory, skippedHandovers, missingHandovers };
+}
+
+/**
+ * ISS-1499 slice B: one handover's full structured entry, read and stripped
+ * like any body, for the brief's recent-activity block. Null when the body
+ * cannot be read.
+ */
+export function structuredEntryFor(handoversDir: string, filename: string): StructuredEntry | null {
+  let body: string;
+  try {
+    body = splitLineage(readHandoverBody(handoversDir, filename)).body;
+  } catch {
+    return null;
+  }
+  const full = selectBoundedRecords(parseHandoverMarkdown(body, filename).records, filename);
+  return { filename, form: "structured", records: full.records, index: full.index };
 }

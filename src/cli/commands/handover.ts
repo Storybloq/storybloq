@@ -1,6 +1,7 @@
 import { ledgerOptions, ledgerState, ledgerStates, withLedgerState } from "../../core/ledger-state.js";
 import { extractHandoverDate, listHandovers, readHandover } from "../../core/handover-parser.js";
-import { buildHandoverBrief, isFilenameAdmitted } from "../../core/handover-brief.js";
+import { buildHandoverBrief, isFilenameAdmitted, CROSS_HANDOVER_BUDGET } from "../../core/handover-brief.js";
+import { buildBriefOtherLines, buildRawOtherLines } from "../../core/handover-other-lines.js";
 import {
   HANDOVER_TEMPLATE_MARKER,
   computeCarriedForward,
@@ -46,9 +47,16 @@ import {
   readHandoverBody,
   selectHandovers,
   selectionNotices,
+  scanRecentTails,
+  finaliseRecentLines,
+  recentCutoff,
   type HandoverLinesAddition,
   type HandoverSelection,
+  type OtherLines,
+  type RecentLines,
+  type RecentScan,
 } from "../../core/handover-selection.js";
+import { handoverFilenameDate } from "../../core/handover-filename.js";
 import { currentClientTaskId, normalizeClientTaskId } from "../../autonomous/client-profile.js";
 import { extractHandoverHeading } from "../../federation/handover-utils.js";
 import type { LoadWarning } from "../../core/errors.js";
@@ -79,7 +87,7 @@ import {
   guardPath,
   detectTeamModeFromDisk,
 } from "../../core/project-loader.js";
-import { parseHandoverFilename, todayISO, CliValidationError } from "../helpers.js";
+import { parseHandoverFilename, CliValidationError } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import type { OutputFormat } from "../../models/types.js";
 
@@ -265,6 +273,8 @@ export interface HandoverLatestOptions {
   readonly ledger?: boolean;
   /** ISS-1499 slice B: the identity whose line to read, instead of the environment's. */
   readonly as?: string;
+  /** ISS-1499 slice B: the clock for the recent-lines window (tests). */
+  readonly now?: Date;
 }
 
 /** Uncached tail reads a `latest` or `template` selection may make, and bodies the raw fill may skip. */
@@ -285,15 +295,34 @@ interface ReaderSelection {
   readonly tails: TailReader;
   readonly memo: MemoResolution;
   readonly selection: HandoverSelection;
+  /** `latest` only: the recent scan, run before the selection. */
+  readonly scan: RecentScan | null;
 }
 
-/** Plan sections 4 and 7: the caller's memo, then the one selection. */
-function selectForReader(ctx: CommandContext, taskId: string | null, count: number): ReaderSelection {
+/**
+ * Plan sections 4, 7 and 8: the caller's memo, the recent scan when a
+ * window cutoff is given (`latest` only), then the one selection.
+ */
+function selectForReader(ctx: CommandContext, taskId: string | null, count: number, cutoff: string | null = null): ReaderSelection {
   const listing = ctx.state.handoverFilenames;
   const tails = new TailReader(ctx.handoversDir, listing);
   const memo = resolveLineMemo(resolve(ctx.root), taskId, tails);
+  const scan = cutoff === null ? null : scanRecentTails({ listing, tails, cutoff });
   const selection = selectHandovers({ listing, tails, memo, count, maxReads: READER_MAX_READS });
-  return { tails, memo, selection };
+  return { tails, memo, selection, scan };
+}
+
+/** The window's date rule follows the board's filename rule; an unreadable config reads as local dates. */
+async function windowCutoff(root: string, now: Date): Promise<string> {
+  let team = false;
+  try { team = await detectTeamMode(resolve(root)); } catch { team = false; }
+  return recentCutoff(now, team);
+}
+
+/** `lines` exists only with a notice or a block; never `{ notices: [] }`. */
+function linesOf(notices: readonly string[], otherLines: OtherLines | undefined): HandoverLinesAddition | undefined {
+  if (notices.length === 0 && otherLines === undefined) return undefined;
+  return otherLines === undefined ? { notices } : { notices, otherLines };
 }
 
 /**
@@ -303,10 +332,6 @@ function selectForReader(ctx: CommandContext, taskId: string | null, count: numb
 function compatibleFiles(listing: readonly string[], count: number, files: readonly string[]): readonly string[] {
   const slice = listing.slice(0, count);
   return isDeepStrictEqual([...files], slice) ? files : slice;
-}
-
-function linesAddition(notices: readonly string[]): HandoverLinesAddition | undefined {
-  return notices.length > 0 ? { notices } : undefined;
 }
 
 export async function handleHandoverLatest(
@@ -324,7 +349,11 @@ export async function handleHandoverLatest(
   }
 
   const listing = ctx.state.handoverFilenames;
-  const { tails, memo, selection } = selectForReader(ctx, taskId, count);
+  const cutoff = await windowCutoff(ctx.root, opts.now ?? new Date());
+  const { tails, memo, selection, scan } = selectForReader(ctx, taskId, count, cutoff);
+  const recentFor = (selected: readonly string[]): RecentLines => finaliseRecentLines({
+    listing, tails, scan: scan!, selection, selected, memo, admitted: isFilenameAdmitted,
+  });
 
   // T-320 commit 2: brief/priming are additive -- omitting both keeps the
   // default path below byte-identical to today (always the full raw body).
@@ -343,14 +372,24 @@ export async function handleHandoverLatest(
       }
     }
     try {
+      const meter = { used: 0 };
       const result = await buildHandoverBrief(ctx.handoversDir, filenames, {
         brief: opts.brief ?? false,
         priming: opts.priming ?? false,
+        meter,
       });
       const empty = filenames.length === 0;
-      const lines = observed
-        ? linesAddition(selectionNotices(memo, selection, selection.limited || selection.fill !== null, empty, listing.length))
-        : undefined;
+      let lines: HandoverLinesAddition | undefined;
+      if (observed) {
+        // After the selection and after the caller's own window was built,
+        // which nothing below changes.
+        const rl = recentFor(filenames);
+        const notices = selectionNotices(memo, selection, selection.limited || selection.fill !== null || rl.limited, empty, listing.length);
+        const otherLines = opts.brief
+          ? buildBriefOtherLines(rl, notices, CROSS_HANDOVER_BUDGET - meter.used, ctx.format, ctx.handoversDir)
+          : buildRawOtherLines(rl);
+        lines = linesOf(notices, otherLines);
+      }
       // buildHandoverBrief drops a listed-but-missing file (ENOENT) from the
       // window itself rather than failing the whole request -- matching the
       // default path's own tolerance for a missing file when count > 1.
@@ -455,9 +494,12 @@ export async function handleHandoverLatest(
     if (again !== null) return again;
   }
   const empty = selection.source === "default" && selected.length === 0;
-  const lines = observed
-    ? linesAddition(selectionNotices(memo, { ...selection, walked, endReached }, selection.limited || fillLimited, empty, listing.length))
-    : undefined;
+  let lines: HandoverLinesAddition | undefined;
+  if (observed) {
+    const rl = recentFor(selected);
+    const notices = selectionNotices(memo, { ...selection, walked, endReached }, selection.limited || fillLimited || rl.limited, empty, listing.length);
+    lines = linesOf(notices, buildRawOtherLines(rl));
+  }
 
   if (bodies.length === 0) {
     if (empty && lines !== undefined) return { output: formatHandoverEmptyDefault(lines, ctx.format) };
@@ -980,7 +1022,7 @@ export async function handleHandoverCreate(
   }
 
   const slug = normalizeSlug(slugRaw);
-  const date = todayISO();
+  const date = handoverFilenameDate(new Date(), false);
   let filename: string | undefined;
   const absRoot = resolve(root);
   const plan = planLineage(content, lineage);

@@ -27,7 +27,7 @@ import { describeRepeatInterval } from "./session-intel/sampler.js";
 import type { HandoverBriefResult, HandoverBriefEntry } from "./handover-brief.js";
 import type { CreateLineageResult, LineageWarning, LinesRow, LinesView } from "./handover-lineage.js";
 import type { ContinueResult } from "./handover-line-memo.js";
-import type { HandoverLinesAddition } from "./handover-selection.js";
+import type { HandoverLinesAddition, OtherLines } from "./handover-selection.js";
 import type { SectionRecord, TrajectoryEntry } from "./markdown-sections.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
@@ -2789,9 +2789,42 @@ export function formatHandoverEmptyDefault(lines: HandoverLinesAddition, format:
   return formatHandoverLinesMd(lines);
 }
 
+/** ISS-1499 slice B: the pointer line and the label of the recent-activity block. */
+export const OTHER_LINES_POINTER = "Other lines were written recently: `storybloq handover lines`";
+export const OTHER_LINES_LABEL = "Recent activity on other lines (bounded scan; the exact view is `storybloq handover lines`)";
+
+function otherLinesMd(o: OtherLines): string[] {
+  const out = [OTHER_LINES_POINTER, OTHER_LINES_LABEL];
+  for (const r of o.recent) {
+    const attrs = `role=${r.role ?? "-"} by=${r.by ?? "-"}`;
+    if (r.entry) out.push(`### ${r.file} (${attrs})`, formatHandoverBriefEntryMd(r.entry));
+    else out.push(`- ${r.file} ${attrs}`);
+  }
+  if (o.more) out.push("and more");
+  return out;
+}
+
 /** ISS-1499 slice B: the `lines` addition as the last Markdown part of a reader result. */
 export function formatHandoverLinesMd(lines: HandoverLinesAddition): string {
-  return lines.notices.join("\n");
+  return [...lines.notices, ...(lines.otherLines ? otherLinesMd(lines.otherLines) : [])].join("\n");
+}
+
+/**
+ * ISS-1499 slice B: the bytes `otherLines` adds to a reader result in
+ * `format`, next to `notices`: key, value, separators and indentation in
+ * JSON (and the `lines` key itself when there is no notice); the section
+ * and its leading separator in Markdown. Rendered by the output's own code.
+ */
+export function otherLinesBytes(otherLines: OtherLines, notices: readonly string[], format: OutputFormat): number {
+  const bytes = (s: string): number => Buffer.byteLength(s, "utf-8");
+  if (format === "json") {
+    const without = notices.length > 0 ? { lines: { notices } } : {};
+    const withIt = { lines: { notices, otherLines } };
+    return bytes(JSON.stringify(successEnvelope(withIt), null, 2)) - bytes(JSON.stringify(successEnvelope(without), null, 2));
+  }
+  const withIt = formatHandoverLinesMd({ notices, otherLines });
+  const without = notices.length > 0 ? formatHandoverLinesMd({ notices }) : "";
+  return bytes(withIt) - bytes(without) + (notices.length > 0 ? 0 : 2);
 }
 
 export function formatHandoverTemplate(content: string, format: OutputFormat): string {

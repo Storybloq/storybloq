@@ -5,7 +5,7 @@
  * line; notices N1 to N4 ride in `lines`. B4 (command rows), B5, B8 except
  * the create step, the command-level rows of B13 and C8's own window.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -22,8 +22,16 @@ const CLI = resolve(here, "../../../dist/cli.js");
 const TASK = "task-r.1";
 
 let env: IsolatedEnv;
-beforeEach(() => { env = isolateEnv(); });
+// The recent-activity window (commit 5) follows the clock; these rows pin
+// the caller's own window, so the clock sits where no fixture is recent.
+// The block itself is pinned in handover-lines-recent.test.ts.
+beforeEach(() => {
+  env = isolateEnv();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2027-06-01T12:00:00Z"));
+});
 afterEach(() => {
+  vi.useRealTimers();
   env.restore();
   rmSync(env.base, { recursive: true, force: true });
 });

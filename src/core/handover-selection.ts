@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { scanHandoverFile } from "./handover-lineage-scan.js";
 import type { BrokenReason, ScannedFile } from "./handover-lineage.js";
 import type { MemoResolution } from "./handover-line-memo.js";
+import type { StructuredEntry } from "./handover-brief.js";
+import { handoverFilenameDate } from "./handover-filename.js";
 
 /**
  * Set to true by exactly three events: the `TailReader` returns a `linked`
@@ -143,48 +145,73 @@ export function selectHandovers(o: SelectOptions): HandoverSelection {
   return o.memo.kind === "active" ? memoWalk(o, o.memo.tip, overLimit) : defaultWalk(o, overLimit);
 }
 
-function memoWalk(o: SelectOptions, tip: string, overLimit: (name: string) => boolean): HandoverSelection {
+type ParentStep =
+  | { readonly kind: "next"; readonly name: string }
+  | { readonly kind: "end" }
+  | { readonly kind: "limit" }
+  | { readonly kind: "broken"; readonly broken: SelectionBroken };
+
+function positionsOf(listing: readonly string[]): Map<string, number> {
   const position = new Map<string, number>();
-  o.listing.forEach((n, i) => { if (!position.has(n)) position.set(n, i); });
+  listing.forEach((n, i) => { if (!position.has(n)) position.set(n, i); });
+  return position;
+}
+
+/**
+ * Section 7's Parent of `cur`, shared by the memo walk and the recent-lines
+ * marking walk. `visited` holds the names already on the walk.
+ */
+function parentStep(
+  listing: readonly string[],
+  position: ReadonlyMap<string, number>,
+  tails: TailReader,
+  cur: string,
+  visited: ReadonlySet<string>,
+  overLimit: (name: string) => boolean,
+): ParentStep {
+  if (overLimit(cur)) return { kind: "limit" };
+  const st = tails.state(cur);
+  if (st.state === "linked") {
+    const c = st.lineage!.lineage.continues;
+    if (c.state === "absent") return { kind: "end" };
+    if (c.state === "invalid") return { kind: "broken", broken: { at: cur, target: null, reason: "invalid" } };
+    const t = c.file;
+    if (t === cur) return { kind: "broken", broken: { at: cur, target: t, reason: "self" } };
+    if (!position.has(t)) return { kind: "broken", broken: { at: cur, target: t, reason: "missing" } };
+    if (visited.has(t)) return { kind: "broken", broken: { at: cur, target: t, reason: "repeat" } };
+    if (overLimit(t)) return { kind: "limit" };
+    if (tails.state(t).state === "unknown") return { kind: "broken", broken: { at: cur, target: t, reason: "unreadable" } };
+    return { kind: "next", name: t };
+  }
+  // An unlinked file's parent is the next unlinked name after it; the
+  // search never restarts from the top of the listing.
+  for (let j = (position.get(cur) ?? listing.length) + 1; j < listing.length; j++) {
+    const n = listing[j]!;
+    if (overLimit(n)) return { kind: "limit" };
+    if (tails.state(n).state === "unlinked") {
+      return visited.has(n) ? { kind: "broken", broken: { at: cur, target: n, reason: "repeat" } } : { kind: "next", name: n };
+    }
+  }
+  return { kind: "end" };
+}
+
+function memoWalk(o: SelectOptions, tip: string, overLimit: (name: string) => boolean): HandoverSelection {
+  const position = positionsOf(o.listing);
   const files = [tip];
   const visited = new Set<string>([tip]);
   let broken: SelectionBroken | null = null;
   let limited = false;
   let cur = tip;
-  const done = (): HandoverSelection => ({
-    files, source: "memo", broken, limited, fill: null, endReached: false, walked: 0, visited: [...files],
-  });
   while (files.length < o.count) {
-    if (overLimit(cur)) { limited = true; return done(); }
-    const st = o.tails.state(cur);
-    let next: string | null = null;
-    if (st.state === "linked") {
-      const c = st.lineage!.lineage.continues;
-      if (c.state === "absent") return done();
-      if (c.state === "invalid") { broken = { at: cur, target: null, reason: "invalid" }; return done(); }
-      const t = c.file;
-      if (t === cur) { broken = { at: cur, target: t, reason: "self" }; return done(); }
-      if (!position.has(t)) { broken = { at: cur, target: t, reason: "missing" }; return done(); }
-      if (visited.has(t)) { broken = { at: cur, target: t, reason: "repeat" }; return done(); }
-      if (overLimit(t)) { limited = true; return done(); }
-      if (o.tails.state(t).state === "unknown") { broken = { at: cur, target: t, reason: "unreadable" }; return done(); }
-      next = t;
-    } else {
-      // An unlinked file's parent is the next unlinked name after it; the
-      // search never restarts from the top of the listing.
-      for (let j = (position.get(cur) ?? o.listing.length) + 1; j < o.listing.length; j++) {
-        const n = o.listing[j]!;
-        if (overLimit(n)) { limited = true; return done(); }
-        if (o.tails.state(n).state === "unlinked") { next = n; break; }
-      }
-      if (next === null) return done();
-      if (visited.has(next)) { broken = { at: cur, target: next, reason: "repeat" }; return done(); }
-    }
-    files.push(next);
-    visited.add(next);
-    cur = next;
+    const step = parentStep(o.listing, position, o.tails, cur, visited, overLimit);
+    if (step.kind === "limit") { limited = true; break; }
+    if (step.kind === "broken") { broken = step.broken; break; }
+    if (step.kind === "end") break;
+    files.push(step.name);
+    visited.add(step.name);
+    cur = step.name;
   }
-  return done();
+  return { files, source: "memo", broken, limited, fill: null, endReached: false, walked: 0, visited: [...files] };
 }
 
 function defaultWalk(o: SelectOptions, overLimit: (name: string) => boolean): HandoverSelection {
@@ -205,12 +232,163 @@ function defaultWalk(o: SelectOptions, overLimit: (name: string) => boolean): Ha
 }
 
 // ---------------------------------------------------------------------------
+// Recent lines (plan section 8; `handover latest` only)
+// ---------------------------------------------------------------------------
+
+const RECENT_WINDOW_DAYS = 14;
+/** Tails the recent scan reads at most. */
+export const RECENT_SCAN_MAX = 500;
+const RECENT_SHOWN = 5;
+const RECENT_LABEL_MAX_BYTES = 40;
+/** The marking walk ends after this many consecutive names outside the window. */
+const MARKING_OUTSIDE_MAX = 10;
+const MARKING_MAX_READS = 200;
+const DATED = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The window's first date: the date `handover create` would name a file with, 14 days before `now`. */
+export function recentCutoff(now: Date, team: boolean): string {
+  return handoverFilenameDate(new Date(now.getTime() - RECENT_WINDOW_DAYS * 86_400_000), team);
+}
+
+/** In the window: a dated name whose date is at or after the cutoff. Undated names never are. */
+export function inRecentWindow(name: string, cutoff: string): boolean {
+  const d = name.slice(0, 10);
+  return DATED.test(d) && d >= cutoff;
+}
+
+export interface RecentScan {
+  /** The window's names in listing order, at most 500. */
+  readonly window: readonly string[];
+  /** More than 500 names were in the window. */
+  readonly limited: boolean;
+}
+
+/** Steps 1 and 2: the window, and every tail in it read (before the selection, so the cache is warm). */
+export function scanRecentTails(o: { readonly listing: readonly string[]; readonly tails: TailReader; readonly cutoff: string }): RecentScan {
+  const inWindow = o.listing.filter((n) => inRecentWindow(n, o.cutoff));
+  const window = inWindow.slice(0, RECENT_SCAN_MAX);
+  for (const n of window) o.tails.state(n);
+  return { window, limited: inWindow.length > RECENT_SCAN_MAX };
+}
+
+export interface RecentLine {
+  readonly file: string;
+  readonly role: string | null;
+  readonly by: string | null;
+}
+
+export interface RecentLines {
+  /** The first five candidates, in listing order. */
+  readonly recent: readonly RecentLine[];
+  /** More than five candidates were found. */
+  readonly more: boolean;
+  /** The scan or the marking walk stopped at a limit. */
+  readonly limited: boolean;
+}
+
+function clipBytes(value: string | null, max: number): string | null {
+  if (value === null) return null;
+  const buf = Buffer.from(value, "utf8");
+  if (buf.length <= max) return value;
+  let end = max;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString("utf8");
+}
+
+/**
+ * Steps 3 to 5, after the selection (and the raw fill). `selected` is every
+ * name the caller is shown as its own; `admitted` is the brief's filename
+ * admission, applied to the candidates.
+ */
+export function finaliseRecentLines(o: {
+  readonly listing: readonly string[];
+  readonly tails: TailReader;
+  readonly scan: RecentScan;
+  readonly selection: HandoverSelection;
+  readonly selected: readonly string[];
+  readonly memo: MemoResolution;
+  readonly admitted: (name: string) => boolean;
+}): RecentLines {
+  const own = new Set<string>([...o.selected, ...o.selection.files, ...o.selection.visited]);
+  const windowSet = new Set(o.scan.window);
+  let limited = o.scan.limited;
+  const position = positionsOf(o.listing);
+  const start = o.tails.reads;
+  const overLimit = (name: string): boolean => !o.tails.isCached(name) && o.tails.reads - start >= MARKING_MAX_READS;
+
+  if (o.memo.kind === "active") {
+    // The marking walk: the caller's line past `count`. Ten consecutive
+    // names outside the window end it normally (further ancestors are
+    // older); the read limit leaves membership undetermined.
+    let cur = o.memo.tip;
+    const visited = new Set<string>([cur]);
+    own.add(cur);
+    let outside = windowSet.has(cur) ? 0 : 1;
+    while (outside < MARKING_OUTSIDE_MAX) {
+      const step = parentStep(o.listing, position, o.tails, cur, visited, overLimit);
+      if (step.kind === "limit") { limited = true; break; }
+      if (step.kind !== "next") break;
+      own.add(step.name);
+      visited.add(step.name);
+      outside = windowSet.has(step.name) ? 0 : outside + 1;
+      cur = step.name;
+    }
+  } else {
+    for (const n of o.scan.window) if (o.tails.state(n).state === "unlinked") own.add(n);
+  }
+
+  const claimed = new Set<string>();
+  for (const n of o.scan.window) {
+    const st = o.tails.state(n);
+    if (st.state !== "linked") continue;
+    const l = st.lineage!.lineage;
+    if (l.continues.state === "valid") claimed.add(l.continues.file);
+    for (const a of l.absorbs) claimed.add(a);
+  }
+
+  let head: string | null = null;
+  if (o.memo.kind === "active") {
+    for (const n of o.listing) {
+      if (overLimit(n)) { limited = true; break; }
+      if (o.tails.state(n).state === "unlinked") { head = n; break; }
+    }
+  }
+
+  const candidates: RecentLine[] = [];
+  for (const n of o.scan.window) {
+    if (own.has(n) || !o.admitted(n)) continue;
+    const st = o.tails.state(n);
+    if (st.state === "linked") {
+      if (claimed.has(n)) continue;
+      const l = st.lineage!.lineage;
+      candidates.push({ file: n, role: clipBytes(l.role, RECENT_LABEL_MAX_BYTES), by: clipBytes(l.by, RECENT_LABEL_MAX_BYTES) });
+    } else if (n === head) {
+      candidates.push({ file: n, role: null, by: null });
+    }
+  }
+  return { recent: candidates.slice(0, RECENT_SHOWN), more: candidates.length > RECENT_SHOWN, limited };
+}
+
+// ---------------------------------------------------------------------------
 // Notices and the `lines` addition (plan section 9)
 // ---------------------------------------------------------------------------
 
-/** The optional `lines` object a reader result carries. `otherLines` arrives with the recent-lines scan. */
+/** One recent line in the block; `entry` only in a brief, when its full entry fit. */
+export interface OtherLinesItem extends RecentLine {
+  readonly entry?: StructuredEntry;
+}
+
+/** Recent activity on other lines (plan section 9). */
+export interface OtherLines {
+  readonly pointer: true;
+  readonly recent: readonly OtherLinesItem[];
+  readonly more: boolean;
+}
+
+/** The optional `lines` object a reader result carries. */
 export interface HandoverLinesAddition {
   readonly notices: readonly string[];
+  readonly otherLines?: OtherLines;
 }
 
 const NOTICE_FILE_MAX_BYTES = 120;

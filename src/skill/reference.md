@@ -343,10 +343,10 @@ Evaluate frontend code against platform-specific design best practices.
 
 ```
 /story design          # Auto-detect platform, evaluate frontend
-/story design web      # Evaluate against web best practices
-/story design ios      # Evaluate against iOS HIG
-/story design macos    # Evaluate against macOS HIG
-/story design android  # Evaluate against Material Design
+/story design web      # Against web best practices
+/story design ios      # Against iOS HIG
+/story design macos    # Against macOS HIG
+/story design android  # Against Material Design
 ```
 
 Creates issues automatically when storybloq MCP tools or CLI are available, skipping existing design issues so repeated runs add no duplicates; with neither, outputs a markdown checklist.

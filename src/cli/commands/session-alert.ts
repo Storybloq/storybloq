@@ -37,6 +37,8 @@ export interface SessionAlertOptions {
   /** Test seams. */
   readonly root?: string | null;
   readonly now?: number;
+  /** Test seam: runs after the caller is bound, before the locked write. */
+  readonly afterBinding?: () => void;
 }
 
 export interface SessionAlertResult {
@@ -139,13 +141,20 @@ export function handleSessionAlert(o: SessionAlertOptions = {}): SessionAlertRes
     return { output: renderState(record, recordRoot, cfg, format), errorCode: null };
   }
 
+  o.afterBinding?.();
   const observed: HandoverStampObservation = { state: null };
+  const expectedEra = mode === "bound" ? binding.era : null;
+  let pointBefore: number | null = null as number | null;
   let refused: string | null = null as string | null;
   let written: SessionIntelPresence | null = null as SessionIntelPresence | null;
   const outcome = applyPresenceEnrichment(recordRoot, sessionId, LIFECYCLE_LOCK_BUDGET_MS, "session-intel", (base, nowIso) => {
     const intel = base.sessionIntel;
     if (!intel) { refused = "no session intel on this session's record yet"; return base; }
     if (base.endedAt !== null) { refused = "this session has ended"; return base; }
+    // The same era check stampIntoRecord makes, for every flag group: a
+    // startup era swap between the binding and this lock writes nothing.
+    if (mode === "bound" && (expectedEra === null || intel.era === null || intel.era !== expectedEra)) { refused = "record era differs from the caller's live era"; return base; }
+    pointBefore = intel.lastSample?.ceiling ?? null;
     let next: SessionIntelPresence = intel;
     if (plan.rule !== undefined) next = { ...next, rule: plan.rule.set ? { handovers: "elsewhere", where: plan.rule.where, setAt: nowIso } : null };
     if (plan.override !== undefined) next = { ...next, override: plan.override };
@@ -154,9 +163,16 @@ export function handleSessionAlert(o: SessionAlertOptions = {}): SessionAlertRes
     if (next !== intel) next = { ...next, policyGen: next.policyGen + 1 };
     let rec: SessionPresence = { ...base, sessionIntel: next };
     if (plan.coveredBy !== undefined) {
-      const r = stampIntoRecord(recordRoot, sessionId, rec, nowIso, now, mode === "bound" ? binding.era : null, null, { out: observed, cfg }, mode, { handoverFile: null, coveredBy: plan.coveredBy });
+      const r = stampIntoRecord(recordRoot, sessionId, rec, nowIso, now, expectedEra, null, { out: observed, cfg }, mode, { handoverFile: null, coveredBy: plan.coveredBy });
       if (r.refused !== null) { refused = r.refused; return base; }
       rec = r.next;
+    }
+    // An override change invalidates the stored sample: its rawState was
+    // decided under the old thresholds, and a claim re-decides from the
+    // record's own sample, so no notice is due until a fresh sample is taken
+    // under the new ones (taken after the cover, which reads it).
+    if (plan.override !== undefined && rec.sessionIntel && rec.sessionIntel.lastSample !== null) {
+      rec = { ...rec, sessionIntel: { ...rec.sessionIntel, lastSample: null } };
     }
     written = rec.sessionIntel;
     return rec;
@@ -177,7 +193,7 @@ export function handleSessionAlert(o: SessionAlertOptions = {}): SessionAlertRes
     } else {
       const parts = [plan.override.imperativePct !== null ? `imperativePct ${plan.override.imperativePct}` : null, plan.override.imperativeHeadroomTokens !== null ? `imperativeHeadroomTokens ${n(plan.override.imperativeHeadroomTokens)}` : null].filter(Boolean);
       lines.push(`Recorded for this session only: ${parts.join(", ")}.`);
-      const th = effectiveThresholds(cfg, after, after.lastSample?.ceiling ?? null);
+      const th = effectiveThresholds(cfg, after, pointBefore);
       const empty = emptyBandReason(th);
       if (empty) lines.push(`Warning: on the current expected point ${empty}.`);
     }

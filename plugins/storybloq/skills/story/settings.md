@@ -112,7 +112,7 @@ Do NOT search source code for this. The full config.json schema is shown below. 
   "sessionIntel": {
     "enabled": "boolean (default true). false disables sampling, banners, the prompt-hook line, the guide directive and the status projection for this project; `session intel` still answers read-only",
     "advisoryPct": "number 0.5-0.95 (default 0.70) of the expected auto-compact ceiling",
-    "imperativePct": "number 0.6-0.99 (default 0.90), must exceed advisoryPct; imperative when this and imperativeHeadroomTokens both hold. A seat with a slow handover path lowers it here, or for itself only with `storybloq session alert --imperative-pct`",
+    "imperativePct": "number 0.6-0.99 (default 0.90), must exceed advisoryPct; imperative when this and imperativeHeadroomTokens both hold. A slow handover path lowers it here, or per session with `storybloq session alert --imperative-pct`",
     "imperativeHeadroomTokens": "integer 10000-500000 (default 50000) headroom",
     "compactNeededPct": "number 0.85-1.0 (default 0.98), must exceed imperativePct; past it a session with no covering handover is told once per compaction",
     "ceilingFraction": "number 0.8-1.0 (default 0.925; measured fire point over autoCompactWindow)",

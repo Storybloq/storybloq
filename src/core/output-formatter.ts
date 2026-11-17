@@ -3929,10 +3929,10 @@ export function formatReference(
   lines.push("");
   lines.push("```");
   lines.push("/story design          # Auto-detect platform, evaluate frontend");
-  lines.push("/story design web      # Evaluate against web best practices");
-  lines.push("/story design ios      # Evaluate against iOS HIG");
-  lines.push("/story design macos    # Evaluate against macOS HIG");
-  lines.push("/story design android  # Evaluate against Material Design");
+  lines.push("/story design web      # Against web best practices");
+  lines.push("/story design ios      # Against iOS HIG");
+  lines.push("/story design macos    # Against macOS HIG");
+  lines.push("/story design android  # Against Material Design");
   lines.push("```");
   lines.push("");
   lines.push("Creates issues automatically when storybloq MCP tools or CLI are available, skipping existing design issues so repeated runs add no duplicates; with neither, outputs a markdown checklist.");

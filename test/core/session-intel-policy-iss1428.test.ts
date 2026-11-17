@@ -1319,12 +1319,17 @@ describe("T18 the arrangement party rule (commit 2)", () => {
     await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "here", where: "x" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere", where: "two\nlines" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(handleArrangementUpdate(ARR, { party: SID }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
-    rawArrangement(s.f.root, [
-      { role: "pen", client: "claude", identityAnchor: SID },
-      { role: "worker", client: "codex", identityAnchor: SID },
-    ]);
-    // A hand-written file the schema refuses is not found; a schema-valid twin anchor is refused by name count.
-    await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere" }, "json", s.f.root)).rejects.toBeTruthy();
+    // A schema-valid arrangement with one anchor on two parties (claude and codex).
+    await writeArrangementUnlocked({
+      id: ARR, lifecycle: "active", bounds: ["ISS-1428"],
+      parties: [{ role: "pen", client: "claude", identityAnchor: SID }, { role: "worker", client: "codex", identityAnchor: SID }],
+      gates: [], unreachability: { onIrreversibleWork: "hold" }, createdDate: "2026-11-17", updatedAt: "2026-11-17T00:00:00.000Z",
+    } as never, s.f.root);
+    const twins = () => loadArrangementsSafe(s.f.root).arrangements.find((a) => a.id === ARR)?.parties;
+    const before = twins();
+    expect(before).toHaveLength(2);
+    await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input", message: expect.stringContaining(`2 parties of arrangement ${ARR} have identity anchor`) });
+    expect(twins()).toEqual(before);
   });
 
   it("the record keeps rule and override through both resets; SessionEnd clears the subtree", async () => {
@@ -1335,6 +1340,40 @@ describe("T18 the arrangement party rule (commit 2)", () => {
     for (const r of [applyBoundaryReset(i, "2026-11-17T09:00:00.000Z"), applyAssumedReset(i, "2026-11-17T09:00:00.000Z")]) {
       expect(r.rule).toEqual(i.rule);
       expect(r.override).toEqual(i.override);
+    }
+  });
+});
+
+describe("commit 2 fixup: an override change and the era check (Codex)", () => {
+  it("an override changed after an unclaimed imperative sample: guideDirectiveFor at once, with no new sample, gives no ask (mutant: the stored sample kept)", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    at(s, 91);
+    // Re-arm by fixture: the 91 sample is imperative and unclaimed.
+    patchIntel(s.f.root, (i) => ({ ...i, lastImperativeEmittedAt: null, noticeTokens: null, policyGen: i.policyGen + 1 }));
+    expect(intelOf(s.f.root).lastSample!.rawState).toBe("imperative");
+    // Headroom 10,000 moves the line to 218,000: 91 percent (207,480) is below it.
+    expect(alert(s, { imperativeHeadroom: 10_000 }).errorCode).toBeNull();
+    expect(guideDirectiveFor(s.f.root, SID, s.t)).toBeNull();
+    expect(intelOf(s.f.root).lastImperativeEmittedAt).toBeNull();
+    // The next sample is decided under the new thresholds: 91 asks nothing, 96 asks.
+    at(s, 91);
+    at(s, 96);
+    expect(kinds(s)).toEqual(["ask@91", "ask@96"]);
+  });
+
+  it("the era changed between the binding and the lock: every flag group refuses and no field changes (mutant: the era check only on the cover)", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    const live = intelOf(s.f.root).era;
+    let before: SessionIntelPresence | null = null;
+    const swap = () => { patchIntel(s.f.root, (i) => ({ ...i, era: "1:1" })); before = intelOf(s.f.root); };
+    for (const o of [{ handovers: "elsewhere" as const }, { imperativePct: 0.8 }, { resetThresholds: true }, { coveredBy: "ops/x" }]) {
+      patchIntel(s.f.root, (i) => ({ ...i, era: live }));
+      const r = alert(s, { ...o, afterBinding: swap });
+      expect(intelOf(s.f.root)).toEqual(before);
+      expect(r.errorCode, JSON.stringify(o)).toBe("not_bound");
+      expect(r.output).toMatch(/record era differs/);
     }
   });
 });

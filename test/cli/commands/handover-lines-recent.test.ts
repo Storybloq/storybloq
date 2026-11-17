@@ -13,7 +13,11 @@ import { memoFileName, serializeLineMemo } from "../../../src/core/handover-line
 import { appendLineage, serializeLineage, type LineageInput } from "../../../src/core/handover-lineage.js";
 import { LIMIT_NOTICE } from "../../../src/core/handover-selection.js";
 import { OTHER_LINES_LABEL, OTHER_LINES_POINTER } from "../../../src/core/output-formatter.js";
+import { withLedgerState } from "../../../src/core/ledger-state.js";
 import { isolateEnv, runCli, type IsolatedEnv } from "../../fixtures/handover-lineage/harness.js";
+
+/** C-v4.1 commit 7 (main): `latest` and `get` show the ledger-state line; these fixtures are not git repositories. */
+const led = (text: string): string => withLedgerState(text, "md", null);
 
 const TASK = "task-recent.1";
 const NOW = new Date("2026-11-16T03:00:00Z");
@@ -76,7 +80,7 @@ describe("C4: a session with no memo after another session opted in", () => {
       "2026-11-14-01-o.md": linked("T-9", { role: "pen", by: "amir" }),
     });
     const md = await run(p.root, ["handover", "latest", "--count", "3"]);
-    expect(md).toBe([body("T-2"), body("T-1"), blockMd([entry("2026-11-14-01-o.md", "pen", "amir")])].join("\n\n---\n\n"));
+    expect(md).toBe([led(body("T-2")), led(body("T-1")), blockMd([entry("2026-11-14-01-o.md", "pen", "amir")])].join("\n\n---\n\n"));
     const js = envelopes(await run(p.root, ["handover", "latest", "--count", "3", "--format", "json"]));
     expect(js.map((e) => e.data?.filename)).toEqual(["2026-11-12-01-u2.md", "2026-11-10-01-u1.md"]);
     expect(js[0]!.data).not.toHaveProperty("lines");
@@ -97,7 +101,7 @@ describe("C10: more than five recent lines", () => {
     const p = await project(files);
     const md = await run(p.root, ["handover", "latest"]);
     const names = [9, 8, 7, 6, 5].map((d, k) => entry(`2026-11-0${d}-02-o${7 - k}.md`, `r${7 - k}`));
-    expect(md).toBe(`${body("T-1")}\n\n---\n\n${blockMd(names, true)}`);
+    expect(md).toBe(`${led(body("T-1"))}\n\n---\n\n${blockMd(names, true)}`);
     expect(md).not.toMatch(/\b7\b|seven/);
     expect(await lastLines(p.root, ["handover", "latest"])).toEqual({ notices: [], otherLines: { pointer: true, recent: names, more: true } });
   });
@@ -185,7 +189,7 @@ describe("B6: the caller's own set", () => {
     files["2026-11-15-01-tip.md"] = linked("T-99", { continues: old[0]! });
     const p = await project(files);
     seedMemo(p, "2026-11-15-01-tip.md");
-    expect(await run(p.root, ["handover", "latest", "--as", TASK])).toBe(body("T-99"));
+    expect(await run(p.root, ["handover", "latest", "--as", TASK])).toBe(led(body("T-99")));
     expect(await lastLines(p.root, ["handover", "latest", "--as", TASK])).toBeUndefined();
   });
 
@@ -277,7 +281,7 @@ describe("the window's edge follows the board's filename date", () => {
   it("team mode (UTC dates): 2026-11-01 is outside the window", async () => {
     const p = await project(files, { team: true });
     expect(await lastLines(p.root, ["handover", "latest"])).toBeUndefined();
-    expect(await run(p.root, ["handover", "latest"])).toBe(body("T-1"));
+    expect(await run(p.root, ["handover", "latest"])).toBe(led(body("T-1")));
   });
 
   it("handover create names a local file with the local date at this clock", async () => {

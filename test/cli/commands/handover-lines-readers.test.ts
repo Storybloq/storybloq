@@ -15,7 +15,11 @@ import { loadClassificationContext } from "../../../src/core/classification-cont
 import { memoFileName, serializeLineMemo } from "../../../src/core/handover-line-memo.js";
 import { appendLineage, serializeLineage } from "../../../src/core/handover-lineage.js";
 import { PRIMING_RAW_BODY_MAX_BYTES } from "../../../src/core/handover-brief.js";
+import { withLedgerState } from "../../../src/core/ledger-state.js";
 import { isolateEnv, runCli, type IsolatedEnv } from "../../fixtures/handover-lineage/harness.js";
+
+/** C-v4.1 commit 7 (main): `latest` and `get` show the ledger-state line; these fixtures are not git repositories. */
+const led = (text: string): string => withLedgerState(text, "md", null);
 
 const here = resolve(fileURLToPath(import.meta.url), "..");
 const CLI = resolve(here, "../../../dist/cli.js");
@@ -88,7 +92,7 @@ describe("latest reads the caller's line", () => {
     seedMemo(p, "2026-11-12-01-l2.md");
     const md = await run(p.root, ["handover", "latest", "--count", "3", "--as", TASK]);
     expect(md.exit).toBe(0);
-    expect(md.out).toBe([body("T-103"), body("T-102"), body("T-101")].join("\n\n---\n\n"));
+    expect(md.out).toBe([body("T-103"), body("T-102"), body("T-101")].map(led).join("\n\n---\n\n"));
     const js = envelopes((await run(p.root, ["handover", "latest", "--count", "3", "--as", TASK, "--format", "json"])).out);
     expect(js.map((e) => e.data?.filename)).toEqual(["2026-11-12-01-l2.md", "2026-11-11-01-l1.md", "2026-11-10-01-u.md"]);
     expect(js.every((e) => !("lines" in (e.data ?? {})))).toBe(true);
@@ -105,10 +109,10 @@ describe("latest reads the caller's line", () => {
     seedMemo(p, "2026-11-01-01-gone.md");
     const n1 = "This session's handover line could not be found (2026-11-01-01-gone.md: missing). Showing the default line. To pick a line: `storybloq handover lines`, then `storybloq handover continue <file>`.";
     const md = await run(p.root, ["handover", "latest", "--as", TASK]);
-    expect(md.out).toBe(`${body("T-201")}\n\n---\n\n${n1}`);
+    expect(md.out).toBe(`${led(body("T-201"))}\n\n---\n\n${n1}`);
     const js = envelopes((await run(p.root, ["handover", "latest", "--as", TASK, "--format", "json"])).out);
     expect(js).toHaveLength(1);
-    expect(js[0]!.data).toEqual({ filename: "2026-11-13-01-n.md", content: body("T-201"), lines: { notices: [n1] } });
+    expect(js[0]!.data).toEqual({ filename: "2026-11-13-01-n.md", content: body("T-201"), lines: { notices: [n1] }, ledgerState: null });
   });
 
   it("an empty default is a success carrying N4, in every mode", async () => {
@@ -148,7 +152,7 @@ describe("B4 the raw fill at --count 500", () => {
 
   it("a body that is exactly the word missing is a handover, in the first selection and past position 200", async () => {
     const solo = await project((put) => put("2026-11-13-01-m.md", "missing"));
-    expect(await run(solo.root, ["handover", "latest"])).toEqual({ exit: 0, out: "missing" });
+    expect(await run(solo.root, ["handover", "latest"])).toEqual({ exit: 0, out: led("missing") });
     const three = await project((put) => { put("2026-11-13-01-m.md", "missing"); put("2026-11-12-01-a.md", body("T-1")); });
     expect(envelopes((await run(three.root, ["handover", "latest", "--count", "3", "--format", "json"])).out).map((e) => e.data?.content)).toEqual(["missing", body("T-1")]);
     const all = names(260);
@@ -184,7 +188,7 @@ describe("B5 the reader strip", () => {
       expect((await run(p.root, [...args, "--as", TASK])).out, args.join(" ")).toBe(await plainOut(args));
     }
     expect(loadClassificationContext(p.root, p.hdir).recentHandovers).toEqual([{ filename: "2026-11-12-01-l.md", content }]);
-    expect((await run(p.root, ["handover", "get", "2026-11-12-01-l.md"])).out).toBe(linked);
+    expect((await run(p.root, ["handover", "get", "2026-11-12-01-l.md"])).out).toBe(led(linked));
   });
 
   it("the priming trigger measures the body without the line: 12,000 bytes stays raw, one more is structured", async () => {

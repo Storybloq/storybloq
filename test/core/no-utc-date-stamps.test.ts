@@ -18,7 +18,8 @@ const EXCEPTIONS: ReadonlyArray<{ file: string; line: string; reason: string }> 
   { file: "core/merge-driver.ts", line: "if (aDateOnly !== bDateOnly && a.slice(0, 10) === b.slice(0, 10)) return 0;", reason: "compares two stored values" },
   { file: "core/handover-parser.ts", line: "const dateA = a.slice(0, 10);", reason: "compares handover filename prefixes" },
   { file: "core/handover-parser.ts", line: "const dateB = b.slice(0, 10);", reason: "compares handover filename prefixes" },
-  { file: "cli/commands/handover.ts", line: "const windowFilenames = filenames.slice(0, 10);", reason: "array window" },
+  { file: "cli/commands/handover.ts", line: "const shown = names.slice(0, 10).join(\", \");", reason: "array window" },
+  { file: "core/handover-selection.ts", line: "const d = name.slice(0, 10);", reason: "compares handover filename prefixes" },
   { file: "cli/commands/review-stats.ts", line: "for (const f of scan.failures.slice(0, 10)) {", reason: "array window" },
   { file: "autonomous/lens-harness/context-packager.ts", line: "return sigs.slice(0, 10); // Cap at 10 signatures", reason: "array cap" },
 ];

@@ -61,14 +61,19 @@ async function canonicalOnThisBoard(root: string, ref: string): Promise<{ ref: s
   return { ref: canonicalRef(board, String(found.record.id)) };
 }
 
-async function editList(root: string, commit: boolean, format: Format, label: string, edit: (entries: Entry[]) => Entry[] | string): Promise<CommandResult> {
+/** Test seam: runs after the command is invoked and before the project lock is taken. */
+export const nonCodeSeams: { beforeLock: () => Promise<void> } = { beforeLock: async () => {} };
+
+/** The ref is resolved and checked inside `edit`, which runs under the project lock on the locked state and config. */
+async function editList(root: string, commit: boolean, format: Format, label: string, edit: (entries: Entry[]) => Promise<Entry[] | string>): Promise<CommandResult> {
   const { withProjectLock, writeConfigUnlocked } = await import("../../core/project-loader.js");
   let refused: string | undefined;
   let after: Entry[] = [];
+  await nonCodeSeams.beforeLock();
   const { context } = await runWithBoardWriteContext(label, commit, async () => {
     await withProjectLock(root, { strict: false }, async () => {
       const config = readConfigRaw(root);
-      const next = edit(entriesOf(config));
+      const next = await edit(entriesOf(config));
       if (typeof next === "string") { refused = next; return; }
       after = next;
       await writeConfigUnlocked(withEntries(config, next) as never, root);
@@ -84,20 +89,22 @@ async function editList(root: string, commit: boolean, format: Format, label: st
 export async function handleNonCodeAdd(root: string, ref: string, reason: string | undefined, commit: boolean, format: Format): Promise<CommandResult> {
   if (reason === undefined || reason.trim().length === 0) return fail(format, "invalid_reason: --reason is required. Nothing was written.");
   if (Buffer.byteLength(reason, "utf8") > NON_CODE_REASON_BYTES) return fail(format, `invalid_reason: the reason is at most ${NON_CODE_REASON_BYTES} bytes. Nothing was written.`);
-  const c = await canonicalOnThisBoard(root, ref);
-  if ("error" in c) return fail(format, `${c.error} Nothing was written.`);
-  return editList(root, commit, format, "proof non-code add", (entries) =>
-    entries.some((e) => e.ref === c.ref) ? `already_listed: ${c.ref} is already non-code.` : [...entries, { ref: c.ref, reason }]);
+  return editList(root, commit, format, "proof non-code add", async (entries) => {
+    const c = await canonicalOnThisBoard(root, ref);
+    if ("error" in c) return c.error;
+    return entries.some((e) => e.ref === c.ref) ? `already_listed: ${c.ref} is already non-code.` : [...entries, { ref: c.ref, reason }];
+  });
 }
 
 export async function handleNonCodeRemove(root: string, ref: string, commit: boolean, format: Format): Promise<CommandResult> {
-  const board = readBoardId(root);
-  const c = await canonicalOnThisBoard(root, ref);
-  // A listed ref whose item is gone can still be removed by its canonical form.
-  const target = "ref" in c ? c.ref : board !== undefined && ref.startsWith(`${board}:`) ? ref : undefined;
-  if (target === undefined) return fail(format, `${"error" in c ? c.error : `invalid_ref: ${ref}`} Nothing was written.`);
-  return editList(root, commit, format, "proof non-code remove", (entries) =>
-    entries.some((e) => e.ref === target) ? entries.filter((e) => e.ref !== target) : `not_listed: ${target} is not on the non-code list.`);
+  return editList(root, commit, format, "proof non-code remove", async (entries) => {
+    const board = readBoardId(root);
+    const c = await canonicalOnThisBoard(root, ref);
+    // A listed ref whose item is gone can still be removed by its canonical form.
+    const target = "ref" in c ? c.ref : board !== undefined && ref.startsWith(`${board}:`) ? ref : undefined;
+    if (target === undefined) return "error" in c ? c.error : `invalid_ref: ${ref}`;
+    return entries.some((e) => e.ref === target) ? entries.filter((e) => e.ref !== target) : `not_listed: ${target} is not on the non-code list.`;
+  });
 }
 
 export function handleNonCodeList(root: string, format: Format): CommandResult {

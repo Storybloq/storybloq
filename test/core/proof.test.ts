@@ -16,6 +16,7 @@ beforeAll(() => { restoreGit = isolateGit(); });
 afterAll(() => restoreGit());
 afterEach(() => {
   proofSeams.beforeRevalidate = async () => {};
+  proofSeams.afterLoad = async () => {};
   cleanupTempDirs();
 });
 
@@ -113,9 +114,9 @@ describe("proof (C-v4.1 commit 5, 5.5 and 5.6)", () => {
   it("resolving an issue keeps proof", async () => {
     const b = await board({ kind: "issue" });
     append(b, receipt(b));
-    const before = await proveRef(b.root, "ISS-001");
+    expect((await proveRef(b.root, "ISS-001")).outcome).toBe("proven");
     writeRec(b, { ...readRec(b), status: "resolved", resolvedDate: "2026-11-16", resolution: "fixed" });
-    expect((await proveRef(b.root, "ISS-001")).outcome).toBe(before.outcome);
+    expect((await proveRef(b.root, "ISS-001")).outcome).toBe("proven");
   });
 
   it("withdrawal, a tombstone and a blockedBy conflict are ineligible; a bookkeeping conflict is not", async () => {
@@ -390,6 +391,48 @@ describe("plan 5.7 rows across repositories, submodules and mixed commits", () =
     const moving: UnitProjection = (unit) => ({ children: [unit], missing: [], digest });
     proofSeams.beforeRevalidate = async () => { if (digest === "v1") digest = "v2"; };
     expect(await proveRef(a.root, "T-001", { projection: moving })).toMatchObject({ outcome: "proven", recomputed: true });
+  });
+
+  it("a failing receipt appended after the load, during the git scans, is never confirmed away (Codex F2)", async () => {
+    const b = await board();
+    const first = receipt(b);
+    append(b, first);
+    let once = false;
+    proofSeams.afterLoad = async () => {
+      if (once) return;
+      once = true;
+      append(b, receipt(b, { result: "fail", supersedes: [first.id] }));
+    };
+    expect(await prove(b)).toMatchObject({ outcome: "unproven", reason: "failing" });
+  });
+
+  it("another record taking the child's display id between gathers moves attribution; the old proven answer is not returned (Codex F3)", async () => {
+    const b = await board({ code: false });
+    // A hash-named item carrying display id T-002, with its own attributed code commit.
+    const hashId = "t-0000000000000001";
+    const hashFile = join(b.root, ".story", "tickets", `${hashId}.json`);
+    const hashRec: Json = { ...readRec(b), id: hashId, displayId: "T-002", title: "Hashed" };
+    writeFileSync(hashFile, JSON.stringify(hashRec, null, 2) + "\n");
+    writeFileSync(join(b.root, "code.txt"), "hashed\n");
+    git(b.root, "add", "-A");
+    git(b.root, "commit", "-q", "-m", "T-002 the code");
+    const sha = headSha(b.root);
+    git(b.root, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const hb: Board = { ...b, file: hashFile, unit: `${b.board}:${hashId}`, codeSha: sha };
+    const r = { ...receipt(b, { sha }), target: hb.unit, unitRef: hb.unit, revisions: { unit: recordRevision(hashRec, "ticket") } };
+    const rec = JSON.parse(readFileSync(hashFile, "utf8")) as Json;
+    writeFileSync(hashFile, JSON.stringify({ ...rec, receipts: [r] }, null, 2) + "\n");
+    expect(await proveRef(b.root, hashId)).toMatchObject({ outcome: "proven" });
+    let once = false;
+    proofSeams.beforeRevalidate = async () => {
+      if (once) return;
+      once = true;
+      // A legacy record now also answers to T-002, so the commit's token no longer resolves to the hash item alone.
+      writeFileSync(join(b.root, ".story", "tickets", "T-002.json"), JSON.stringify({ ...readRec(b), id: "T-002", title: "Other" }, null, 2) + "\n");
+    };
+    const p = await proveRef(b.root, hashId);
+    expect(p.outcome).not.toBe("proven");
+    expect(p).toMatchObject({ recomputed: true });
   });
 
   it("an edit inside a submodule at its expected commit is unproven (6.2)", async () => {

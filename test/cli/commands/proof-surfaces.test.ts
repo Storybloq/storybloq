@@ -5,14 +5,17 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { handleNonCodeAdd, handleNonCodeList, handleNonCodeRemove, handleProofCommand } from "../../../src/cli/commands/proof.js";
+import { handleNonCodeAdd, handleNonCodeList, handleNonCodeRemove, handleProofCommand, nonCodeSeams } from "../../../src/cli/commands/proof.js";
 import { recordRevision } from "../../../src/core/record-revision.js";
 import { captureTools, cleanupTempDirs, git, headSha, isolateGit, makeProjectRepo } from "../../mcp/board-git-fixtures.js";
 
 let restoreGit: () => void;
 beforeAll(() => { restoreGit = isolateGit(); });
 afterAll(() => restoreGit());
-afterEach(() => cleanupTempDirs());
+afterEach(() => {
+  nonCodeSeams.beforeLock = async () => {};
+  cleanupTempDirs();
+});
 
 type Json = Record<string, unknown>;
 let BOARD = "";
@@ -95,6 +98,16 @@ describe("proof non-code add, remove, list (Q4)", () => {
     const f = join(root, ".story", "tickets", "T-002.json");
     writeFileSync(f, JSON.stringify({ ...(JSON.parse(readFileSync(f, "utf8")) as Json), deletedAt: "2026-11-16" }, null, 2) + "\n");
     expect((await handleNonCodeAdd(root, "T-002", "r", false, "md")).output).toContain("is deleted");
+    expect((JSON.parse(readFileSync(join(root, ".story", "config.json"), "utf8")) as Json).proof).toBeUndefined();
+  });
+
+  it("resolves and checks the ref under the lock: a target deleted after invocation is refused (Codex F1)", async () => {
+    const { root } = await provenBoard();
+    const f = join(root, ".story", "tickets", "T-002.json");
+    nonCodeSeams.beforeLock = async () => {
+      writeFileSync(f, JSON.stringify({ ...(JSON.parse(readFileSync(f, "utf8")) as Json), deletedAt: "2026-11-16" }, null, 2) + "\n");
+    };
+    expect((await handleNonCodeAdd(root, "T-002", "docs only", false, "md")).output).toContain("is deleted");
     expect((JSON.parse(readFileSync(join(root, ".story", "config.json"), "utf8")) as Json).proof).toBeUndefined();
   });
 });

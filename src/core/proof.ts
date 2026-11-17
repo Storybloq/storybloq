@@ -337,8 +337,11 @@ export type UnitProjection = (unit: ResolvedItem) => { readonly children: readon
 /** An item unit is its own single child. */
 export const itemProjection: UnitProjection = (unit) => ({ children: [unit], missing: [] });
 
-/** Test seam: runs before each revalidating read. */
-export const proofSeams: { beforeRevalidate: () => Promise<void> } = { beforeRevalidate: async () => {} };
+/** Test seams: beforeRevalidate runs before each revalidating read; afterLoad runs after the records are loaded and before the git scans. */
+export const proofSeams: { beforeRevalidate: () => Promise<void>; afterLoad: () => Promise<void> } = {
+  beforeRevalidate: async () => {},
+  afterLoad: async () => {},
+};
 
 const refuse = (message: string): never => {
   throw new ProjectLoaderError("invalid_input", message);
@@ -458,6 +461,7 @@ async function gather(root: string, ref: string, projection: UnitProjection): Pr
   }
   const nearUnit = [...new Set(allRecords.flatMap((i) => onRecords.get(i.ref)!))];
 
+  await proofSeams.afterLoad();
   const repos = new Map<string, RepoPartition>();
   const partitionDigest: Record<string, unknown> = {};
   for (const [path, boardId] of boards) {
@@ -472,7 +476,12 @@ async function gather(root: string, ref: string, projection: UnitProjection): Pr
     const facts = await readGitFacts(path, states.get(path)!);
     const worktree = worktreeState(path);
     repos.set(boardId, { state: "ok", boardId, facts, worktree });
-    partitionDigest[boardId] = { refs: facts.snapshot.status === "ok" ? facts.snapshot.key : `unknown:${facts.snapshot.reason}`, worktree: canonicalJson(worktree) };
+    partitionDigest[boardId] = {
+      refs: facts.snapshot.status === "ok" ? facts.snapshot.key : `unknown:${facts.snapshot.reason}`,
+      worktree: canonicalJson(worktree),
+      // Attribution resolves tokens against every record on the board, not only the unit's: its result is an input too.
+      attribution: facts.commits === undefined ? null : [...facts.commits.keys()].sort().map((id) => [id, [...facts.commits!.get(id)!].sort()]),
+    };
   }
 
   const children: ProofChild[] = proj.children.map((c) => {
@@ -492,6 +501,10 @@ async function gather(root: string, ref: string, projection: UnitProjection): Pr
   const fileOf = (i: ResolvedItem): string => (i.kind === "ticket" ? ticketFilePath(i.path, i.id) : issueFilePath(i.path, i.id));
   const fingerprint = sha256(canonicalJson({
     records: Object.fromEntries(allRecords.map((i) => [i.ref, rawDigest(fileOf(i))])),
+    // The content the calculation used, as loaded: the raw digests are read after the scans, so on their own they could
+    // fingerprint bytes written after the load (a receipt appended mid-scan) and let revalidation confirm a stale answer.
+    loaded: Object.fromEntries(allRecords.map((i) => [i.ref, sha256(canonicalJson(i.record))])),
+    loadedConfigs: Object.fromEntries([...boards.keys()].map((p) => [p, sha256(canonicalJson((states.get(p) as unknown as { config?: unknown } | undefined)?.config ?? null))])),
     configs: Object.fromEntries([...boards.keys()].map((p) => [p, rawDigest(join(p, ".story", "config.json"))])),
     aliases: registry.map((e) => [e.alias, e.path, e.boardId ?? null]),
     partitions: partitionDigest,

@@ -367,12 +367,14 @@ describe("presence record carries session intel (T-499)", () => {
   });
 
   /**
-   * The T-477 worst case, plus a session-intel subtree at its own cap, must
-   * still fit the record bound. This re-baselines the record's headroom
-   * rather than loosening the bound: intel is the one subtree that can reach
-   * MAX_SESSION_INTEL_BYTES legitimately, so it is measured at that size.
+   * The T-477 worst case, plus a session-intel subtree at EXACTLY its own cap
+   * (ISS-1428, record-ladder deviation): the per-field caps let the notice
+   * fields take a legal subtree all the way to MAX_SESSION_INTEL_BYTES, and
+   * then the record is over its bound. Neither cap moves; the record's own
+   * ladder sheds, in the subtree's order: intel's display text first, which
+   * alone fits it, so the panel state and the decision sample both survive.
    */
-  it("the worst case with intel at its cap stays under the record bound", () => {
+  it("the worst case with intel at exactly its cap fits by shedding only intel's display text, never the sample", () => {
     const exact = (bytes: number, seed: string) => (seed + "z".repeat(bytes)).slice(0, bytes);
     let rec = applyPresenceEvent(null, ctx({ event: "SessionStart", source: "startup" }));
     for (let i = 0; i < MAX_AGENT_IDS; i++) {
@@ -384,12 +386,23 @@ describe("presence record carries session intel (T-499)", () => {
     for (let i = 0; i < MAX_CLOSED_TOOL_IDS; i++) {
       rec = applyPresenceEvent(rec, ctx({ event: "PostToolUse", toolId: exact(MAX_ID_BYTES, `closed${i}-`), toolName: "Read" }));
     }
-    // Pad the intel subtree up to (not over) its cap through the one field
-    // that can legitimately be long.
-    let intel: SessionIntelPresence = full();
-    const room = MAX_SESSION_INTEL_BYTES - sessionIntelBytes({ ...intel, transcriptPath: "" });
-    intel = { ...intel, transcriptPath: "p".repeat(Math.min(room, MAX_TRANSCRIPT_PATH_BYTES)) };
-    expect(sessionIntelBytes(intel)).toBeLessThanOrEqual(MAX_SESSION_INTEL_BYTES);
+    // A legal subtree at exactly the cap: the era, incarnation, path and the
+    // other display texts at their own caps, then `coveredBy` (escaped characters, two JSON bytes
+    // each) trimmed so the subtree lands on MAX_SESSION_INTEL_BYTES.
+    const base: SessionIntelPresence = {
+      ...full(),
+      era: "\\".repeat(MAX_ERA_BYTES),
+      incarnation: "\\".repeat(MAX_INCARNATION_BYTES),
+      transcriptPath: "p".repeat(MAX_TRANSCRIPT_PATH_BYTES),
+      handoverFile: `a${"-".repeat(MAX_HANDOVER_FILE_BYTES - 4)}.md`,
+      rule: { handovers: "elsewhere", where: "\\".repeat(MAX_RULE_WHERE_BYTES), setAt: "2026-09-09T07:30:00.000Z" },
+      coveredBy: "",
+    };
+    const room = MAX_SESSION_INTEL_BYTES - sessionIntelBytes(base);
+    expect(Math.floor(room / 2)).toBeLessThanOrEqual(MAX_COVERED_BY_BYTES);
+    const intel: SessionIntelPresence = { ...base, coveredBy: "\\".repeat(Math.floor(room / 2)) + "z".repeat(room % 2) };
+    expect(sessionIntelBytes(intel)).toBe(MAX_SESSION_INTEL_BYTES);
+    expect(parseSessionIntel(JSON.parse(JSON.stringify(intel)))).toEqual(intel); // legal: the decoder keeps every byte
     rec = {
       ...rec,
       arrangementPresence: Array.from({ length: MAX_ARRANGEMENT_PRESENCE_ENTRIES }, (_, i) => ({
@@ -400,18 +413,22 @@ describe("presence record carries session intel (T-499)", () => {
       ownerIdentity: { client: "codex", clientTaskId: exact(MAX_CLIENT_TASK_ID_BYTES, "t-") },
       sessionIntel: intel,
     };
+    // Unshed, the record is over its bound.
+    expect(Buffer.byteLength(JSON.stringify(rec) + "\n", "utf-8")).toBeGreaterThan(MAX_RECORD_BYTES);
     const text = serializePresence(rec)!;
     expect(text).not.toBeNull();
-    const bytes = Buffer.byteLength(text, "utf-8");
-    expect(bytes).toBeLessThanOrEqual(MAX_RECORD_BYTES);
-    // Nothing was shed to get there: the caps, not the ladder, are the bound.
-    expect(parsePresenceRecord(text, SESSION)!.sessionIntel).toEqual(intel);
-    // The margin in bytes, at its measured bound. ISS-1428 (pen ruling,
-    // deviation A): the notice fields let the subtree actually reach its
-    // 4096-byte cap here (before, the transcript-path cap stopped it short),
-    // so the margin is 271 bytes, measured; both caps are unchanged so that an
-    // older CLI never refuses a record this version writes.
-    expect(MAX_RECORD_BYTES - bytes).toBeGreaterThanOrEqual(271);
+    expect(Buffer.byteLength(text, "utf-8")).toBeLessThanOrEqual(MAX_RECORD_BYTES);
+    const back = parsePresenceRecord(text, SESSION)!;
+    // The display text went first; every decision field, the path and the
+    // sample survived.
+    expect(back.sessionIntel).toEqual(shedDisplayText(intel));
+    expect(back.sessionIntel!.lastSample).toEqual(intel.lastSample);
+    // That one step is enough: the panel state is untouched, and the record
+    // lands 104 bytes under its bound, measured.
+    expect(back.closedToolIds).toEqual(rec.closedToolIds);
+    expect(back.agentIds).toEqual(rec.agentIds);
+    expect(back.openTools).toEqual(rec.openTools);
+    expect(MAX_RECORD_BYTES - Buffer.byteLength(text, "utf-8")).toBe(104);
   });
 });
 

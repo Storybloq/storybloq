@@ -364,20 +364,25 @@ describe("presence bounds (ISS-1022)", () => {
       },
     };
 
-    // T-499: two intel steps lead the ladder, ahead of everything the panel
-    // shows, and they touch nothing but the two derived intel fields.
-    const [intelSample, intelPath, one, two, three, four] = PRESENCE_SHED_STEPS;
-    expect(PRESENCE_SHED_STEPS).toHaveLength(6);
-    const i1 = intelSample!(rec);
-    expect(i1.sessionIntel!.lastSample).toBeNull();
-    expect(i1.sessionIntel!.transcriptPath).toBe(rec.sessionIntel!.transcriptPath);
-    expect(i1.closedToolIds).toEqual(rec.closedToolIds);
-    const i2 = intelPath!(i1);
+    // ISS-1428 (record-ladder deviation): intel's display text leads, the
+    // four panel steps follow, then the transcript path, and the sample is
+    // shed LAST. Each intel step touches nothing but its own fields.
+    const [intelText, one, two, three, four, intelPath, intelSample] = PRESENCE_SHED_STEPS;
+    expect(PRESENCE_SHED_STEPS).toHaveLength(7);
+    const withText = { ...rec, sessionIntel: { ...rec.sessionIntel!, handoverFile: "h.md", coveredBy: "ops", rule: { handovers: "elsewhere" as const, where: "log", setAt: "2026-08-20T12:00:00.000Z" } } };
+    const t1 = intelText!(withText);
+    expect(t1.sessionIntel).toEqual({ ...withText.sessionIntel, handoverFile: null, coveredBy: null, rule: { ...withText.sessionIntel.rule, where: null } });
+    expect(t1.closedToolIds).toEqual(rec.closedToolIds);
+    expect(t1.sessionIntel!.lastSample).toEqual(rec.sessionIntel!.lastSample);
+    const i2 = intelPath!(rec);
     expect(i2.sessionIntel!.transcriptPath).toBeNull();
-    expect({ ...i2.sessionIntel!, lastSample: null, transcriptPath: null }).toEqual({ ...rec.sessionIntel!, lastSample: null, transcriptPath: null });
+    expect(i2.sessionIntel!.lastSample).toEqual(rec.sessionIntel!.lastSample);
     expect(i2.openTools).toEqual(rec.openTools);
-    // A record with no intel passes through both steps untouched.
-    expect(intelPath!(intelSample!({ ...rec, sessionIntel: null }))).toEqual({ ...rec, sessionIntel: null });
+    const i3 = intelSample!(i2);
+    expect(i3.sessionIntel!.lastSample).toBeNull();
+    expect({ ...i3.sessionIntel!, lastSample: null, transcriptPath: null }).toEqual({ ...rec.sessionIntel!, lastSample: null, transcriptPath: null });
+    // A record with no intel passes through every intel step untouched.
+    expect(intelSample!(intelPath!(intelText!({ ...rec, sessionIntel: null })))).toEqual({ ...rec, sessionIntel: null });
 
     const s1 = one!(rec);
     expect(s1.closedToolIds).toEqual(rec.closedToolIds.slice(-8));

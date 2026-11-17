@@ -124,6 +124,13 @@ function start(f: Fx, point = POINT, t0 = Date.parse("2026-11-17T08:00:00Z"), st
   return { f, point, lines, path, era: processEra.current()!.id, t: t0, step, pushed: [], all: [] };
 }
 
+/**
+ * The real-time soft budgets (150 ms banner, 500 ms prompt hook) are not under
+ * test here; at a machine load near 25 they returned null and failed rows that
+ * test the policy. Every direct banner and hook call gets this one instead.
+ */
+const SOFT = 60_000;
+
 const tokensAt = (s: Sess, pct: number) => Math.round((pct / 100) * s.point);
 
 /** One assistant turn at `pct` of the point, then one prompt-hook call. */
@@ -136,7 +143,7 @@ function at(s: Sess, pct: number, label = `${pct}`): ReturnType<typeof handleSes
 
 /** One more prompt-hook call on the transcript as it stands. */
 function hook(s: Sess, label: string): ReturnType<typeof handleSessionIntelPrompt> {
-  const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: s.path, now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings });
+  const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: s.path, now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT });
   if (r.status === "emitted") {
     const text = (JSON.parse(r.output!) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
     s.pushed.push({ label, kind: kindOf(text), text });
@@ -381,7 +388,7 @@ describe("T6b delayed claims (commit 1: by fixture)", () => {
     at(s, 91);
     // The hook delivered ask; re-arm it by fixture so a banner decides ask afresh.
     patchIntel(s.f.root, (i) => ({ ...i, lastImperativeEmittedAt: null, noticeTokens: null, policyGen: i.policyGen + 1 }));
-    const banner = tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings });
+    const banner = tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT });
     expect(banner).toMatchObject({ notice: "ask" });
     return { s, banner: banner! };
   }
@@ -418,7 +425,7 @@ describe("T6b delayed claims (commit 1: by fixture)", () => {
 });
 
 describe("T6c the locked sample decides", () => {
-  const opts = (s: Sess) => ({ now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings });
+  const opts = (s: Sess) => ({ now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT });
   /** Writes a sample straight into the record, as a Stop hook would. */
   function landSample(s: Sess, pct: number): void {
     s.t += 1_000;
@@ -701,7 +708,7 @@ describe("T16 guide", () => {
     const s = start(await fixture());
     s.lines.push(assistantRecord({ ts: iso(s.t), read: tokensAt(s, 91) - 2 }));
     writeTranscript(s.f.projects, encoded(s.f.root), SID, s.lines);
-    tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings }); // persists the sample, claims nothing
+    tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT }); // persists the sample, claims nothing
     const sample = intelOf(s.f.root).lastSample!;
     const directive = guideDirectiveFor(s.f.root, SID, s.t);
     expect(directive).toBe(renderNotice("ask", { used: sample.contextTokens!, point: sample.ceiling!, source: sample.ceilingSource, confidence: sample.ceilingConfidence }, "guide"));
@@ -913,7 +920,7 @@ describe("pure tables", () => {
     s.t += s.step;
     s.lines.push(assistantRecord({ ts: iso(s.t - 1_000), read: tokensAt(s, 30) - 2 }));
     writeTranscript(s.f.projects, encoded(s.f.root), SID, s.lines);
-    tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings }); // persists, does not deliver
+    tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT }); // persists, does not deliver
     const intel = intelOf(s.f.root);
     expect(decideFromRecord(intel, cfg)).toBe("catch-up");
     expect(claimNotice(s.f.root, SID, noticeSeenOf(intel), "catch-up", "ask", s.t, cfg)).toBe(false);

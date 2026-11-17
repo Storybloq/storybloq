@@ -48,7 +48,7 @@ import {
   type SessionPresence,
 } from "./types.js";
 import { capString } from "./redaction.js";
-import { parseSessionIntel } from "./session-intel-fields.js";
+import { parseSessionIntel, shedDisplayText } from "./session-intel-fields.js";
 
 export interface PresenceEventContext {
   readonly event: PresenceHookEvent;
@@ -280,15 +280,20 @@ export function serializePresence(record: SessionPresence): string | null {
  * shows, so they go last and never entirely.
  */
 export const PRESENCE_SHED_STEPS: ReadonlyArray<(r: SessionPresence) => SessionPresence> = [
-  // T-499: session intel's derived state goes before anything the panel
-  // shows. The sample is rebuilt by the next scan; the transcript path is a
-  // hint with two fallbacks. The capture and boundary fields are never shed.
-  (r) => (r.sessionIntel ? { ...r, sessionIntel: { ...r.sessionIntel, lastSample: null } } : r),
-  (r) => (r.sessionIntel ? { ...r, sessionIntel: { ...r.sessionIntel, transcriptPath: null } } : r),
+  // ISS-1428 (pen ruling, record-ladder deviation): this ladder agrees with
+  // the subtree's own (`SESSION_INTEL_SHED_STEPS`). Session intel's display
+  // text goes first, since no decision reads it and every text that names it
+  // has a true fallback. Then the panel state, which only the panel renders.
+  // Then the transcript path, a hint with two fallbacks, and LAST the sample
+  // the context notice is decided on. The capture, boundary, stamp, notice
+  // and rule fields are never shed.
+  (r) => (r.sessionIntel ? { ...r, sessionIntel: shedDisplayText(r.sessionIntel) } : r),
   (r) => ({ ...r, closedToolIds: r.closedToolIds.slice(-8) }),
   (r) => ({ ...r, agentIds: r.agentIds.slice(-4) }),
   (r) => ({ ...r, openTools: r.openTools.slice(-2).map((t) => ({ ...t, target: null })) }),
   (r) => ({ ...r, closedToolIds: [], agentIds: [], openTools: r.openTools.slice(-1) }),
+  (r) => (r.sessionIntel ? { ...r, sessionIntel: { ...r.sessionIntel, transcriptPath: null } } : r),
+  (r) => (r.sessionIntel ? { ...r, sessionIntel: { ...r.sessionIntel, lastSample: null } } : r),
 ];
 
 // ---------------------------------------------------------------------------

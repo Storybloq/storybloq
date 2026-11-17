@@ -16,6 +16,7 @@
  * handler is ever called; only unlocked primitives, whose writes the engine
  * commits itself.
  */
+import { exemptCompletion } from "./completion-check.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
@@ -864,7 +865,7 @@ async function stepTicket(ctx: StepContext, key: string): Promise<void> {
   const t = p.tickets.find((x) => x.key === key)!;
   const base = await prepareNewTicketUnlocked({ title: t.title, type: t.type, phase: phaseIdOf(p, t.phase), description: t.description, blockedBy: [], parentTicket: null }, ctx.lr.state, ctx.root);
   // Already-built work is created complete, dated the day the setup began (stable across resumes and restores).
-  const done = plannedStatus(t) === "complete" ? { status: "complete" as const, completedDate: ctx.progress.note.createdDate } : {};
+  const done = plannedStatus(t) === "complete" && exemptCompletion("setup-apply-import") ? { status: "complete" as const, completedDate: ctx.progress.note.createdDate } : {};
   const ticket = { ...base, ...done, setup: plannedSetupField(p, t) } as Ticket;
   const op = await prepareTicketWrite(ticket, ctx.root, t.establishes !== undefined ? { verificationAuthority: ESTABLISHMENT_CREATION_AUTHORITY } : undefined);
   await commit(ctx, [op], { step: `item:${key}`, target: `ticket:${ticket.id}`, ownedPre: null, ownedPost: ownedDigest.ticket(ticket, t) });
@@ -1608,7 +1609,7 @@ function restoredTicket(plan: SetupPayload, planned: PlannedItem, t: Ticket, dat
   if (planned.kind === "issue") return t;
   // An explicit planned status is restored with its date: complete on the setup's day, open with none.
   const status = planned.kind === "ticket" && planned.item.status !== undefined
-    ? (planned.item.status === "complete" ? { status: "complete", completedDate: date } : { status: "open", completedDate: null })
+    ? (planned.item.status === "complete" && exemptCompletion("setup-apply-import") ? { status: "complete", completedDate: date } : { status: "open", completedDate: null })
     : {};
   return {
     ...t,

@@ -237,6 +237,16 @@ describe("enablement", () => {
 });
 
 describe("resolve", () => {
+  it("C-v4.1 commit 6: resolve completes the checkpoint ticket with gitState.requireCommitOnComplete on and no commit naming it (exempt: a decision, not code)", async () => {
+    const dir = await project();
+    const path = join(dir, ".story", "config.json");
+    const config = JSON.parse(await readFile(path, "utf-8"));
+    await writeFile(path, JSON.stringify({ ...config, gitState: { requireCommitOnComplete: true } }, null, 2) + "\n");
+    const t = await newCheckpoint(dir);
+    const { ticket } = await resolveCheckpoint(dir, t.id, expectedOf(t), { response: "Yes", actor: ACTOR });
+    expect((await ticketOnDisk(dir, ticket.id)).status).toBe("complete");
+  });
+
   it("approves at the current revision, completes the ticket and records the answer", async () => {
     const dir = await project();
     const t = await newCheckpoint(dir);

@@ -19,6 +19,7 @@
  * Exit codes: 0 verified or recorded; 1 failed or no tests; 2 refused; 4
  * evidence unreadable; 5 stale, or the process group's cleanup unconfirmed.
  */
+import { exemptCompletion } from "./completion-check.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -449,6 +450,7 @@ async function commit(root: string, ref: string, first: Checked, env: Readonly<R
     const spec = now.meta.verification.spec;
     const setup = { ...(now.ticket as Ticket & { setup: Record<string, unknown> }).setup };
     setup.verification = { ...now.meta.verification, result: { status: "verified", ...(verified.counts ? { counts: verified.counts } : {}), tailDigest: tailDigest(verified.tail), at } };
+    exemptCompletion("setup-verify");
     const next = { ...now.ticket, status: "complete", completedDate: localDateOf(new Date()), setup } as Ticket;
     const decision = authoriseStatusChange(now.ticket, next, now.guard, { claimFreeReopen: false }, label(now.ticket));
     if (!decision.ok) {
@@ -786,6 +788,7 @@ async function resolveWith(root: string, state: ProjectState, found: Identified,
 
   let ticketOp: Awaited<ReturnType<typeof prepareTicketWrite>>;
   if (leaveOff) {
+    exemptCompletion("setup-verify");
     const next = { ...ticket, status: "complete", completedDate: localDateOf(new Date()), setup } as Ticket;
     const authorised = authoriseStatusChange(ticket, next, guard, { claimFreeReopen: false }, label(ticket));
     if (!authorised.ok) throw refuse(authorised.reason);

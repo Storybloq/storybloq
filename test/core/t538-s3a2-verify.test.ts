@@ -49,6 +49,14 @@ const configOf = async (root: string) => JSON.parse(await readFile(join(root, ".
 };
 
 describe("a verified run", () => {
+  it("C-v4.1 commit 6: completes the setup ticket with gitState.requireCommitOnComplete on and no commit naming it (exempt: it checks setup, not a commit)", async () => {
+    const root = await ready(replay("vitest-pass"));
+    const path = join(root, ".story", "config.json");
+    await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, "utf-8")), gitState: { requireCommitOnComplete: true } }, null, 2) + "\n");
+    expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(0);
+    expect((await ticketFile(root, "T-002")).status).toBe("complete");
+  });
+
   it("completes the ticket, records the result, and turns the served stages on in one write", async () => {
     const root = await ready(replay("vitest-pass"));
     const before = await configOf(root);

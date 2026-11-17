@@ -15,6 +15,7 @@
  * Retirement is the only release that is not an approval; nothing deletes a
  * checkpoint. The CLI and MCP surfaces are thin wrappers over these.
  */
+import { exemptCompletion } from "./completion-check.js";
 import { CONFLICT_SETTLEMENT_AUTHORITY, LIFECYCLE_AUTHORITY, sameValue } from "./checkpoint-guard.js";
 import { createHash } from "node:crypto";
 import { extname, join } from "node:path";
@@ -427,6 +428,7 @@ export async function resolveCheckpoint(root: string, id: string, expected: Expe
     };
     const resolved = { ...cp, generation, resolution };
     const record = validated({ ...resolved, history: [...cp.history, historyEntry(resolved, "resolved", by, at)] });
+    exemptCompletion("checkpoint-resolve");
     const fields: Partial<Ticket> = { status: "complete", completedDate: todayISO() };
 
     if (!prepared) {

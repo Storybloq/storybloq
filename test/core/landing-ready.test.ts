@@ -6,6 +6,9 @@
 import { describe, expect, it } from "vitest";
 import { computeLandingReadiness, DEFAULT_LANDING_POLICY, inReadinessScope, parseCandidate, resolveLandingPolicy, type AncestryOracle, type LandingPolicy } from "../../src/core/landing-ready.js";
 import { currentAttempts, ReceiptSchema, type Receipt } from "../../src/core/receipts.js";
+import { computeProof } from "../../src/core/proof.js";
+import { recordRevision } from "../../src/core/record-revision.js";
+import type { GitFactsView } from "../../src/core/git-facts/facts.js";
 
 type Json = Record<string, unknown>;
 const sha = (c: string): string => c.repeat(40);
@@ -138,11 +141,24 @@ describe("landing-ready (C-v4.1 commit 6, section 7)", () => {
 
 describe("B4 precedence, one table through landingReady and proof", () => {
   // Each row is a set of current-attempt inputs; both callers must read the same outcome from currentAttempts.
-  const rows: Array<{ name: string; make: () => Json[]; outcome: "none" | "concurrent" | "failing" | "pass" }> = [
-    { name: "no receipts", make: () => [], outcome: "none" },
-    { name: "a pass beside a fail", make: () => [rc("device"), rc("device", { result: "fail" })], outcome: "concurrent" },
-    { name: "a pass superseded by a fail", make: () => { const p = rc("device"); return [p, rc("device", { result: "fail", supersedes: [p.id] })]; }, outcome: "failing" },
-    { name: "a single pass", make: () => [rc("device")], outcome: "pass" },
+  // computeProof's input: a real unit revision on every receipt, and repository facts where H carries T-001's code commit B on the default branch.
+  const UNIT = { id: "T-001", title: "T-001", description: "", type: "task", status: "inprogress", phase: "p0", order: 10, createdDate: "2026-01-01", completedDate: null, blockedBy: [], parentTicket: null };
+  const REV = recordRevision(UNIT, "ticket");
+  const BOARD = "b-0000000000000000";
+  const REF = `${BOARD}:T-001`;
+  const facts = { snapshot: { status: "ok", graph: { onDefault: git.onDefault, position: (x: string) => order.indexOf(x) }, isAncestor: git.isAncestor }, items: undefined, commits: new Map([["T-001", new Set([B])]]), stateOf: () => ({ state: "built" }) } as unknown as GitFactsView;
+  const proofOf = (receipts: Receipt[]) => computeProof({
+    unit: { ref: REF, revision: REV, eligibility: { eligible: true } },
+    children: [{ ref: REF, id: "T-001", boardId: BOARD, revision: REV, eligibility: { eligible: true }, workClass: "code" }],
+    missing: [],
+    repos: new Map([[BOARD, { state: "ok", boardId: BOARD, facts, worktree: { staged: 0, unstaged: 0, untracked: 0, submodule: 0 } }]]),
+    receipts,
+  });
+  const rows: Array<{ name: string; make: () => Json[]; outcome: "none" | "concurrent" | "failing" | "pass"; proof: { outcome: string; reason?: string } }> = [
+    { name: "no receipts", make: () => [], outcome: "none", proof: { outcome: "unproven", reason: "no current attempt" } },
+    { name: "a pass beside a fail", make: () => [rc("device", { revisions: { unit: REV } }), rc("device", { result: "fail", revisions: { unit: REV } })], outcome: "concurrent", proof: { outcome: "unproven", reason: "concurrent" } },
+    { name: "a pass superseded by a fail", make: () => { const p = rc("device", { revisions: { unit: REV } }); return [p, rc("device", { result: "fail", supersedes: [p.id], revisions: { unit: REV } })]; }, outcome: "failing", proof: { outcome: "unproven", reason: "failing" } },
+    { name: "a single pass", make: () => [rc("device", { revisions: { unit: REV } })], outcome: "pass", proof: { outcome: "proven" } },
   ];
   for (const row of rows) {
     it(`${row.name}: ${row.outcome}`, () => {
@@ -152,6 +168,10 @@ describe("B4 precedence, one table through landingReady and proof", () => {
       expect(readiness.kinds.find((k) => k.kind === "device")!.outcome).toBe(row.outcome);
       // proof's scope over the same receipts: every receipt is for the unit at the current revision.
       expect(currentAttempts(parsed, () => true).outcome).toBe(row.outcome);
+      // computeProof itself over the same receipts: the child's attempts and the proof outcome.
+      const proof = proofOf(parsed);
+      expect(proof.children[0]!.attempts).toBe(row.outcome);
+      expect({ outcome: proof.outcome, ...(proof.reason !== undefined ? { reason: proof.reason } : {}) }).toEqual(row.proof);
     });
   }
 });

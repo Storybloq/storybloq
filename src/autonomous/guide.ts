@@ -1,4 +1,5 @@
 import { displayIdOf } from "../core/resolver.js";
+import { completionGate } from "../core/completion-check.js";
 import { loadClassificationContext } from "../core/classification-context.js";
 import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -735,7 +736,8 @@ type RecoveryResult =
   | { readonly kind: "recovered"; readonly state: FullSessionState }
   | { readonly kind: "checkpoint-blocked"; readonly ticketId: string; readonly checkpoints: readonly string[]; readonly state: FullSessionState }
   | { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState }
-  | { readonly kind: "sweep-step-pending"; readonly reason: string; readonly state: FullSessionState };
+  | { readonly kind: "sweep-step-pending"; readonly reason: string; readonly state: FullSessionState }
+  | { readonly kind: "git-refused"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState };
 
 const recovered = (state: FullSessionState): RecoveryResult => ({ kind: "recovered", state });
 
@@ -786,6 +788,12 @@ async function completedTicketCheckpointBlock(root: string, ticketId: string | u
  * state and its pending completion, and the same call succeeds once the
  * project loads.
  */
+/** C-v4.1 commit 6: the completion check refused; nothing written, the marker kept. */
+function gitRefusedResult(dir: string, state: FullSessionState, refusal: { readonly ticketId: string; readonly reason: string }): McpToolResult {
+  appendEvent(dir, { rev: state.revision, type: "completion_git_refused", timestamp: new Date().toISOString(), data: { ticketId: refusal.ticketId, reason: refusal.reason } });
+  return guideError(new Error(refusal.reason));
+}
+
 function loadFailedResult(dir: string, state: FullSessionState, failure: { readonly ticketId: string; readonly reason: string }): McpToolResult {
   appendEvent(dir, {
     rev: state.revision,
@@ -1042,6 +1050,7 @@ async function recoverPendingMutation(
   const completion = targetValue === "complete";
   let conflict = false;
   let blocked: readonly string[] | null = null;
+  let gitRefused: string | null = null;
   try {
     const { withProjectLock, writeTicketUnlocked, sortKeysDeep } = await import("../core/project-loader.js");
     const { completeDependent, evidenceFor } = await import("../core/checkpoint-evidence.js");
@@ -1054,6 +1063,13 @@ async function recoverPendingMutation(
       // completeDependent; a checkpoint that has not released stops it, and
       // nothing is written, cleared or advanced.
       const complete = async (candidate: Ticket): Promise<void> => {
+        // C-v4.1 commit 6: the guide's completions are checked, never decided here.
+        // An already-complete ticket only refreshes its checkpoint evidence: no new completion to check.
+        const gate = completionGate("guide");
+        if (gate.kind === "check" && projectState.ticketByID(candidate.id)?.status !== "complete") {
+          gitRefused = await gate.refusal(root, projectState, candidate.id, displayIdOf(candidate));
+          if (gitRefused !== null) { blocked = []; return; }
+        }
         const outcome = await completeDependent(projectState, candidate, root);
         if (outcome.kind === "checkpoint-blocked") blocked = outcome.checkpoints;
       };
@@ -1160,6 +1176,8 @@ async function recoverPendingMutation(
   }
 
   // T-537: blocked on an owner checkpoint -- marker kept, no postMutation.
+  const refusedWith: string | null = gitRefused;
+  if (refusedWith !== null) return { kind: "git-refused", ticketId: targetId, reason: refusedWith, state };
   const blockedOn: readonly string[] | null = blocked;
   if (blockedOn) return { kind: "checkpoint-blocked", ticketId: targetId, checkpoints: blockedOn, state };
 
@@ -1641,6 +1659,7 @@ async function handleStartAfterNormalization(
     const startRecovery = await recoverPendingMutation(existing.dir, existing.state, root);
     if (startRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(existing.dir, existing.state, startRecovery);
     if (startRecovery.kind === "load-failed") return loadFailedResult(existing.dir, existing.state, startRecovery);
+    if (startRecovery.kind === "git-refused") return gitRefusedResult(existing.dir, existing.state, startRecovery);
     if (startRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(startRecovery.reason);
     // Re-read after recovery -- session may have been ended by postMutation
     existing = findActiveSessionFull(root);
@@ -2940,6 +2959,7 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   const reportRecovery = await recoverPendingMutation(info.dir, state, root);
   if (reportRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, state, reportRecovery);
   if (reportRecovery.kind === "load-failed") return loadFailedResult(info.dir, state, reportRecovery);
+  if (reportRecovery.kind === "git-refused") return gitRefusedResult(info.dir, state, reportRecovery);
   if (reportRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(reportRecovery.reason);
   state = reportRecovery.state;
 
@@ -3725,6 +3745,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   const resumeRecovery = await recoverPendingMutation(info.dir, info.state, root);
   if (resumeRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, info.state, resumeRecovery);
   if (resumeRecovery.kind === "load-failed") return loadFailedResult(info.dir, info.state, resumeRecovery);
+  if (resumeRecovery.kind === "git-refused") return gitRefusedResult(info.dir, info.state, resumeRecovery);
   if (resumeRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(resumeRecovery.reason);
   const recoveredState = resumeRecovery.state;
   if (recoveredState !== info.state) {
@@ -4827,6 +4848,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     // crash after it finds no marker and goes straight to release.
     if (cancelRecovery.kind === "checkpoint-blocked") abandonBlockedCompletion(root, info.dir, info.state, cancelRecovery);
     if (cancelRecovery.kind === "load-failed") abandonBlockedCompletion(root, info.dir, info.state, { kind: "load-failed", ticketId: cancelRecovery.ticketId, reason: cancelRecovery.reason });
+    if (cancelRecovery.kind === "git-refused") abandonBlockedCompletion(root, info.dir, info.state, { kind: "load-failed", ticketId: cancelRecovery.ticketId, reason: `git-refused: ${cancelRecovery.reason}` });
   } else if (info.state.pendingProjectMutation) {
     writeSessionAndRefresh(
       root, info.dir,

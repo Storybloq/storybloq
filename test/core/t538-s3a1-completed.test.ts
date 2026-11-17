@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadProject } from "../../src/core/project-loader.js";
+import { initProject } from "../../src/core/init.js";
 import { setupApply, setupApplySeams, setupResolve, setupResume } from "../../src/core/setup-apply.js";
 import { effectiveEdges, parseSetupPayload, prerequisites, renderSetupPayload, validateSetupPayload } from "../../src/core/setup-payload.js";
 import { parseSetupMeta } from "../../src/core/setup-meta.js";
@@ -164,6 +165,16 @@ describe("the payload", () => {
 });
 
 describe("applying already-built work", () => {
+  it("C-v4.1 commit 6: imports planned-complete work complete with gitState.requireCommitOnComplete on and no commit naming it (exempt: history imported at setup time)", async () => {
+    const root = await folder();
+    await initProject(root, { name: "scaffold" });
+    const path = join(root, ".story", "config.json");
+    await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, "utf-8")), gitState: { requireCommitOnComplete: true } }, null, 2) + "\n");
+    expect((await setupApply(root, payload())).exitCode).toBe(0);
+    expect((JSON.parse(await readFile(path, "utf-8")) as { gitState?: unknown }).gitState).toEqual({ requireCommitOnComplete: true });
+    expect((await ticketFile(root, "T-001")).status).toBe("complete");
+  });
+
   it("creates the ticket complete, dated the setup's first day, and reports it as built", async () => {
     const root = await folder();
     clock("2026-10-20T12:00:00Z");

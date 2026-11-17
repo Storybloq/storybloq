@@ -114,56 +114,56 @@
   "sequenced/mcp/crlf": {
     "file": "<FILE>",
     "bytes": "IyBUDQoNCi0gYQ0K",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/lineNotFinal": {
     "file": "<FILE>",
     "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/nearMissV1": {
     "file": "<FILE>",
     "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/plain": {
     "file": "<FILE>",
     "bytes": "IyBTZXNzaW9uCkRvbmUu",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/trailingWhitespace": {
     "file": "<FILE>",
     "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/unicode": {
     "file": "<FILE>",
     "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/v10Line": {
     "file": "<FILE>",
     "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "sequenced/mcp/v2Line": {
     "file": "<FILE>",
     "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
@@ -282,56 +282,56 @@
   "team/mcp/crlf": {
     "file": "<FILE>",
     "bytes": "IyBUDQoNCi0gYQ0K",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/lineNotFinal": {
     "file": "<FILE>",
     "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz0iMjAyNi0xMS0xMy0wMS1hLm1kIiByb2xlPSJtYW5hZ2VyIiBhdD0iYWJjMTIzNCIgYnk9IndAeC55IiAtLT4KbW9yZSB0ZXh0Cg==",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/nearMissV1": {
     "file": "<FILE>",
     "bytes": "IyBUCgpib2R5Cgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxIGNvbnRpbnVlcz1hLm1kIC0tPgo=",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/plain": {
     "file": "<FILE>",
     "bytes": "IyBTZXNzaW9uCkRvbmUu",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/trailingWhitespace": {
     "file": "<FILE>",
     "bytes": "IyBUCgpib2R5ICAKCgogIAo=",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/unicode": {
     "file": "<FILE>",
     "bytes": "IyBDYWbDqSDinJMKCm5hw692ZSBub3Rlcwo=",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/v10Line": {
     "file": "<FILE>",
     "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYxMCAtLT4K",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   },
   "team/mcp/v2Line": {
     "file": "<FILE>",
     "bytes": "IyBUCgo8IS0tIHN0b3J5YmxvcS1saW5lYWdlIHYyIGNvbnRpbnVlcz0iYS5tZCIgLS0+Cg==",
-    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). The pressure line repeats at most once every 10 minutes. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
+    "reply": "Created handover: <FILE>\n\nHandover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk. The caller could not be bound to a live presence record.\n\nGit: .story/handovers/<FILE> no git (not a repository)",
     "exitCode": null,
     "isError": false
   }

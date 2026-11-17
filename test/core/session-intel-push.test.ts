@@ -482,8 +482,10 @@ describe("guide directive and handover stamp", () => {
       const era = primed(f, 410_000, now);
       markCompactPending(f.root, SID, { eventId: "p", era, at: new Date(now + 1000).toISOString() });
       const pending = await handleHandoverCreate("# Pending", "pending", "md", f.root, { now: now + 2000, projectsDir: f.projects });
-      expect(pending.output).toMatch(/\n\nHandover (recorded|stamp did not land)/);
-      expect(pending.output).not.toMatch(/held at advisory|\/compact|no further handovers/);
+      // A pending compaction makes the size unknown: the exact unknown-size reply,
+      // never a covering, a will-not-ask or a close-and-expected sentence.
+      expect(pending.output).toBe("Created handover: 2026-11-17-01-pending.md\n\nHandover recorded. The context size was not known when it was written, so the notice may still ask for one near the compaction point. Keep working in this same turn.");
+      expect(pending.output).not.toMatch(/covers this compaction|will not ask again|close and expected|held at advisory|\/compact|no further handovers/);
     });
   });
 
@@ -1315,7 +1317,7 @@ describe("ISS-1214: the reply names a stamp that did not land", () => {
       locateSwap.hook = () => { throw new Error("injected stamp failure"); };
       const md = await handleHandoverCreate("# H", "h-1214-throw", "md", f.root, { now, projectsDir: f.projects });
       expect(locateSwap.hook).toBeNull();
-      expect(md.output).toContain("Handover stamp did not land (error: injected stamp failure). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
+      expect(md.output).toContain("Handover stamp did not land (error: injected stamp failure). Each band's notice is shown at most once per compaction; the handover is on disk.");
       // An error is not a binding failure: neither sentence belongs on it.
       expect(md.output).not.toContain(NEUTRAL);
       expect(md.output).not.toContain(HINT);
@@ -1337,7 +1339,7 @@ describe("ISS-1214: the reply names a stamp that did not land", () => {
       const result = await client.callTool({ name: "storybloq_handover_create", arguments: { content: "# H", slug: "h-1214-nosid-mcp" } });
       await client.close();
       const text = (result.content as { text: string }[])[0]!.text;
-      expect(text).toContain("Handover stamp did not land (skipped: no caller session id). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
+      expect(text).toContain("Handover stamp did not land (skipped: no caller session id). Each band's notice is shown at most once per compaction; the handover is on disk.");
       // A fresh server: the neutral sentence, never the causal claim.
       expect(text).toContain(NEUTRAL);
       expect(text).not.toContain(HINT);
@@ -1354,7 +1356,7 @@ describe("ISS-1214: the reply names a stamp that did not land", () => {
       inject.forceOutcome = { status: "skipped-lock-busy" };
       const md = await handleHandoverCreate("# H", "h-1214-busy", "md", f.root, { now, projectsDir: f.projects });
       expect(inject.forceOutcome).toBeNull();
-      expect(md.output).toMatch(/^Created handover: [^\n]+\n\nHandover stamp did not land \(lock busy\)\. The notice is shown once per compaction, so it will not repeat; the handover is on disk\.$/);
+      expect(md.output).toMatch(/^Created handover: [^\n]+\n\nHandover stamp did not land \(lock busy\)\. Each band's notice is shown at most once per compaction; the handover is on disk\.$/);
       expect(intelOf(f.root).handoverWrittenAt).toBeNull();
 
       inject.calls = 0;
@@ -1375,7 +1377,7 @@ describe("ISS-1214: the reply names a stamp that did not land", () => {
       inject.transformBase = (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, era: "999:1" } });
       const md = await handleHandoverCreate("# H", "h-1214-refused", "md", f.root, { now, projectsDir: f.projects });
       expect(inject.transformBase).toBeNull();
-      expect(md.output).toContain("Handover stamp did not land (refused: record era differs from the caller's live era). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
+      expect(md.output).toContain("Handover stamp did not land (refused: record era differs from the caller's live era). Each band's notice is shown at most once per compaction; the handover is on disk.");
       expect(md.output).not.toContain(NEUTRAL);
       expect(md.output).not.toContain(HINT);
       expect(intelOf(f.root).handoverWrittenAt).toBeNull();
@@ -1388,13 +1390,13 @@ describe("ISS-1214: the reply names a stamp that did not land", () => {
       primed(f, IMPERATIVE_TOKENS, now);
       applyPresenceEnrichment(f.root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, endedAt: at(5) }));
       const ended = await handleHandoverCreate("# H", "h-1214-ended", "md", f.root, { now, projectsDir: f.projects });
-      expect(ended.output).toContain("Handover stamp did not land (skipped: caller session has ended). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
+      expect(ended.output).toContain("Handover stamp did not land (skipped: caller session has ended). Each band's notice is shown at most once per compaction; the handover is on disk.");
       expect(ended.output).toContain(NEUTRAL);
       expect(ended.output).not.toContain(HINT);
 
       applyPresenceEnrichment(f.root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, endedAt: null, sessionIntel: { ...b.sessionIntel!, era: "9:9" } }));
       const era = await handleHandoverCreate("# H", "h-1214-era", "md", f.root, { now, projectsDir: f.projects });
-      expect(era.output).toContain("Handover stamp did not land (skipped: record era differs from the live process era). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
+      expect(era.output).toContain("Handover stamp did not land (skipped: record era differs from the live process era). Each band's notice is shown at most once per compaction; the handover is on disk.");
       expect(era.output).toContain(NEUTRAL);
       expect(era.output).not.toContain(HINT);
     });

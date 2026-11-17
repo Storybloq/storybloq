@@ -137,7 +137,7 @@ describe("ISS-1214 (c): the registered storybloq_handover_create stamps the boun
     expect(reply.isError, reply.content[0]?.text).toBeUndefined();
     const text = reply.content[0]!.text;
     expect(text).toMatch(/Created handover: /);
-    expect(text).toMatch(/Handover stamp did not land \(skipped: no caller session id\)\. The notice is shown once per compaction, so it will not repeat; the handover is on disk\./);
+    expect(text).toMatch(/Handover stamp did not land \(skipped: no caller session id\)\. Each band's notice is shown at most once per compaction; the handover is on disk\./);
     expect(text, "the hedged line, not the causal one").toContain(HANDOVER_STAMP_UNBOUND_LINE);
     expect(text, "a fresh server is never told it is stale").not.toContain(HANDOVER_STAMP_STALE_NOTE);
     expect(text).not.toMatch(/held at advisory/);

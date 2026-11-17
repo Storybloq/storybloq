@@ -1651,13 +1651,13 @@ describe("ISS-1214: formatHandoverCreateResult names why an attempted stamp did 
     expect(outputFormatter.formatHandoverCreateResult(FILE, "md")).toBe(`Created handover: ${FILE}`);
     expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, null)).toBe(`Created handover: ${FILE}`);
     expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, busy)).toBe(
-      `Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`,
+      `Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). Each band's notice is shown at most once per compaction; the handover is on disk.`,
     );
   });
 
   it("md: the causal restart hint requires POSITIVE staleness; an unbound caller on a fresh server gets the neutral sentence", () => {
     const fresh = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, unbound, false);
-    expect(fresh).toContain("Handover stamp did not land (skipped: no presence record for the caller). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
+    expect(fresh).toContain("Handover stamp did not land (skipped: no presence record for the caller). Each band's notice is shown at most once per compaction; the handover is on disk.");
     expect(fresh).toContain(NEUTRAL);
     expect(fresh).not.toContain(HINT);
 
@@ -1674,7 +1674,7 @@ describe("ISS-1214: formatHandoverCreateResult names why an attempted stamp did 
       for (const stale of [false, true]) {
         const out = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, { reason: `r-${kind}`, kind }, stale);
         expect(out, `${kind}/${String(stale)}`).toBe(
-          `Created handover: ${FILE}\n\nHandover stamp did not land (r-${kind}). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`,
+          `Created handover: ${FILE}\n\nHandover stamp did not land (r-${kind}). Each band's notice is shown at most once per compaction; the handover is on disk.`,
         );
       }
     }
@@ -1733,7 +1733,7 @@ describe("ISS-1428 T13: the stamp sentence says what the stamp achieved (plan se
 
   it("a failed stamp promises no repeat interval, and the reply never names a rearm key", () => {
     const failed = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, { reason: "lock busy", kind: "outcome" });
-    expect(failed).toBe(`Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`);
+    expect(failed).toBe(`Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). Each band's notice is shown at most once per compaction; the handover is on disk.`);
     for (const r of [failed, reply({ covers: true }), reply(null)]) expect(r).not.toMatch(/handoverRearm|minute|no further handovers|\/compact/);
   });
 });

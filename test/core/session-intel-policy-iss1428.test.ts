@@ -19,8 +19,8 @@ import { ensureCapture } from "../../src/core/session-intel/capture.js";
 import { applyAssumedReset, applyBoundaryReset, claimNotice, noticeSeenOf, readPresenceRecord, stampHandover, type HandoverStampObservation } from "../../src/core/session-intel/presence-bridge.js";
 import { processEra } from "../../src/core/session-intel/process-era.js";
 import { resolveSessionIntelConfig } from "../../src/core/session-intel/config.js";
-import { decideFromRecord, effectiveThresholds, emptyBandReason, eraCovered, finalAllowed, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "../../src/core/session-intel/policy.js";
-import { applyBannerToMcpText, applyStatusPushesToMcpText, deliverBanner, guideDirectiveFor, statusPushesFor, tokenPressureBannerFor } from "../../src/core/session-intel/push.js";
+import { decideFromRecord, effectiveThresholds, emptyBandReason, eraCovered, thresholdsForRecord, finalAllowed, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "../../src/core/session-intel/policy.js";
+import { applyBannerToMcpText, applyStatusPushesToMcpText, deliverBanner, guideDirectiveFor, stampHandoverForCaller, statusPushesFor, tokenPressureBannerFor } from "../../src/core/session-intel/push.js";
 import { handleSessionIntelPrompt } from "../../src/cli/commands/session-intel.js";
 import { handleHandoverCreate } from "../../src/cli/commands/handover.js";
 import { registerAllTools, runMcpReadTool, runMcpWriteTool } from "../../src/mcp/tools.js";
@@ -619,14 +619,22 @@ describe("T13 reply through the CLI and the registered MCP tool", () => {
     expect(replyLine(cli.output as string)).toBe(`Handover recorded. It was written well before the compaction point (${tokensAt(s, 60).toLocaleString("en-US")} of about 228,000 tokens in use), so the notice may still ask for one nearer to it. Keep working in this same turn.`);
   });
 
-  it("the empty-band configuration: a stamp at 880,000 on a 925,000 point is past the compact line and gets the non-covering reply", async () => {
+  it("the empty-band configuration: a stamp at 880,000 on a 925,000 point is past the compact line (878,750) and gets the non-covering reply (mutant: a stamp past the compact line counted as covering)", async () => {
     const f = await fixture(1_000_000);
-    setIntelConfig(f.root, { imperativeHeadroomTokens: 10_000 });
+    // Imperative line max(0.9 x 925,000, 925,000 - 10,000) = 915,000; compact line 0.95 x 925,000 = 878,750; covering needs 905,000.
+    setIntelConfig(f.root, { imperativeHeadroomTokens: 10_000, compactNeededPct: 0.95 });
     const s = start(f, WIDE, Date.now() - 10_000, 1_000);
     s.t = Date.now() - 2_000;
     s.lines.push(assistantRecord({ ts: iso(s.t - 500), read: 880_000 - 2 }));
     writeTranscript(s.f.projects, encoded(s.f.root), SID, s.lines);
     hook(s, "880k");
+    expect(intelOf(f.root).lastSample!.rawState).toBe("compact-needed");
+    // The stamp's own observation, as the CLI reads it: past the compact line, not covering.
+    const r = stampHandoverForCaller(s.f.root, { cwd: s.f.root, projectsDir: s.f.projects, handoverFile: "2026-11-17-00-probe.md" });
+    expect(r.status).toBe("stamped");
+    expect(r.status === "stamped" ? r.observation : null).toMatchObject({ covers: false, pastCompact: true, tokens: 880_000 });
+    const th = thresholdsForRecord(intelOf(f.root), resolveSessionIntelConfig({ imperativeHeadroomTokens: 10_000, compactNeededPct: 0.95 }));
+    expect({ bandEmpty: th.bandEmpty, compactLine: th.compactLine }).toEqual({ bandEmpty: true, compactLine: 878_750 });
     const cli = await handleHandoverCreate("# H\n", "empty-band", "md", s.f.root, { projectsDir: s.f.projects });
     expect(replyLine(cli.output as string)).toBe("Handover recorded. It was written well before the compaction point (880,000 of about 925,000 tokens in use), so the notice may still ask for one nearer to it. Keep working in this same turn.");
   });

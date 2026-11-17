@@ -2984,7 +2984,7 @@ export interface HandoverStampFailure {
 export function formatHandoverStampFailure(failure: HandoverStampFailure, serverStale = false): string {
   // ISS-1428: the reply never promises another notice. Each band's notice is
   // shown once per compaction whether or not a stamp lands.
-  const base = `Handover stamp did not land (${failure.reason}). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`;
+  const base = `Handover stamp did not land (${failure.reason}). Each band's notice is shown at most once per compaction; the handover is on disk.`;
   // Only a binding failure is about the caller's link to a record at all; an
   // outcome, a refusal and a thrown error each have their own causes, and a
   // restart addresses none of them.

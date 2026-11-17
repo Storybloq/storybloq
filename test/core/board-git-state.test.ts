@@ -156,10 +156,13 @@ describe("board git state module (ISS-1107)", () => {
     }
     for (const command of COMMANDS) {
       // `bus send --commit <sha>` predates ISS-1107: a string naming a git commit the message refers to.
-      if (!command.flags.includes("--commit") || command.name === "snapshot" || command.name === "bus send") continue;
+      // `proof` is one documented leaf; its --commit applies only to `proof non-code add|remove`, whose write labels end in add and remove (checked below).
+      if (!command.flags.includes("--commit") || command.name === "snapshot" || command.name === "bus send" || command.name === "proof") continue;
       if (!COMMIT_VERBS[commitVerbKey(command.name)]) missing.push(command.name);
     }
     expect(missing).toEqual([]);
+    expect(COMMIT_VERBS[commitVerbKey("proof non-code add")]).toBe("added");
+    expect(COMMIT_VERBS[commitVerbKey("proof non-code remove")]).toBe("removed");
     expect(COMMIT_VERBS.snapshot).toBeUndefined();
   });
 

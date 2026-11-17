@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,11 +62,17 @@ const body = (id: string): string => `# Handover ${id}\n\n## Next steps\n\n- **$
 const linked = (id: string, attrs: LineageInput): string => appendLineage(body(id), serializeLineage(attrs).line);
 
 const U1 = "2026-11-10-01-u1.md";
+const U0 = "2026-11-09-01-u0.md";
+const U3 = "2026-11-09-02-u3.md";
 const L1 = "2026-11-11-01-l1.md";
 const U2 = "2026-11-12-01-u2.md";
 const L2 = "2026-11-13-01-l2.md";
 const O = "2026-11-14-01-o.md";
 const FILES: Record<string, string> = {
+  // No final newline: a reader must see these bytes as written.
+  [U0]: body("T-0").trimEnd(),
+  // Trailing blank lines, kept byte for byte.
+  [U3]: body("T-00") + "\n\n\n",
   [U1]: body("T-1"),
   [L1]: linked("T-2", { role: "pen" }),
   [U2]: body("T-3"),
@@ -80,11 +86,27 @@ function project(): string {
   const init = run("new", root, ["init", "--name", "e2e", "--format", "json"]);
   expect(init.status, init.stderr).toBe(0);
   for (const [n, c] of Object.entries(FILES)) writeFileSync(join(root, ".story", "handovers", n), c);
+  // Every file and folder dated in the past, so a same-byte rewrite moves its mtime.
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      const abs = join(dir, name);
+      if (lstatSync(abs).isDirectory()) walk(abs);
+      utimesSync(abs, PAST, PAST);
+    }
+  };
+  walk(root);
   return root;
 }
 
+const PAST = new Date("2020-01-01T00:00:00Z");
+
 const MEMO_DIR = join(".story", "telemetry", "handover-lines");
-/** Every file under the project, path to sha256, minus the memo folder. */
+const MEMO_PARENT = join(".story", "telemetry");
+/**
+ * Every entry under the project, minus the memo folder: its lstat type and
+ * inode, and for a file its mtime and sha256. A same-byte rewrite moves the
+ * mtime, a replace moves the inode, a symlink changes the type.
+ */
 function snapshot(root: string): Map<string, string> {
   const out = new Map<string, string>();
   const walk = (dir: string): void => {
@@ -92,8 +114,16 @@ function snapshot(root: string): Map<string, string> {
       const abs = join(dir, name);
       const rel = relative(root, abs);
       if (rel === MEMO_DIR || rel.startsWith(MEMO_DIR + "/")) continue;
-      if (statSync(abs).isDirectory()) walk(abs);
-      else out.set(rel, createHash("sha256").update(readFileSync(abs)).digest("hex"));
+      const st = lstatSync(abs);
+      const type = st.isFile() ? "file" : st.isDirectory() ? "dir" : st.isSymbolicLink() ? "symlink" : "other";
+      if (type === "dir") {
+        // A folder's mtime moves when an entry is added, so only its type and inode count.
+        out.set(rel, `dir ${st.ino}`);
+        walk(abs);
+      } else {
+        const sha = type === "file" ? createHash("sha256").update(readFileSync(abs)).digest("hex") : "";
+        out.set(rel, `${type} ${st.ino} ${st.mtimeMs} ${sha}`);
+      }
     }
   };
   walk(root);
@@ -134,10 +164,12 @@ describe("C1: no command rewrites, renames or migrates an existing file", () => 
       expect(r.status, `${label}: ${r.stderr}`).toBe(0);
       const after = snapshot(root);
       for (const [path, sha] of before) expect(after.get(path), `${label}: ${path}`).toBe(sha);
-      const added = [...after.keys()].filter((p) => !before.has(p));
+      // The memo folder's parent may appear with it, as a folder and nothing else.
+      const added = [...after.keys()].filter((p) => !before.has(p) && !(p === MEMO_PARENT && after.get(p)!.startsWith("dir ")));
       if (creates) {
         expect(added, label).toHaveLength(1);
         expect(added[0]!, label).toMatch(/^\.story\/handovers\/[^/]+\.md$/);
+        expect(after.get(added[0]!)!, label).toMatch(/^file /);
       } else {
         expect(added, label).toEqual([]);
       }
@@ -146,6 +178,37 @@ describe("C1: no command rewrites, renames or migrates an existing file", () => 
     // The memo folder holds exactly the identity that opted in.
     expect(readdirSync(join(root, MEMO_DIR))).toEqual([memoFileName(TASK)]);
   }, 120_000);
+});
+
+describe("the write-time check through the dist: what writes unlinked, and what a missing newline does not", () => {
+  interface Created { filename: string; lineage: { linked: boolean; warnings: Array<{ code: string }> } }
+  const create = (root: string, content: string, slug: string): Created => {
+    const r = run("new", root, ["handover", "create", "--content", content, "--slug", slug, "--new-line", "--role", "pen", "--format", "json"]);
+    expect(r.status, r.stderr).toBe(0);
+    return (JSON.parse(r.stdout) as { data: Created }).data;
+  };
+
+  it("a body of headings only is written unlinked with parser_check_failed (slice A, A7): a reader parsing the raw file would take the line as a record", () => {
+    const root = project();
+    for (const [i, content] of ["# C", "# C\n", "# C D\n"].entries()) {
+      const made = create(root, content, `title${i}`);
+      expect(made.lineage.linked, JSON.stringify(content)).toBe(false);
+      expect(made.lineage.warnings.map((w) => w.code), JSON.stringify(content)).toEqual(["parser_check_failed"]);
+      expect(splitLineage(readFileSync(join(root, ".story", "handovers", made.filename), "utf8")).lineage).toBeNull();
+    }
+  }, 60_000);
+
+  it("a handover without a final newline, or ending on an empty heading, is linked", () => {
+    const root = project();
+    const full = "# Handover T\n\n## Next steps\n\n- **T-1** carry on";
+    for (const [i, content] of [full, `${full}\n\n## Notes`, `${full}\n\n## Notes\n`, "hello"].entries()) {
+      const made = create(root, content, `plain${i}`);
+      expect(made.lineage.linked, JSON.stringify(content)).toBe(true);
+      expect(made.lineage.warnings, JSON.stringify(content)).toEqual([]);
+      const written = readFileSync(join(root, ".story", "handovers", made.filename), "utf8");
+      expect(splitLineage(written).lineage?.lineage.role).toBe("pen");
+    }
+  }, 60_000);
 });
 
 describe.skipIf(skip !== null)(`C5: storybloq 1.16.0 on an opted-in project${skip ? ` (${skip})` : ""}`, () => {
@@ -169,7 +232,7 @@ describe.skipIf(skip !== null)(`C5: storybloq 1.16.0 on an opted-in project${ski
     expect(json(run("old", root, ["handover", "list", "--format", "json"]))).toEqual(folder);
     const latest = docs(run("old", root, ["handover", "latest", "--count", String(folder.length), "--format", "json"]));
     expect(latest.map((d) => d.filename)).toEqual(folder);
-    for (const d of latest) expect(d.content.trimEnd(), d.filename).toBe(readFileSync(join(hdir, d.filename), "utf8").trimEnd());
+    for (const d of latest) expect(d.content, d.filename).toBe(readFileSync(join(hdir, d.filename), "utf8"));
 
     const before = readdirSync(hdir);
     expect(run("old", root, ["handover", "create", "--content", body("T-10"), "--slug", "old", "--format", "json"]).status).toBe(0);

@@ -138,6 +138,19 @@ describe("B4 the raw fill at --count 500", () => {
     expect(js.some((e) => "lines" in (e.data ?? {}))).toBe(false);
   });
 
+  it("a body that is exactly the word missing is a handover, in the first selection and past position 200", async () => {
+    const solo = await project((put) => put("2026-11-13-01-m.md", "missing"));
+    expect(await run(solo.root, ["handover", "latest"])).toEqual({ exit: 0, out: "missing" });
+    const three = await project((put) => { put("2026-11-13-01-m.md", "missing"); put("2026-11-12-01-a.md", body("T-1")); });
+    expect(envelopes((await run(three.root, ["handover", "latest", "--count", "3", "--format", "json"])).out).map((e) => e.data?.content)).toEqual(["missing", body("T-1")]);
+    const all = names(260);
+    const late = all[30]!; // position 229 newest first, reached only by the fill
+    const p = await project((put) => { for (const n of all) put(n, n === late ? "missing" : body(n)); });
+    const js = envelopes((await run(p.root, ["handover", "latest", "--count", "500", "--format", "json"])).out);
+    expect(js).toHaveLength(260);
+    expect(js.find((e) => e.data?.filename === late)?.data?.content).toBe("missing");
+  });
+
   it("200 skipped bodies set limited and N3", async () => {
     const plainNew = names(200, 1000);
     const linkedMid = names(205, 500);
@@ -287,6 +300,9 @@ describe("B13 command rows: a FIFO sorting newest fails fast, as an unreadable b
     expect(t.error).toBeUndefined();
     expect(t.signal).toBeNull();
     expect(t.status).not.toBe(0);
+    const te = JSON.parse(t.stdout) as Envelope;
+    expect(te.error?.code).toBe("io_error");
+    expect(te.error?.message).toContain("2026-11-30-01-pipe.md: not a regular file");
     expect(t.stdout).not.toContain("T-1");
     expect(readFileSync(join(root, ".story", "handovers", "2026-11-01-01-a.md"), "utf8")).toBe(body("T-1"));
   }, 120_000);

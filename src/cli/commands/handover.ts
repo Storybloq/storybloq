@@ -383,34 +383,35 @@ export async function handleHandoverLatest(
   // main does, with main's early return. No fill name is touched until
   // every selected name has passed.
   const bodies: Array<{ readonly filename: string; readonly content: string }> = [];
-  const readOne = async (filename: string): Promise<CommandResult | "missing" | string> => {
+  type BodyRead = { readonly kind: "missing" } | { readonly kind: "body"; readonly content: string } | { readonly kind: "error"; readonly result: CommandResult };
+  const readOne = async (filename: string): Promise<BodyRead> => {
     await parseHandoverFilename(filename, ctx.handoversDir);
     try {
-      return readHandoverBody(ctx.handoversDir, filename);
+      return { kind: "body", content: readHandoverBody(ctx.handoversDir, filename) };
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         // Skip missing files silently when loading multiple
-        if (count > 1) return "missing";
-        return {
+        if (count > 1) return { kind: "missing" };
+        return { kind: "error", result: {
           output: formatError("not_found", `Handover file not found: ${filename}`, ctx.format),
           exitCode: ExitCode.USER_ERROR,
           errorCode: "not_found",
-        };
+        } };
       }
-      return {
+      return { kind: "error", result: {
         output: formatError("io_error", `Cannot read handover: ${(err as Error).message}`, ctx.format),
         exitCode: ExitCode.USER_ERROR,
         errorCode: "io_error",
-      };
+      } };
     }
   };
 
   const readAll = async (names: readonly string[], into: Array<{ filename: string; content: string }>): Promise<CommandResult | null> => {
     for (const filename of names) {
       const got = await readOne(filename);
-      if (got === "missing") continue;
-      if (typeof got !== "string") return got;
-      into.push({ filename, content: got });
+      if (got.kind === "missing") continue;
+      if (got.kind === "error") return got.result;
+      into.push({ filename, content: got.content });
     }
     return null;
   };
@@ -432,14 +433,14 @@ export async function handleHandoverLatest(
     for (; j < listing.length && open > 0; j++) {
       const filename = listing[j]!;
       const got = await readOne(filename);
-      if (typeof got !== "string") return got;
-      if (got !== "missing" && readLineage(got).kind === "linked") {
+      if (got.kind === "error") return got.result;
+      if (got.kind === "body" && readLineage(got.content).kind === "linked") {
         tails.observation.seen = true;
         if (++skipped >= READER_MAX_READS) { j++; fillLimited = true; break; }
         continue;
       }
       selected.push(filename);
-      if (got !== "missing") bodies.push({ filename, content: got });
+      if (got.kind === "body") bodies.push({ filename, content: got.content });
       open--;
     }
     walked = j;

@@ -230,8 +230,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "handover create",
     description: "Create a handover",
-    usage: "storybloq handover create [--content <value>] [--stdin] [--slug <value>] [--commit] [--continues <file>] [--new-line] [--role <label>] [--from <file>] [--absorbs <file>]... [--format <json|md>]",
-    flags: ["--content", "--stdin", "--slug", "--format", "--commit", "--continues", "--new-line", "--role", "--from", "--absorbs"],
+    usage: "storybloq handover create [--content <value>] [--stdin] [--slug <value>] [--commit] [--continues <file>] [--new-line] [--role <label>] [--from <file>] [--absorbs <file>]... [--as <id>] [--format <json|md>]",
+    flags: ["--content", "--stdin", "--slug", "--format", "--commit", "--continues", "--new-line", "--role", "--from", "--absorbs", "--as"],
   },
   {
     name: "handover template",

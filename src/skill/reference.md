@@ -44,7 +44,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **handover list** (--format?) - Handover filenames, newest first
 - **handover latest** (--count?, --brief?, --priming?, --as?, --format?) - Newest handovers
 - **handover get <filename>** (--format?) - One handover
-- **handover create** (--content?, --stdin?, --slug?, --format?, --commit?, --continues?, --new-line?, --role?, --from?, --absorbs?) - Create a handover
+- **handover create** (--content?, --stdin?, --slug?, --format?, --commit?, --continues?, --new-line?, --role?, --from?, --absorbs?, --as?) - Create a handover
 - **handover template** (--override?, --as?, --new-line?, --role?, --from?, --format?) - Scaffold a handover
 - **handover lines** (--all?, --format?) - Tips, forks and broken links
 - **blocker list** (--format?) - List all roadmap blockers

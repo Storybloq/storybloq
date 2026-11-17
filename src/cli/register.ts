@@ -1094,6 +1094,10 @@ export function registerHandoverCommand(yargs: Argv): Argv {
                 .option("from", {
                   type: "string",
                   describe: "Handover a new line starts from",
+                })
+                .option("as", {
+                  type: "string",
+                  describe: "Client task id whose handover line this continues",
                 }), "absorbs", {
                   // A handover file name never holds a comma, so split is safe.
                   // Empty values are preserved, not dropped: an absorbs value the

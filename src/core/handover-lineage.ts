@@ -612,7 +612,9 @@ export function walkLine(graph: LineageGraph, start: string): LineWalk {
 export type LineageWarningCode =
   | "new_line_ignored" | "modifier_ignored" | "from_dropped" | "content_line_discarded"
   | "continues_invalid" | "parent_not_in_checkout" | "parent_unreadable"
-  | "absorb_dropped" | "attribute_dropped" | "parser_check_failed" | "scan_incomplete" | "scan_failed";
+  | "absorb_dropped" | "attribute_dropped" | "parser_check_failed" | "scan_incomplete" | "scan_failed"
+  // ISS-1499 slice B (plan section 6)
+  | "memo_stale" | "memo_not_written" | "identity_invalid";
 
 export type AbsorbDropReason = "not_found" | "not_a_tip" | "is_parent" | "invalid" | "scan_incomplete";
 
@@ -634,6 +636,8 @@ export interface CreateLineageResult {
   readonly by: string | null;
   readonly forkChildren: readonly string[];
   readonly warnings: readonly LineageWarning[];
+  /** Slice B, design 5: the parent's id-less owner-gated and blocked labels this content does not carry. Absent when none. */
+  readonly omittedRecords?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

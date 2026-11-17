@@ -3081,6 +3081,9 @@ function lineageWarningLine(w: LineageWarning, linked: boolean): string {
     case "scan_failed": return "The handovers folder could not be listed, so the parent was not checked.";
     case "continues_invalid": return "Written unlinked: the continues value is not a valid handover file name.";
     case "parser_check_failed": return "Written unlinked: the lineage line would change what a reader finds in this handover.";
+    case "memo_stale": return `Written unlinked, on the default line: this session's handover line could not be found (${t ?? "its tip"}: ${w.detail}). To pick a line: \`storybloq handover lines\`, then \`storybloq handover continue <file>\`.`;
+    case "memo_not_written": return `This session's line was not recorded; run \`storybloq handover continue ${t ?? "<file>"}\` to stay on it.`;
+    case "identity_invalid": return "Ignored --as: it is not a valid client task id, so no session line was read or recorded.";
   }
 }
 
@@ -3103,6 +3106,10 @@ function formatCreateLineageBlock(l: CreateLineageResult): string {
   if (l.absorbs.length > 0) out.push(`Absorbs: ${l.absorbs.map(esc).join(", ")}`);
   out.push(...by(["new_line_ignored", "modifier_ignored", "from_dropped", "content_line_discarded", "absorb_dropped", "attribute_dropped"]));
   out.push(...by(["continues_invalid", "parser_check_failed"]));
+  out.push(...by(["identity_invalid", "memo_stale", "memo_not_written"]));
+  if (l.omittedRecords !== undefined && l.omittedRecords.length > 0) {
+    out.push("Not carried from the parent (keep, close or file):", ...l.omittedRecords.map((r) => `- ${esc(r)}`));
+  }
   return out.join("\n");
 }
 

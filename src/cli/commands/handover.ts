@@ -38,6 +38,8 @@ import {
   lineMemoDisplayPath,
   removeLineMemo,
   writeLineMemo,
+  readLineMemo,
+  digestBytes,
   resolveLineMemo,
   type ContinueResult,
   type MemoResolution,
@@ -731,6 +733,8 @@ export interface HandoverCreateLineage {
    * clarification 9): the last occurrence applies, each earlier one is named.
    */
   readonly ignoredRepeats?: readonly { readonly flag: string; readonly value: string }[];
+  /** ISS-1499 slice B: the identity whose line memo this create reads and advances. */
+  readonly as?: string;
 }
 
 /**
@@ -761,6 +765,7 @@ export function lineageFlagsFromArgv(argv: Readonly<Record<string, unknown>>): H
     from: single("--from", argv.from),
     absorbs,
     ignoredRepeats,
+    as: argv.as === undefined || argv.as === null ? undefined : String(Array.isArray(argv.as) ? argv.as[argv.as.length - 1] : argv.as),
   };
 }
 
@@ -797,7 +802,13 @@ const UNLINKED: Omit<CreateLineageResult, "warnings"> = {
 /** What to write, decided before the lock from the content and the flags alone. */
 type LineagePlan =
   | { readonly kind: "none" }
-  | { readonly kind: "unlinked"; readonly bytes: string; readonly warnings: readonly LineageWarning[] }
+  | {
+      readonly kind: "unlinked";
+      readonly bytes: string;
+      readonly warnings: readonly LineageWarning[];
+      /** No selector, no content line: the memo may still give a parent (slice B). */
+      readonly noSource?: true;
+    }
   | {
       readonly kind: "linked";
       /** The unlinked fallback bytes (5.3), and the body the line is appended to. */
@@ -811,7 +822,7 @@ type LineagePlan =
       readonly warnings: readonly LineageWarning[];
     };
 
-function planLineage(content: string, flags: HandoverCreateLineage | null): LineagePlan {
+function planLineage(content: string, flags: HandoverCreateLineage | null, memoTip: string | null = null): LineagePlan {
   const f = flags ?? {};
   const modifiers: string[] = [];
   if (f.role !== undefined) modifiers.push("--role");
@@ -820,7 +831,7 @@ function planLineage(content: string, flags: HandoverCreateLineage | null): Line
   const hasSelector = f.continues !== undefined || f.newLine === true;
   const repeats = f.ignoredRepeats ?? [];
   const split = splitLineage(content);
-  if (!hasSelector && modifiers.length === 0 && repeats.length === 0 && split.lineage === null) return { kind: "none" };
+  if (!hasSelector && modifiers.length === 0 && repeats.length === 0 && split.lineage === null && memoTip === null) return { kind: "none" };
 
   const warnings: LineageWarning[] = [];
   for (const r of repeats) warnings.push(warn("modifier_ignored", echoableRepeat(r.flag, r.value), r.flag));
@@ -851,10 +862,12 @@ function planLineage(content: string, flags: HandoverCreateLineage | null): Line
       if (d.attribute === "continues" && d.reason === "invalid") continue;
       warnings.push(warn("attribute_dropped", null, `${d.attribute}:${d.reason}`));
     }
+  } else if (memoTip !== null) {
+    // Slice B, plan section 6: an active memo behaves exactly as --continues <tip>.
+    continues = { state: "valid", file: memoTip };
   } else {
-    // (Slice B inserts the memo here, between the content line and "none".)
     for (const m of modifiers) warnings.push(warn("modifier_ignored", null, m));
-    return { kind: "unlinked", bytes: content, warnings };
+    return { kind: "unlinked", bytes: content, warnings, noSource: true };
   }
 
   if (continues.state === "invalid") {
@@ -976,6 +989,8 @@ async function resolveLinkedWrite(
     return { bytes: plan.fallback, result: { ...UNLINKED, warnings: [...plan.warnings, warn("parser_check_failed")] } };
   }
   const l = ser.lineage;
+  const parentReadable = enumerated && parent !== null && byName.get(parent)?.state !== undefined && byName.get(parent)?.state !== "unknown";
+  const omitted = parentReadable ? omittedRecords(handoversDir, parent!, plan.fallback) : [];
   return {
     bytes: final,
     result: {
@@ -988,9 +1003,49 @@ async function resolveLinkedWrite(
       by: l.by,
       forkChildren,
       warnings: [...plan.warnings, ...found],
+      ...(omitted.length > 0 ? { omittedRecords: omitted } : {}),
     },
   };
 }
+
+const OMITTED_DISPOSITIONS = new Set(["owner-gated", "blocked"]);
+
+/**
+ * Design 5: the parent's owner-gated and blocked records with no id whose
+ * label the new content does not carry (compared trimmed, whitespace runs
+ * collapsed, lowercased). Empty labels and "(none)" are placeholders.
+ * Nothing is appended to any file and no id is invented.
+ */
+function omittedRecords(handoversDir: string, parent: string, content: string): string[] {
+  let body: string;
+  try {
+    body = splitLineage(readHandoverBody(handoversDir, parent)).body;
+  } catch {
+    return [];
+  }
+  const norm = (s: string): string => s.trim().replace(/\s+/g, " ").toLowerCase();
+  const carried = new Set(parseHandoverMarkdown(content, "handover.md").records.map((r) => norm(r.label)));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of parseHandoverMarkdown(body, parent).records) {
+    if (r.id !== null || !OMITTED_DISPOSITIONS.has(r.disposition)) continue;
+    const key = norm(r.label);
+    if (key === "" || key === "(none)" || carried.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(r.label.trim().replace(/\s+/g, " "));
+  }
+  return out;
+}
+
+/**
+ * ISS-1499 slice B test seams: a throw from `afterIntent` stops a linked
+ * create after its memo intent and before its file; one from `beforeFinalMemo`
+ * stops it after its file and before the final memo write.
+ */
+export const createMemoSeams: {
+  afterIntent: ((file: string) => void) | null;
+  beforeFinalMemo: ((file: string) => void) | null;
+} = { afterIntent: null, beforeFinalMemo: null };
 
 /**
  * Creates a handover markdown file.
@@ -1025,8 +1080,18 @@ export async function handleHandoverCreate(
   const date = handoverFilenameDate(new Date(), false);
   let filename: string | undefined;
   const absRoot = resolve(root);
-  const plan = planLineage(content, lineage);
+  let plan = planLineage(content, lineage);
   let lineageResult: CreateLineageResult | null = null;
+  // Slice B, plan section 6: the identity whose memo this create reads and
+  // advances. An invalid --as is no identity, named, and the write goes on.
+  const asInvalid = lineage?.as !== undefined && normalizeClientTaskId(lineage.as) === null;
+  const taskId = asInvalid ? null : currentClientTaskId(lineage?.as ?? intel.clientTaskId ?? undefined);
+  const memoSource = plan.kind === "none" || (plan.kind === "unlinked" && plan.noSource === true);
+  const consultMemo = taskId !== null && (memoSource || plan.kind === "linked");
+  const memoMayLink = consultMemo && memoSource && readLineMemo(absRoot, taskId) !== null;
+  const lateWarnings: LineageWarning[] = asInvalid ? [warn("identity_invalid")] : [];
+  let resolution: MemoResolution = { kind: "none" };
+  let intentWritten = false;
   let toWrite = content;
   if (plan.kind === "unlinked") {
     toWrite = plan.bytes;
@@ -1036,7 +1101,7 @@ export async function handleHandoverCreate(
   // `at` and `by` are read before the lock is taken.
   let at: string | null = null;
   let by: string | null = null;
-  if (plan.kind === "linked") {
+  if (plan.kind === "linked" || memoMayLink) {
     const { gitUserEmail } = await import("../../autonomous/git-inspector.js");
     [at, by] = await Promise.all([gitShortHead(absRoot), gitUserEmail(absRoot)]);
   }
@@ -1046,12 +1111,31 @@ export async function handleHandoverCreate(
     await mkdir(handoversDir, { recursive: true });
     const wrapDir = join(absRoot, ".story");
 
+    // Resolved inside the lock, so two creates by one identity cannot pick
+    // the same parent.
+    if (consultMemo && taskId !== null) {
+      const names = await listHandovers(handoversDir, absRoot, []);
+      resolution = resolveLineMemo(absRoot, taskId, new TailReader(handoversDir, names));
+      if (memoSource && resolution.kind === "active") plan = planLineage(content, lineage, resolution.tip);
+      if (memoSource && resolution.kind === "stale") lateWarnings.push(warn("memo_stale", resolution.tip, resolution.reason));
+    }
+
     if (plan.kind === "linked") {
       const r = await resolveLinkedWrite(plan, handoversDir, absRoot, at, by);
       toWrite = r.bytes;
       lineageResult = r.result;
       refuseEmptyFallback(toWrite);
     }
+
+    // Memo writes: a linked write with an identity only (plan section 6).
+    const memoTask = (lineageResult as CreateLineageResult | null)?.linked === true ? taskId : null;
+    const writeIntent = (candidate: string): void => {
+      if (memoTask === null) return;
+      const tip = resolution.kind === "active" ? resolution.tip : null;
+      const sha256 = digestBytes(Buffer.from(toWrite, "utf-8"));
+      intentWritten = writeLineMemo(absRoot, { v: 1, task: memoTask, tip, writing: { file: candidate, sha256 } });
+      createMemoSeams.afterIntent?.(candidate);
+    };
 
     const isTeamMode = await detectTeamMode(absRoot);
 
@@ -1068,6 +1152,7 @@ export async function handleHandoverCreate(
         try {
           await parseHandoverFilename(candidate, handoversDir);
           await guardPath(candidatePath, wrapDir);
+          writeIntent(candidate);
           writeFileSync(tmpPath, toWrite, "utf-8");
           tmpCreated = true;
           await fencedLink(tmpPath, candidatePath);
@@ -1127,10 +1212,23 @@ export async function handleHandoverCreate(
 
       await parseHandoverFilename(candidate, handoversDir);
       await guardPath(candidatePath, wrapDir);
+      writeIntent(candidate);
       await atomicWrite(candidatePath, toWrite);
       filename = candidate;
     }
+
+    // Final memo write: attempted even when the intent failed.
+    if (memoTask !== null && filename !== undefined) {
+      createMemoSeams.beforeFinalMemo?.(filename);
+      const finalWritten = writeLineMemo(absRoot, { v: 1, task: memoTask, tip: filename, writing: null });
+      if (!intentWritten && !finalWritten) lateWarnings.push(warn("memo_not_written", filename));
+    }
   });
+
+  if (lateWarnings.length > 0) {
+    const base = lineageResult ?? { ...UNLINKED, warnings: [] };
+    lineageResult = { ...base, warnings: [...base.warnings, ...lateWarnings] };
+  }
 
   // T-499: the handover is on disk; record it against the caller's current
   // compaction boundary so imperative pressure is held at advisory until the

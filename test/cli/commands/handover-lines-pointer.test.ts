@@ -130,10 +130,20 @@ describe("B10: the compact pointer", () => {
     expect(scans()).toHaveBeenCalledTimes(1);
   });
 
-  it("a symlink sorting newest to a linked handover: named, heading read, never throws", async () => {
-    const p = await project({ [U]: body("T-1"), [L1]: linked("T-2", {}) });
-    symlinkSync(join(p.hdir, U), join(p.hdir, "2026-11-30-01-link.md"));
-    expect(await pointer(p.root)).toBe(named("2026-11-30-01-link.md", "T-1"));
+  it("a symlink to a linked handover is unknown (plan section 7): selected, named, its heading read through the link", async () => {
+    const LINK = "2026-11-30-01-link.md";
+    // No lineage observed: main's choice, the newest name.
+    const p = await project({ [U]: body("T-1"), [L1]: linked("T-2", { continues: U }) });
+    symlinkSync(join(p.hdir, L1), join(p.hdir, LINK));
+    scans().mockClear();
+    expect(await pointer(p.root)).toBe(named(LINK, "T-2"));
+    expect(scans()).toHaveBeenCalledTimes(1);
+    expect(scans().mock.results[0]!.value).toMatchObject({ name: LINK, state: "unknown" });
+    // Lineage observed: the newer linked file is skipped and the link, read
+    // as unknown and never followed for its lineage, takes the position.
+    const q = await project({ [U]: body("T-1"), [L1]: linked("T-2", { continues: U }), "2026-12-01-01-o.md": linked("T-4", {}) });
+    symlinkSync(join(q.hdir, L1), join(q.hdir, LINK));
+    expect(await pointer(q.root)).toBe(named(LINK, "T-2"));
   });
 
   it("a FIFO sorting newest, with and without lineage: selected as unknown with a null heading, inside the deadline", async () => {

@@ -3,7 +3,7 @@
  * 6; C6, B2 create side, B9, the create steps of B3 and B8).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { initProject } from "../../../src/core/init.js";
 import { digestBytes, memoFileName, serializeLineMemo, type LineMemo } from "../../../src/core/handover-line-memo.js";
@@ -11,6 +11,22 @@ import { appendLineage, serializeLineage, splitLineage, type LineageInput } from
 import { createMemoSeams, handleHandoverCreate } from "../../../src/cli/commands/handover.js";
 import { isolateEnv, runCli, type IsolatedEnv } from "../../fixtures/handover-lineage/harness.js";
 import * as memoModule from "../../../src/core/handover-line-memo.js";
+
+// A targeted fs stub: while armed, a rename onto the armed memo path fails
+// with EACCES, as it would for any runner, root included. Everything else
+// is the real fs.
+const failRenameTo: { path: string | null; hits: number } = { path: null, hits: 0 };
+vi.mock("node:fs", async (importOriginal) => {
+  const m = await importOriginal<typeof import("node:fs")>();
+  const renameSync = (from: import("node:fs").PathLike, to: import("node:fs").PathLike): void => {
+    if (failRenameTo.path !== null && String(to) === failRenameTo.path) {
+      failRenameTo.hits++;
+      throw Object.assign(new Error(`EACCES: permission denied, rename '${String(from)}' -> '${String(to)}'`), { code: "EACCES" });
+    }
+    m.renameSync(from, to);
+  };
+  return { ...m, renameSync, default: { ...m.default, renameSync } };
+});
 
 // Pass-through spies: the create path's two memo reads, counted.
 vi.mock("../../../src/core/handover-line-memo.js", async (importOriginal) => {
@@ -247,13 +263,16 @@ describe("Codex gate on commit 6: each memo write fails alone", () => {
   it("the intent lands and the final write fails: no memo_not_written, and the next resolution heals to the new file", async () => {
     const p = await project({ [A]: linked("T-1", {}) });
     seedMemo(p, { tip: A, writing: null });
-    createMemoSeams.beforeFinalMemo = () => { chmodSync(p.mdir, 0o555); };
+    // Armed after the intent landed, so only the final write meets the EACCES.
+    createMemoSeams.beforeFinalMemo = () => { failRenameTo.path = memoPath(p); failRenameTo.hits = 0; };
     let r: Awaited<ReturnType<typeof create>>;
     try {
       r = await create(p, ["--content", body("T-2"), "--as", TASK, "--format", "json"]);
     } finally {
-      chmodSync(p.mdir, 0o755);
+      failRenameTo.path = null;
     }
+    expect(failRenameTo.hits).toBe(1);
+    expect(readdirSync(p.mdir).filter((n) => n.startsWith(".tmp-"))).toEqual([]);
     expect(r.exit).toBe(0);
     expect((JSON.parse(r.out) as Reply).data.lineage!.warnings).toEqual([]);
     expect(readMemo(p)).toEqual({ v: 1, task: TASK, tip: A, writing: { file: r.file, sha256: digestBytes(Buffer.from(r.bytes)) } });

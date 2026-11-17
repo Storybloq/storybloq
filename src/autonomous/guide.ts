@@ -797,24 +797,26 @@ function gitRefusedResult(dir: string, state: FullSessionState, refusal: { reado
 }
 
 /**
- * C-v4.1 commit 6: the pending completion this session holds was refused by
- * the completion check. Durable across a restart: the completion_git_refused
- * event in events.log, matched to THIS marker by target and transitionId, so
- * a refusal of an earlier completion never excuses a later one.
+ * C-v4.1 commit 6: would the completion check refuse the pending completion
+ * this session holds, right now? Evaluated live with the replay's inputs (the
+ * strictly loaded project, the marker's target, completionGate("guide")), so
+ * the answer never depends on events.log, which is an audit trail only. False
+ * for any marker that is not a ticket completion, for an already-complete
+ * target (the replay checks nothing there), and when the project cannot load.
  */
-function pendingCompletionGitRefused(dir: string, state: FullSessionState): boolean {
+async function pendingCompletionRefusedNow(root: string, state: FullSessionState): Promise<boolean> {
   const m = state.pendingProjectMutation as Record<string, unknown> | null | undefined;
-  if (!m || m.type !== "ticket_update" || m.value !== "complete" || typeof m.target !== "string" || typeof m.transitionId !== "string") return false;
-  let raw: string;
-  try { raw = readFileSync(join(dir, "events.log"), "utf-8"); } catch { return false; }
-  for (const line of raw.split("\n")) {
-    if (line.trim() === "") continue;
-    try {
-      const e = JSON.parse(line) as { type?: unknown; data?: { ticketId?: unknown; transitionId?: unknown } };
-      if (e.type === "completion_git_refused" && e.data?.ticketId === m.target && e.data?.transitionId === m.transitionId) return true;
-    } catch { /* a malformed line is skipped */ }
+  if (!m || m.type !== "ticket_update" || m.value !== "complete" || typeof m.target !== "string") return false;
+  const gate = completionGate("guide");
+  if (gate.kind !== "check") return false;
+  try {
+    const { state: projectState } = await loadProject(root, { strict: true });
+    const ticket = projectState.ticketByID(m.target);
+    if (!ticket || ticket.status === "complete") return false;
+    return (await gate.refusal(root, projectState, ticket.id, displayIdOf(ticket))) !== null;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 function loadFailedResult(dir: string, state: FullSessionState, failure: { readonly ticketId: string; readonly reason: string }): McpToolResult {
@@ -4833,8 +4835,8 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // progress until the file is fixed, and it must stay cancellable.
   const checkpointParked = !resume && checkpointParkedTicket !== null
     && (await completedTicketCheckpointBlock(root, checkpointParkedTicket)) !== null;
-  // C-v4.1 commit 6: a completion the gate refused cannot advance (retry keeps refusing and parks nothing), so cancel may abandon it.
-  const gitRefusedCompletion = !resume && pendingCompletionGitRefused(info.dir, info.state);
+  // C-v4.1 commit 6: a completion the gate refuses now cannot advance (retry keeps refusing and parks nothing), so cancel may abandon it.
+  const gitRefusedCompletion = !resume && (await pendingCompletionRefusedNow(root, info.state));
   if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost && !consistentCompletion && !checkpointParked && !gitRefusedCompletion) {
     return {
       content: [{

@@ -10,7 +10,7 @@
  * docstring names this window).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -34,6 +34,13 @@ vi.mock("../../src/autonomous/git-inspector.js", () => ({
   gitIsAncestor: vi.fn().mockResolvedValue({ ok: true, data: false }),
   gitUserEmail: vi.fn().mockResolvedValue("me@example.com"),
 }));
+
+// The event-append seam: guide's appendEvent calls go through here; session writes are untouched.
+const seam = vi.hoisted(() => ({ failEvents: false }));
+vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/autonomous/session.js")>();
+  return { ...real, appendEvent: (...a: Parameters<typeof real.appendEvent>) => { if (!seam.failEvents) real.appendEvent(...a); } };
+});
 
 import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
 import { createSession, writeSessionSync } from "../../src/autonomous/session.js";
@@ -169,44 +176,69 @@ describe("C-v4.1 commit 6: the guide's completion asks the completion check", ()
   });
 });
 
-describe("C-v4.1 commit 6: cancel after a git refusal", () => {
+describe("C-v4.1 commit 6: cancel after a git refusal (the gate evaluated live, events.log never read)", () => {
   const marker = { type: "ticket_update", target: "T-001", value: "complete", expectedCurrent: "inprogress", transitionId: "txn-c6-cancel" };
   const held = (sessionId: string) => ({ claimedBySession: sessionId, claim: { user: "me@example.com", branch: "main", since: NOW } });
+  const setPolicy = (on: boolean): void => {
+    const p = join(root, ".story", "config.json");
+    writeFileSync(p, JSON.stringify({ ...(JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>), gitState: { requireCommitOnComplete: on } }));
+  };
+  const softGate = (r: { content: unknown[] }) => expect((r.content[0] as { text: string }).text).toMatch(/item\(s\) finished/);
 
-  it("an auto session with work remaining and a held claim: after the refusal, cancel clears the marker and ends; the ticket is not complete", async () => {
+  it("event appends fail while session writes succeed: the refusal, then cancel abandons the completion and ends; the ticket is not complete", async () => {
     const { sessionId, sessDir } = plantPreTerminalSession(root, marker);
     writeTicket(root, "T-001", held(sessionId));
-    const refused = await handleAutonomousGuide(root, { action: "report", sessionId, report: { completedAction: "tests_written" } });
-    expect(refused.isError).toBe(true);
-    expect(eventsOfType(sessDir, "completion_git_refused")[0]!.data).toMatchObject({ ticketId: "T-001", transitionId: "txn-c6-cancel" });
-    const cancelled = await handleAutonomousGuide(root, { action: "cancel", sessionId });
-    expect(cancelled.isError).toBeFalsy();
+    seam.failEvents = true;
+    try {
+      const refused = await handleAutonomousGuide(root, { action: "report", sessionId, report: { completedAction: "tests_written" } });
+      expect(refused.isError).toBe(true);
+      expect(existsSync(join(sessDir, "events.log")) ? eventsOfType(sessDir, "completion_git_refused") : []).toHaveLength(0);
+      const cancelled = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+      expect(cancelled.isError).toBeFalsy();
+    } finally { seam.failEvents = false; }
     const after = readState(sessDir);
     expect(after.pendingProjectMutation).toBeNull();
     expect(after.state).toBe("SESSION_END");
     expect(readTicket(root, "T-001").status).not.toBe("complete");
+  });
+
+  it("with appends working the refusal is still audited (ticketId and transitionId), and cancel abandons the same way", async () => {
+    const { sessionId, sessDir } = plantPreTerminalSession(root, marker);
+    writeTicket(root, "T-001", held(sessionId));
+    await handleAutonomousGuide(root, { action: "report", sessionId, report: { completedAction: "tests_written" } });
+    expect(eventsOfType(sessDir, "completion_git_refused")[0]!.data).toMatchObject({ ticketId: "T-001", transitionId: "txn-c6-cancel" });
+    expect((await handleAutonomousGuide(root, { action: "cancel", sessionId })).isError).toBeFalsy();
+    expect(readState(sessDir).state).toBe("SESSION_END");
     expect(eventsOfType(sessDir, "checkpoint_blocked_abandoned")).toHaveLength(1);
   });
 
-  it("no widening: the same session without a git refusal still meets the soft gate", async () => {
+  it("policy turned off after the refusal: the gate passes, so cancel meets the soft gate (refusal event in the log notwithstanding) and the replay completes the ticket", async () => {
+    const { sessionId, sessDir } = plantPreTerminalSession(root, marker);
+    writeTicket(root, "T-001", held(sessionId));
+    await handleAutonomousGuide(root, { action: "report", sessionId, report: { completedAction: "tests_written" } });
+    expect(eventsOfType(sessDir, "completion_git_refused")).toHaveLength(1);
+    setPolicy(false);
+    softGate(await handleAutonomousGuide(root, { action: "cancel", sessionId }));
+    expect(readState(sessDir).pendingProjectMutation).not.toBeNull();
+    await handleAutonomousGuide(root, { action: "report", sessionId, report: { completedAction: "tests_written" } });
+    expect(readTicket(root, "T-001").status).toBe("complete");
+  });
+
+  it("no widening: a pending completion the gate would pass meets the soft gate as before", async () => {
+    setPolicy(false);
     const { sessionId, sessDir } = plantPreTerminalSession(root, marker);
     writeTicket(root, "T-001", held(sessionId));
     const before = readState(sessDir);
-    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
-    const text = (result.content[0] as { text: string }).text;
-    expect(result.isError).toBeFalsy();
+    softGate(await handleAutonomousGuide(root, { action: "cancel", sessionId }));
     const after = readState(sessDir);
     expect(after.state).toBe(before.state);
     expect(after.pendingProjectMutation).toEqual(before.pendingProjectMutation);
-    expect(text).toMatch(/item\(s\) finished/);
   });
 
-  it("a refusal of an earlier completion does not excuse a later one (matched by transitionId)", async () => {
-    const { sessionId, sessDir } = plantPreTerminalSession(root, { ...marker, transitionId: "txn-later" });
+  it("a marker that is not a ticket completion meets the soft gate, policy on and no commit naming the ticket", async () => {
+    const { sessionId, sessDir } = plantPreTerminalSession(root, { type: "ticket_update", target: "T-001", value: "inprogress", expectedCurrent: "open", transitionId: "txn-c6-start" });
     writeTicket(root, "T-001", held(sessionId));
-    writeFileSync(join(sessDir, "events.log"), JSON.stringify({ rev: 1, type: "completion_git_refused", timestamp: NOW, data: { ticketId: "T-001", reason: "x", transitionId: "txn-earlier" } }) + "\n", { flag: "a" });
-    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
-    expect((result.content[0] as { text: string }).text).toMatch(/item\(s\) finished/);
+    softGate(await handleAutonomousGuide(root, { action: "cancel", sessionId }));
     expect(readState(sessDir).state).toBe("WRITE_TESTS");
     expect(readState(sessDir).pendingProjectMutation).not.toBeNull();
   });

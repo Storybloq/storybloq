@@ -163,6 +163,21 @@ describe("B6: the caller's own set", () => {
     });
   });
 
+  it("ten recent ancestors past the 500-name cap still count as inside the window: the scanned ancestor beyond them is not listed", async () => {
+    // Listing order is by name, so the line's oldest handover can sort first.
+    const chain = Array.from({ length: 10 }, (_, i) => `2026-11-13-${String(i + 10)}-x.md`);
+    const files: Record<string, string> = {
+      "2026-11-15-99-anc.md": linked("T-1", { role: "worker" }),
+      "2026-11-15-50-tip.md": linked("T-2", { continues: chain[0]! }),
+    };
+    chain.forEach((n, i) => { files[n] = linked(`T-${10 + i}`, { continues: i === chain.length - 1 ? "2026-11-15-99-anc.md" : chain[i + 1]! }); });
+    for (let i = 0; i < 498; i++) files[`2026-11-14-${String(1000 + i)}-f.md`] = body(`T-${100 + i}`);
+    const p = await project(files);
+    seedMemo(p, "2026-11-15-50-tip.md");
+    const lines = (await lastLines(p.root, ["handover", "latest", "--as", TASK])) as { otherLines?: { recent: Array<{ file: string }> } };
+    expect(lines.otherLines?.recent.map((r) => r.file) ?? []).not.toContain("2026-11-15-99-anc.md");
+  });
+
   it("a line with twelve ancestors older than the window ends the marking walk normally: no N3", async () => {
     const old = Array.from({ length: 12 }, (_, i) => `2026-10-${String(20 - i).padStart(2, "0")}-01-x${i}.md`);
     const files: Record<string, string> = {};

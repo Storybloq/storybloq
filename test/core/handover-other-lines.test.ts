@@ -71,10 +71,29 @@ describe("buildBriefOtherLines (design 4.5)", () => {
   it("more is the scan's own, or any returned line left out; never recomputed from the returned lines", () => {
     expect(buildBriefOtherLines(rl(5, true), [], 1_000_000, "json", dir)!.more).toBe(true);
     expect(buildBriefOtherLines(rl(5, false), [], 1_000_000, "json", dir)!.more).toBe(false);
-    const oneLine = otherLinesBytes({ pointer: true, recent: rl(3).recent, more: true }, [], "json");
+    const oneLine = Math.max(...[true, false].map((more) => otherLinesBytes({ pointer: true, recent: rl(3).recent, more }, [], "json")));
     const cut = buildBriefOtherLines(rl(5, false), [], oneLine, "json", dir)!;
     expect(cut.recent).toHaveLength(3);
     expect(cut.more).toBe(true);
+  });
+
+  it("an exact fit with more false never overruns by the byte \"false\" adds", () => {
+    const lines = rl(2, false);
+    const exact = otherLinesBytes({ pointer: true, recent: lines.recent, more: false }, [], "json");
+    const all = buildBriefOtherLines(lines, [], exact, "json", dir)!;
+    expect(all).toEqual({ pointer: true, recent: lines.recent, more: false });
+    const under = buildBriefOtherLines(lines, [], exact - 1, "json", dir)!;
+    expect(otherLinesBytes(under, [], "json")).toBeLessThanOrEqual(exact - 1);
+    expect(under).toEqual({ pointer: true, recent: [lines.recent[0]], more: true });
+  });
+
+  it("in Markdown, where \"and more\" is the longer form, a scan with more never overruns at the boundary", () => {
+    const lines = rl(2, true);
+    const exact = otherLinesBytes({ pointer: true, recent: lines.recent, more: true }, [], "md");
+    expect(buildBriefOtherLines(lines, [], exact, "md", dir)).toEqual({ pointer: true, recent: lines.recent, more: true });
+    const under = buildBriefOtherLines(lines, [], exact - 1, "md", dir)!;
+    expect(otherLinesBytes(under, [], "md")).toBeLessThanOrEqual(exact - 1);
+    expect(under.recent).toEqual([lines.recent[0]]);
   });
 
   it("the notices stand outside the block's measure", () => {
@@ -108,9 +127,11 @@ describe("the scan and the finaliser", () => {
   it("the window holds at most 500 names and says limited past them", () => {
     const listing = Array.from({ length: 501 }, (_, i) => `2026-11-10-${String(1000 - i).padStart(4, "0")}-x.md`);
     for (const n of listing) writeFileSync(join(dir, n), "# H\n");
-    const scan = scanRecentTails({ listing, tails: new TailReader(dir, listing), cutoff: "2026-11-01" });
+    const tails = new TailReader(dir, listing);
+    const scan = scanRecentTails({ listing, tails, cutoff: "2026-11-01" });
     expect(scan.window).toEqual(listing.slice(0, 500));
     expect(scan.limited).toBe(true);
+    expect(tails.reads).toBe(500);
     const at500 = scanRecentTails({ listing: listing.slice(0, 500), tails: new TailReader(dir, listing), cutoff: "2026-11-01" });
     expect(at500.limited).toBe(false);
   });

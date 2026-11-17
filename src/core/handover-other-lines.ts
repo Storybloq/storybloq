@@ -38,8 +38,14 @@ export function buildBriefOtherLines(
   handoversDir: string,
 ): OtherLines | undefined {
   if (rl.recent.length === 0) return undefined;
-  const fits = (recent: readonly OtherLinesItem[]): boolean => otherLinesBytes({ pointer: true, recent, more: true }, notices, format) <= left;
-  if (!fits([])) return undefined;
+  // An entry fits only if the block fits with either final value of `more`:
+  // "false" is the longer one in JSON, "and more" the longer one in Markdown.
+  const fits = (recent: readonly OtherLinesItem[]): boolean => Math.max(
+    otherLinesBytes({ pointer: true, recent, more: true }, notices, format),
+    otherLinesBytes({ pointer: true, recent, more: false }, notices, format),
+  ) <= left;
+  // The pointer-only form always ships with `more: true`.
+  if (otherLinesBytes({ pointer: true, recent: [], more: true }, notices, format) > left) return undefined;
   const items: OtherLinesItem[] = [];
   for (const r of rl.recent) {
     const entry = structuredEntryFor(handoversDir, r.file);

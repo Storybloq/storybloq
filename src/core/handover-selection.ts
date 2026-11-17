@@ -261,6 +261,8 @@ export interface RecentScan {
   readonly window: readonly string[];
   /** More than 500 names were in the window. */
   readonly limited: boolean;
+  /** The window's first date; membership past the 500-name cap is still decided by it. */
+  readonly cutoff: string;
 }
 
 /** Steps 1 and 2: the window, and every tail in it read (before the selection, so the cache is warm). */
@@ -268,7 +270,7 @@ export function scanRecentTails(o: { readonly listing: readonly string[]; readon
   const inWindow = o.listing.filter((n) => inRecentWindow(n, o.cutoff));
   const window = inWindow.slice(0, RECENT_SCAN_MAX);
   for (const n of window) o.tails.state(n);
-  return { window, limited: inWindow.length > RECENT_SCAN_MAX };
+  return { window, limited: inWindow.length > RECENT_SCAN_MAX, cutoff: o.cutoff };
 }
 
 export interface RecentLine {
@@ -310,7 +312,9 @@ export function finaliseRecentLines(o: {
   readonly admitted: (name: string) => boolean;
 }): RecentLines {
   const own = new Set<string>([...o.selected, ...o.selection.files, ...o.selection.visited]);
-  const windowSet = new Set(o.scan.window);
+  // The marking walk asks the window rule itself: a recent ancestor past the
+  // 500-name cap is still inside the window.
+  const inWindow = (name: string): boolean => inRecentWindow(name, o.scan.cutoff);
   let limited = o.scan.limited;
   const position = positionsOf(o.listing);
   const start = o.tails.reads;
@@ -323,14 +327,14 @@ export function finaliseRecentLines(o: {
     let cur = o.memo.tip;
     const visited = new Set<string>([cur]);
     own.add(cur);
-    let outside = windowSet.has(cur) ? 0 : 1;
+    let outside = inWindow(cur) ? 0 : 1;
     while (outside < MARKING_OUTSIDE_MAX) {
       const step = parentStep(o.listing, position, o.tails, cur, visited, overLimit);
       if (step.kind === "limit") { limited = true; break; }
       if (step.kind !== "next") break;
       own.add(step.name);
       visited.add(step.name);
-      outside = windowSet.has(step.name) ? 0 : outside + 1;
+      outside = inWindow(step.name) ? 0 : outside + 1;
       cur = step.name;
     }
   } else {

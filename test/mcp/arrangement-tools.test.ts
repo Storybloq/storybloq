@@ -7,7 +7,7 @@ import { registerAllTools } from "../../src/mcp/tools.js";
 import { initProject } from "../../src/core/init.js";
 import { writeArrangementUnlocked } from "../../src/core/arrangement-loader.js";
 import { handleTicketCreate } from "../../src/cli/commands/ticket.js";
-import { ArrangementPartySchema } from "../../src/models/arrangement.js";
+import { ArrangementPartyCreateSchema, ArrangementPartySchema } from "../../src/models/arrangement.js";
 import { IDENTITY_ANCHOR_FORMAT_MESSAGE } from "../../src/models/types.js";
 
 interface RegisteredTool {
@@ -142,7 +142,7 @@ describe("arrangement MCP tools (T-473, amendment A3)", () => {
       expect(result.content[0]!.text).toContain(IDENTITY_ANCHOR_FORMAT_MESSAGE);
     });
 
-    it("the registered tool's parties element schema is the imported ArrangementPartySchema (no hand-duplicated copy)", async () => {
+    it("the registered tool's parties element schema is the imported ArrangementPartyCreateSchema, ArrangementPartySchema less handoverRule (no hand-duplicated copy)", async () => {
       const root = await mkdtemp(join(tmpdir(), "mcp-arrangement-"));
       tempDirs.push(root);
       await initProject(root, { name: "test" });
@@ -152,7 +152,9 @@ describe("arrangement MCP tools (T-473, amendment A3)", () => {
       // a built ZodObject rather than a raw shape literal).
       const registeredSchema = tools.get("storybloq_arrangement_create")!.config.inputSchema!;
       const partiesSchema = registeredSchema.shape.parties as z.ZodArray<z.ZodTypeAny>;
-      expect(partiesSchema.element).toBe(ArrangementPartySchema);
+      expect(partiesSchema.element).toBe(ArrangementPartyCreateSchema);
+      // ISS-1428: derived from the party schema, only the CLI-set rule left out.
+      expect(Object.keys(ArrangementPartyCreateSchema.shape).sort()).toEqual(Object.keys(ArrangementPartySchema.shape).filter((k) => k !== "handoverRule").sort());
     });
 
     it("an extra unrecognized party field survives through the registered schema and is persisted (passthrough, ISS-1117 0.1 finding 3 / 0.2 finding 1)", async () => {

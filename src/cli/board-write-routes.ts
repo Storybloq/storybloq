@@ -99,6 +99,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleResolve: "admin: settles merge conflicts the merge driver recorded",
   handleRosterWrite: "seat roster record on the presence plane, not a board item",
   handleSelftest: "integration smoke test: creates and deletes throwaway entities",
+  handleSessionAlert: "session handover rule, cover and thresholds on the presence record (gitignored telemetry)",
   handleSessionClearCompact: "autonomous session state (gitignored sessions/)",
   handleSessionCompactPrepare: "autonomous session state (gitignored sessions/)",
   handleSessionDelete: "autonomous session state (gitignored sessions/)",

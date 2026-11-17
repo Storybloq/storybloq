@@ -101,6 +101,14 @@ export const ArrangementPartySchema = z
   })
   .passthrough();
 
+/**
+ * ISS-1428: the party element of the arrangement_create MCP schema. The
+ * party's handoverRule is set with `arrangement update` (CLI), so it is left
+ * out here and tools/list does not grow; a rule passed anyway is checked by
+ * ArrangementSchema at write. Derived, never a hand-written copy.
+ */
+export const ArrangementPartyCreateSchema = ArrangementPartySchema.omit({ handoverRule: true });
+
 export const ArrangementGateSchema = z
   .object({
     name: z.string().min(1).max(128),

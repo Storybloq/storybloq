@@ -156,7 +156,7 @@ import {
   handleArrangementUpdate,
   handleArrangementRebind,
 } from "../cli/commands/arrangement.js";
-import { ARRANGEMENT_ROLES, ARRANGEMENT_LIFECYCLE, ArrangementPartySchema, type ArrangementParty } from "../models/arrangement.js";
+import { ARRANGEMENT_ROLES, ARRANGEMENT_LIFECYCLE, ArrangementPartyCreateSchema, type ArrangementParty } from "../models/arrangement.js";
 import { DuetOperationSchema } from "../models/duet.js";
 import { handleDuetCoordinate } from "../cli/commands/duet.js";
 // T-476 section 11: unlike T-473/T-474, the ratified plan calls for all four
@@ -1377,10 +1377,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     inputSchema: {
       bounds: z.array(z.string()).min(1).describe("Ticket/issue refs, display-form or canonical"),
       parties: z
-        // ISS-1428: the party's handoverRule is set with `arrangement update`
-        // (CLI); it is left out of this tool's schema so tools/list does not
-        // grow. A rule passed anyway is checked by ArrangementSchema at write.
-        .array(ArrangementPartySchema.omit({ handoverRule: true }))
+        .array(ArrangementPartyCreateSchema)
         .min(2)
         .describe("Exactly one pen and one worker party"),
       onIrreversibleWork: z.enum(["hold", "escalate"]),

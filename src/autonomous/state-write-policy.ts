@@ -56,9 +56,10 @@ export const STATE_WRITE_CATCHES: Readonly<Record<string, string>> = {
   "src/cli/register.ts#registerSessionCommand#catch#1": "B",
   // The catalog-write boundary the brief rebase runs under: reports the error and sets the exit code.
   "src/cli/register.ts#runCatalogWrite#catch#1": "B",
-  "src/cli/register.ts#registerSessionCommand#catch#7": "B",
+  // ISS-1428: `session alert` (catch #3) shifted the later catches by one.
   "src/cli/register.ts#registerSessionCommand#catch#8": "B",
-  "src/cli/register.ts#registerSessionCommand#catch#11": "B",
+  "src/cli/register.ts#registerSessionCommand#catch#9": "B",
+  "src/cli/register.ts#registerSessionCommand#catch#12": "B",
   // Registration-time catches: tools are registered, no state is written here.
   // T-538: the init/setup swap to the full surface (moved out of the init handler).
   "src/mcp/index.ts#swapToFullSurface#catch#2": "B",

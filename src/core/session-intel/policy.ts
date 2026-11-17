@@ -254,7 +254,12 @@ export function renderNotice(kind: NoticeKind, facts: NoticeFacts, surface: Noti
 }
 
 /** The detail a kind needs, read from the record (and the arrangement rule, when that decided it). */
-export function noticeDetailFor(kind: NoticeKind, intel: SessionIntelPresence, arrangementRule: ArrangementRuleInForce | null): NoticeDetail {
+/**
+ * `tip` is read lazily: only an `ask` or `catch-up` text calls it, so a
+ * delivered notice costs at most one memo read and every other path none.
+ */
+export function noticeDetailFor(kind: NoticeKind, intel: SessionIntelPresence, arrangementRule: ArrangementRuleInForce | null, tip: (() => string | null) | null = null): NoticeDetail {
+  if ((kind === "ask" || kind === "catch-up") && tip !== null) return { tip: tip() };
   if (kind === "covered") return { file: intel.handoverFile, coveredBy: intel.coveredBy };
   if (kind === "rule") {
     if (intel.rule !== null) return { where: intel.rule.where };

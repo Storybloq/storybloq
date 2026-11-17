@@ -17,6 +17,7 @@
  *                it against the current compaction boundary.
  */
 
+import { readLineMemoTip } from "../handover-line-memo.js";
 import { isPresenceEnabled } from "../../presence/handler.js";
 import type { SessionIntelPresence, SessionIntelSample, TokenPressureState } from "../../presence/session-intel-fields.js";
 import { LIFECYCLE_LOCK_BUDGET_MS } from "../presence-enrichment.js";
@@ -233,7 +234,7 @@ function bannerFor(acquired: CallerSample, cfg: SessionIntelConfig, surface: "mc
     sampledAt: sample.sampledAt,
     suppressedBy: sample.suppressedBy,
     notice: final,
-    text: renderNotice(final, facts, surface, noticeDetailFor(final, acquired.intel, arrangementRule)),
+    text: renderNotice(final, facts, surface, noticeDetailFor(final, acquired.intel, arrangementRule, () => readLineMemoTip(acquired.root, acquired.sessionId))),
     claim,
     degraded: dataLine,
   };
@@ -537,7 +538,7 @@ export function guideDirectiveFor(root: string, ownerClaudeSessionId: string | n
     if (walkedIdentity && !revalidateCandidateIdentity(resolvedRoot, walkedIdentity)) return null;
     if (!claimNotice(resolvedRoot, ownerClaudeSessionId, noticeSeenOf(intel), candidate, final, now, cfg)) return null;
     if (final === "settle") return null;
-    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, arrangementRule));
+    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, arrangementRule, () => readLineMemoTip(root, ownerClaudeSessionId)));
   } catch {
     return null;
   }

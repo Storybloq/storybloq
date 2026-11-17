@@ -143,6 +143,23 @@ export function readLineMemo(root: string, taskId: string | null): LineMemo | nu
 }
 
 /**
+ * ISS-1428 (slice C commit 3, plan 6.3): the tip of the line this session is
+ * on, for the `{line}` hint of the `ask` and `catch-up` notices only. One
+ * bounded memo read: the tip's file name when the memo decodes for this task
+ * id, names a tip and has no pending `writing` intent; else null. No lstat,
+ * no handover read. It is never evidence: nothing stamps, settles or
+ * silences on it. Never throws, never writes.
+ */
+export function readLineMemoTip(root: string, taskId: string | null): string | null {
+  try {
+    const memo = readLineMemo(root, taskId);
+    return memo !== null && memo.tip !== null && memo.writing === null ? memo.tip : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Which line the caller is on (plan section 4, steps 1 to 4). A memo that
  * decodes sets the observation, whatever it resolves to.
  */

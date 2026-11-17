@@ -23,12 +23,14 @@ import { decideFromRecord, effectiveThresholds, emptyBandReason, eraCovered, thr
 import { applyBannerToMcpText, applyStatusPushesToMcpText, deliverBanner, guideDirectiveFor, stampHandoverForCaller, statusPushesFor, tokenPressureBannerFor } from "../../src/core/session-intel/push.js";
 import { handleSessionIntelPrompt } from "../../src/cli/commands/session-intel.js";
 import { handleSessionAlert, redecideStoredSample, type SessionAlertOptions } from "../../src/cli/commands/session-alert.js";
+import { readLineMemo, readLineMemoTip, writeLineMemo } from "../../src/core/handover-line-memo.js";
+import type { CommandContext } from "../../src/cli/types.js";
 import { handleArrangementUpdate } from "../../src/cli/commands/arrangement.js";
 import { writeArrangementUnlocked, loadArrangementsSafe } from "../../src/core/arrangement-loader.js";
 import { coordinateDuet } from "../../src/core/duet-coordination.js";
 import { ArrangementPartySchema } from "../../src/models/arrangement.js";
 import type { DuetOperation } from "../../src/models/duet.js";
-import { handleHandoverCreate } from "../../src/cli/commands/handover.js";
+import { handleHandoverContinue, handleHandoverCreate } from "../../src/cli/commands/handover.js";
 import { registerAllTools, runMcpReadTool, runMcpWriteTool } from "../../src/mcp/tools.js";
 import { runReadCommandWithRoot } from "../../src/cli/run.js";
 import { applyPresenceEnrichment, LIFECYCLE_LOCK_BUDGET_MS } from "../../src/core/presence-enrichment.js";
@@ -1412,5 +1414,161 @@ describe("commit 2 fixup 2: an override re-decides the stored sample in place (C
     at(s, 91);
     const fresh = intelOf(s.f.root).lastSample!;
     expect(redecideStoredSample(intelOf(s.f.root), resolveSessionIntelConfig(null)).lastSample).toEqual(fresh);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Commit 3: the line hint (`{line}` from the caller's line memo)
+// ---------------------------------------------------------------------------
+
+const PEER = "2026-11-17-09-peer.md";
+const LINE = (tip: string) => ` It continues the line this session is on (${tip}).`;
+
+function peerHandover(root: string): void {
+  const dir = join(root, ".story", "handovers");
+  mkdirSync(dir, { recursive: true });
+  // Two lines: the peer's (a worker line) and a newer pen line that is the
+  // head, so the peer's handover is an open tip that is not the head.
+  const linked = (role: string) => `# Handover\n\nwork\n\n<!-- storybloq-lineage v1 role="${role}" -->\n`;
+  writeFileSync(join(dir, PEER), linked("worker"));
+  writeFileSync(join(dir, "2026-11-17-10-head.md"), linked("pen"));
+}
+
+async function continueOnto(root: string, fork = false): Promise<void> {
+  const ctx = { root, handoversDir: join(root, ".story", "handovers"), format: "md", state: undefined, warnings: [] } as unknown as CommandContext;
+  await handleHandoverContinue(ctx, { file: PEER, as: SID, ...(fork ? { fork: true } : {}) });
+  expect(readLineMemo(root, SID)).toMatchObject({ tip: PEER, writing: null });
+}
+
+describe("T10 the line memo is never evidence (commit 3)", () => {
+  for (const fork of [false, true]) {
+    it(`(a) a memo pointed at a peer's handover by handover continue${fork ? " --fork" : ""}: ask at 91 and catch-up at 30 still pushed, each with the line hint (mutant: the memo tip stamps or settles)`, async () => {
+      const s = start(await fixture());
+      peerHandover(s.f.root);
+      await continueOnto(s.f.root, fork);
+      at(s, 55);
+      at(s, 91);
+      boundary(s);
+      at(s, 30);
+      expect(kinds(s)).toEqual(["ask@91", "catch-up@30"]);
+      for (const p of s.pushed) expect(p.text).toContain(LINE(PEER));
+      expect(intelOf(s.f.root)).toMatchObject({ handoverWrittenAt: null, tokensAtHandover: null, handoverFile: null });
+    });
+  }
+
+  it("(b) a handover stamped at 60 percent stays non-covering at 91 with its memo active: ask, and tokensAtHandover unchanged", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    at(s, 60);
+    expect(stampHandover(s.f.root, SID, s.era, tokensAt(s, 60), s.t, undefined, "bound", { handoverFile: "2026-11-17-01-mine.md" }).status).toBe("written");
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+    expect(s.pushed[0]!.text).toContain(LINE(PEER));
+    expect(intelOf(s.f.root).tokensAtHandover).toBe(tokensAt(s, 60));
+  });
+
+  it("(c) a stamp with null tokens and an active memo: ask", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    at(s, 75);
+    patchIntel(s.f.root, (x) => ({ ...x, handoverWrittenAt: iso(s.t), tokensAtHandover: null, handoverBoundaryAt: x.lastBoundaryAt, policyGen: x.policyGen + 1 }));
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+    expect(s.pushed[0]!.text).toContain(LINE(PEER));
+  });
+
+  it("(d) a memo with a pending writing intent gives no line hint", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    const memo = readLineMemo(s.f.root, SID)!;
+    expect(writeLineMemo(s.f.root, { ...memo, writing: { file: "2026-11-17-02-next.md", sha256: "0".repeat(64) } })).toBe(true);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+    expect(s.pushed[0]!.text).not.toContain("It continues the line");
+    expect(readLineMemoTip(s.f.root, SID)).toBeNull();
+  });
+
+  it("no memo: no line hint; a covered or rule text never carries one", async () => {
+    const s = start(await fixture());
+    at(s, 91);
+    expect(s.pushed[0]!.text).not.toContain("It continues the line");
+    const r = start(await fixture());
+    peerHandover(r.f.root);
+    await continueOnto(r.f.root);
+    at(r, 75);
+    handover(r, "2026-11-17-03-cover.md");
+    patchIntel(r.f.root, (i) => ({ ...i, tokensAtHandover: tokensAt(r, 75), policyGen: i.policyGen + 1 }));
+    at(r, 91);
+    expect(kinds(r)).toEqual(["covered@91"]);
+    expect(r.pushed[0]!.text).not.toContain("It continues the line");
+  });
+
+  it("the banner carries the same hint", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    at(s, 55);
+    s.t += s.step;
+    s.lines.push(assistantRecord({ ts: iso(s.t - 1_000), read: tokensAt(s, 91) - 2 }));
+    writeTranscript(s.f.projects, encoded(s.f.root), SID, s.lines);
+    const banner = tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT });
+    expect(banner).toMatchObject({ notice: "ask" });
+    expect(banner!.text).toContain(LINE(PEER));
+  });
+});
+
+describe("the guide carries the line hint (commit 3)", () => {
+  it("an unclaimed ask decided by the guide names the line", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    at(s, 55);
+    at(s, 91);
+    patchIntel(s.f.root, (i) => ({ ...i, lastImperativeEmittedAt: null, noticeTokens: null, policyGen: i.policyGen + 1 }));
+    const d = guideDirectiveFor(s.f.root, SID, s.t);
+    expect(d).toContain(LINE(PEER));
+  });
+});
+
+describe("T17 cost of the line hint (commit 3)", () => {
+  function countOpens(): string[] {
+    const opened: string[] = [];
+    const orig = fsDefault.openSync;
+    vi.spyOn(fsDefault, "openSync").mockImplementation(((...a: unknown[]) => { opened.push(String(a[0])); return (orig as (...x: unknown[]) => number).apply(fsDefault, a); }) as never);
+    syncBuiltinESMExports();
+    return opened;
+  }
+  const memoOpens = (o: string[]) => o.filter((p) => p.includes("handover-lines"));
+
+  it("at ok no memo read; on an emitting path at most one", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    let o = countOpens();
+    at(s, 30);
+    vi.restoreAllMocks(); syncBuiltinESMExports();
+    expect(memoOpens(o)).toEqual([]);
+    o = countOpens();
+    at(s, 91);
+    vi.restoreAllMocks(); syncBuiltinESMExports();
+    expect(kinds(s)).toEqual(["ask@91"]);
+    expect(memoOpens(o).length).toBe(1);
+  });
+
+  it("a covered notice reads no memo: the hint is read only for ask and catch-up", async () => {
+    const s = start(await fixture());
+    peerHandover(s.f.root);
+    await continueOnto(s.f.root);
+    at(s, 75);
+    handover(s, "2026-11-17-03-cover.md");
+    patchIntel(s.f.root, (i) => ({ ...i, tokensAtHandover: tokensAt(s, 75), policyGen: i.policyGen + 1 }));
+    const o = countOpens();
+    at(s, 91);
+    vi.restoreAllMocks(); syncBuiltinESMExports();
+    expect(kinds(s)).toEqual(["covered@91"]);
+    expect(memoOpens(o)).toEqual([]);
   });
 });

@@ -7,6 +7,7 @@
  * this handler so both surfaces return identical numbers.
  */
 
+import { readLineMemoTip } from "../../core/handover-line-memo.js";
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import { LIFECYCLE_LOCK_BUDGET_MS } from "../../core/presence-enrichment.js";
 import { isPresenceEnabled } from "../../presence/handler.js";
@@ -391,7 +392,7 @@ export function handleSessionIntelPrompt(options: SessionIntelPromptOptions = {}
       return { status: "silent", reason: "notice not claimed (superseded or already delivered)", capture, result, output: null };
     }
     if (final === "settle") return { status: "silent", reason: "owed catch-up settled by a rule", capture, result, output: null };
-    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderNotice(final, facts, "hook", noticeDetailFor(final, intel, arrangementRule)) } });
+    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderNotice(final, facts, "hook", noticeDetailFor(final, intel, arrangementRule, () => readLineMemoTip(root, sessionId))) } });
     return { status: "emitted", reason: null, capture, result, output };
   } catch (err) {
     return skipped(err instanceof Error ? err.message : String(err));

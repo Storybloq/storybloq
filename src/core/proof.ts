@@ -401,7 +401,7 @@ function okDeviceReceipts(record: Readonly<Record<string, unknown>>): Receipt[] 
 }
 
 /** Q2: a receipt naming this unit or child under a stored boardId the ref no longer resolves to. */
-function refProblemOf(registry: readonly BoardEntry[], unit: ResolvedItem, child: ResolvedItem, receipts: readonly Receipt[]): string | undefined {
+function refProblemOf(registry: readonly BoardEntry[], unit: ResolvedItem, child: ResolvedItem, receipts: readonly Receipt[], partitions: ReadonlySet<string>): string | undefined {
   const classify = (stored: string, current: string): string => {
     const r = resolveBoardRef(registry, stored);
     return r.state === "unresolved" ? `unresolved repo: no registered board carries ${stored}` : `mismatched repo: a receipt names ${stored}, the ref now resolves to ${current}`;
@@ -410,8 +410,21 @@ function refProblemOf(registry: readonly BoardEntry[], unit: ResolvedItem, child
     const u = r.unitRef!;
     const colon = u.lastIndexOf(":");
     if (u.slice(colon + 1) === unit.id && u.slice(0, colon) !== unit.boardId) return classify(u.slice(0, colon), unit.boardId);
-    const coversChild = r.covers !== undefined ? r.covers.some((c) => c.slice(c.lastIndexOf(":") + 1) === child.id) : child.ref === unit.ref;
-    if (u === unit.ref && coversChild && r.repo !== child.boardId) return classify(r.repo, child.boardId);
+    if (u !== unit.ref) continue;
+    if (r.covers === undefined) {
+      if (child.ref === unit.ref && r.repo !== child.boardId) return classify(r.repo, child.boardId);
+      continue;
+    }
+    // A covers entry names this child when its board is the child's own, or when it is no board of this unit's partitions
+    // (a stored boardId that has moved); an entry naming another current partition is that partition's child, not this one.
+    for (const c of r.covers) {
+      const colon = c.lastIndexOf(":");
+      if (c.slice(colon + 1) !== child.id) continue;
+      const stored = c.slice(0, colon);
+      if (stored === child.boardId) {
+        if (r.repo !== child.boardId) return classify(r.repo, child.boardId);
+      } else if (!partitions.has(stored)) return classify(stored, child.boardId);
+    }
   }
   return undefined;
 }
@@ -429,7 +442,11 @@ async function gather(root: string, ref: string, projection: UnitProjection): Pr
   const unit = await resolveItem(registry, root, ownBoard, ref, states);
   const proj = projection(unit);
   const boards = new Map<string, string>([[unit.path, unit.boardId]]);
-  for (const c of proj.children) boards.set(c.path, c.boardId);
+  for (const c of proj.children) {
+    boards.set(c.path, c.boardId);
+    // A projected child on another board brings its own state (Q6: each partition reads facts with its own state).
+    if (!states.has(c.path)) states.set(c.path, c.state);
+  }
 
   const allRecords = [unit, ...proj.children];
   const receipts = new Map<string, Receipt>();
@@ -460,7 +477,7 @@ async function gather(root: string, ref: string, projection: UnitProjection): Pr
 
   const children: ProofChild[] = proj.children.map((c) => {
     const config = (states.get(c.path) as unknown as { config?: unknown } | undefined)?.config;
-    const problem = refProblemOf(registry, unit, c, nearUnit);
+    const problem = refProblemOf(registry, unit, c, nearUnit, new Set(boards.values()));
     return {
       ref: c.ref,
       id: c.id,

@@ -4,9 +4,10 @@
  * receipts onto the record, and reads proof through `proveRef`.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { proofSeams, proveRef } from "../../src/core/proof.js";
+import { proofSeams, proveRef, type ResolvedItem, type UnitProjection } from "../../src/core/proof.js";
+import { loadProject } from "../../src/core/project-loader.js";
 import { recordRevision } from "../../src/core/record-revision.js";
 import { cleanupTempDirs, git, headSha, isolateGit, makeProjectRepo } from "../mcp/board-git-fixtures.js";
 
@@ -308,5 +309,115 @@ describe("proof (C-v4.1 commit 5, 5.5 and 5.6)", () => {
       proofSeams.beforeRevalidate = async () => { n += 1; git(b.root, "update-ref", `refs/heads/moving-${n}`, "HEAD"); };
       expect(await prove(b)).toMatchObject({ outcome: "unproven", reason: "inputs moved" });
     });
+  });
+});
+
+/** Registers `nodes` on the orchestrator board's config. */
+function setNodes(orch: Board, nodes: Record<string, string>): void {
+  const p = join(orch.root, ".story", "config.json");
+  const cfg = JSON.parse(readFileSync(p, "utf8")) as Json;
+  writeFileSync(p, JSON.stringify({ ...cfg, nodes: Object.fromEntries(Object.entries(nodes).map(([k, v]) => [k, { path: v }])) }, null, 2) + "\n");
+}
+
+describe("plan 5.7 rows across repositories, submodules and mixed commits", () => {
+  it("a cross-repo journey (stub projection over two partitions) is proven only with both receipts", async () => {
+    const a = await board();
+    const b = await board();
+    expect(a.board).not.toBe(b.board);
+    setNodes(a, { api: b.root });
+    const stateB = (await loadProject(b.root)).state;
+    // Stands in for T-572: the unit's children are its own T-001 and the node's T-001.
+    const journey: UnitProjection = (unit) => ({
+      children: [unit, { ref: b.unit, id: "T-001", boardId: b.board, path: b.root, state: stateB, record: readRec(b), kind: "ticket" } satisfies ResolvedItem],
+      missing: [],
+      digest: "stub-journey",
+    });
+    const unitRev = recordRevision(readRec(a), "ticket");
+    const onA = receipt(a, { covers: [a.unit], revisions: { unit: unitRev, [a.unit]: unitRev } });
+    append(a, onA);
+    const one = await proveRef(a.root, "T-001", { projection: journey });
+    expect(one).toMatchObject({ outcome: "unproven", reason: `${b.unit}: no current attempt` });
+    expect(one.children.find((c) => c.ref === a.unit)).toMatchObject({ outcome: "proven" });
+    const onB = receipt(b, { unitRef: a.unit, target: a.unit, repo: b.board, covers: [b.unit], revisions: { unit: unitRev, [b.unit]: recordRevision(readRec(b), "ticket") } });
+    append(b, onB);
+    const both = await proveRef(a.root, "T-001", { projection: journey });
+    expect(both).toMatchObject({ outcome: "proven", evidenceTotal: 2 });
+    expect(both.children.map((c) => c.outcome)).toEqual(["proven", "proven"]);
+    // The node's partition is read on its own repository: a later code commit there makes only that child stale.
+    writeFileSync(join(b.root, "code.txt"), "two\n");
+    git(b.root, "add", "code.txt");
+    git(b.root, "commit", "-q", "-m", "T-001 more code");
+    git(b.root, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const later = await proveRef(a.root, "T-001", { projection: journey });
+    expect(later).toMatchObject({ outcome: "stale", reason: `${b.unit}: a later code commit` });
+  });
+
+  it("a receipt naming a second registered board is a mismatched repo; alias rename, rebind and removal (section 2)", async () => {
+    const a = await board();
+    const b = await board();
+    setNodes(a, { api: b.root });
+    append(a, receipt(a), receipt(a, { unitRef: `${b.board}:T-001` }));
+    expect(await prove(a)).toMatchObject({ outcome: "unproven", reason: `mismatched repo: a receipt names ${b.board}, the ref now resolves to ${a.board}` });
+
+    append(b, receipt(b));
+    expect(await proveRef(a.root, "api:T-001")).toMatchObject({ unit: b.unit, outcome: "proven" });
+    setNodes(a, { backend: b.root });
+    expect(await proveRef(a.root, "backend:T-001")).toMatchObject({ unit: b.unit, outcome: "proven" });
+    expect(await proveRef(a.root, `${b.board}:T-001`)).toMatchObject({ unit: b.unit, outcome: "proven" });
+    const c = await board();
+    setNodes(a, { backend: c.root });
+    await expect(proveRef(a.root, "backend:T-001")).resolves.toMatchObject({ unit: c.unit, outcome: "unproven", reason: "no current attempt" });
+    await expect(proveRef(a.root, `${b.board}:T-001`)).rejects.toThrow(/proof_unresolved/);
+    setNodes(a, {});
+    await expect(proveRef(a.root, "backend:T-001")).rejects.toThrow(/proof_unresolved/);
+  }, 30_000);
+
+  it("a node rebind during proof recomputes (A4)", async () => {
+    const a = await board();
+    const b = await board();
+    const c = await board();
+    setNodes(a, { api: b.root });
+    append(a, receipt(a));
+    let n = 0;
+    proofSeams.beforeRevalidate = async () => { n += 1; if (n === 1) setNodes(a, { api: c.root }); };
+    expect(await prove(a)).toMatchObject({ outcome: "proven", recomputed: true });
+  }, 30_000);
+
+  it("a projection that moves during proof recomputes (A4, the projection digest)", async () => {
+    const a = await board();
+    append(a, receipt(a));
+    let digest = "v1";
+    const moving: UnitProjection = (unit) => ({ children: [unit], missing: [], digest });
+    proofSeams.beforeRevalidate = async () => { if (digest === "v1") digest = "v2"; };
+    expect(await proveRef(a.root, "T-001", { projection: moving })).toMatchObject({ outcome: "proven", recomputed: true });
+  });
+
+  it("an edit inside a submodule at its expected commit is unproven (6.2)", async () => {
+    const sub = await board();
+    const a = await board();
+    git(a.root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.root, "sub");
+    git(a.root, "commit", "-q", "-m", "add a submodule");
+    append(a, receipt(a));
+    expect((await prove(a)).outcome).toBe("proven");
+    mkdirSync(join(a.root, "sub", "extra"), { recursive: true });
+    writeFileSync(join(a.root, "sub", "extra", "new.txt"), "untracked inside the submodule\n");
+    expect(await prove(a)).toMatchObject({ outcome: "unproven", reason: "worktree dirty" });
+  }, 30_000);
+
+  it("a mixed code plus ledger commit naming the item is attributed, so the ancestry rule applies", async () => {
+    const a = await board({ code: false });
+    const before = a.ledgerSha;
+    writeFileSync(join(a.root, "code.txt"), "mixed\n");
+    writeFileSync(join(a.root, ".story", "mixed.txt"), "ledger half\n");
+    git(a.root, "add", "-A");
+    git(a.root, "commit", "-q", "-m", "T-001 code and ledger together");
+    const mixed = headSha(a.root);
+    git(a.root, "update-ref", "refs/remotes/origin/main", "HEAD");
+    append(a, receipt(a, { sha: before }));
+    expect(await prove(a)).toMatchObject({ outcome: "unproven", reason: "rule 5: its sha lacks the code" });
+    const b2 = { ...a, codeSha: mixed };
+    writeRec(a, { ...readRec(a), receipts: [] });
+    append(a, receipt(b2));
+    expect(await prove(a)).toMatchObject({ outcome: "proven" });
   });
 });

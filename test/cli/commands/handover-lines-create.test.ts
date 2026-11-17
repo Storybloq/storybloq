@@ -17,7 +17,7 @@ import * as memoModule from "../../../src/core/handover-line-memo.js";
 // is the real fs.
 const failRenameTo: { path: string | null; hits: number } = { path: null, hits: 0 };
 vi.mock("node:fs", async (importOriginal) => {
-  const m = await importOriginal<typeof import("node:fs")>();
+  const m = await importOriginal<typeof import("node:fs") & { default: typeof import("node:fs") }>();
   const renameSync = (from: import("node:fs").PathLike, to: import("node:fs").PathLike): void => {
     if (failRenameTo.path !== null && String(to) === failRenameTo.path) {
       failRenameTo.hits++;

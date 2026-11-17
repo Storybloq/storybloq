@@ -22,7 +22,7 @@ import { registerAllTools } from "../../src/mcp/tools.js";
 import { SID, assistantRecord, userRecord, writeTranscript } from "../core/session-intel-fixtures.js";
 
 const CEILING = 0.925 * 450_000;
-/** Inside the imperative band (60,000 tokens of headroom to 98% of the ceiling, T-533), clear of the 25,000-token re-arm cap. */
+/** Inside the imperative band, below the compact line (98% of the ceiling, T-533). */
 const IMPERATIVE_TOKENS = Math.ceil(0.9 * CEILING) + 5_000;
 
 interface RegisteredTool {
@@ -91,7 +91,7 @@ function startSession(f: Fx, start: number): { lines: string[]; path: string } {
   return { lines, path: writeTranscript(f.projects, encoded(f.root), SID, lines) };
 }
 
-/** One prompt at `now`, the context grown by `grow` tokens (below the re-arm step). */
+/** One prompt at `now`, the context grown by `grow` tokens. */
 function prompt(f: Fx, s: { lines: string[]; path: string }, now: number, i: number, grow: number) {
   s.lines.push(userRecord({ ts: new Date(now - 2_000).toISOString(), text: `prompt ${i}` }));
   s.lines.push(assistantRecord({ ts: new Date(now - 1_000).toISOString(), read: IMPERATIVE_TOKENS - 2 + grow }));
@@ -117,7 +117,7 @@ describe("ISS-1263: the handover flood replay", () => {
         vi.setSystemTime(now);
         const r = prompt(fx, s, now, i, i * 1_000);
         if (r.status === "emitted") {
-          expect(r.output).toMatch(/Context pressure IMPERATIVE/);
+          expect(r.output).toMatch(/Write a handover now/);
           emitted.push(i);
         }
         serverCannotResolveEra();
@@ -126,7 +126,7 @@ describe("ISS-1263: the handover flood replay", () => {
         expect(reply.isError, reply.content[0]?.text).toBeUndefined();
         const text = reply.content[0]!.text;
         expect(text).toMatch(/Created handover: /);
-        expect(text, `reply ${i}`).toMatch(/Handover recorded at [^\n]+\. The pressure line will not repeat for 10 minutes\./);
+        expect(text, `reply ${i}`).toMatch(/Handover recorded: it covers this compaction and the notice will not ask again before it\. Written on the context-pressure notice/);
         expect(text).not.toMatch(/next imperative is expected/);
         expect(text).not.toMatch(/restart/i);
         const after = intelOf(fx.root);
@@ -141,7 +141,7 @@ describe("ISS-1263: the handover flood replay", () => {
     expect(stamps, "one unbound-era stamp per handover_create").toBe(6);
   });
 
-  it("with no stamp ever landing, the rate limit alone keeps the imperative to at most one line per 10 minutes", () => {
+  it("ISS-1428: with no stamp ever landing, the notice is delivered once in the era, never again on time or growth", () => {
     const start = Date.now();
     const s = startSession(fx, start);
     const emittedAt: number[] = [];
@@ -149,10 +149,10 @@ describe("ISS-1263: the handover flood replay", () => {
       const now = start + i * NINE_MIN;
       const r = prompt(fx, s, now, i, i * 1_000);
       if (r.status === "emitted") emittedAt.push(now);
-      else expect(r.reason, `prompt ${i}`).toMatch(/rate-limited/);
+      else expect(r.reason, `prompt ${i}`).toMatch(/no notice due/);
     }
-    expect(emittedAt.length).toBe(3);
-    for (let k = 1; k < emittedAt.length; k++) expect(emittedAt[k]! - emittedAt[k - 1]!).toBeGreaterThanOrEqual(600_000);
+    expect(emittedAt).toEqual([start]);
     expect(intelOf(fx.root).handoverWrittenAt).toBeNull();
   });
+
 });

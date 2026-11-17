@@ -155,8 +155,13 @@ export interface TokenPressureSample {
   readonly jumpAllowanceBasis: string;
   readonly state: TokenPressureState;
   readonly rawState: TokenPressureState;
-  /** ISS-1263: "rate-limit" when the imperative line was delivered inside the re-arm interval. */
-  readonly suppressedBy: "handover" | "rate-limit" | null;
+  /**
+   * Why the state is held below the raw band: "handover" when a stamp covers
+   * this compaction, "rule" when this session's record carries a handover
+   * rule (ISS-1428). "rate-limit" is no longer produced; it stays decodable
+   * on records written by older versions.
+   */
+  readonly suppressedBy: "handover" | "rule" | "rate-limit" | null;
   readonly imperativeSince: string | null;
   readonly reason: string | null;
   /** T-501: the advisory's inputs, kept so the record can store them and the decision can be recomputed under the current config. */

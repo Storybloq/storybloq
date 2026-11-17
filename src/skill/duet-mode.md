@@ -50,7 +50,7 @@ A Claude Code session does not resume itself across a turn boundary: a turn that
 - **Worker, 30 minutes.** Never end a turn with an intention. A turn ends with the deliverable, a question for the manager, or the literal words "turn ending, continue needed" plus the current scope, so the manager's continue lands on a known state. Any stop longer than 30 minutes owes a message even when its whole content is "blocked on X" or "context exhausted". A dirty shared tree with no message is a duet failure, not a pause.
 - **Manager, 60 minutes and every dispatch.** The manager arms the harness's idle notification (`notify_when_idle: true` on Claude Code cross-session messaging) on every dispatch and on every reply while work is open, so the worker's next idle transition wakes the manager. On that notice, if the expected package or question has not arrived, the manager sends a continue. An idle notice is not a report. Sixty silent minutes while the manager is active is a status demand, as above.
 
-Cadence ruling: handover before auto-compaction, after a major item completes, and after a batch of issues or one big issue resolves; the pushed line is advice, not one handover per message; never stop at a percentage; one continue after a handover is allowed; no status demands to a worker above 90 percent.
+Handover cadence and the context notice: SKILL.md, Context pressure.
 
 Every dispatch prompt states the worker obligation verbatim.
 

@@ -75,7 +75,8 @@ import {
   compactSample,
   consumeUsageAdvisory,
   stampHandover,
-  claimImperativeEmission,
+  claimNotice,
+  noticeSeenOf,
 } from "../../src/core/session-intel/presence-bridge.js";
 import { resolveSessionIntelConfig } from "../../src/core/session-intel/config.js";
 import { computeSample } from "../../src/core/session-intel/sampler.js";
@@ -875,17 +876,19 @@ describe("consumeUsageAdvisory", () => {
 describe("ISS-1263: the unbound-era stamp and the emission record", () => {
   it("stampHandover in unbound-era mode lands on a live record whose era is null or differs, writes the same fields as a bound stamp and records the binding", () => {
     withRoot((root) => {
-      seed(root, { era: "1:2", lastBoundaryAt: at(1), promptsSinceHandover: 4, lastImperativeAt: at(2), lastImperativeEmittedAt: at(2) });
+      seed(root, { era: "1:2", lastBoundaryAt: at(1), lastImperativeEmittedAt: at(2), owed: { boundaryAt: at(1), eraStartAt: null }, policyGen: 5 });
       expect(stampHandover(root, SID, null, 123, T0, undefined, "unbound-era").status).toBe("written");
       expect(intelOf(root)).toMatchObject({
         handoverWrittenAt: new Date(T0).toISOString(),
         tokensAtHandover: 123,
         handoverBoundaryAt: at(1),
-        promptsSinceHandover: 0,
-        lastImperativeAt: null,
         handoverStampBinding: "unbound-era",
-        // A stamp never resets the rate limit: the two are independent.
+        // ISS-1428: a stamp keeps the band mark (the notice was delivered),
+        // settles what the previous era owed, and advances the generation.
         lastImperativeEmittedAt: at(2),
+        owed: null,
+        policyGen: 6,
+        handoverFile: null,
       });
       seed(root, { era: null });
       expect(stampHandover(root, SID, null, 5, T0 + 1000, undefined, "unbound-era").status).toBe("written");
@@ -931,85 +934,123 @@ describe("ISS-1263: the unbound-era stamp and the emission record", () => {
     });
   });
 
-  describe("claimImperativeEmission: the one right to deliver the imperative line", () => {
-    const INTERVAL = 600_000;
-    const seenOf = (root: string) => { const i = intelOf(root); return { revision: i.revision, lastBoundaryAt: i.lastBoundaryAt, handoverWrittenAt: i.handoverWrittenAt, sampledAt: i.lastSample?.sampledAt ?? null }; };
+  describe("ISS-1428 claimNotice: the one right to deliver a notice", () => {
+    /** Default cfg on 417,737: imperative from 375,963, compact-needed from 409,383. */
+    const IMP = 417_737 - 40_000;
+    const LOW = 120_000;
+    /** A record at era 1:2 whose last sample is `tokens`, persisted the real way. */
+    const seedAt = (root: string, tokens: number, over: Partial<SessionIntelPresence> = {}) => {
+      seed(root, { era: "1:2", ...over });
+      const path = writeTranscript(join(root, "projects"), "p", SID, [assistantRecord({ ts: at(0), read: tokens - 2 })]);
+      const s = compactSample(sampleFor(path, "1:2", intelOf(root).revision, intelOf(root)));
+      applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, lastSample: s } }));
+      return s;
+    };
 
-    it("the first claim writes now; a second inside the interval refuses and writes nothing; at the interval it claims again", () => {
+    it("a granted ask sets the imperative mark and noticeTokens and advances policyGen; the same claim again is refused", () => {
       withRoot((root) => {
-        seed(root, { era: "1:2" });
-        expect(claimImperativeEmission(root, SID, seenOf(root), T0, INTERVAL)).toBe(true);
+        seedAt(root, IMP);
+        const seen = noticeSeenOf(intelOf(root));
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0, cfg)).toBe(true);
+        expect(intelOf(root)).toMatchObject({ lastImperativeEmittedAt: new Date(T0).toISOString(), compactNeededEmittedAt: null, noticeTokens: IMP, policyGen: seen.policyGen + 1 });
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0 + 1, cfg)).toBe(false);
+        expect(claimNotice(root, SID, noticeSeenOf(intelOf(root)), "ask", "ask", T0 + 2, cfg)).toBe(false);
         expect(intelOf(root).lastImperativeEmittedAt).toBe(new Date(T0).toISOString());
-        expect(claimImperativeEmission(root, SID, seenOf(root), T0 + INTERVAL - 1, INTERVAL)).toBe(false);
-        expect(intelOf(root).lastImperativeEmittedAt).toBe(new Date(T0).toISOString());
-        expect(claimImperativeEmission(root, SID, seenOf(root), T0 + INTERVAL, INTERVAL)).toBe(true);
-        expect(intelOf(root).lastImperativeEmittedAt).toBe(new Date(T0 + INTERVAL).toISOString());
       });
     });
 
     it("refuses with nothing created for no record and no subtree, and refuses an ended record", () => {
       withRoot((root) => {
-        const none = { revision: 0, lastBoundaryAt: null, handoverWrittenAt: null, sampledAt: null };
-        expect(claimImperativeEmission(root, SID, none, T0, INTERVAL)).toBe(false);
+        const none = { revision: 0, lastBoundaryAt: null, handoverWrittenAt: null, policyGen: 0 };
+        expect(claimNotice(root, SID, none, "ask", "ask", T0, cfg)).toBe(false);
         expect(readPresenceRecord(root, SID)).toBeNull();
         applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b }));
-        expect(claimImperativeEmission(root, SID, none, T0, INTERVAL)).toBe(false);
+        expect(claimNotice(root, SID, none, "ask", "ask", T0, cfg)).toBe(false);
         expect(readPresenceRecord(root, SID)?.sessionIntel ?? null).toBeNull();
-        seed(root, { era: "1:2" });
+        seedAt(root, IMP);
         applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, endedAt: at(0) }));
-        expect(claimImperativeEmission(root, SID, seenOf(root), T0, INTERVAL)).toBe(false);
+        expect(claimNotice(root, SID, noticeSeenOf(intelOf(root)), "ask", "ask", T0, cfg)).toBe(false);
         expect(intelOf(root).lastImperativeEmittedAt).toBeNull();
       });
     });
 
-    it("acquisition, then a handover stamp, then the claim: refused, nothing written", () => {
+    it("T6b: a stamp, a revision bump, or a policyGen bump between decision and claim refuses, nothing written", () => {
+      for (const change of ["stamp", "revision", "policyGen"] as const) {
+        withRoot((root) => {
+          seedAt(root, IMP);
+          const seen = noticeSeenOf(intelOf(root));
+          if (change === "stamp") expect(stampHandover(root, SID, "1:2", 1, T0).status).toBe("written");
+          else applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, [change]: b.sessionIntel![change] + 1 } }));
+          expect(claimNotice(root, SID, seen, "ask", "ask", T0 + 1, cfg), change).toBe(false);
+          expect(intelOf(root).lastImperativeEmittedAt, change).toBeNull();
+        });
+      }
+    });
+
+    it("T6b: a record rule written between decision and claim refuses the stale ask", () => {
       withRoot((root) => {
-        seed(root, { era: "1:2" });
-        const seen = seenOf(root);
-        expect(stampHandover(root, SID, "1:2", 1, T0).status).toBe("written");
-        expect(claimImperativeEmission(root, SID, seen, T0 + 1, INTERVAL)).toBe(false);
+        seedAt(root, IMP);
+        const seen = noticeSeenOf(intelOf(root));
+        // The rule is written the way commit 2's command will: with a generation step.
+        applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, rule: { handovers: "elsewhere", where: null, setAt: at(0) }, policyGen: b.sessionIntel!.policyGen + 1 } }));
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0, cfg)).toBe(false);
+        // Even with the generation unchanged, the locked re-decision says rule, not ask.
+        applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, policyGen: seen.policyGen } }));
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0, cfg)).toBe(false);
         expect(intelOf(root).lastImperativeEmittedAt).toBeNull();
       });
     });
 
-    it("acquisition, then a boundary reset, then the claim: refused, and the new epoch's first imperative still claims", () => {
+    it("acquisition, then a boundary reset, then the claim: refused, and the new era claims once its own sample decides", () => {
       withRoot((root) => {
-        seed(root, { era: "1:2", lastBoundaryAt: at(0) });
-        const seen = seenOf(root);
+        seedAt(root, IMP, { lastBoundaryAt: at(0) });
+        const seen = noticeSeenOf(intelOf(root));
         applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: applyBoundaryReset(b.sessionIntel!, at(1)) }));
-        expect(claimImperativeEmission(root, SID, seen, T0 + 1, INTERVAL)).toBe(false);
-        expect(intelOf(root).lastImperativeEmittedAt).toBeNull();
-        expect(claimImperativeEmission(root, SID, seenOf(root), T0 + 2, INTERVAL)).toBe(true);
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0 + 1, cfg)).toBe(false);
+        expect(intelOf(root)).toMatchObject({ lastImperativeEmittedAt: null, lastSample: null, owed: { boundaryAt: at(1) } });
+        // No sample: nothing to decide on.
+        expect(claimNotice(root, SID, noticeSeenOf(intelOf(root)), "catch-up", "catch-up", T0 + 2, cfg)).toBe(false);
       });
     });
 
-    it("a revision bump between acquisition and claim refuses", () => {
+    it("T6c: the locked sample decides; a lower sample landing after the decision refuses the ask with no generation change", () => {
       withRoot((root) => {
-        seed(root, { era: "1:2", revision: 3 });
-        const seen = seenOf(root);
-        applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, revision: 4 } }));
-        expect(claimImperativeEmission(root, SID, seen, T0, INTERVAL)).toBe(false);
+        seedAt(root, IMP);
+        const seen = noticeSeenOf(intelOf(root));
+        const low = compactSample(sampleFor(writeTranscript(join(root, "projects"), "q", SID, [assistantRecord({ ts: at(0), read: LOW })]), "1:2", intelOf(root).revision, intelOf(root)));
+        applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({ ...b, sessionIntel: { ...b.sessionIntel!, lastSample: low } }));
+        expect(noticeSeenOf(intelOf(root))).toEqual(seen);
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0, cfg)).toBe(false);
+        expect(intelOf(root).lastImperativeEmittedAt).toBeNull();
+      });
+    });
+
+    it("finalAllowed: an action the candidate does not allow is refused (settle on an ask)", () => {
+      withRoot((root) => {
+        seedAt(root, IMP);
+        expect(claimNotice(root, SID, noticeSeenOf(intelOf(root)), "ask", "settle", T0, cfg)).toBe(false);
+        expect(claimNotice(root, SID, noticeSeenOf(intelOf(root)), "ask", "uncovered", T0, cfg)).toBe(false);
         expect(intelOf(root).lastImperativeEmittedAt).toBeNull();
       });
     });
 
     it("a pending compaction, or a pending listing that cannot rule one out, refuses", () => {
       withRoot((root) => {
-        seed(root, { era: "1:2" });
-        const seen = seenOf(root);
+        seedAt(root, IMP);
+        const seen = noticeSeenOf(intelOf(root));
         markCompactPending(root, SID, { eventId: "p1", era: "1:2", at: at(0) });
-        expect(claimImperativeEmission(root, SID, seen, T0, INTERVAL)).toBe(false);
+        expect(claimNotice(root, SID, seen, "ask", "ask", T0, cfg)).toBe(false);
         expect(intelOf(root).lastImperativeEmittedAt).toBeNull();
       });
       withRoot((root) => {
-        seed(root, { era: "1:2" });
-        const seen = seenOf(root);
+        seedAt(root, IMP);
+        const seen = noticeSeenOf(intelOf(root));
         const dir = join(root, ".story", "telemetry", "session-intel-pending", presenceFileBase(SID));
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, "x.json"), "{}");
         chmodSync(dir, 0o000);
         try {
-          expect(claimImperativeEmission(root, SID, seen, T0, INTERVAL)).toBe(false);
+          expect(claimNotice(root, SID, seen, "ask", "ask", T0, cfg)).toBe(false);
         } finally {
           chmodSync(dir, 0o755);
         }
@@ -1017,7 +1058,7 @@ describe("ISS-1263: the unbound-era stamp and the emission record", () => {
       });
     });
 
-    it("persistSample never writes the emission record, whoever sampled", () => {
+    it("persistSample never writes a notice mark, whoever sampled", () => {
       withRoot((root) => {
         seed(root, { era: "1:2" });
         const tokens = 417_737 - 40_000; // past 0.9 x the ceiling and within 50,000 of it

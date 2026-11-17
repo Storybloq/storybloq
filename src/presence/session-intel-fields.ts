@@ -97,7 +97,13 @@ export interface SessionIntelSample {
   readonly ceilingConfidence: CeilingConfidence | null;
   readonly observation: SessionIntelObservation;
   readonly imperativeSince: string | null;
-  readonly suppressedBy: "handover" | "rate-limit" | null;
+  /**
+   * ISS-1428: "handover" when a covering handover holds an imperative at
+   * advisory, "rule" when the session's own handover rule does. "rate-limit"
+   * is no longer produced and is still decoded, so an older stored sample
+   * keeps parsing.
+   */
+  readonly suppressedBy: "handover" | "rule" | "rate-limit" | null;
   /** T-501: null on an older record, or when a malformed value was refused. */
   readonly usageInput: SessionIntelUsageInput | null;
 }
@@ -122,15 +128,10 @@ export interface SessionIntelPresence {
   readonly handoverWrittenAt: string | null;
   readonly tokensAtHandover: number | null;
   readonly handoverBoundaryAt: string | null;
-  /**
-   * ISS-1197: prompts seen since the handover was stamped, and when the
-   * imperative last fired. Two of the three re-arm gates read these; a record
-   * written before they existed reads 0 and null, which is the behaviour it
-   * already had. Never shed: shedding either would re-arm the imperative
-   * early, which is the bug they exist to close.
-   */
-  readonly promptsSinceHandover: number;
-  readonly lastImperativeAt: string | null;
+  // ISS-1428: `promptsSinceHandover` and `lastImperativeAt` (the ISS-1197
+  // re-arm counters) are no longer kept. They are dropped on read and never
+  // written; storybloq 1.16.0 reads their absence as 0 and null, the values
+  // it would otherwise have been given.
   /**
    * ISS-1263: how the handover stamp was bound. "unbound-era" is a stamp the
    * MCP server wrote without proving its process era (unknown, or unverifiable
@@ -156,7 +157,52 @@ export interface SessionIntelPresence {
    * advisory again on the next priming call.
    */
   readonly usageAdvisoryShownAt: string | null;
+  /**
+   * ISS-1428: the compact-needed band's notice was delivered in this era.
+   * `lastImperativeEmittedAt` is the imperative band's mark. Both are cleared
+   * by a compaction reset and by the heal (a fall in tokens).
+   */
+  readonly compactNeededEmittedAt: string | null;
+  /** ISS-1428: context tokens of the sample the latest notice was claimed on; the heal compares against it. */
+  readonly noticeTokens: number | null;
+  /** ISS-1428: the handover file name the stamp was made for; null for an older stamp or none. */
+  readonly handoverFile: string | null;
+  /** ISS-1428: the text given to `session alert --covered-by`; null when the stamp is a handover or there is none. */
+  readonly coveredBy: string | null;
+  /**
+   * ISS-1428: the era that ended at `boundaryAt` reached the imperative line
+   * with no stamp. The catch-up notice is owed until a stamp lands, a rule
+   * settles it, the catch-up is claimed, or the next reset decides again.
+   */
+  readonly owed: SessionIntelOwed | null;
+  /** ISS-1428: this session's handovers live elsewhere; set by `session alert --handovers elsewhere`. */
+  readonly rule: SessionIntelRule | null;
+  /**
+   * ISS-1428: advanced by every write that can change a notice decision (a
+   * claim, a stamp, a heal, a reset, a rule write). A notice claim must see the
+   * generation it decided on.
+   */
+  readonly policyGen: number;
 }
+
+export interface SessionIntelOwed {
+  readonly boundaryAt: string;
+  readonly eraStartAt: string | null;
+}
+
+export interface SessionIntelRule {
+  readonly handovers: "elsewhere";
+  readonly where: string | null;
+  readonly setAt: string;
+}
+
+/** ISS-1428: a handover file name the stamp may record: a bare `.md` name, never a path. */
+export const MAX_HANDOVER_FILE_BYTES = 128;
+const HANDOVER_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
+/** ISS-1428: `session alert --covered-by` text, one line. */
+export const MAX_COVERED_BY_BYTES = 300;
+/** ISS-1428: `session alert --where` text, one line. */
+export const MAX_RULE_WHERE_BYTES = 200;
 
 const CAPTURE_KINDS: ReadonlySet<string> = new Set(["startup", "late", "absent"]);
 const WINDOW_SOURCES: ReadonlySet<string> = new Set(["local", "project", "user"]);
@@ -184,11 +230,16 @@ export function emptySessionIntel(): SessionIntelPresence {
     handoverWrittenAt: null,
     tokensAtHandover: null,
     handoverBoundaryAt: null,
-    promptsSinceHandover: 0,
-    lastImperativeAt: null,
     handoverStampBinding: null,
     lastImperativeEmittedAt: null,
     usageAdvisoryShownAt: null,
+    compactNeededEmittedAt: null,
+    noticeTokens: null,
+    handoverFile: null,
+    coveredBy: null,
+    owed: null,
+    rule: null,
+    policyGen: 0,
   };
 }
 
@@ -223,11 +274,16 @@ export function parseSessionIntel(value: unknown): SessionIntelPresence | null {
     handoverWrittenAt: isoOrNull(v.handoverWrittenAt),
     tokensAtHandover: nonNegativeIntOrNull(v.tokensAtHandover),
     handoverBoundaryAt: isoOrNull(v.handoverBoundaryAt),
-    promptsSinceHandover: safeInt(v.promptsSinceHandover, 0),
-    lastImperativeAt: isoOrNull(v.lastImperativeAt),
     handoverStampBinding: v.handoverStampBinding === "bound" || v.handoverStampBinding === "unbound-era" || v.handoverStampBinding === "derived" ? v.handoverStampBinding : null,
     lastImperativeEmittedAt: isoOrNull(v.lastImperativeEmittedAt),
     usageAdvisoryShownAt: isoOrNull(v.usageAdvisoryShownAt),
+    compactNeededEmittedAt: isoOrNull(v.compactNeededEmittedAt),
+    noticeTokens: nonNegativeIntOrNull(v.noticeTokens),
+    handoverFile: handoverFileOrNull(v.handoverFile),
+    coveredBy: oneLineOrNull(v.coveredBy, MAX_COVERED_BY_BYTES),
+    owed: parseOwed(v.owed),
+    rule: parseRule(v.rule),
+    policyGen: safeInt(v.policyGen, 0),
   };
   return fitSessionIntel(parsed);
 }
@@ -238,14 +294,23 @@ export function sessionIntelBytes(intel: SessionIntelPresence): number {
 }
 
 /**
- * The subtree's own shedding ladder: the sample is derived state the next
- * scan rebuilds; the transcript path is a locate HINT with two fallbacks.
- * Capture, epoch, revision, boundary, baseline and handover fields are never
- * shed -- losing any of them changes a verdict, not a display.
+ * The subtree's own shedding ladder. First the display text (ISS-1428): the
+ * handover file name, the `--covered-by` text and the rule's `where` are read
+ * by no decision, and every text that names them has a true fallback. Then
+ * the transcript path, a locate HINT with two fallbacks; then, last, the
+ * sample, which the notice is decided on (no legal input reaches this step:
+ * pinned in test). Capture, epoch, revision, boundary,
+ * baseline, handover, notice and rule fields are never shed -- losing any of
+ * them changes a verdict, not a display.
  */
+export function shedDisplayText(i: SessionIntelPresence): SessionIntelPresence {
+  return { ...i, handoverFile: null, coveredBy: null, rule: i.rule === null ? null : { ...i.rule, where: null } };
+}
+
 export const SESSION_INTEL_SHED_STEPS: ReadonlyArray<(i: SessionIntelPresence) => SessionIntelPresence> = [
-  (i) => ({ ...i, lastSample: null }),
+  shedDisplayText,
   (i) => ({ ...i, transcriptPath: null }),
+  (i) => ({ ...i, lastSample: null }),
 ];
 
 /**
@@ -364,11 +429,47 @@ function parseSample(value: unknown): SessionIntelSample | null {
     ceilingConfidence: typeof v.ceilingConfidence === "string" && CONFIDENCES.has(v.ceilingConfidence) ? (v.ceilingConfidence as CeilingConfidence) : null,
     observation,
     imperativeSince: isoOrNull(v.imperativeSince),
-    suppressedBy: v.suppressedBy === "handover" || v.suppressedBy === "rate-limit" ? v.suppressedBy : null,
+    suppressedBy: v.suppressedBy === "handover" || v.suppressedBy === "rule" || v.suppressedBy === "rate-limit" ? v.suppressedBy : null,
     // A malformed input is refused on its own; it must never cost the record
     // the sample around it (the same rule the sample gets inside the subtree).
     usageInput: parseUsageInput(v.usageInput),
   };
+}
+
+export function handoverFileOrNull(value: unknown): string | null {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf-8") > MAX_HANDOVER_FILE_BYTES) return null;
+  return HANDOVER_FILE.test(value) ? value : null;
+}
+
+/**
+ * One line of user text, refused (never truncated) when over the cap, empty,
+ * or carrying a control character. Refusing control characters also bounds
+ * the JSON escaping of the field to twice its bytes.
+ */
+export function oneLineOrNull(value: unknown, maxBytes: number): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  if (Buffer.byteLength(value, "utf-8") > maxBytes) return null;
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f\u2028\u2029]/.test(value) ? null : value;
+}
+
+function parseOwed(value: unknown): SessionIntelOwed | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const boundaryAt = isoOrNull(v.boundaryAt);
+  if (boundaryAt === null) return null;
+  return { boundaryAt, eraStartAt: isoOrNull(v.eraStartAt) };
+}
+
+function parseRule(value: unknown): SessionIntelRule | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (v.handovers !== "elsewhere") return null;
+  const setAt = isoOrNull(v.setAt);
+  if (setAt === null) return null;
+  const where = v.where === undefined || v.where === null ? null : oneLineOrNull(v.where, MAX_RULE_WHERE_BYTES);
+  if (where === null && v.where !== undefined && v.where !== null) return null;
+  return { handovers: "elsewhere", where, setAt };
 }
 
 function parseUsageInput(value: unknown): SessionIntelUsageInput | null {

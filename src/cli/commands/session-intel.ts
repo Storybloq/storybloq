@@ -12,8 +12,9 @@ import { LIFECYCLE_LOCK_BUDGET_MS } from "../../core/presence-enrichment.js";
 import { isPresenceEnabled } from "../../presence/handler.js";
 import { ensureCapture, type CaptureOutcome, type CaptureSource } from "../../core/session-intel/capture.js";
 import { readSessionIntelConfig } from "../../core/session-intel/config.js";
-import { claimImperativeEmission, findPresenceRecordAcrossWorktrees, newestHandoverAfter, readPresenceRecord, reconcileUnderLock, stampDerivedHandover, type ReconcileOutcome } from "../../core/session-intel/presence-bridge.js";
-import { COMPACT_NEEDED_ADVICE, basisText, renderUsageAdvisory } from "../../core/session-intel/push.js";
+import { claimNotice, findPresenceRecordAcrossWorktrees, noticeSeenOf, readPresenceRecord, reconcileUnderLock, type ReconcileOutcome } from "../../core/session-intel/presence-bridge.js";
+import { decideFromRecord, noticeDetailFor, noticeFactsOf, renderNotice, resolveFinal } from "../../core/session-intel/policy.js";
+import { renderUsageAdvisory } from "../../core/session-intel/push.js";
 import { sampleSession, type SessionIntelResult } from "../../core/session-intel/query.js";
 import { authorizeTranscriptPath, locateTranscript } from "../../core/session-intel/transcript-locate.js";
 import { scanTail } from "../../core/session-intel/transcript-scan.js";
@@ -62,18 +63,16 @@ export function formatSessionIntelMd(r: SessionIntelResult, root: string | null 
     lines.push(`Token pressure: unknown (${r.unusableReason ?? "no pressure available"})`);
   } else {
     const c = p.ceiling;
-    lines.push(`Token pressure: ${p.state.toUpperCase()}${p.suppressedBy === "rate-limit" ? " (imperative rate-limited: shown recently)" : p.suppressedBy ? " (imperative suppressed by a recent handover)" : ""}`);
+    lines.push(`Token pressure: ${p.state.toUpperCase()}${p.suppressedBy === "rule" ? " (held by this session's handover rule)" : p.suppressedBy === "handover" ? " (a handover covers this compaction)" : ""}`);
     lines.push(`- Context in use: ${p.contextTokens?.toLocaleString() ?? "n/a"} tokens (${pctText(p.pct)} of the expected auto-compact point)`);
     lines.push(`- Expected auto-compact at: ${c.ceiling === null ? "unknown" : Math.round(c.ceiling).toLocaleString()} tokens, source ${c.source}${c.confidence ? ` (${c.confidence} confidence)` : ""}`);
     lines.push(`- Basis: ${c.basis}`);
     if (c.conflict) lines.push(`- Conflict: ${c.conflict}`);
     lines.push(`- Headroom: ${p.headroom?.toLocaleString() ?? "n/a"} tokens; jump allowance ${p.jumpAllowance?.toLocaleString() ?? "n/a"} (${p.jumpAllowanceBasis})`);
     if (p.reason) lines.push(`- Why: ${p.reason}`);
-    // ISS-1197 commit 2: compact-needed is checked first, so the diagnostic
-    // surface never prints the handover imperative past the compact line.
-    if (p.state === "compact-needed") lines.push("", COMPACT_NEEDED_ADVICE);
-    else if (p.state === "imperative") lines.push("", "Write a handover now (storybloq handover create / storybloq_handover_create), then keep working in this same turn. The handover makes compaction safe: do not stop, do not defer the next step to a later turn, and do not ask the user whether to continue. Any auto-compaction that follows is expected and safe: the session continues through it, and one handover covers it.");
-    else if (p.state === "advisory") lines.push("", "Plan a handover before the next large step.");
+    // ISS-1428: this is a read the agent asked for, so it reports the numbers
+    // and words no notice; the notice itself is shown once per band per
+    // compaction by the push surfaces.
   }
   // T-501: reported on every call, whatever the pressure state, and never
   // stamped -- this surface is the diagnostic, not the push.
@@ -323,32 +322,13 @@ export interface SessionIntelPromptOutcome {
   readonly output: string | null;
 }
 
-/** The line the model reads on its next turn. Imperative and compact-needed only. */
-export function renderPromptDirective(p: NonNullable<SessionIntelResult["pressure"]>): string {
-  const pct = p.pct === null ? "n/a" : `${Math.round(p.pct * 100)}%`;
-  const conf = p.ceiling.confidence ? `, ${p.ceiling.confidence} confidence` : "";
-  const head = `[storybloq] Context pressure ${p.state.toUpperCase()}: ${pct} of the expected auto-compact point (${p.contextTokens?.toLocaleString() ?? "n/a"} tokens; source ${p.ceiling.source}${conf}).`;
-  // ISS-1197 commit 2: this hook fires on EVERY prompt, so it is the surface
-  // that would nag for handovers forever past the compact line.
-  if (p.state === "compact-needed") return `${head} ${COMPACT_NEEDED_ADVICE}`;
-  return `${head}${basisText(p.reason)} Write a handover now via storybloq_handover_create (or \`storybloq handover create\`), then keep working in this same turn. The handover makes compaction safe: do not stop, do not defer the next step to a later turn, and do not ask the user whether to continue. Any auto-compaction that follows is expected and safe: the session continues through it, and one handover covers it.`;
-}
-
-/**
- * ISS-1316: the one line the prompt hook shows in place of the imperative when
- * it stamps a handover the MCP server could not. After it the record is
- * stamped, so the ordinary re-arm gates keep the hook quiet.
- */
-export function renderStampNotLanded(file: string): string {
-  return `[storybloq] A handover was written (${file}) but its stamp did not land, most likely because the MCP server predates the build on disk: restart the client. Pressure is held at advisory; do not write another handover.`;
-}
-
 /**
  * The synchronous UserPromptSubmit sample: one bounded, lifecycle-bound tail
  * sample for the caller's own session (no glob, 500 ms soft budget), persisted
  * under the ordering rule. Emits `additionalContext` ONLY when the sample is
- * usable and imperative; every other outcome, including every failure, is
- * silent. The prompt text is never read.
+ * usable and a notice is due and claimed (ISS-1428: once per band per
+ * compaction); every other outcome, including every failure, is silent. The
+ * prompt text is never read.
  */
 export function handleSessionIntelPrompt(options: SessionIntelPromptOptions = {}): SessionIntelPromptOutcome {
   const skipped = (reason: string, capture: CaptureOutcome | null = null): SessionIntelPromptOutcome => ({ status: "skipped", reason, capture, result: null, output: null });
@@ -388,41 +368,25 @@ export function handleSessionIntelPrompt(options: SessionIntelPromptOptions = {}
     if (result.binding !== "bound") {
       return { status: "silent", reason: `unbound caller: ${result.bindingReason}`, capture, result, output: null };
     }
-    if (!result.usable || !pressure || (pressure.state !== "imperative" && pressure.state !== "compact-needed")) {
-      const quiet = pressure?.suppressedBy === "rate-limit" ? "state advisory (imperative rate-limited)" : `state ${pressure?.state ?? "unknown"}`;
-      return { status: "silent", reason: result.usable ? quiet : (result.unusableReason ?? "unusable"), capture, result, output: null };
+    if (!result.usable || !pressure) {
+      return { status: "silent", reason: result.usable ? "no pressure" : (result.unusableReason ?? "unusable"), capture, result, output: null };
     }
-    // ISS-1263: the imperative line is delivered at most once per re-arm
-    // interval, claimed under the lock against the record this sample was
-    // persisted into. The record must still hold THIS sample (a newer sample,
-    // reset or handover since means the claim is not ours to take); a refusal
-    // of any kind is silent for this prompt, and the next prompt samples again.
-    if (pressure.state === "imperative") {
-      const intel = readPresenceRecord(root, sessionId)?.sessionIntel ?? null;
-      const ours = intel !== null && intel.lastSample?.sampledAt === pressure.sampledAt && intel.lastSample?.state === "imperative";
-      // ISS-1316: a handover written after this session was last shown the
-      // imperative, with no stamp on the record for this compaction, is a
-      // stamp that did not land: an MCP server older than the build on disk
-      // cannot stamp. Stamp it from the file and say so once, instead of
-      // asking for another handover every re-arm interval.
-      if (ours && intel.lastImperativeEmittedAt !== null && (intel.handoverWrittenAt === null || intel.handoverBoundaryAt !== intel.lastBoundaryAt)) {
-        const emittedMs = Date.parse(intel.lastImperativeEmittedAt);
-        const boundaryMs = intel.lastBoundaryAt === null ? -Infinity : Date.parse(intel.lastBoundaryAt);
-        const found = Number.isFinite(emittedMs) ? newestHandoverAfter(root, Math.max(emittedMs, boundaryMs), now) : null;
-        if (found) {
-          const seen = { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt, lastImperativeEmittedAt: intel.lastImperativeEmittedAt };
-          if (!stampDerivedHandover(root, sessionId, seen, found.mtimeMs, now)) {
-            return { status: "silent", reason: "derived handover stamp not written", capture, result, output: null };
-          }
-          const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderStampNotLanded(found.file) } });
-          return { status: "emitted", reason: "derived handover stamp", capture, result, output };
-        }
-      }
-      if (!ours || !claimImperativeEmission(root, sessionId, { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt }, now, cfg.handoverRearmIntervalMs)) {
-        return { status: "silent", reason: "imperative not claimed (rate-limited or superseded)", capture, result, output: null };
-      }
+    // ISS-1428: the notice is decided from the record this sample was
+    // persisted into, and claimed under the lock against it. The record must
+    // still hold THIS sample (a newer sample, reset or stamp since means the
+    // decision is not ours to act on); a refusal of any kind is silent.
+    const intel = readPresenceRecord(root, sessionId)?.sessionIntel ?? null;
+    const ours = intel !== null && intel.lastSample !== null && intel.lastSample.sampledAt === pressure.sampledAt;
+    if (!ours) return { status: "silent", reason: "the record no longer holds this sample", capture, result, output: null };
+    const facts = noticeFactsOf(intel.lastSample!);
+    const candidate = decideFromRecord(intel, cfg);
+    const final = resolveFinal(candidate, null);
+    if (final === null || facts === null) return { status: "silent", reason: `state ${pressure.state}, no notice due`, capture, result, output: null };
+    if (!claimNotice(root, sessionId, noticeSeenOf(intel), candidate, final, now, cfg)) {
+      return { status: "silent", reason: "notice not claimed (superseded or already delivered)", capture, result, output: null };
     }
-    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderPromptDirective(pressure) } });
+    if (final === "settle") return { status: "silent", reason: "owed catch-up settled by a rule", capture, result, output: null };
+    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderNotice(final, facts, "hook", noticeDetailFor(final, intel, null)) } });
     return { status: "emitted", reason: null, capture, result, output };
   } catch (err) {
     return skipped(err instanceof Error ? err.message : String(err));

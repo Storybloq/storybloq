@@ -148,7 +148,7 @@ PLAN_REVIEW and CODE_REVIEW/BYTE-REVIEW SHOULD use the project's configured back
 
 ## Handover cadence
 
-Cadence ruling: handover before auto-compaction, after a major item completes, and after a batch of issues or one big issue resolves; the pushed line is advice, not one handover per message; never stop at a percentage; one continue after a handover is allowed; no status demands to a worker above 90 percent.
+Handover cadence and the context notice: SKILL.md, Context pressure.
 
 The wave boundary (step 7) is the FLOOR for handovers, not the whole rule. A single item can be a multi-stage, multi-hour, locally-committed-but-unpushed unit of work; if handovers fire only at wave boundaries, a compaction or crash mid-item loses everything since the last boundary. The trigger is reconstruction cost, not the wave:
 

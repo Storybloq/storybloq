@@ -65,14 +65,20 @@ describe("sessionIntel config: hot-path reader", () => {
     }
   });
 
-  it("ISS-1197: the three handover re-arm keys default, are taken as written, and clamp per field", () => {
-    expect(resolveSessionIntelConfig(null)).toMatchObject({ handoverRearmStepCapTokens: 25_000, handoverRearmIntervalMs: 600_000, handoverRearmPrompts: 3 });
-    const taken = resolveSessionIntelConfig({ handoverRearmStepCapTokens: 1_000, handoverRearmIntervalMs: 0, handoverRearmPrompts: 0 });
-    expect(taken).toMatchObject({ handoverRearmStepCapTokens: 1_000, handoverRearmIntervalMs: 0, handoverRearmPrompts: 0 });
-    expect(taken.notes).toEqual([]);
-    const clamped = resolveSessionIntelConfig({ handoverRearmStepCapTokens: 999, handoverRearmIntervalMs: 3_600_001, handoverRearmPrompts: 51 });
-    expect(clamped).toMatchObject({ handoverRearmStepCapTokens: 25_000, handoverRearmIntervalMs: 600_000, handoverRearmPrompts: 3 });
-    expect(clamped.notes).toHaveLength(3);
+  it("ISS-1428: the step cap keeps its default and range; the two retired re-arm keys are named in notes and change nothing", () => {
+    expect(resolveSessionIntelConfig(null)).toMatchObject({ handoverRearmStepCapTokens: 25_000, stepPct: 0.05 });
+    expect(resolveSessionIntelConfig(null).notes).toEqual([]);
+    expect(resolveSessionIntelConfig({ handoverRearmStepCapTokens: 1_000 })).toMatchObject({ handoverRearmStepCapTokens: 1_000, notes: [] });
+    expect(resolveSessionIntelConfig({ handoverRearmStepCapTokens: 999 }).handoverRearmStepCapTokens).toBe(25_000);
+    // A legal value gets the one retirement note; an out-of-range one also
+    // keeps its range note, so the reader still agrees with the schema.
+    const retired = (k: string) => `sessionIntel.${k} is no longer used: the notice is shown once per band per compaction`;
+    expect(resolveSessionIntelConfig({ handoverRearmIntervalMs: 0 }).notes).toEqual([retired("handoverRearmIntervalMs")]);
+    expect(resolveSessionIntelConfig({ handoverRearmPrompts: 3 }).notes).toEqual([retired("handoverRearmPrompts")]);
+    const bad = resolveSessionIntelConfig({ handoverRearmIntervalMs: 3_600_001, handoverRearmPrompts: 51 }).notes;
+    expect(bad).toContain(retired("handoverRearmIntervalMs"));
+    expect(bad).toContain(retired("handoverRearmPrompts"));
+    expect(bad).toHaveLength(4);
   });
 
   it("T-533, r-awey8xrtwqf1r005: the imperative defaults to 0.9 with 50000 tokens of headroom, and compact-needed to 0.98", () => {

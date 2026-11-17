@@ -23,7 +23,6 @@ import type { LedgerIntegrityResult } from "./ledger-integrity.js";
 import type { NextTicketOutcome, NextTicketsOutcome, WaitingInventory, WaitingItem } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
 import { isHandoverWindowIncomplete } from "./recommend.js";
-import { describeRepeatInterval } from "./session-intel/sampler.js";
 import type { HandoverBriefResult, HandoverBriefEntry } from "./handover-brief.js";
 import type { CreateLineageResult, LineageWarning, LinesRow, LinesView } from "./handover-lineage.js";
 import type { ContinueResult } from "./handover-line-memo.js";
@@ -2916,18 +2915,32 @@ export function formatHandoverBrief(
   return sections.join("\n\n");
 }
 
-/** T-499: the continuation line after a handover that was stamped on the caller's presence record. */
-export const HANDOVER_STAMPED_CONTINUE_LINE =
-  "Handover recorded against your current compaction boundary: context pressure is held at advisory. Keep working in this same turn; do not stop, defer the next step, or ask the user whether to continue.";
-
 /**
- * ISS-1197 commit 2: the same stamp, at compact-needed. The line above is a
- * false claim here -- the stamp lands, but nothing is suppressed past the
- * compact line, and it would print directly under a COMPACT-NEEDED banner
- * telling the caller the opposite.
+ * ISS-1428: what the stamp achieved, read under its own lock from the record
+ * it was written into. `covers` is `eraCovered` on that record; `asked` says a
+ * band notice was delivered in this era before the stamp landed.
  */
-export const HANDOVER_STAMPED_COMPACT_NEEDED_LINE =
-  "Handover recorded, but context is past the compact line, so this does not lower the pressure. Auto-compaction will follow and is expected: keep working through it, and write no further handovers.";
+export interface HandoverStampReply {
+  readonly covers: boolean;
+  readonly asked: boolean;
+  readonly pastCompact: boolean;
+  readonly tokens: number | null;
+  readonly point: number | null;
+}
+
+const enUS = (v: number) => Math.round(v).toLocaleString("en-US");
+
+/** ISS-1428 section 8: the stamp sentence of the handover reply. */
+export function formatHandoverStampedLine(r: HandoverStampReply | null): string {
+  const known = r !== null && r.tokens !== null && r.point !== null;
+  const writtenOn = known && r.asked
+    ? ` Written on the context-pressure notice (${enUS(r.tokens!)} of about ${enUS(r.point!)} tokens in use, ${Math.round((r.tokens! / r.point!) * 100)}%).`
+    : "";
+  if (r !== null && r.covers && r.pastCompact) return `Handover recorded.${writtenOn} Auto-compaction is close and expected: keep working through it.`;
+  if (r !== null && r.covers) return `Handover recorded: it covers this compaction and the notice will not ask again before it.${writtenOn} Keep working in this same turn; do not stop, defer the next step, or ask the user whether to continue.`;
+  if (known) return `Handover recorded. It was written well before the compaction point (${enUS(r.tokens!)} of about ${enUS(r.point!)} tokens in use), so the notice may still ask for one nearer to it. Keep working in this same turn.`;
+  return "Handover recorded. The context size was not known when it was written, so the notice may still ask for one near the compaction point. Keep working in this same turn.";
+}
 
 /**
  * ISS-1263: a binding failure on a server that is ALSO stale. The staleness
@@ -2968,15 +2981,10 @@ export interface HandoverStampFailure {
  * a causal claim, and a false one sends a reader to restart a client that was
  * never the problem.
  */
-/** ISS-1263: the line quoting the re-arm interval; zero means there is none. */
-const NO_REPEAT_INTERVAL = "The pressure line has no minimum repeat interval (handoverRearmIntervalMs is 0).";
-
-export function formatHandoverStampFailure(failure: HandoverStampFailure, serverStale = false, rearmIntervalMs = 600_000): string {
-  // ISS-1263: the reply never promises another imperative. The line is rate
-  // limited at delivery whether or not a stamp lands, and the old promise is
-  // what sent a worker into a handover every turn.
-  const interval = rearmIntervalMs > 0 ? `The pressure line repeats at most once every ${describeRepeatInterval(rearmIntervalMs)}.` : NO_REPEAT_INTERVAL;
-  const base = `Handover stamp did not land (${failure.reason}). ${interval}`;
+export function formatHandoverStampFailure(failure: HandoverStampFailure, serverStale = false): string {
+  // ISS-1428: the reply never promises another notice. Each band's notice is
+  // shown once per compaction whether or not a stamp lands.
+  const base = `Handover stamp did not land (${failure.reason}). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`;
   // Only a binding failure is about the caller's link to a record at all; an
   // outcome, a refusal and a thrown error each have their own causes, and a
   // restart addresses none of them.
@@ -2995,8 +3003,8 @@ export function formatHandoverCreateResult(
   stamped = false,
   stampedRoot: string | null = null,
   mcpRoot: string | null = null,
-  /** ISS-1197 commit 2: the stamp landed, but on a compact-needed sample. */
-  compactNeeded = false,
+  /** ISS-1428: what the landed stamp achieved; null when unknown. */
+  stampReply: HandoverStampReply | null = null,
   /**
    * ISS-1214: why an attempted stamp did not land. Null when it landed, when
    * none was attempted, and when the skip was a precondition this surface
@@ -3009,14 +3017,8 @@ export function formatHandoverCreateResult(
    * that cannot must leave it false rather than infer it.
    */
   serverStale = false,
-  /**
-   * ISS-1263: how the landed stamp was bound. "unbound-era" (the caller's
-   * process era could not be proven) gets the acknowledgement by artifact
-   * instead of the bound continuation line.
-   */
+  /** ISS-1263: how the landed stamp was bound; reported in JSON only. */
   stampBinding: "bound" | "unbound-era" = "bound",
-  /** ISS-1263: the configured re-arm interval, quoted exactly in the reply. */
-  rearmIntervalMs = 600_000,
   /** ISS-1499: present only when there was lineage input; null keeps the reply byte identical. */
   lineage: CreateLineageResult | null = null,
 ): string {
@@ -3033,14 +3035,10 @@ export function formatHandoverCreateResult(
   const block = lineage === null ? "" : `\n\n${formatCreateLineageBlock(lineage)}`;
   if (!stamped) {
     const base = `Created handover: ${filename}`;
-    return (failure === null ? base : `${base}\n\n${formatHandoverStampFailure(failure, serverStale, rearmIntervalMs)}`) + block;
+    return (failure === null ? base : `${base}\n\n${formatHandoverStampFailure(failure, serverStale)}`) + block;
   }
   const note = diverged ? ` (stamped under a different root: ${stampedRoot})` : "";
-  const line = compactNeeded
-    ? HANDOVER_STAMPED_COMPACT_NEEDED_LINE
-    : stampBinding === "unbound-era"
-      ? `Handover recorded at ${filename}. ${rearmIntervalMs > 0 ? `The pressure line will not repeat for ${describeRepeatInterval(rearmIntervalMs)}.` : NO_REPEAT_INTERVAL}`
-      : HANDOVER_STAMPED_CONTINUE_LINE;
+  const line = formatHandoverStampedLine(stampReply);
   return `Created handover: ${filename}\n\n${line}${note}${block}`;
 }
 

@@ -81,6 +81,7 @@ import {
   formatError,
   ExitCode,
   type HandoverStampFailure,
+  type HandoverStampReply,
 } from "../../core/output-formatter.js";
 import {
   withProjectLock,
@@ -1359,34 +1360,30 @@ export async function handleHandoverCreate(
   const absRoot = prep.absRoot;
 
   // T-499: the handover is on disk; record it against the caller's current
-  // compaction boundary so imperative pressure is held at advisory until the
-  // context grows by a step or the next compaction. Best-effort, after the
+  // compaction boundary. ISS-1428: the reply says whether it covers this
+  // compaction, read under the stamp's own lock. Best-effort, after the
   // project lock is released, never affecting the result.
   let stamped = false;
   let stampedRoot: string | null = null;
-  // ISS-1197 commit 2: past the compact line the stamp still lands, but it
-  // suppresses nothing, so the reply must not claim it did.
-  let compactNeeded = false;
+  let stampReply: HandoverStampReply | null = null;
   // ISS-1214: why an attempted stamp did not land, so the reply cannot read
   // as success while the record keeps `handoverWrittenAt: null` and the
   // prompt hook re-fires the imperative with no visible cause.
   let stampFailure: HandoverStampFailure | null = null;
   let serverStale = false;
-  // ISS-1263: how the stamp bound, and the re-arm interval the reply quotes.
+  // ISS-1263: how the stamp bound.
   let stampBinding: "bound" | "unbound-era" = "bound";
-  let rearmIntervalMs = 600_000;
   if (intel.stamp !== false) {
     try {
       const { describeStampFailure, stampHandoverForCaller } = await import("../../core/session-intel/push.js");
-      const { readSessionIntelConfig } = await import("../../core/session-intel/config.js");
-      rearmIntervalMs = readSessionIntelConfig(root).handoverRearmIntervalMs;
-      const r = stampHandoverForCaller(root, { explicitTaskId: intel.clientTaskId, cwd: root, now: intel.now, projectsDir: intel.projectsDir });
+      const r = stampHandoverForCaller(root, { explicitTaskId: intel.clientTaskId, cwd: root, now: intel.now, projectsDir: intel.projectsDir, handoverFile: filename! });
       // Only a stamp whose locked write LANDED counts: a busy lock, a failed
       // write, or a refusal under the lock leaves the record unchanged.
       stamped = r.status === "stamped" && r.outcome.status === "written";
       if (stamped && r.status === "stamped") {
         stampedRoot = r.root;
-        compactNeeded = r.pressureState === "compact-needed";
+        const o = r.observation;
+        stampReply = { covers: o.covers ?? false, asked: o.asked ?? false, pastCompact: o.pastCompact ?? false, tokens: o.tokens ?? null, point: o.point ?? null };
         stampBinding = r.binding;
       } else {
         stampFailure = describeStampFailure(r, intel.surface ?? "cli");
@@ -1415,5 +1412,5 @@ export async function handleHandoverCreate(
   // a suppression that did not happen. ISS-1185: stampedRoot is reported
   // only when it diverges from the MCP root (formatHandoverCreateResult
   // gates on that itself).
-  return { output: formatHandoverCreateResult(filename!, format, stamped, stampedRoot, absRoot, compactNeeded, stampFailure, serverStale, stampBinding, rearmIntervalMs, lineageResult) };
+  return { output: formatHandoverCreateResult(filename!, format, stamped, stampedRoot, absRoot, stampReply, stampFailure, serverStale, stampBinding, lineageResult) };
 }

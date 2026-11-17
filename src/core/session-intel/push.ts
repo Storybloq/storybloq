@@ -4,12 +4,15 @@
  * response goes out untouched.
  *
  *   banner       a prefix (MCP md), a sibling key (MCP json), an appended
- *                line (CLI md) or one STDERR line (CLI json) at advisory or
- *                imperative, for the CALLER's own session under the binding
- *                rule: record exists, not ended, live non-null era equal to
- *                the record's. A persistent MCP server across `/clear`
- *                inherits an ended id and therefore pushes nothing.
- *   directive    the guide's imperative line for the autonomous OWNER.
+ *                line (CLI md) or one STDERR line (CLI json) carrying the
+ *                context notice (ISS-1428: once per band per compaction, on
+ *                whichever surface carries it first), for the CALLER's own
+ *                session under the binding rule: record exists, not ended,
+ *                live non-null era equal to the record's. A persistent MCP
+ *                server across `/clear` inherits an ended id and therefore
+ *                pushes nothing. `status` also carries the numbers alone at
+ *                advisory and above, unclaimed.
+ *   directive    the guide's copy of the same notice for the autonomous OWNER.
  *   stamp        after a handover is written, the caller's record records
  *                it against the current compaction boundary.
  */
@@ -18,7 +21,8 @@ import { isPresenceEnabled } from "../../presence/handler.js";
 import type { SessionIntelPresence, SessionIntelSample, TokenPressureState } from "../../presence/session-intel-fields.js";
 import { LIFECYCLE_LOCK_BUDGET_MS } from "../presence-enrichment.js";
 import { readSessionIntelConfig, type SessionIntelConfig } from "./config.js";
-import { claimImperativeEmission, consumeUsageAdvisory, findPresenceRecordAcrossWorktrees, peekPending, readPresenceRecord, reconcileIntel, reconcileUnderLock, resolveCallerBinding, revalidateCandidateIdentity, stampHandover, type CallerBinding, type CandidateIdentity, type HandoverStampObservation, type HandoverStampOutcome } from "./presence-bridge.js";
+import { claimNotice, consumeUsageAdvisory, findPresenceRecordAcrossWorktrees, noticeSeenOf, peekPending, readPresenceRecord, reconcileIntel, reconcileUnderLock, resolveCallerBinding, revalidateCandidateIdentity, stampHandover, type CallerBinding, type CandidateIdentity, type HandoverStampObservation, type HandoverStampOutcome } from "./presence-bridge.js";
+import { decideFromRecord, noticeDetailFor, noticeFactsOf, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "./policy.js";
 import { sampleSession } from "./query.js";
 import { usageAdvisoryFrom } from "./sampler.js";
 import type { UsageAdvisory } from "./types.js";
@@ -30,23 +34,25 @@ export const BANNER_SOFT_BUDGET_MS = 150;
 
 /** The banner's payload: the compact sample plus a rendered line. */
 export interface TokenPressureBanner {
-  readonly state: "advisory" | "imperative" | "compact-needed";
+  readonly state: Exclude<TokenPressureState, "unknown">;
   readonly pct: number | null;
   readonly contextTokens: number | null;
   readonly ceiling: number | null;
   readonly ceilingSource: SessionIntelSample["ceilingSource"];
   readonly ceilingConfidence: SessionIntelSample["ceilingConfidence"];
   readonly sampledAt: string;
-  readonly suppressedBy: "handover" | "rate-limit" | null;
+  readonly suppressedBy: SessionIntelSample["suppressedBy"];
+  /** ISS-1428: the notice this banner carries, or null for the status data line. */
+  readonly notice: NoticeKind | null;
   readonly text: string;
   /**
-   * ISS-1263: present only on an imperative banner that has not been
-   * delivered yet. `deliverBanner` calls it once, immediately before the
-   * text is attached, and swaps in `degraded` when the claim is refused.
+   * Present only on a notice that has not been delivered yet. `deliverBanner`
+   * calls it once, immediately before the text is attached, and swaps in
+   * `degraded` (the status data line, or nothing) when the claim is refused.
    * Neither ever reaches output (`bannerJson` drops both).
    */
   readonly claim?: () => boolean;
-  readonly degraded?: TokenPressureBanner;
+  readonly degraded?: TokenPressureBanner | null;
 }
 
 export interface BannerOptions {
@@ -59,44 +65,6 @@ export interface BannerOptions {
   readonly clock?: () => number;
   readonly projectsDir?: string;
   readonly userSettingsPath?: string;
-}
-
-const pctText = (p: number | null) => (p === null ? "n/a" : `${Math.round(p * 100)}%`);
-
-/**
- * ISS-1197 commit 2: the one wording every compact-needed surface shares, so
- * the banner, the guide directive and the prompt hook cannot drift into
- * asking for a handover that would not help. Deliberately free of the phrase
- * the imperative surfaces use: an agent that reads both must be able to tell
- * them apart on the words alone.
- */
-export const COMPACT_NEEDED_ADVICE =
-  "Context is past the point where another handover helps: write no further handovers. A session cannot compact itself; finish the step in flight and keep working, auto-compaction is expected and the session continues through it. If the user wants it sooner, they can run /compact in this session.";
-
-/**
- * ISS-1249: the printed percentage can sit below the configured share, so the
- * line states its basis; that is what stops it reading as a bug. T-533: the
- * sampler reason names the clause that fired (the headroom floor or the
- * share), so it is stated as written. Used by the UserPromptSubmit directive,
- * which holds the live sample; the MCP banner is built from the persisted
- * presence sample, which carries no reason.
- */
-export function basisText(reason: string | null | undefined): string {
-  if (!reason) return " Basis: the imperative fires once the context is both at the imperative share of the expected auto-compact point and within the headroom floor of it, whichever comes later.";
-  return ` Basis: ${reason}.`;
-}
-
-export function renderBannerText(sample: SessionIntelSample, surface: "mcp" | "cli"): string {
-  const where = surface === "mcp" ? "storybloq_handover_create" : "storybloq handover create";
-  const head = `Context pressure ${sample.state.toUpperCase()}: ${pctText(sample.pct)} of the expected auto-compact point (${sample.contextTokens?.toLocaleString() ?? "n/a"} tokens; source ${sample.ceilingSource}${sample.ceilingConfidence ? `, ${sample.ceilingConfidence} confidence` : ""}).`;
-  // ISS-1197 commit 2: past this line another handover buys nothing, so the
-  // text must not ask for one. It carries both halves: what the agent should
-  // do (keep working through the compaction that is coming) and what only the
-  // user can do (bring it forward with /compact).
-  if (sample.state === "compact-needed") return `${head} ${COMPACT_NEEDED_ADVICE}`;
-  if (sample.state === "imperative") return `${head} Write a handover now via ${where}, then keep working in this same turn. The handover makes compaction safe: do not stop, do not defer the next step to a later turn, and do not ask the user whether to continue. Any auto-compaction that follows is expected and safe: the session continues through it, and one handover covers it.`;
-  if (sample.suppressedBy === "rate-limit") return `${head} The imperative line was shown recently and will not repeat for a while: keep working.`;
-  return `${head}${sample.suppressedBy === "handover" ? " A recent handover holds this at advisory: keep working." : ""} Plan a handover before the next large step, and keep working.`;
 }
 
 /**
@@ -186,23 +154,23 @@ export function tokenPressureBannerFor(root: string, opts: BannerOptions = {}, s
     if (!cfg.enabled || !cfg.banner) return null;
     const acquired = acquireCallerSample(root, opts, cfg, { startedAt, softMs, clock });
     if (!acquired) return null;
-    return bannerFromSample(acquired.sample, surface, claimFor(acquired, cfg, opts.now ?? startedAt));
+    return bannerFor(acquired, cfg, surface, false, opts.now ?? startedAt);
   } catch {
     return null;
   }
 }
 
 /**
- * ISS-1263: the delivery claim for an acquired imperative sample, bound to
- * the identity of the record it was read from. A write, so a record found by
- * the ISS-1185 worktree walk is revalidated first; any throw is a refusal.
+ * ISS-1428: the claim for a decided notice, bound to the identity of the
+ * record it was decided on. A write, so a record found by the ISS-1185
+ * worktree walk is revalidated first; any throw is a refusal.
  */
-function claimFor(acquired: CallerSample, cfg: SessionIntelConfig, now: number): () => boolean {
-  const seen = { revision: acquired.intel.revision, lastBoundaryAt: acquired.intel.lastBoundaryAt, handoverWrittenAt: acquired.intel.handoverWrittenAt };
+function claimFor(acquired: CallerSample, cfg: SessionIntelConfig, candidate: NoticeCandidate, final: FinalAction, now: number): () => boolean {
+  const seen = noticeSeenOf(acquired.intel);
   return () => {
     try {
       if (acquired.recordRootIdentity && !revalidateCandidateIdentity(acquired.root, acquired.recordRootIdentity)) return false;
-      return claimImperativeEmission(acquired.root, acquired.sessionId, seen, now, cfg.handoverRearmIntervalMs);
+      return claimNotice(acquired.root, acquired.sessionId, seen, candidate, final, now, cfg);
     } catch {
       return false;
     }
@@ -210,10 +178,10 @@ function claimFor(acquired: CallerSample, cfg: SessionIntelConfig, now: number):
 }
 
 /**
- * ISS-1263: resolves a banner for delivery, claiming the imperative line at
- * most once. Call it only once the response is PROVEN to carry the banner,
- * so a response that cannot carry it spends nothing. The result carries no
- * claim, so resolving it again is a no-op.
+ * Resolves a banner for delivery, claiming its notice at most once. Call it
+ * only once the response is PROVEN to carry the banner, so a response that
+ * cannot carry it spends nothing. The result carries no claim, so resolving
+ * it again is a no-op.
  */
 export function deliverBanner(banner: TokenPressureBanner | null): TokenPressureBanner | null {
   if (!banner || !banner.claim) return banner;
@@ -221,14 +189,38 @@ export function deliverBanner(banner: TokenPressureBanner | null): TokenPressure
   return claim() ? plain : (degraded ?? null);
 }
 
-/** The pressure gate on top of an acquired sample: only advisory, imperative and compact-needed are pushed. */
-function bannerFromSample(sample: SessionIntelSample, surface: "mcp" | "cli", claim?: () => boolean): TokenPressureBanner | null {
-  if (sample.state !== "advisory" && sample.state !== "imperative" && sample.state !== "compact-needed") return null;
-  if (sample.state === "imperative" && claim) {
-    const plain = bannerFromSample(sample, surface)!;
-    const degraded = bannerFromSample({ ...sample, state: "advisory", suppressedBy: "rate-limit" }, surface)!;
-    return { ...plain, claim, degraded };
-  }
+/**
+ * ISS-1428: the one decision every banner shares. The candidate comes from
+ * the caller's own record and sample; the final action from it (commit 1: no
+ * arrangement rule is looked up yet). A `status` response also carries the
+ * numbers alone at advisory and above, unclaimed, and the notice replaces
+ * them when one is due.
+ */
+function bannerFor(acquired: CallerSample, cfg: SessionIntelConfig, surface: "mcp" | "cli", status: boolean, now: number): TokenPressureBanner | null {
+  const sample = acquired.sample;
+  const facts = noticeFactsOf(sample);
+  if (!facts || sample.state === "unknown") return null;
+  const raw = sample.rawState;
+  const dataLine: TokenPressureBanner | null = status && (raw === "advisory" || raw === "imperative" || raw === "compact-needed")
+    ? {
+        state: sample.state,
+        pct: sample.pct,
+        contextTokens: sample.contextTokens,
+        ceiling: sample.ceiling,
+        ceilingSource: sample.ceilingSource,
+        ceilingConfidence: sample.ceilingConfidence,
+        sampledAt: sample.sampledAt,
+        suppressedBy: sample.suppressedBy,
+        notice: null,
+        text: noticeHead(facts),
+      }
+    : null;
+  const candidate = decideFromRecord(acquired.intel, cfg);
+  const final = resolveFinal(candidate, null);
+  if (final === null) return dataLine;
+  const claim = claimFor(acquired, cfg, candidate, final, now);
+  // A settle carries no text, so any surface may take it at once.
+  if (final === "settle") { claim(); return dataLine; }
   return {
     state: sample.state,
     pct: sample.pct,
@@ -238,7 +230,10 @@ function bannerFromSample(sample: SessionIntelSample, surface: "mcp" | "cli", cl
     ceilingConfidence: sample.ceilingConfidence,
     sampledAt: sample.sampledAt,
     suppressedBy: sample.suppressedBy,
-    text: renderBannerText(sample, surface),
+    notice: final,
+    text: renderNotice(final, facts, surface, noticeDetailFor(final, acquired.intel, null)),
+    claim,
+    degraded: dataLine,
   };
 }
 
@@ -390,7 +385,7 @@ export function statusPushesFor(root: string, opts: BannerOptions = {}, surface:
     const acquired = acquireCallerSample(root, opts, cfg, { startedAt, softMs, clock });
     if (!acquired) return none;
     return {
-      banner: bannerFromSample(acquired.sample, surface, claimFor(acquired, cfg, opts.now ?? startedAt)),
+      banner: bannerFor(acquired, cfg, surface, true, opts.now ?? startedAt),
       usage: usageAdvisoryGate(cfg) ? usageAdvisoryFrom_(acquired, cfg, { startedAt, softMs, clock }, opts.now ?? startedAt) : null,
     };
   } catch {
@@ -463,7 +458,7 @@ export function applyStatusPushesToMcpText(
   banner: TokenPressureBanner | null,
   usage: UsageAdvisoryPush | null,
 ): string {
-  // ISS-1263: the two renderings below would each claim the imperative line;
+  // The two renderings below would each claim the notice;
   // it is resolved once here, when the response can carry it at all.
   const resolved = canCarryPushes(text, format) ? deliverBanner(banner) : banner;
   const bannerOnly = applyBannerToMcpText(text, format, resolved);
@@ -484,7 +479,7 @@ export function cliStatusPushesFor(root: string, format: "md" | "json", opts: Ba
   // The advisory goes first when both are present: the banner is about this
   // turn, the advisory about the session's whole cost.
   if (usage && usage.commit()) lines.push(usage.text);
-  // ISS-1263: a CLI line is always printed, so the claim is taken here.
+  // A CLI line is always printed, so the claim is taken here.
   const delivered = deliverBanner(banner);
   if (delivered) lines.push(delivered.text);
   return format === "json"
@@ -504,10 +499,11 @@ export function cliBannerFor(root: string, format: "md" | "json", opts: BannerOp
 // ---------------------------------------------------------------------------
 
 /**
- * The autonomous OWNER's imperative directive, from its record only (the
- * guide never scans a transcript). Null unless the owner's usable sample is
- * imperative or compact-needed and `guideDirective` is on. Not a state
- * transition.
+ * The autonomous OWNER's copy of the context notice, from its record only
+ * (the guide never scans a transcript). ISS-1428: the same decision, claim and
+ * text as every other surface, so it is delivered once per band per era and
+ * never after another surface claimed it. Null unless a notice is due and
+ * `guideDirective` is on. Not a state transition.
  */
 export function guideDirectiveFor(root: string, ownerClaudeSessionId: string | null | undefined, now: number = Date.now(), cfg: SessionIntelConfig = readSessionIntelConfig(root)): string | null {
   try {
@@ -527,19 +523,18 @@ export function guideDirectiveFor(root: string, ownerClaudeSessionId: string | n
     }
     const intel = record?.sessionIntel ?? null;
     const sample = intel?.lastSample ?? null;
-    if (!intel || !sample || (sample.state !== "imperative" && sample.state !== "compact-needed")) return null;
+    if (!intel || !sample) return null;
+    const facts = noticeFactsOf(sample);
+    if (!facts) return null;
     const rec = reconcileIntel(intel, null, peekPending(resolvedRoot, ownerClaudeSessionId, now), cfg, now);
     if (rec.status !== "complete" || rec.intel.lastSample !== sample) return null;
-    const head = `Context pressure ${sample.state} (${pctText(sample.pct)} of ceiling, source ${sample.ceilingSource}${sample.ceilingConfidence ? `, ${sample.ceilingConfidence} confidence` : ""})`;
-    // ISS-1197 commit 2: the guide is an autonomous driver, so this is exactly
-    // where a handover demand past the compact line would loop forever.
-    if (sample.state === "compact-needed") return `${head}: ${COMPACT_NEEDED_ADVICE}`;
-    // ISS-1263: the guide delivers the imperative too, so it claims the one
-    // line per interval like every other surface; refused means no directive.
+    const candidate = decideFromRecord(intel, cfg);
+    const final = resolveFinal(candidate, null);
+    if (final === null) return null;
     if (walkedIdentity && !revalidateCandidateIdentity(resolvedRoot, walkedIdentity)) return null;
-    const seen = { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt };
-    if (!claimImperativeEmission(resolvedRoot, ownerClaudeSessionId, seen, now, cfg.handoverRearmIntervalMs)) return null;
-    return `${head}: write a handover now via storybloq_handover_create, then keep working in this same turn. The handover makes compaction safe: do not stop, do not defer the next step to a later turn, and do not ask the user whether to continue. Any auto-compaction that follows is expected and safe: the session continues through it, and one handover covers it.`;
+    if (!claimNotice(resolvedRoot, ownerClaudeSessionId, noticeSeenOf(intel), candidate, final, now, cfg)) return null;
+    if (final === "settle") return null;
+    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, null));
   } catch {
     return null;
   }
@@ -556,11 +551,10 @@ export type HandoverStampResult =
       readonly outcome: HandoverStampOutcome;
       readonly root: string;
       /**
-       * ISS-1197 commit 2: the state of the sample the stamp saw under its own
-       * lock, so the reply can say what the stamp actually achieved. Null when
-       * there was no sample, or when the write never reached one.
+       * What the stamp saw and achieved under its own lock, so the reply can
+       * say it (ISS-1428 section 8: covers, asked, tokens and point).
        */
-      readonly pressureState: TokenPressureState | null;
+      readonly observation: HandoverStampObservation;
       /** ISS-1263: "unbound-era" when the stamp landed without a proven process era. */
       readonly binding: "bound" | "unbound-era";
     }
@@ -661,7 +655,7 @@ function stampModeFor(binding: CallerBinding): "bound" | "unbound-era" | null {
  * `stampHandover`. A root swapped since discovery refuses the stamp rather
  * than reconciling or writing through it.
  */
-export function stampHandoverForCaller(root: string, opts: { explicitTaskId?: string | null; cwd?: string; now?: number; projectsDir?: string } = {}): HandoverStampResult {
+export function stampHandoverForCaller(root: string, opts: { explicitTaskId?: string | null; cwd?: string; now?: number; projectsDir?: string; handoverFile?: string | null } = {}): HandoverStampResult {
   try {
     const cfg = readSessionIntelConfig(root);
     if (!cfg.enabled) return { status: "skipped", reason: "sessionIntel disabled", kind: "config" };
@@ -695,8 +689,8 @@ export function stampHandoverForCaller(root: string, opts: { explicitTaskId?: st
     // sampler or compaction landing between the reconcile and the stamp
     // cannot pair an old count with a newer boundary.
     const observed: HandoverStampObservation = { state: null };
-    const outcome = stampHandover(resolvedRoot, sessionId, mode === "bound" ? binding.era : null, null, now, { out: observed, cfg }, mode);
-    return { status: "stamped", sessionId, outcome, root: resolvedRoot, pressureState: observed.state, binding: mode };
+    const outcome = stampHandover(resolvedRoot, sessionId, mode === "bound" ? binding.era : null, null, now, { out: observed, cfg }, mode, { handoverFile: opts.handoverFile ?? null });
+    return { status: "stamped", sessionId, outcome, root: resolvedRoot, observation: observed, binding: mode };
   } catch (err) {
     return { status: "skipped", reason: err instanceof Error ? err.message : String(err), kind: "error" };
   }

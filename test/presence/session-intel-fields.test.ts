@@ -8,11 +8,15 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  MAX_COVERED_BY_BYTES,
   MAX_ERA_BYTES,
+  MAX_HANDOVER_FILE_BYTES,
   MAX_INCARNATION_BYTES,
+  MAX_RULE_WHERE_BYTES,
   MAX_SESSION_INTEL_BYTES,
   MAX_TRANSCRIPT_PATH_BYTES,
   SESSION_INTEL_SHED_STEPS,
+  shedDisplayText,
   emptySessionIntel,
   fitSessionIntel,
   parseSessionIntel,
@@ -36,7 +40,9 @@ import {
   type SessionPresence,
 } from "../../src/presence/types.js";
 import { ensureTelemetrySubdir } from "../../src/presence/io.js";
-import { mkdtempSync, rmSync, lstatSync, symlinkSync, mkdirSync } from "node:fs";
+import { encodeProjectDir, locateTranscript } from "../../src/core/session-intel/transcript-locate.js";
+import { SID, writeTranscript } from "../core/session-intel-fixtures.js";
+import { mkdtempSync, rmSync, lstatSync, symlinkSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -90,11 +96,16 @@ function full(): SessionIntelPresence {
     handoverWrittenAt: "2026-09-09T09:55:00.000Z",
     tokensAtHandover: 290_000,
     handoverBoundaryAt: "2026-09-09T08:00:00.000Z",
-    promptsSinceHandover: 4,
-    lastImperativeAt: "2026-09-09T09:50:00.000Z",
     usageAdvisoryShownAt: "2026-09-09T09:00:00.000Z",
     handoverStampBinding: "unbound-era",
     lastImperativeEmittedAt: "2026-09-09T09:51:00.000Z",
+    compactNeededEmittedAt: "2026-09-09T09:58:00.000Z",
+    noticeTokens: 410_000,
+    handoverFile: "2026-09-09-095500-cpm-w15-delta.md",
+    coveredBy: "ops/watch.md#2026-09-09",
+    owed: { boundaryAt: "2026-09-09T08:00:00.000Z", eraStartAt: "2026-09-09T07:00:00.000Z" },
+    rule: { handovers: "elsewhere", where: "watch log", setAt: "2026-09-09T07:30:00.000Z" },
+    policyGen: 7,
   };
 }
 
@@ -133,18 +144,15 @@ describe("session intel fields (T-499)", () => {
     expect(parseSessionIntel({ ...full(), lastSample: { ...sample(), state: "compact-needed", rawState: "panic" } })!.lastSample).toMatchObject({ state: "compact-needed", rawState: "compact-needed" });
   });
 
-  it("ISS-1197: a record written before the re-arm counters existed parses with 0 and null, keeping its handover fields", () => {
-    const { promptsSinceHandover, lastImperativeAt, ...legacy } = full();
-    expect(promptsSinceHandover).toBe(4);
-    expect(lastImperativeAt).not.toBeNull();
-    const parsed = parseSessionIntel(JSON.parse(JSON.stringify(legacy)))!;
-    expect(parsed.promptsSinceHandover).toBe(0);
-    expect(parsed.lastImperativeAt).toBeNull();
-    expect(parsed.handoverWrittenAt).toBe(legacy.handoverWrittenAt);
-    expect(parsed.tokensAtHandover).toBe(legacy.tokensAtHandover);
-    // A hand-edited negative or fractional count reads as 0, never as itself.
-    expect(parseSessionIntel({ ...full(), promptsSinceHandover: -1, lastImperativeAt: "nope" })!).toMatchObject({ promptsSinceHandover: 0, lastImperativeAt: null });
+  it("ISS-1428: the retired re-arm counters on an older record are dropped on read, keeping its handover fields", () => {
+    const older = { ...full(), promptsSinceHandover: 4, lastImperativeAt: "2026-09-09T09:50:00.000Z" };
+    const parsed = parseSessionIntel(JSON.parse(JSON.stringify(older)))!;
+    expect(parsed).toEqual(full());
+    expect(parsed).not.toHaveProperty("promptsSinceHandover");
+    expect(parsed).not.toHaveProperty("lastImperativeAt");
+    expect(JSON.stringify(parsed)).not.toMatch(/promptsSinceHandover|lastImperativeAt"/);
   });
+
 
   it("drops a malformed sample without dropping the capture", () => {
     const parsed = parseSessionIntel({ ...full(), lastSample: { ...sample(), observation: { incarnation: "x" } } })!;
@@ -189,49 +197,135 @@ describe("session intel fields (T-499)", () => {
    * exercised against a tighter cap, deterministically: one fixture needs
    * exactly one step, one needs both, one cannot fit.
    */
-  it("sheds in order under a cap, measured on serialized bytes, and refuses what cannot fit", () => {
+  it("sheds in order under a cap (display text, then path, then sample), measured on serialized bytes, and refuses what cannot fit", () => {
     const escapeHeavy = '"\\'.repeat(MAX_TRANSCRIPT_PATH_BYTES / 2); // 1024 chars, 2048 escaped bytes
     expect(Buffer.byteLength(JSON.stringify(escapeHeavy), "utf-8")).toBeGreaterThan(2 * MAX_TRANSCRIPT_PATH_BYTES);
     const subject: SessionIntelPresence = { ...full(), transcriptPath: escapeHeavy };
-    const withoutSample = { ...subject, lastSample: null };
-    const withoutBoth = { ...withoutSample, transcriptPath: null };
-    const [all, noSample, noBoth] = [subject, withoutSample, withoutBoth].map(sessionIntelBytes) as [number, number, number];
-    expect(all).toBeGreaterThan(noSample);
-    expect(noSample).toBeGreaterThan(noBoth);
+    const noText = shedDisplayText(subject);
+    const noPath = { ...noText, transcriptPath: null };
+    const noSample = { ...noPath, lastSample: null };
+    const [all, a, b, c] = [subject, noText, noPath, noSample].map(sessionIntelBytes) as [number, number, number, number];
+    expect(all).toBeGreaterThan(a);
+    expect(a).toBeGreaterThan(b);
+    expect(b).toBeGreaterThan(c);
+    expect(noText).toMatchObject({ handoverFile: null, coveredBy: null, rule: { handovers: "elsewhere", where: null }, owed: full().owed, policyGen: full().policyGen });
 
-    // One step: a cap the sample-less subtree meets but the full one does not.
-    const oneStep = fitSessionIntel(subject, noSample)!;
-    expect(oneStep).toEqual(withoutSample);
-    expect(sessionIntelBytes(oneStep)).toBeLessThanOrEqual(noSample);
-    // Two steps: the path must go as well, and nothing else changes.
-    const twoSteps = fitSessionIntel(subject, noBoth)!;
-    expect(twoSteps).toEqual(withoutBoth);
+    expect(fitSessionIntel(subject, a)).toEqual(noText);
+    expect(fitSessionIntel(subject, b)).toEqual(noPath);
+    expect(fitSessionIntel(subject, c)).toEqual(noSample);
     // Cannot fit: refused, never truncated further.
-    expect(fitSessionIntel(subject, noBoth - 1)).toBeNull();
+    expect(fitSessionIntel(subject, c - 1)).toBeNull();
     // A subtree already under the cap is returned untouched.
     expect(fitSessionIntel(subject, all)).toEqual(subject);
-
-    const [shedSample, shedPath] = SESSION_INTEL_SHED_STEPS;
-    expect(SESSION_INTEL_SHED_STEPS).toHaveLength(2);
-    expect(shedSample!(subject)).toEqual(withoutSample);
-    expect(shedPath!(withoutSample)).toEqual(withoutBoth);
+    expect(SESSION_INTEL_SHED_STEPS).toHaveLength(3);
   });
 
-  it("the worst LEGAL subtree stays under the real cap, so the ladder is last resort", () => {
+  /**
+   * ISS-1428 (pen ruling, deviation A): decision fields and the sample are
+   * never shed for any legal input. The worst legal subtree: the transcript
+   * path at its cap in characters that escape to two bytes, era and
+   * incarnation at their caps the same way (on the record and the sample),
+   * every counter at MAX_SAFE_INTEGER, every timestamp set, `owed` and `rule`
+   * set, and the display text at its caps. It sheds the display text and the
+   * path, never the sample. Mutant "old order" (sample before path) fails it.
+   */
+  it("ISS-1428: the worst legal subtree keeps every decision field and the sample", () => {
+    const ts = "2026-09-09T09:55:00.000Z";
+    const MAX = Number.MAX_SAFE_INTEGER;
     const worst: SessionIntelPresence = {
       ...full(),
       era: "\\".repeat(MAX_ERA_BYTES),
       incarnation: "\\".repeat(MAX_INCARNATION_BYTES),
+      revision: MAX,
+      autoCompactWindowAtStart: MAX,
+      capturedAt: ts,
       transcriptPath: '"\\'.repeat(MAX_TRANSCRIPT_PATH_BYTES / 2),
+      epoch: { kind: "observed", at: ts },
+      lastBoundaryAt: ts,
+      consumedOffset: MAX,
+      baselineAnchor: { offset: MAX, sha256: SHA },
       lastSample: sample({
         pct: 0.123456789012345,
+        contextTokens: MAX,
         ceiling: 1_234_567.123456789,
-        observation: { ...sample().observation, era: "\\".repeat(MAX_ERA_BYTES), incarnation: "\\".repeat(MAX_INCARNATION_BYTES), sizeAtOpen: Number.MAX_SAFE_INTEGER, consumedOffset: Number.MAX_SAFE_INTEGER },
+        suppressedBy: "rate-limit",
+        usageInput: { window: MAX, source: "user", oneMillionFlag: true },
+        observation: { ...sample().observation, era: "\\".repeat(MAX_ERA_BYTES), incarnation: "\\".repeat(MAX_INCARNATION_BYTES), sizeAtOpen: MAX, consumedOffset: MAX, anchor: { offset: MAX, sha256: SHA }, revisionSeen: MAX },
       }),
+      handoverWrittenAt: ts,
+      tokensAtHandover: MAX,
+      handoverBoundaryAt: ts,
+      usageAdvisoryShownAt: ts,
+      handoverStampBinding: "unbound-era",
+      lastImperativeEmittedAt: ts,
+      compactNeededEmittedAt: ts,
+      noticeTokens: MAX,
+      handoverFile: `a${"-".repeat(MAX_HANDOVER_FILE_BYTES - 4)}.md`,
+      coveredBy: "\\".repeat(MAX_COVERED_BY_BYTES),
+      owed: { boundaryAt: ts, eraStartAt: ts },
+      rule: { handovers: "elsewhere", where: "\\".repeat(MAX_RULE_WHERE_BYTES), setAt: ts },
+      policyGen: MAX,
     };
-    expect(parseSessionIntel(JSON.parse(JSON.stringify(worst)))).toEqual(worst); // legal: nothing shed on read
-    expect(sessionIntelBytes(worst)).toBeLessThan(MAX_SESSION_INTEL_BYTES);
+    expect(sessionIntelBytes(worst)).toBeGreaterThan(MAX_SESSION_INTEL_BYTES);
+    const read = parseSessionIntel(JSON.parse(JSON.stringify(worst)))!;
+    const expected = { ...shedDisplayText(worst), transcriptPath: null };
+    expect(read).toEqual(expected);
+    expect(read.lastSample).toEqual(worst.lastSample);
+    expect(sessionIntelBytes(read)).toBe(2_381);
+  });
+
+  it("ISS-1428: with the path shed and the sample kept, the transcript is still located through the cwd fallback", () => {
+    const subject: SessionIntelPresence = { ...full(), transcriptPath: '"\\'.repeat(MAX_TRANSCRIPT_PATH_BYTES / 2) };
+    const shed = fitSessionIntel(subject, sessionIntelBytes({ ...shedDisplayText(subject), transcriptPath: null }))!;
+    expect(shed.transcriptPath).toBeNull();
+    expect(shed.lastSample).toEqual(full().lastSample);
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "w15-locate-")));
+    try {
+      const projects = join(base, "projects");
+      const file = writeTranscript(projects, encodeProjectDir("/Users/x/proj"), SID, ["{}"]);
+      expect(locateTranscript({ sessionId: SID, cwd: "/Users/x/proj", hint: shed.transcriptPath, allowGlob: false, projectsDir: projects })).toEqual({ path: file, source: "cwd" });
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("a full subtree with a plain path at its cap sheds nothing", () => {
+    const plain: SessionIntelPresence = { ...full(), transcriptPath: "p".repeat(MAX_TRANSCRIPT_PATH_BYTES) };
+    expect(parseSessionIntel(JSON.parse(JSON.stringify(plain)))).toEqual(plain);
     expect(sessionIntelBytes(full())).toBeLessThan(MAX_SESSION_INTEL_BYTES * 0.5);
+  });
+});
+
+describe("ISS-1428 T18: the notice fields decode", () => {
+  it("an older record without them decodes every one as null or 0", () => {
+    const { compactNeededEmittedAt, noticeTokens, handoverFile, coveredBy, owed, rule, policyGen, ...older } = full();
+    void [compactNeededEmittedAt, noticeTokens, handoverFile, coveredBy, owed, rule, policyGen];
+    expect(parseSessionIntel(JSON.parse(JSON.stringify(older)))).toMatchObject({
+      compactNeededEmittedAt: null, noticeTokens: null, handoverFile: null, coveredBy: null, owed: null, rule: null, policyGen: 0,
+    });
+  });
+
+  it("each malformed value is refused on its own, never costing the record", () => {
+    const bad = parseSessionIntel({
+      ...full(),
+      compactNeededEmittedAt: "nope",
+      noticeTokens: -1,
+      handoverFile: "../escape.md",
+      coveredBy: "two\nlines",
+      owed: { eraStartAt: "2026-09-09T07:00:00.000Z" },
+      rule: { handovers: "here", setAt: "2026-09-09T07:30:00.000Z" },
+      policyGen: 1.5,
+    })!;
+    expect(bad).toMatchObject({ compactNeededEmittedAt: null, noticeTokens: null, handoverFile: null, coveredBy: null, owed: null, rule: null, policyGen: 0 });
+    expect(bad.lastSample).toEqual(full().lastSample);
+    // Over the cap is refused, never truncated.
+    expect(parseSessionIntel({ ...full(), coveredBy: "x".repeat(MAX_COVERED_BY_BYTES + 1) })!.coveredBy).toBeNull();
+    expect(parseSessionIntel({ ...full(), handoverFile: `${"a".repeat(MAX_HANDOVER_FILE_BYTES)}.md` })!.handoverFile).toBeNull();
+    expect(parseSessionIntel({ ...full(), rule: { handovers: "elsewhere", where: "\u2028", setAt: "2026-09-09T07:30:00.000Z" } })!.rule).toBeNull();
+    // A rule with no where is legal.
+    expect(parseSessionIntel({ ...full(), rule: { handovers: "elsewhere", setAt: "2026-09-09T07:30:00.000Z" } })!.rule).toEqual({ handovers: "elsewhere", where: null, setAt: "2026-09-09T07:30:00.000Z" });
+    // "rule" is a legal suppression on a sample.
+    expect(parseSessionIntel({ ...full(), lastSample: sample({ suppressedBy: "rule" }) })!.lastSample!.suppressedBy).toBe("rule");
   });
 });
 
@@ -312,11 +406,12 @@ describe("presence record carries session intel (T-499)", () => {
     expect(bytes).toBeLessThanOrEqual(MAX_RECORD_BYTES);
     // Nothing was shed to get there: the caps, not the ladder, are the bound.
     expect(parsePresenceRecord(text, SESSION)!.sessionIntel).toEqual(intel);
-    // T-501 added two fields (`lastSample.usageInput` and
-    // `usageAdvisoryShownAt`), so the worst case is about a hundred bytes
-    // larger than the 5%-headroom form of this assertion allowed. Stated as
-    // the margin it is actually about, in bytes.
-    expect(MAX_RECORD_BYTES - bytes).toBeGreaterThan(512);
+    // The margin in bytes, at its measured bound. ISS-1428 (pen ruling,
+    // deviation A): the notice fields let the subtree actually reach its
+    // 4096-byte cap here (before, the transcript-path cap stopped it short),
+    // so the margin is 271 bytes, measured; both caps are unchanged so that an
+    // older CLI never refuses a record this version writes.
+    expect(MAX_RECORD_BYTES - bytes).toBeGreaterThanOrEqual(271);
   });
 });
 
@@ -377,8 +472,9 @@ describe("usage advisory persistence (T-501)", () => {
     expect(parsed.lastSample!.usageInput).toEqual({ window: 600_000, source: null, oneMillionFlag: null });
   });
 
-  it("shedding still drops the sample (and the input with it) first, and NEVER the stamp", () => {
-    const shed = fitSessionIntel(full(), sessionIntelBytes(full()) - 1)!;
+  it("shedding drops display text, the path, then the sample (and the input with it), and NEVER the stamp", () => {
+    const cap = sessionIntelBytes({ ...shedDisplayText(full()), transcriptPath: null }) - 1;
+    const shed = fitSessionIntel(full(), cap)!;
     expect(shed.lastSample).toBeNull();
     expect(shed.usageAdvisoryShownAt).toBe("2026-09-09T09:00:00.000Z");
     expect(shed.autoCompactWindowAtStart).toBe(450_000);

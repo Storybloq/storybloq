@@ -15,11 +15,12 @@
  *               contextTokens >= compactNeededPct x ceiling, decided before
  *               the imperative rule and without the jump allowance, and never
  *               suppressed by a handover (ISS-1197 commit 2);
- *   suppressed  an imperative raw state reads advisory when the record's
- *               handover belongs to the CURRENT compaction
- *               (handoverBoundaryAt === lastBoundaryAt) and any one of the
- *               three re-arm gates is still closed: growth, interval, prompts
- *               (ISS-1197).
+ *   suppressed  ISS-1428: an imperative raw state reads advisory when the
+ *               era is covered (`eraCovered`: a stamp for this compaction
+ *               written no more than the headroom before the imperative line),
+ *               and an imperative or compact-needed one reads advisory under
+ *               the record's own handover rule. The re-arm gates and the rate
+ *               limit are gone: the notice is shown once per band per era.
  *
  * `imperativeSince` is informational only and takes no part in suppression.
  * The I/O half (locate, scan, reconcile, persist) lives with the presence
@@ -28,6 +29,7 @@
 
 import type { SessionIntelPresence, TokenPressureState } from "../../presence/session-intel-fields.js";
 import type { SessionIntelConfig } from "./config.js";
+import { effectiveThresholds, emptyBandReason, eraCovered } from "./policy.js";
 import type { CeilingResolution, SampledBy, ScanResult, TokenPressureSample, UsageAdvisory, UsageAdvisoryInput } from "./types.js";
 
 export interface ComputeSampleInput {
@@ -61,66 +63,6 @@ export function jumpAllowanceFor(deltas: readonly number[], cfg: SessionIntelCon
   const value = Math.min(cap, Math.max(floor, p));
   const clamped = value === p ? "" : value === floor ? ", raised to floor" : ", capped";
   return { value, basis: `p90 of ${deltas.length} per-turn deltas since epoch = ${p}${clamped}` };
-}
-
-/** The re-arm gate that is still closed, and so is holding the advisory. */
-export type HandoverRearmGate = "step" | "interval" | "prompts";
-
-/**
- * Suppression as a function of the record alone (recomputed after acceptance
- * against the record as it is THEN). Null means nothing holds and the
- * imperative stands.
- *
- * ISS-1197: growth alone re-armed roughly a jump allowance past the handover,
- * so the imperative came back on the very next prompt and an agent wrote
- * eleven handovers in one session. Three gates now guard the re-arm and the
- * advisory holds while ANY of them is closed: the context has to have grown,
- * time has to have passed since the handover or the last imperative, and the
- * session has to have taken a few prompts.
- */
-export function handoverSuppresses(
-  record: SessionIntelPresence | null,
-  contextTokens: number,
-  ceiling: number,
-  cfg: SessionIntelConfig,
-  sampledAt: string,
-): HandoverRearmGate | null {
-  if (!record || record.tokensAtHandover === null || record.handoverWrittenAt === null) return null;
-  if (record.handoverBoundaryAt !== record.lastBoundaryAt) return null;
-  const step = Math.min(cfg.stepPct * ceiling, cfg.handoverRearmStepCapTokens);
-  if (contextTokens < record.tokensAtHandover + step) return "step";
-  const written = Date.parse(record.handoverWrittenAt);
-  const latch = record.lastImperativeAt === null ? written : Math.max(written, Date.parse(record.lastImperativeAt));
-  if (Date.parse(sampledAt) - latch < cfg.handoverRearmIntervalMs) return "interval";
-  // Only the prompt hook advances the count, so with the hook off this gate
-  // could never open and would hold the advisory until the next compaction.
-  if (cfg.promptHook && record.promptsSinceHandover < cfg.handoverRearmPrompts) return "prompts";
-  return null;
-}
-
-/**
- * ISS-1263: milliseconds since the imperative line was last delivered, when
- * that is inside `handoverRearmIntervalMs`; null when the line may be shown.
- * Delivery is claimed under the record lock by `claimImperativeEmission`;
- * this reads the same field so the sample describes what the surfaces do.
- */
-/**
- * ISS-1263: a repeat interval as a reader should read it, never rounded:
- * whole minutes when exact, else whole seconds when exact, else
- * milliseconds. Zero is the caller's to phrase (there is no interval).
- */
-export function describeRepeatInterval(ms: number): string {
-  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  if (ms % 60_000 === 0) return unit(ms / 60_000, "minute");
-  if (ms % 1_000 === 0) return unit(ms / 1_000, "second");
-  return unit(ms, "millisecond");
-}
-
-export function rateLimitedFor(record: SessionIntelPresence | null, cfg: SessionIntelConfig, sampledAt: string): number | null {
-  const last = record?.lastImperativeEmittedAt ?? null;
-  if (last === null) return null;
-  const elapsed = Date.parse(sampledAt) - Date.parse(last);
-  return Number.isFinite(elapsed) && elapsed < cfg.handoverRearmIntervalMs ? Math.max(0, elapsed) : null;
 }
 
 /**
@@ -179,44 +121,29 @@ export function computeSample(input: ComputeSampleInput): TokenPressureSample {
   const pct = tokens / c;
   const headroom = Math.max(0, Math.round(c - tokens));
 
+  // ISS-1428: the lines come from the one helper every reader shares. The
+  // imperative line is the later of the share and the headroom lines (T-533,
+  // owner ruling r-awey8xrtwqf1r005), never relaxed. compact-needed is decided
+  // FIRST, on the measured tokens alone: the two bands overlap by construction
+  // and imperative would otherwise win every time. When the imperative line is
+  // at or past the compact line the imperative band is empty and the state
+  // goes from advisory straight to compact-needed.
+  const th = effectiveThresholds(cfg, record, c);
+  const headroomLimit = th.imperativeHeadroomTokens;
   let rawState: TokenPressureState = "ok";
-  // ISS-1197 commit 2: compact-needed is decided FIRST, on the measured tokens
-  // alone. Before the imperative rule, because the two overlap by construction
-  // and imperative would otherwise win every time; and without the jump
-  // allowance, because the allowance is headroom reserved for the NEXT turn,
-  // while this line is about where the context already is.
-  // T-533, amended by owner ruling r-awey8xrtwqf1r005: the imperative fires
-  // once the context is BOTH at imperativePct of the ceiling AND within the
-  // headroom floor of it, which is the later of the two lines. A session at
-  // 74% with 60,000 tokens left was being asked for a handover; the owner
-  // ruled that far too early. The jump allowance no longer widens the floor.
-  // The raw difference is compared, not the rounded `headroom` field.
-  const headroomLimit = cfg.imperativeHeadroomTokens;
-  const byHeadroom = c - tokens <= headroomLimit;
-  const byPct = tokens >= cfg.imperativePct * c;
-  if (tokens >= cfg.compactNeededPct * c) rawState = "compact-needed";
-  else if (byHeadroom && byPct) rawState = "imperative";
-  else if (tokens >= cfg.advisoryPct * c || ceiling.conflict !== null) rawState = "advisory";
+  if (tokens >= th.compactLine!) rawState = "compact-needed";
+  else if (tokens >= th.imperativeLine!) rawState = "imperative";
+  else if (tokens >= th.advisoryPct * c || ceiling.conflict !== null) rawState = "advisory";
 
   let state = rawState;
-  let suppressedBy: "handover" | "rate-limit" | null = null;
-  // Only an imperative is ever held. A handover cannot answer compact-needed:
-  // the whole point of the state is that writing one more is not the fix, so
-  // routing it through the re-arm gates would hide the one state the surfaces
-  // exist to show.
-  const heldBy = rawState === "imperative" ? handoverSuppresses(record, tokens, c, cfg, input.sampledAt) : null;
-  if (heldBy !== null) {
+  let suppressedBy: "handover" | "rule" | null = null;
+  const covered = record !== null && eraCovered(record, th);
+  if (record?.rule && (rawState === "imperative" || rawState === "compact-needed")) {
+    state = "advisory";
+    suppressedBy = "rule";
+  } else if (rawState === "imperative" && covered) {
     state = "advisory";
     suppressedBy = "handover";
-  }
-  // ISS-1263: the hard rate limit, independent of any stamp. Whatever the
-  // re-arm gates let through still reads advisory while the line was
-  // delivered inside the interval, so every reader (banner, guide, status
-  // projection, `session intel`) agrees the line is quiet and says why.
-  const limitedFor = rawState === "imperative" && heldBy === null ? rateLimitedFor(record, cfg, input.sampledAt) : null;
-  if (limitedFor !== null) {
-    state = "advisory";
-    suppressedBy = "rate-limit";
   }
   // At compact-needed the imperative condition is satisfied too (the tokens
   // alone already clear the higher line), so the stamp continues rather than
@@ -225,20 +152,27 @@ export function computeSample(input: ComputeSampleInput): TokenPressureSample {
   // Both clauses hold at an imperative. The reason names the one whose line
   // is HIGHER in tokens: the one that was reached last and so decided it. It
   // depends on the ceiling and the config only, so it never flips.
-  const pctDecides = cfg.imperativePct * c >= c - headroomLimit;
+  const pctDecides = th.imperativePct * c >= c - headroomLimit;
   const imperativeBasis = pctDecides
-    ? `${tokens} >= ${cfg.imperativePct} x ${Math.round(c)} (${Math.round(c - tokens)} tokens left)`
-    : `${tokens} leaves headroom ${Math.round(c - tokens)} <= imperativeHeadroomTokens ${headroomLimit} (and is past ${cfg.imperativePct} x ${Math.round(c)})`;
-  const reason =
+    ? `${tokens} >= ${th.imperativePct} x ${Math.round(c)} (${Math.round(c - tokens)} tokens left)`
+    : `${tokens} leaves headroom ${Math.round(c - tokens)} <= imperativeHeadroomTokens ${headroomLimit} (and is past ${th.imperativePct} x ${Math.round(c)})`;
+  const held = suppressedBy === "rule"
+    ? "; held at advisory by this session's handover rule"
+    : suppressedBy === "handover"
+      ? "; held at advisory: a handover covers this compaction"
+      : "";
+  const empty = emptyBandReason(th);
+  const base =
     rawState === "compact-needed"
-      ? `${tokens} >= ${cfg.compactNeededPct} x ${Math.round(c)}; past this point a handover does not help and only /compact does`
+      ? `${tokens} >= ${th.compactNeededPct} x ${Math.round(c)}; auto-compaction is close`
       : rawState === "imperative"
-        ? `${imperativeBasis}${heldBy ? `; suppressed by a handover written for this compaction (the ${heldBy} gate holds the re-arm)` : ""}${limitedFor !== null ? `; rate-limited: the imperative was shown ${Math.round(limitedFor / 1000)} s ago; it repeats at most once every ${describeRepeatInterval(cfg.handoverRearmIntervalMs)}` : ""}`
+        ? imperativeBasis
         : rawState === "advisory"
-          ? ceiling.conflict && tokens < cfg.advisoryPct * c
+          ? ceiling.conflict && tokens < th.advisoryPct * c
             ? `ceiling conflict: ${ceiling.conflict}`
-            : `${tokens} >= ${cfg.advisoryPct} x ${Math.round(c)}`
+            : `${tokens} >= ${th.advisoryPct} x ${Math.round(c)}`
           : null;
+  const reason = base === null ? null : `${base}${held}${empty ? `; ${empty}` : ""}`;
 
   return { ...common, pct, headroom, jumpAllowance: jump.value, jumpAllowanceBasis: jump.basis, state, rawState, suppressedBy, imperativeSince, reason };
 }

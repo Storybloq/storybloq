@@ -459,8 +459,8 @@ describe("ISS-1185: handleHandoverCreate's stamped-root diagnostic", () => {
       sampledBy: "stop-hook",
       state: "compact-needed",
       rawState: "compact-needed",
-      pct: 0.96,
-      contextTokens: 400_000,
+      pct: 0.985,
+      contextTokens: 410_000,
       ceiling: 416_250,
       ceilingSource: "setting",
       ceilingConfidence: "high",
@@ -495,7 +495,7 @@ describe("ISS-1185: handleHandoverCreate's stamped-root diagnostic", () => {
       expect(readPresenceRecord(wt.main, SID)).toBeNull();
 
       const md = await handleHandoverCreate("# H\nDone.", "session", "md", wt.main);
-      expect(md.output).toMatch(/Keep working in this same turn; do not stop/);
+      expect(md.output).toMatch(/\n\nHandover recorded[:.]/);
       expect(md.output).toMatch(new RegExp(`\\(stamped under a different root: ${wt.worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
       expect(readPresenceRecord(wt.worktree, SID)!.sessionIntel!.handoverWrittenAt).not.toBeNull();
 
@@ -507,21 +507,21 @@ describe("ISS-1185: handleHandoverCreate's stamped-root diagnostic", () => {
 
       // ISS-1197 commit 2: compact-needed AND a diverged root in one reply.
       // The parenthetical is appended to whichever line was chosen, so a
-      // divergence must not silently restore the advisory wording.
+      // divergence must not silently restore the covering wording.
       const at = new Date().toISOString();
       applyPresenceEnrichment(wt.worktree, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({
         ...b,
         sessionIntel: { ...b.sessionIntel!, handoverWrittenAt: null, tokensAtHandover: null, handoverBoundaryAt: null, lastSample: compactNeededSample(at) },
       }));
       const both = await handleHandoverCreate("# H-compact", "session-compact", "md", wt.main);
-      expect(both.output).toMatch(/past the compact line/);
-      expect(both.output).not.toMatch(/held at advisory/);
+      expect(both.output).toMatch(/Handover recorded\. Auto-compaction is close and expected: keep working through it\./);
+      expect(both.output).not.toMatch(/held at advisory|will not ask again/);
       expect(both.output).toMatch(new RegExp(`\\(stamped under a different root: ${wt.worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
 
       // A record found directly under the MCP root itself: no divergence note.
       bindCallerAt(wt.main);
       const direct = await handleHandoverCreate("# H3", "session-direct", "md", wt.main);
-      expect(direct.output).toMatch(/Keep working in this same turn; do not stop/);
+      expect(direct.output).toMatch(/\n\nHandover recorded[:.]/);
       expect(direct.output).not.toMatch(/stamped under a different root/);
       const directJson = await handleHandoverCreate("# H4", "session-direct-json", "json", wt.main);
       const parsedDirect = JSON.parse(directJson.output as string) as { data: { tokenPressureStamped?: boolean; tokenPressureStampedRoot?: string } };

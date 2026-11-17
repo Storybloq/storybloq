@@ -1649,65 +1649,92 @@ describe("ISS-1214: formatHandoverCreateResult names why an attempted stamp did 
 
   it("md: the bare reply is unchanged when there is no failure, and a failure adds one block under it", () => {
     expect(outputFormatter.formatHandoverCreateResult(FILE, "md")).toBe(`Created handover: ${FILE}`);
-    expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, null)).toBe(`Created handover: ${FILE}`);
-    expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, busy)).toBe(
-      `Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). The pressure line repeats at most once every 10 minutes.`,
+    expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, null)).toBe(`Created handover: ${FILE}`);
+    expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, busy)).toBe(
+      `Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`,
     );
   });
 
   it("md: the causal restart hint requires POSITIVE staleness; an unbound caller on a fresh server gets the neutral sentence", () => {
-    const fresh = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, unbound, false);
-    expect(fresh).toContain("Handover stamp did not land (skipped: no presence record for the caller). The pressure line repeats at most once every 10 minutes.");
+    const fresh = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, unbound, false);
+    expect(fresh).toContain("Handover stamp did not land (skipped: no presence record for the caller). The notice is shown once per compaction, so it will not repeat; the handover is on disk.");
     expect(fresh).toContain(NEUTRAL);
     expect(fresh).not.toContain(HINT);
 
-    const stale = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, unbound, true);
+    const stale = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, unbound, true);
     expect(stale).toContain(HINT);
     expect(stale).not.toContain(NEUTRAL);
 
     // Default is false: a caller that cannot establish staleness never asserts it.
-    expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, unbound)).toContain(NEUTRAL);
+    expect(outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, unbound)).toContain(NEUTRAL);
   });
 
   it("md: outcome, refused and error kinds get neither sentence, stale or not", () => {
     for (const kind of ["outcome", "refused", "error"] as const) {
       for (const stale of [false, true]) {
-        const out = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, { reason: `r-${kind}`, kind }, stale);
+        const out = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, { reason: `r-${kind}`, kind }, stale);
         expect(out, `${kind}/${String(stale)}`).toBe(
-          `Created handover: ${FILE}\n\nHandover stamp did not land (r-${kind}). The pressure line repeats at most once every 10 minutes.`,
+          `Created handover: ${FILE}\n\nHandover stamp did not land (r-${kind}). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`,
         );
       }
     }
   });
 
   it("json: tokenPressureStampReason carries the reason, and the key is absent when there is none", () => {
-    const withReason = JSON.parse(outputFormatter.formatHandoverCreateResult(FILE, "json", false, null, null, false, busy)) as { data: Record<string, unknown> };
+    const withReason = JSON.parse(outputFormatter.formatHandoverCreateResult(FILE, "json", false, null, null, null, busy)) as { data: Record<string, unknown> };
     expect(withReason.data).toEqual({ filename: FILE, tokenPressureStampReason: "lock busy" });
-    const none = JSON.parse(outputFormatter.formatHandoverCreateResult(FILE, "json", false, null, null, false, null)) as { data: Record<string, unknown> };
+    const none = JSON.parse(outputFormatter.formatHandoverCreateResult(FILE, "json", false, null, null, null, null)) as { data: Record<string, unknown> };
     expect(none.data).toEqual({ filename: FILE });
     const landed = JSON.parse(outputFormatter.formatHandoverCreateResult(FILE, "json", true)) as { data: Record<string, unknown> };
     expect(landed.data).toEqual({ filename: FILE, tokenPressureStamped: true });
   });
 });
 
-describe("ISS-1263: the reply quotes the configured re-arm interval exactly", () => {
-  const FILE = "2026-09-24-01-session.md";
-  const busy = { reason: "lock busy", kind: "outcome" } as const;
-  const acked = (ms: number) => outputFormatter.formatHandoverCreateResult(FILE, "md", true, null, null, false, null, false, "unbound-era", ms);
-  const failed = (ms: number) => outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, false, busy, false, "bound", ms);
+describe("ISS-1428 T13: the stamp sentence says what the stamp achieved (plan section 8)", () => {
+  const FILE = "2026-11-17-01-session.md";
+  const reply = (r: Partial<outputFormatter.HandoverStampReply> | null) =>
+    outputFormatter.formatHandoverCreateResult(FILE, "md", true, null, null, r === null ? null : { covers: false, asked: false, pastCompact: false, tokens: null, point: null, ...r });
+  const KEEP = "Keep working in this same turn; do not stop, defer the next step, or ask the user whether to continue.";
 
-  it("whole minutes, whole seconds and milliseconds are each rendered without rounding", () => {
-    expect(acked(600_000)).toBe(`Created handover: ${FILE}\n\nHandover recorded at ${FILE}. The pressure line will not repeat for 10 minutes.`);
-    expect(acked(60_000)).toMatch(/will not repeat for 1 minute\.$/);
-    expect(acked(90_000)).toMatch(/will not repeat for 90 seconds\.$/);
-    expect(acked(1_500)).toMatch(/will not repeat for 1500 milliseconds\.$/);
-    expect(failed(90_000)).toMatch(/\(lock busy\)\. The pressure line repeats at most once every 90 seconds\.$/);
+  it("covers, asked: names the notice it answers, with the numbers", () => {
+    expect(reply({ covers: true, asked: true, tokens: 207_480, point: 228_000 })).toBe(
+      `Created handover: ${FILE}\n\nHandover recorded: it covers this compaction and the notice will not ask again before it. Written on the context-pressure notice (207,480 of about 228,000 tokens in use, 91%). ${KEEP}`,
+    );
   });
 
-  it("an interval of zero promises no hold at all", () => {
-    expect(acked(0)).toBe(`Created handover: ${FILE}\n\nHandover recorded at ${FILE}. The pressure line has no minimum repeat interval (handoverRearmIntervalMs is 0).`);
-    expect(failed(0)).toMatch(/\(lock busy\)\. The pressure line has no minimum repeat interval \(handoverRearmIntervalMs is 0\)\.$/);
-    expect(acked(0)).not.toMatch(/minute|will not repeat/);
+  it("covers, not asked: the same without the Written on sentence", () => {
+    expect(reply({ covers: true, tokens: 171_000, point: 228_000 })).toBe(
+      `Created handover: ${FILE}\n\nHandover recorded: it covers this compaction and the notice will not ask again before it. ${KEEP}`,
+    );
+  });
+
+  it("covers past the compact line: compaction is close and expected", () => {
+    expect(reply({ covers: true, pastCompact: true, tokens: 226_000, point: 228_000 })).toBe(`Created handover: ${FILE}\n\nHandover recorded. Auto-compaction is close and expected: keep working through it.`);
+    expect(reply({ covers: true, pastCompact: true, asked: true, tokens: 226_000, point: 228_000 })).toBe(
+      `Created handover: ${FILE}\n\nHandover recorded. Written on the context-pressure notice (226,000 of about 228,000 tokens in use, 99%). Auto-compaction is close and expected: keep working through it.`,
+    );
+  });
+
+  it("does not cover, tokens known: written well before the point", () => {
+    expect(reply({ tokens: 136_800, point: 228_000 })).toBe(
+      `Created handover: ${FILE}\n\nHandover recorded. It was written well before the compaction point (136,800 of about 228,000 tokens in use), so the notice may still ask for one nearer to it. Keep working in this same turn.`,
+    );
+    // The empty-band configuration: a stamp past the compact line that does not cover gets this variant, never "covers".
+    const empty = reply({ pastCompact: true, tokens: 880_000, point: 925_000 });
+    expect(empty).toContain("It was written well before the compaction point (880,000 of about 925,000 tokens in use)");
+    expect(empty).not.toMatch(/covers|close and expected/);
+  });
+
+  it("does not cover, tokens unknown (or no observation at all)", () => {
+    const unknown = `Created handover: ${FILE}\n\nHandover recorded. The context size was not known when it was written, so the notice may still ask for one near the compaction point. Keep working in this same turn.`;
+    expect(reply({ point: 228_000 })).toBe(unknown);
+    expect(reply(null)).toBe(unknown);
+  });
+
+  it("a failed stamp promises no repeat interval, and the reply never names a rearm key", () => {
+    const failed = outputFormatter.formatHandoverCreateResult(FILE, "md", false, null, null, null, { reason: "lock busy", kind: "outcome" });
+    expect(failed).toBe(`Created handover: ${FILE}\n\nHandover stamp did not land (lock busy). The notice is shown once per compaction, so it will not repeat; the handover is on disk.`);
+    for (const r of [failed, reply({ covers: true }), reply(null)]) expect(r).not.toMatch(/handoverRearm|minute|no further handovers|\/compact/);
   });
 });
 

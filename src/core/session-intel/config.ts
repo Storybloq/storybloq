@@ -36,23 +36,24 @@ export interface SessionIntelConfig {
   readonly jumpAllowanceCapTokens: number;
   readonly maxSampleAgeMs: number;
   readonly compactPendingTtlMs: number;
-  readonly stepPct: number;
   /**
-   * ISS-1197: the three handover re-arm gates. A handover holds the
-   * imperative at advisory while ANY of them is still closed, so an agent
-   * that has just written one is not told to write another on the next
-   * prompt. The growth gate is `min(stepPct x ceiling, this cap)`: on a large
-   * ceiling a percentage step alone is wider than the jump allowance that
-   * raised the imperative in the first place.
+   * ISS-1428: the heal step is `min(stepPct x ceiling, handoverRearmStepCapTokens)`.
+   * A sample that far below the tokens a notice was claimed on (or a stamp
+   * was made at) is a compaction nobody recorded, and clears the marks (or
+   * the stamp).
    */
+  readonly stepPct: number;
   readonly handoverRearmStepCapTokens: number;
-  /** Wall time since the later of the handover and the last imperative. */
+  /**
+   * ISS-1428: no longer used (the notice is shown once per band per
+   * compaction). Still parsed and bounds-checked so a config carrying them
+   * stays valid, and named in `notes` when present.
+   */
   readonly handoverRearmIntervalMs: number;
-  /** Prompts seen since the handover (a bus message and an idle notice each count as one). */
   readonly handoverRearmPrompts: number;
   /**
-   * ISS-1197 commit 2: the fraction of the ceiling past which a handover no
-   * longer helps and only the user's `/compact` does. Must exceed
+   * ISS-1197 commit 2: the fraction of the ceiling past which the compaction
+   * is close (ISS-1428: the `uncovered` notice band). Must exceed
    * `imperativePct` -- a compact-needed line at or below the imperative one
    * would swallow the imperative state entirely -- and the pair falls back to
    * the defaults together when it does not, the way advisory/imperative does.
@@ -188,6 +189,10 @@ export function resolveSessionIntelConfig(rawBlock: unknown): SessionIntelConfig
     notes.push(`sessionIntel.jumpAllowanceFloorTokens (${jumpAllowanceFloorTokens}) exceeds jumpAllowanceCapTokens (${jumpAllowanceCapTokens}); defaults ${d.jumpAllowanceFloorTokens}/${d.jumpAllowanceCapTokens} used for the pair`);
     jumpAllowanceFloorTokens = d.jumpAllowanceFloorTokens;
     jumpAllowanceCapTokens = d.jumpAllowanceCapTokens;
+  }
+
+  for (const key of ["handoverRearmIntervalMs", "handoverRearmPrompts"] as const) {
+    if (raw[key] !== undefined) notes.push(`sessionIntel.${key} is no longer used: the notice is shown once per band per compaction`);
   }
 
   return {

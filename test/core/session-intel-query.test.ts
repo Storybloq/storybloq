@@ -317,30 +317,27 @@ describe("sampleSession", () => {
 });
 
 describe("handleSessionIntel (the shared CLI/MCP handler)", () => {
-  it("ISS-1197: the md surface carries the same imperative wording as the banner, the guide directive and the prompt hook", () => {
+  it("ISS-1428: the md surface reports the band and why, and words no notice (the notice is the push surfaces' job)", () => {
     withFixture((f) => {
       bindCaller(f.root);
       // r-awey8xrtwqf1r005: imperative needs 0.9 x 416,250 (374,625) AND 50,000 or fewer tokens left.
       writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(0), read: 380_000 })]);
       const md = formatSessionIntelMd(handleSessionIntel({ cwd: f.root, format: "json", projectsDir: f.projects }).result);
       expect(md).toMatch(/Token pressure: IMPERATIVE/);
-      expect(md).toMatch(/Write a handover now \(storybloq handover create \/ storybloq_handover_create\), then keep working in this same turn\./);
-      expect(md).toMatch(/auto-compaction that follows is expected and safe: the session continues through it/);
+      expect(md).toMatch(/- Why: /);
+      expect(md).not.toMatch(/Write a handover|handover create|\/compact|no further handovers/i);
     });
   });
 
-  it("ISS-1197 commit 2: past compactNeededPct the md surface says to run /compact and never to write a handover", () => {
+  it("ISS-1428: past compactNeededPct the md surface reports COMPACT-NEEDED with its reason, never /compact or 'no further handovers'", () => {
     withFixture((f) => {
       bindCaller(f.root);
       // Ceiling 416,250; 410,000 tokens is 98.5%, past the 407,925 compact line (T-533: 0.98).
       writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(0), read: 410_000 })]);
       const md = formatSessionIntelMd(handleSessionIntel({ cwd: f.root, format: "json", projectsDir: f.projects }).result);
       expect(md).toMatch(/Token pressure: COMPACT-NEEDED/);
-      expect(md).toMatch(/\/compact/);
-      expect(md).not.toMatch(/write a handover/i);
-      // The advice line is present, not just the header: a dropped branch
-      // would still render the header and the Why line.
-      expect(md).toMatch(/no further handovers/i);
+      expect(md).toMatch(/- Why: .*auto-compaction is close/);
+      expect(md).not.toMatch(/\/compact|no further handovers|write a handover/i);
     });
   });
 

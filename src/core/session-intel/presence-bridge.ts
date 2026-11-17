@@ -24,8 +24,9 @@ import { assertNoSymlinkOnPath } from "../skill-sync-check.js";
 import { presenceDirIfPresent, readBoundedNoFollow, directoryIdentity, ensureTelemetrySubdir, removeRegularFile, telemetrySubdirIfPresent } from "../../presence/io.js";
 import { parsePresenceRecord } from "../../presence/record.js";
 import { MAX_RECORD_BYTES, presenceFileBase, type SessionPresence } from "../../presence/types.js";
-import { emptySessionIntel, type Epoch, type SessionIntelPresence, type SessionIntelSample, type TokenPressureState } from "../../presence/session-intel-fields.js";
+import { emptySessionIntel, type Epoch, type SessionIntelOwed, type SessionIntelPresence, type SessionIntelSample, type TokenPressureState } from "../../presence/session-intel-fields.js";
 import type { SessionIntelConfig } from "./config.js";
+import { decideFromRecord, eraCovered, finalAllowed, stampedThisEra, thresholdsForRecord, type FinalAction, type NoticeCandidate } from "./policy.js";
 import { readEra, type EraEntry } from "./era-store.js";
 import { processEra, type ProcessCheck, type ProcessEraResolver } from "./process-era.js";
 import { anchorsStillMatch, scanBackwardForBoundary } from "./transcript-scan.js";
@@ -512,6 +513,19 @@ export interface ReconcileInput {
 
 const tsOf = (iso: string) => Date.parse(iso);
 
+/**
+ * ISS-1428: what a compaction reset says about the era it ends. The catch-up
+ * notice is owed when the record has no handover rule, the ending era had no
+ * stamp for it (judged before the reset) and it reached the imperative line
+ * (a band mark, or a last sample at imperative or compact-needed).
+ */
+export function owedAfterEra(intel: SessionIntelPresence, boundaryAt: string): SessionIntelOwed | null {
+  if (intel.rule !== null || stampedThisEra(intel)) return null;
+  const raw = intel.lastSample?.rawState ?? null;
+  const reached = intel.lastImperativeEmittedAt !== null || intel.compactNeededEmittedAt !== null || raw === "imperative" || raw === "compact-needed";
+  return reached ? { boundaryAt, eraStartAt: intel.lastBoundaryAt ?? intel.capturedAt } : null;
+}
+
 /** Applies a boundary newer than `lastBoundaryAt`. Idempotent. Pure. */
 export function applyBoundaryReset(intel: SessionIntelPresence, ts: string): SessionIntelPresence {
   if (intel.lastBoundaryAt !== null && tsOf(ts) <= tsOf(intel.lastBoundaryAt)) return intel;
@@ -525,12 +539,15 @@ export function applyBoundaryReset(intel: SessionIntelPresence, ts: string): Ses
     handoverWrittenAt: handoverAfter ? intel.handoverWrittenAt : null,
     tokensAtHandover: handoverAfter ? intel.tokensAtHandover : null,
     handoverBoundaryAt: handoverAfter ? ts : null,
-    promptsSinceHandover: handoverAfter ? intel.promptsSinceHandover : 0,
-    lastImperativeAt: handoverAfter ? intel.lastImperativeAt : null,
     handoverStampBinding: handoverAfter ? intel.handoverStampBinding : null,
-    // ISS-1263: a new compaction is a new epoch; its first imperative is a
-    // real event and may be shown.
+    handoverFile: handoverAfter ? intel.handoverFile : null,
+    coveredBy: handoverAfter ? intel.coveredBy : null,
+    // A new compaction is a new era: each band may be noticed once again.
     lastImperativeEmittedAt: null,
+    compactNeededEmittedAt: null,
+    noticeTokens: null,
+    owed: handoverAfter ? null : owedAfterEra(intel, ts),
+    policyGen: intel.policyGen + 1,
   };
 }
 
@@ -546,10 +563,14 @@ export function applyAssumedReset(intel: SessionIntelPresence, at: string): Sess
     handoverWrittenAt: null,
     tokensAtHandover: null,
     handoverBoundaryAt: null,
-    promptsSinceHandover: 0,
-    lastImperativeAt: null,
     handoverStampBinding: null,
+    handoverFile: null,
+    coveredBy: null,
     lastImperativeEmittedAt: null,
+    compactNeededEmittedAt: null,
+    noticeTokens: null,
+    owed: owedAfterEra(intel, at),
+    policyGen: intel.policyGen + 1,
   };
 }
 
@@ -723,6 +744,35 @@ export function judgeSample(
   return { verdict: "accept", reason: "accepted", bumpRevision: false };
 }
 
+/**
+ * ISS-1428: the heal. A compaction that leaves no boundary record (no
+ * PreCompact hook, a boundary outside the tail window) would otherwise keep
+ * the band marks and the stamp of an era that has ended and silence every
+ * later one. It is decided by a fall in tokens and by nothing else, so a change
+ * of thresholds, override or expected point never heals: a sample more than
+ * `min(stepPct x point, handoverRearmStepCapTokens)` below the tokens a notice
+ * was claimed on clears both marks, and one that far below the stamp's tokens
+ * clears the stamp. Either advances `policyGen`; neither bumps the revision,
+ * touches the epoch or sets `owed`. Pure.
+ */
+export function healStep(cfg: SessionIntelConfig, point: number | null): number {
+  return point === null ? cfg.handoverRearmStepCapTokens : Math.min(cfg.stepPct * point, cfg.handoverRearmStepCapTokens);
+}
+
+export function healIntel(intel: SessionIntelPresence, sample: TokenPressureSample, cfg: SessionIntelConfig): SessionIntelPresence {
+  const tokens = sample.contextTokens;
+  if (tokens === null) return intel;
+  const step = healStep(cfg, sample.ceiling.ceiling);
+  let next = intel;
+  if (intel.noticeTokens !== null && intel.noticeTokens - tokens > step) {
+    next = { ...next, lastImperativeEmittedAt: null, compactNeededEmittedAt: null, noticeTokens: null };
+  }
+  if (intel.tokensAtHandover !== null && intel.tokensAtHandover - tokens > step) {
+    next = { ...next, handoverWrittenAt: null, tokensAtHandover: null, handoverBoundaryAt: null, handoverStampBinding: null, handoverFile: null, coveredBy: null };
+  }
+  return next === intel ? intel : { ...next, policyGen: intel.policyGen + 1 };
+}
+
 export function persistSample(input: PersistInput): PersistOutcome {
   // Boxed so the closure's assignment is visible to the narrowing below.
   const box: { outcome: PersistOutcome } = { outcome: { status: "skipped", reason: "not attempted", validated: false } };
@@ -754,37 +804,19 @@ export function persistSample(input: PersistInput): PersistOutcome {
       if (!judged.bumpRevision) return base;
       return { ...base, sessionIntel: { ...intel, revision: intel.revision + 1, consumedOffset: 0, baselineAnchor: null, incarnation: check.incarnation, lastSample: null } };
     }
-    // Suppression recomputed against the record as it is NOW (a handover
-    // stamp that landed between compute and persist is honoured). The epoch
-    // is owned by reconciliation, never by a sample.
-    // ISS-1197: a prompt that arrives while a handover stands for the current
-    // compaction ages the prompt gate. Counted BEFORE the recompute, so the
-    // prompt that clears the gate is the one that re-arms.
-    const stamped = intel.handoverWrittenAt !== null && intel.handoverBoundaryAt === intel.lastBoundaryAt;
-    const counted = stamped && input.sample.sampledBy === "prompt-hook"
-      ? { ...intel, promptsSinceHandover: intel.promptsSinceHandover + 1 }
-      : intel;
-    const recomputed = input.recompute(counted);
-    // The latch is a CONSEQUENCE of this sample, so it is written to the
-    // record but never fed back into the sample's own verdict: the caller
-    // reads `sample`, not a recompute of a record that now says the
-    // imperative just fired.
-    //
-    // Only the prompt hook spends the re-arm, because only its
-    // additionalContext reaches the model. A Stop-hook sample that reads
-    // imperative delivers nothing, so latching on it would zero the count and
-    // restart the interval behind the agent's back, and the next prompt would
-    // go silent: the imperative would be swallowed for another full cycle.
-    const fired = recomputed.state === "imperative" && input.sample.sampledBy === "prompt-hook";
+    // ISS-1428: the heal runs first, on the record the sample is written
+    // into, then suppression is recomputed against the record as it is NOW
+    // (a handover stamp that landed between compute and persist is
+    // honoured). The epoch is owned by reconciliation, never by a sample.
+    const healed = healIntel(intel, input.sample, input.cfg);
+    const recomputed = input.recompute(healed);
     const next: SessionIntelPresence = {
-      ...counted,
+      ...healed,
       transcriptPath: input.transcriptPath,
       consumedOffset: obs.consumedOffset,
       incarnation: obs.incarnation,
       baselineAnchor: obs.anchor,
       lastSample: compactSample(recomputed),
-      promptsSinceHandover: fired ? 0 : counted.promptsSinceHandover,
-      lastImperativeAt: fired ? recomputed.sampledAt : counted.lastImperativeAt,
     };
     box.outcome = { status: "accepted", intel: next, sample: recomputed };
     return { ...base, sessionIntel: next };
@@ -817,6 +849,17 @@ export type HandoverStampOutcome = EnrichmentOutcome | { readonly status: "refus
  */
 export interface HandoverStampObservation {
   state: TokenPressureState | null;
+  /**
+   * ISS-1428: what the reply may say, all read from the record the stamp was
+   * written into, under the same lock. `asked`: a band notice was delivered in
+   * this era. `covers`: `eraCovered` holds. `pastCompact`: the stamp's tokens
+   * are at or past the compact line. `tokens` and `point` are the stamp's.
+   */
+  asked?: boolean;
+  covers?: boolean;
+  pastCompact?: boolean;
+  tokens?: number | null;
+  point?: number | null;
 }
 
 /**
@@ -852,178 +895,112 @@ export interface HandoverStampObserve {
  * stands. The stamp's identity then rests on the session id alone; its worst
  * case is one withheld imperative, where the missing stamp produced a flood.
  */
-export function stampHandover(root: string, sessionId: string, expectedEra: string | null, tokensAtHandover: number | null, now: number, observe?: HandoverStampObserve, mode: "bound" | "unbound-era" = "bound"): HandoverStampOutcome {
+export interface HandoverStampWhat {
+  /** The handover file the stamp is made for; null for a stamp with no file. */
+  readonly handoverFile?: string | null;
+  /** ISS-1428: `session alert --covered-by` text, stamped through this same write path. */
+  readonly coveredBy?: string | null;
+}
+
+export function stampHandover(root: string, sessionId: string, expectedEra: string | null, tokensAtHandover: number | null, now: number, observe?: HandoverStampObserve, mode: "bound" | "unbound-era" = "bound", what: HandoverStampWhat = {}): HandoverStampOutcome {
   let refused: string | null = null;
   const outcome = applyPresenceEnrichment(root, sessionId, LIFECYCLE_LOCK_BUDGET_MS, "session-intel", (base, nowIso) => {
     const intel = base.sessionIntel;
     if (!intel) { refused = mode === "bound" ? "record era differs from the caller's live era" : "no session intel on the record"; return base; }
     if (mode === "bound" && (expectedEra === null || intel.era === null || intel.era !== expectedEra)) { refused = "record era differs from the caller's live era"; return base; }
     if (base.endedAt !== null) { refused = "caller session has ended"; return base; }
-    // The stored sample is rewritten to its suppressed form in the same
-    // write: the stamp records the sample's own token count, so the step
-    // rule holds by construction, and every reader (banner, guide directive,
-    // status projection) drops to advisory at once instead of repeating
-    // IMPERATIVE until the next Stop sample lands. Field finding 2026-09-09:
-    // agents that had just written a handover kept seeing the imperative
-    // banner and stopped.
     const last = intel.lastSample;
     // Applied to the record as it is HERE, so the answer belongs to the sample
     // actually being stamped. The identity clause is not redundant with the
     // status: an expired pending event of this era takes the ASSUMED reset,
     // which reports "complete" while nulling the sample, and reporting the
     // pre-reset reading would describe a compaction that has already happened.
-    // A rejected sample leaves the observation null, which is the pre-existing
-    // continuation line, never silence.
+    let sampleHolds = false;
     if (observe && last) {
       const rec = reconcileIntel(intel, null, peekPending(root, sessionId, now), observe.cfg, now);
-      if (rec.status === "complete" && rec.intel.lastSample === last) observe.out.state = last.state;
+      sampleHolds = rec.status === "complete" && rec.intel.lastSample === last;
+      if (sampleHolds) observe.out.state = last.state;
     }
-    const lastSample = last && last.state === "imperative" && last.ceiling !== null && (tokensAtHandover === null || tokensAtHandover === last.contextTokens)
+    const stamped: SessionIntelPresence = {
+      ...intel,
+      handoverWrittenAt: nowIso,
+      tokensAtHandover: tokensAtHandover ?? intel.lastSample?.contextTokens ?? null,
+      handoverBoundaryAt: intel.lastBoundaryAt,
+      handoverFile: what.handoverFile ?? null,
+      coveredBy: what.coveredBy ?? null,
+      handoverStampBinding: mode,
+      // ISS-1428: a landed stamp settles the catch-up the previous era owed.
+      owed: null,
+      policyGen: intel.policyGen + 1,
+    };
+    // The stored sample is rewritten to its projected form in the same write,
+    // so every reader drops to advisory at once when the stamp covers.
+    const covers = observe ? eraCovered(stamped, thresholdsForRecord(stamped, observe.cfg)) : false;
+    const lastSample = last && last.rawState === "imperative" && last.state === "imperative" && covers && stamped.rule === null
       ? { ...last, state: "advisory" as const, suppressedBy: "handover" as const }
       : last;
-    return {
-      ...base,
-      sessionIntel: {
-        ...intel,
-        lastSample,
-        handoverWrittenAt: nowIso,
-        tokensAtHandover: tokensAtHandover ?? intel.lastSample?.contextTokens ?? null,
-        handoverBoundaryAt: intel.lastBoundaryAt,
-        // ISS-1197: the stamp starts both re-arm latches from zero.
-        promptsSinceHandover: 0,
-        lastImperativeAt: null,
-        // ISS-1263: lastImperativeEmittedAt is deliberately untouched: the
-        // rate limit is independent of the stamp.
-        handoverStampBinding: mode,
-      },
-    };
+    if (observe) {
+      // The reply describes only a sample the reconcile keeps: one a pending
+      // compaction has already replaced says nothing about this compaction.
+      const th = thresholdsForRecord(stamped, observe.cfg);
+      const tokens = sampleHolds || tokensAtHandover !== null ? stamped.tokensAtHandover : null;
+      observe.out.asked = intel.lastImperativeEmittedAt !== null || intel.compactNeededEmittedAt !== null;
+      observe.out.covers = tokens !== null && covers;
+      observe.out.tokens = tokens;
+      observe.out.point = th.point;
+      observe.out.pastCompact = tokens !== null && th.compactLine !== null && tokens >= th.compactLine;
+    }
+    return { ...base, sessionIntel: { ...stamped, lastSample } };
   }, () => new Date(now));
   return refused !== null && outcome.status === "written" ? { status: "refused", reason: refused } : outcome;
 }
 
 // ---------------------------------------------------------------------------
-// Derived handover stamp (ISS-1316)
+// Notice claim (ISS-1428)
 // ---------------------------------------------------------------------------
 
-/** What the prompt hook saw on the record when it went looking for a handover file. */
-export interface DerivedStampSeen extends ImperativeSeen {
-  readonly lastImperativeEmittedAt: string;
-}
-
-/**
- * The newest regular `.md` in `.story/handovers/` written after `afterMs` and
- * no later than `nowMs`, or null. Handover files carry no session id, so the
- * only attribution is time: written after this session was shown the
- * imperative. A peer's handover in that window counts too; its cost is one
- * re-arm cycle of quiet, where the missing stamp cost a drip for the session.
- */
-export function newestHandoverAfter(root: string, afterMs: number, nowMs: number): { readonly file: string; readonly mtimeMs: number } | null {
-  const dir = join(root, ".story", "handovers");
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return null;
-  }
-  let best: { file: string; mtimeMs: number } | null = null;
-  for (const name of names) {
-    if (!name.endsWith(".md") || name.startsWith(".")) continue;
-    let st: fs.Stats;
-    try {
-      st = fs.lstatSync(join(dir, name));
-    } catch {
-      continue;
-    }
-    if (!st.isFile()) continue;
-    if (st.mtimeMs <= afterMs || st.mtimeMs > nowMs) continue;
-    if (!best || st.mtimeMs > best.mtimeMs) best = { file: name, mtimeMs: st.mtimeMs };
-  }
-  return best;
-}
-
-/**
- * ISS-1316: stamps the caller's record from a handover file on disk, for a
- * handover a stale MCP server wrote but could not stamp. Written under the
- * lock only when the record is still exactly what the hook saw: same
- * revision, boundary and (absent) stamp, the same last delivery of the
- * imperative, not ended, and no pending compaction. The stamp is the file's
- * mtime and the sample's token count, and the stored imperative drops to
- * advisory in the same write, as `stampHandover` does. True only when the
- * write landed.
- */
-export function stampDerivedHandover(root: string, sessionId: string, seen: DerivedStampSeen, writtenAtMs: number, now: number): boolean {
-  let granted = false;
-  const outcome = applyPresenceEnrichment(root, sessionId, TRY_LOCK_BUDGET_MS, "session-intel", (base) => {
-    const intel = base.sessionIntel;
-    if (!intel || base.endedAt !== null) return ABORT_ENRICHMENT;
-    if (intel.revision !== seen.revision || intel.lastBoundaryAt !== seen.lastBoundaryAt) return ABORT_ENRICHMENT;
-    if (intel.handoverWrittenAt !== seen.handoverWrittenAt) return ABORT_ENRICHMENT;
-    if (intel.lastImperativeEmittedAt !== seen.lastImperativeEmittedAt) return ABORT_ENRICHMENT;
-    const pending = peekPending(root, sessionId, now);
-    if (!pending.complete || pending.files.length > 0) return ABORT_ENRICHMENT;
-    const last = intel.lastSample;
-    const tokensAtHandover = last?.contextTokens ?? null;
-    const lastSample = last && last.state === "imperative" && last.ceiling !== null
-      ? { ...last, state: "advisory" as const, suppressedBy: "handover" as const }
-      : last;
-    granted = true;
-    return {
-      ...base,
-      sessionIntel: {
-        ...intel,
-        lastSample,
-        handoverWrittenAt: new Date(writtenAtMs).toISOString(),
-        tokensAtHandover,
-        handoverBoundaryAt: intel.lastBoundaryAt,
-        promptsSinceHandover: 0,
-        lastImperativeAt: null,
-        handoverStampBinding: "derived" as const,
-      },
-    };
-  }, () => new Date(now));
-  return granted && outcome.status === "written";
-}
-
-// ---------------------------------------------------------------------------
-// Imperative emission claim (ISS-1263)
-// ---------------------------------------------------------------------------
-
-/** The identity of the record a delivering surface acquired its imperative sample from. */
-export interface ImperativeSeen {
+/** The identity of the record a surface decided its notice on. */
+export interface NoticeSeen {
   readonly revision: number;
   readonly lastBoundaryAt: string | null;
   readonly handoverWrittenAt: string | null;
+  readonly policyGen: number;
+}
+
+export function noticeSeenOf(intel: SessionIntelPresence): NoticeSeen {
+  return { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt, policyGen: intel.policyGen };
 }
 
 /**
- * ISS-1263: the one right to put the imperative line in front of the model,
- * taken by every delivering surface immediately before it attaches the text.
- * Sampling never claims. True means deliver; false means degrade (or omit)
- * for this delivery, and the next delivery samples again.
- *
- * Refused, with nothing written, when the record is gone, has no subtree or
- * has ended; when the sample is obsolete (a revision bump or a boundary
- * reset since acquisition, so the new epoch's allowance is not spent on it);
- * when a handover was stamped since acquisition (the imperative was just
- * answered); when a pending compaction exists or cannot be ruled out; and
- * when the line was already delivered inside the interval. A busy lock or a
- * failed write is also false: the line fails toward quiet for one delivery.
+ * ISS-1428: the one right to deliver a notice (or to settle `owed` in
+ * silence), taken under the record lock by the surface about to carry it.
+ * Under the lock, in order: the record must still be the one the decision was
+ * made on (`seen`, generation included); no compaction may be pending;
+ * `decideFromRecord` run on the LOCKED record, with its own `lastSample`, must
+ * give the same candidate; and the final action must be one the candidate
+ * allows. Any failure refuses, with nothing written. A granted claim advances
+ * `policyGen` and applies the action: `ask`, `covered` and `rule` set the
+ * imperative mark; `uncovered` sets both marks; `catch-up` and `settle` clear
+ * `owed`; an emit records the locked sample's tokens in `noticeTokens`.
  */
-export function claimImperativeEmission(root: string, sessionId: string, seen: ImperativeSeen, now: number, intervalMs: number): boolean {
+export function claimNotice(root: string, sessionId: string, seen: NoticeSeen, candidate: NoticeCandidate, final: FinalAction, now: number, cfg: SessionIntelConfig): boolean {
   let granted = false;
   const outcome = applyPresenceEnrichment(root, sessionId, TRY_LOCK_BUDGET_MS, "session-intel", (base, nowIso) => {
     const intel = base.sessionIntel;
     if (!intel || base.endedAt !== null) return ABORT_ENRICHMENT;
     if (intel.revision !== seen.revision || intel.lastBoundaryAt !== seen.lastBoundaryAt) return ABORT_ENRICHMENT;
-    if (intel.handoverWrittenAt !== seen.handoverWrittenAt) return ABORT_ENRICHMENT;
+    if (intel.handoverWrittenAt !== seen.handoverWrittenAt || intel.policyGen !== seen.policyGen) return ABORT_ENRICHMENT;
     const pending = peekPending(root, sessionId, now);
     if (!pending.complete || pending.files.length > 0) return ABORT_ENRICHMENT;
-    if (intel.lastImperativeEmittedAt !== null) {
-      const elapsed = now - Date.parse(intel.lastImperativeEmittedAt);
-      if (!Number.isFinite(elapsed) || elapsed < intervalMs) return ABORT_ENRICHMENT;
-    }
+    if (decideFromRecord(intel, cfg) !== candidate) return ABORT_ENRICHMENT;
+    if (!finalAllowed(candidate, final)) return ABORT_ENRICHMENT;
+    let next: SessionIntelPresence = { ...intel, policyGen: intel.policyGen + 1 };
+    if (final === "ask" || final === "covered" || final === "rule") next = { ...next, lastImperativeEmittedAt: nowIso };
+    if (final === "uncovered") next = { ...next, lastImperativeEmittedAt: intel.lastImperativeEmittedAt ?? nowIso, compactNeededEmittedAt: nowIso };
+    if (final === "catch-up" || final === "settle") next = { ...next, owed: null };
+    if (final !== "settle") next = { ...next, noticeTokens: intel.lastSample?.contextTokens ?? null };
     granted = true;
-    return { ...base, sessionIntel: { ...intel, lastImperativeEmittedAt: nowIso } };
+    return { ...base, sessionIntel: next };
   }, () => new Date(now));
   return granted && outcome.status === "written";
 }

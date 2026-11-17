@@ -91,7 +91,7 @@ function driveToImperative(f: Fx, start: number): { lines: string[]; path: strin
   const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: start, ...seams(f) });
   expect(r.status, r.reason ?? "").toBe("emitted");
   expect(r.result?.pressure?.state).toBe("imperative");
-  expect(r.output).toMatch(/Context pressure IMPERATIVE/);
+  expect(r.output).toMatch(/Write a handover now with storybloq_handover_create/);
   return { lines, path };
 }
 
@@ -108,21 +108,21 @@ describe("ISS-1214 (c): the registered storybloq_handover_create stamps the boun
     expect(reply.isError, reply.content[0]?.text).toBeUndefined();
     const text = reply.content[0]!.text;
     expect(text).toMatch(/Created handover: /);
-    expect(text, "the reply says the stamp landed").toMatch(/Handover recorded against your current compaction boundary: context pressure is held at advisory/);
+    expect(text, "the reply says the stamp landed and answers the notice").toMatch(/Handover recorded: it covers this compaction and the notice will not ask again before it\. Written on the context-pressure notice \([0-9,]+ of about [0-9,]+ tokens in use, 9[0-9]%\)\./);
     expect(text).not.toMatch(/did not land/);
 
     const after = intelOf(fx.root);
     expect(after.handoverWrittenAt, "the record carries the stamp").not.toBeNull();
     expect(after.tokensAtHandover, "the stamp records the sample it saw").toBe(tokens);
-    expect(after.promptsSinceHandover).toBe(0);
+    expect(after.handoverFile).toMatch(/iss1214-c\.md$/);
 
     for (let i = 1; i <= 3; i++) {
       const now = Date.now() + i * 1000;
       lines.push(userRecord({ ts: new Date(now).toISOString(), text: `prompt ${i}` }));
       writeTranscript(fx.projects, encoded(fx.root), SID, lines);
       const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now, ...seams(fx) });
-      expect(r, `prompt ${i} after the stamp`).toMatchObject({ status: "silent", reason: "state advisory", output: null });
-      expect(intelOf(fx.root).promptsSinceHandover, `prompt ${i}`).toBe(i);
+      expect(r, `prompt ${i} after the stamp`).toMatchObject({ status: "silent", output: null });
+      expect(r.reason, `prompt ${i}`).toMatch(/^state advisory/);
     }
     expect(intelOf(fx.root).lastSample).toMatchObject({ state: "advisory", rawState: "imperative", suppressedBy: "handover" });
   });
@@ -137,7 +137,7 @@ describe("ISS-1214 (c): the registered storybloq_handover_create stamps the boun
     expect(reply.isError, reply.content[0]?.text).toBeUndefined();
     const text = reply.content[0]!.text;
     expect(text).toMatch(/Created handover: /);
-    expect(text).toMatch(/Handover stamp did not land \(skipped: no caller session id\)\. The pressure line repeats at most once every 10 minutes\./);
+    expect(text).toMatch(/Handover stamp did not land \(skipped: no caller session id\)\. The notice is shown once per compaction, so it will not repeat; the handover is on disk\./);
     expect(text, "the hedged line, not the causal one").toContain(HANDOVER_STAMP_UNBOUND_LINE);
     expect(text, "a fresh server is never told it is stale").not.toContain(HANDOVER_STAMP_STALE_NOTE);
     expect(text).not.toMatch(/held at advisory/);

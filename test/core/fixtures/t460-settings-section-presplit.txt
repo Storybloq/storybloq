@@ -114,7 +114,7 @@ Do NOT search source code for this. The full config.json schema is shown below. 
     "jumpAllowanceFloorTokens": "integer (default 25000) <= jumpAllowanceCapTokens (default 150000); bounds the p90 per-turn growth reserved before imperative",
     "maxSampleAgeMs": "integer 0-600000 (default 30000); an older stored sample is refreshed by one bound tail read before a banner",
     "compactPendingTtlMs": "integer 10000-3600000 (default 300000); a PreCompact event with no boundary seen within this window is treated as an assumed compaction",
-    "stepPct": "number 0.01-0.5 (default 0.05); context growth after a handover that re-arms imperative",
+    "stepPct": "number 0.01-0.5 (default 0.05); a fall in context larger than the heal step clears the notice marks and the stamp, as a compaction nobody recorded",
     "banner": "boolean (default true) MCP/CLI response banner",
     "promptHook": "boolean (default true) UserPromptSubmit additionalContext at imperative",
     "guideDirective": "boolean (default true) autonomous guide directive at imperative"

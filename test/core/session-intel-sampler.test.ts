@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeSample, describeRepeatInterval, handoverSuppresses, jumpAllowanceFor, p90, usageAdvisoryFrom } from "../../src/core/session-intel/sampler.js";
+import { computeSample, jumpAllowanceFor, p90, usageAdvisoryFrom } from "../../src/core/session-intel/sampler.js";
 import { resolveSessionIntelConfig, type SessionIntelConfig } from "../../src/core/session-intel/config.js";
 import { emptySessionIntel, type SessionIntelPresence } from "../../src/presence/session-intel-fields.js";
 import type { CeilingResolution, ScanResult, UsageAdvisoryInput } from "../../src/core/session-intel/types.js";
@@ -8,7 +8,7 @@ import type { LedgerEntry } from "../../src/core/session-intel/boundary-ledger.j
 
 const cfg = resolveSessionIntelConfig(null);
 // r-awey8xrtwqf1r005 moved the default imperative line to 90% of the ceiling.
-// The hold, re-arm and rate-limit blocks below test what happens AT an
+// The coverage blocks below test what happens AT an
 // imperative, which does not depend on where the line sits. Their numbers
 // were written for a line 60,000 tokens under the ceiling (85% of 400,000),
 // so they pin that line explicitly instead of the default one.
@@ -82,112 +82,71 @@ describe("computeSample states", () => {
   });
 });
 
-describe("handover suppression", () => {
+describe("ISS-1428: a covering stamp holds the imperative at advisory; nothing else does", () => {
   const sample = sample85;
-  const imperativeTokens = 417_737 - 60_000;
-  const withHandover = (over: Partial<SessionIntelPresence>): SessionIntelPresence => ({
+  const C = 417_737;
+  /** cfg85 on 417,737: the line is max(0.85 x C, C - 60,000) = 357,737; a stamp covers from 297,737. */
+  const LINE = C - 60_000;
+  const COVER_FROM = LINE - 60_000;
+  const stamped = (tokens: number | null, over: Partial<SessionIntelPresence> = {}): SessionIntelPresence => ({
     ...emptySessionIntel(),
     handoverWrittenAt: "2026-09-09T12:20:00.000Z",
-    tokensAtHandover: imperativeTokens,
+    tokensAtHandover: tokens,
     handoverBoundaryAt: null,
     lastBoundaryAt: null,
     ...over,
   });
 
-  it("suppresses imperative to advisory while the handover belongs to the current compaction and the context has not grown a step", () => {
-    const s = sample(imperativeTokens, { record: withHandover({}) });
-    expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
-    expect(s.reason).toMatch(/suppressed by a handover/);
-  });
-
-  // ISS-1197: three independent re-arm gates. The stamp sits at 86% of a
-  // 400,000 ceiling, so the effective growth step is 20,000 tokens (0.05 x
-  // 400,000, under the 25,000 cap) and the re-arm line is 91% of ceiling.
-  const CEILING = 400_000;
-  const C = ceiling({ ceiling: CEILING });
-  const STAMP_AT = "2026-09-09T12:20:00.000Z";
-  const STAMP_TOKENS = Math.round(0.86 * CEILING);
-  const afterStamp = (minutes: number) => new Date(Date.parse(STAMP_AT) + minutes * 60_000).toISOString();
-  const pctTokens = (pct: number) => Math.round(pct * CEILING);
-  const rearm = (over: Partial<SessionIntelPresence> = {}): SessionIntelPresence => ({
-    ...emptySessionIntel(),
-    handoverWrittenAt: STAMP_AT,
-    tokensAtHandover: STAMP_TOKENS,
-    handoverBoundaryAt: null,
-    lastBoundaryAt: null,
-    ...over,
-  });
-
-  it("holds advisory while any re-arm gate is closed and re-fires once all three clear", () => {
-    for (const [i, pct] of [0.87, 0.88, 0.89].entries()) {
-      const s = sample(pctTokens(pct), { ceiling: C, record: rearm({ promptsSinceHandover: i }), sampledAt: afterStamp(2) });
-      expect(s, `${pct} of ceiling`).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
-      expect(s.reason, `${pct} of ceiling`).toMatch(/step gate/);
+  it("a stamp of this era at or past (line - headroom) holds the imperative, at any later growth below the compact line", () => {
+    for (const tokens of [LINE, LINE + 30_000]) {
+      const s = sample(tokens, { record: stamped(COVER_FROM) });
+      expect(s, String(tokens)).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
+      expect(s.reason).toMatch(/held at advisory: a handover covers this compaction$/);
     }
-    const rearmed = sample(pctTokens(0.92), { ceiling: C, record: rearm({ promptsSinceHandover: 3 }), sampledAt: afterStamp(11) });
-    expect(rearmed).toMatchObject({ rawState: "imperative", state: "imperative", suppressedBy: null });
   });
 
-  it("mutant-step-dropped: the growth gate alone holds the advisory at 89% eleven minutes and three prompts on", () => {
-    const s = sample(pctTokens(0.89), { ceiling: C, record: rearm({ promptsSinceHandover: 3 }), sampledAt: afterStamp(11) });
-    expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
-    expect(s.reason).toMatch(/step gate/);
+  it("a stamp one token short of the coverage bound, or with unknown tokens, holds nothing", () => {
+    expect(sample(LINE, { record: stamped(COVER_FROM - 1) })).toMatchObject({ state: "imperative", suppressedBy: null });
+    expect(sample(LINE, { record: stamped(null) })).toMatchObject({ state: "imperative", suppressedBy: null });
   });
 
-  it("mutant-interval-dropped: the time latch alone holds the advisory at 92% two minutes and three prompts on", () => {
-    const s = sample(pctTokens(0.92), { ceiling: C, record: rearm({ promptsSinceHandover: 3 }), sampledAt: afterStamp(2) });
-    expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
-    expect(s.reason).toMatch(/interval gate/);
+  it("a stamp of a previous compaction does not hold; one migrated to the current boundary does", () => {
+    const stale = stamped(COVER_FROM, { lastBoundaryAt: "2026-09-09T12:25:00.000Z", handoverBoundaryAt: null });
+    expect(sample(LINE, { record: stale }).state).toBe("imperative");
+    const migrated = stamped(COVER_FROM, { lastBoundaryAt: "2026-09-09T12:25:00.000Z", handoverBoundaryAt: "2026-09-09T12:25:00.000Z" });
+    expect(sample(LINE, { record: migrated }).state).toBe("advisory");
   });
 
-  it("mutant-prompt-age-dropped: the prompt count alone holds the advisory at 92% eleven minutes and two prompts on", () => {
-    const s = sample(pctTokens(0.92), { ceiling: C, record: rearm({ promptsSinceHandover: 2 }), sampledAt: afterStamp(11) });
-    expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
-    expect(s.reason).toMatch(/prompts gate/);
+  it("an unbound-era stamp holds exactly as a bound one does", () => {
+    const reasons = (["bound", "unbound-era", null] as const).map((b) => {
+      const s = sample(LINE, { record: stamped(COVER_FROM, { handoverStampBinding: b }) });
+      expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
+      return s.reason;
+    });
+    expect(new Set(reasons).size).toBe(1);
   });
 
-  it("mutant-prompts-gate-ignores-hook-off: the prompt gate is skipped when the prompt hook is off, since nothing would ever advance the count", () => {
-    const record = rearm({ promptsSinceHandover: 0 });
-    const noHook = resolveSessionIntelConfig({ ...LINE_85, promptHook: false });
-    expect(sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(11), cfg: noHook })).toMatchObject({ rawState: "imperative", state: "imperative", suppressedBy: null });
-    // The same record with the hook on is held by the prompt gate.
-    const held = sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(11) });
-    expect(held).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-    expect(held.reason).toMatch(/prompts gate/);
-    // The other two gates still hold with the hook off.
-    expect(sample(pctTokens(0.89), { ceiling: C, record, sampledAt: afterStamp(11), cfg: noHook })).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-    expect(sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(2), cfg: noHook })).toMatchObject({ state: "advisory", suppressedBy: "handover" });
+  it("a delivered notice never changes the state: no rate limit, no time or prompt gate", () => {
+    const delivered: SessionIntelPresence = { ...emptySessionIntel(), lastImperativeEmittedAt: "2026-09-09T12:29:59.000Z", noticeTokens: LINE };
+    expect(sample(LINE, { record: delivered })).toMatchObject({ state: "imperative", suppressedBy: null });
+    expect(sample(Math.ceil(0.98 * C) + 10, { record: { ...delivered, compactNeededEmittedAt: "2026-09-09T12:29:59.000Z" } })).toMatchObject({ state: "compact-needed", suppressedBy: null });
   });
 
-  it("the time latch runs from the later of the handover and the last imperative", () => {
-    const record = rearm({ promptsSinceHandover: 3, lastImperativeAt: afterStamp(9) });
-    expect(sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(11) })).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-    expect(sample(pctTokens(0.92), { ceiling: C, record, sampledAt: afterStamp(19) })).toMatchObject({ state: "imperative", suppressedBy: null });
+  it("a record rule holds both the imperative and compact-needed at advisory, covered or not", () => {
+    const rule = { handovers: "elsewhere" as const, where: "watch log", setAt: "2026-09-09T12:00:00.000Z" };
+    const held = sample(LINE, { record: { ...emptySessionIntel(), rule } });
+    expect(held).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "rule" });
+    expect(held.reason).toMatch(/held at advisory by this session's handover rule$/);
+    expect(sample(Math.ceil(0.98 * C) + 10, { record: { ...emptySessionIntel(), rule } })).toMatchObject({ rawState: "compact-needed", state: "advisory", suppressedBy: "rule" });
+    expect(sample(LINE, { record: stamped(COVER_FROM, { rule }) }).suppressedBy).toBe("rule");
   });
 
-  it("the growth step is capped in tokens, so a larger ceiling does not widen the gate", () => {
-    const big = ceiling({ ceiling: 1_000_000 });
-    const record = rearm({ tokensAtHandover: 940_000, promptsSinceHandover: 3 });
-    // 0.05 x 1,000,000 is 50,000, capped to 25,000: the line is 965,000.
-    expect(sample(964_000, { ceiling: big, record, sampledAt: afterStamp(11) })).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-    expect(sample(965_000, { ceiling: big, record, sampledAt: afterStamp(11) })).toMatchObject({ state: "imperative", suppressedBy: null });
-  });
-
-  it("a handover from a previous compaction does not suppress; one migrated to the current boundary does", () => {
-    const stale = withHandover({ lastBoundaryAt: "2026-09-09T12:25:00.000Z", handoverBoundaryAt: null });
-    expect(sample(imperativeTokens, { record: stale }).state).toBe("imperative");
-    const migrated = withHandover({ lastBoundaryAt: "2026-09-09T12:25:00.000Z", handoverBoundaryAt: "2026-09-09T12:25:00.000Z" });
-    expect(sample(imperativeTokens, { record: migrated }).state).toBe("advisory");
-    expect(handoverSuppresses(null, 1, 1, cfg, NOW)).toBeNull();
-    expect(handoverSuppresses(withHandover({ tokensAtHandover: null }), 1, 1, cfg, NOW)).toBeNull();
-  });
-
-  it("imperativeSince is carried from the record's last sample and cleared when not imperative; it never affects suppression", () => {
-    const prior = withHandover({ lastSample: { ...sample(imperativeTokens), sampledAt: "2026-09-09T12:10:00.000Z", imperativeSince: "2026-09-09T12:10:00.000Z", observation: scan(1).observation, ceiling: 417_737, ceilingSource: "measured-session", ceilingConfidence: "high", state: "imperative", rawState: "imperative", pct: 0.8, contextTokens: imperativeTokens, suppressedBy: null } });
-    const s = sample(imperativeTokens, { record: prior });
+  it("imperativeSince is carried from the record's last sample and cleared when not imperative; it never affects the hold", () => {
+    const prior = stamped(COVER_FROM, { lastSample: { ...sample(LINE), sampledAt: "2026-09-09T12:10:00.000Z", imperativeSince: "2026-09-09T12:10:00.000Z", observation: scan(1).observation, ceiling: C, ceilingSource: "measured-session", ceilingConfidence: "high", state: "imperative", rawState: "imperative", pct: 0.8, contextTokens: LINE, suppressedBy: null } });
+    const s = sample(LINE, { record: prior });
     expect(s.imperativeSince).toBe("2026-09-09T12:10:00.000Z");
     expect(s.state).toBe("advisory");
-    expect(sample(imperativeTokens).imperativeSince).toBe(NOW);
+    expect(sample(LINE).imperativeSince).toBe(NOW);
     expect(sample(1000).imperativeSince).toBeNull();
   });
 });
@@ -210,7 +169,6 @@ describe("compact-needed", () => {
     tokensAtHandover: tokens,
     handoverBoundaryAt: null,
     lastBoundaryAt: null,
-    promptsSinceHandover: 0,
   });
 
   it("past compactNeededPct the state is compact-needed and a fresh handover stamp does not suppress it", () => {
@@ -221,8 +179,7 @@ describe("compact-needed", () => {
     // boundary, not a mood.
     expect(sample(COMPACT_TOKENS - 1, { ceiling: C })).toMatchObject({ state: "imperative", rawState: "imperative" });
 
-    // The gate that holds an imperative cannot hold this: a handover written a
-    // minute ago, no growth, no prompts, every re-arm gate closed.
+    // A covering stamp holds an imperative but cannot hold this.
     const record = freshHandover(COMPACT_TOKENS);
     const held = sample(COMPACT_TOKENS, { ceiling: C, record, sampledAt: NOW });
     expect(held).toMatchObject({ state: "compact-needed", rawState: "compact-needed", suppressedBy: null });
@@ -455,61 +412,4 @@ describe("computeSample carries the advisory on every path", () => {
   });
 });
 
-describe("ISS-1263: an unbound-era stamp and the imperative rate limit", () => {
-  const sample = sample85;
-  const imperativeTokens = 417_737 - 60_000;
-  const minutesBefore = (m: number) => new Date(Date.parse(NOW) - m * 60_000).toISOString();
-  const stamped = (binding: "bound" | "unbound-era" | null): SessionIntelPresence => ({
-    ...emptySessionIntel(),
-    handoverWrittenAt: "2026-09-09T12:20:00.000Z",
-    tokensAtHandover: imperativeTokens,
-    handoverBoundaryAt: null,
-    lastBoundaryAt: null,
-    handoverStampBinding: binding,
-  });
 
-  it("an unbound-era stamp holds the imperative exactly as a bound one does", () => {
-    const bound = sample(imperativeTokens, { record: stamped("bound") });
-    const unbound = sample(imperativeTokens, { record: stamped("unbound-era") });
-    const legacy = sample(imperativeTokens, { record: stamped(null) });
-    for (const s of [bound, unbound, legacy]) expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "handover" });
-    expect(unbound.reason).toBe(bound.reason);
-  });
-
-  it("an imperative shown inside the interval reads advisory, rate-limited, and says so", () => {
-    const record: SessionIntelPresence = { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(5) };
-    const s = sample(imperativeTokens, { record });
-    expect(s).toMatchObject({ rawState: "imperative", state: "advisory", suppressedBy: "rate-limit" });
-    expect(s.reason).toMatch(/rate-limited: the imperative was shown 300 s ago; it repeats at most once every 10 minutes/);
-  });
-
-  it("the interval is the configured handoverRearmIntervalMs, and at or past it the imperative stands", () => {
-    const at10 = sample(imperativeTokens, { record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(10) } });
-    expect(at10).toMatchObject({ state: "imperative", suppressedBy: null });
-    const at11 = sample(imperativeTokens, { record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(11) } });
-    expect(at11).toMatchObject({ state: "imperative", suppressedBy: null });
-    const short = resolveSessionIntelConfig({ ...LINE_85, handoverRearmIntervalMs: 60_000 });
-    expect(sample(imperativeTokens, { cfg: short, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(2) } })).toMatchObject({ state: "imperative" });
-    expect(sample(imperativeTokens, { cfg: short, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(0.5) } })).toMatchObject({ state: "advisory", suppressedBy: "rate-limit" });
-    // The reason quotes the configured interval exactly, never rounded up to minutes.
-    const odd = resolveSessionIntelConfig({ ...LINE_85, handoverRearmIntervalMs: 90_000 });
-    expect(sample(imperativeTokens, { cfg: odd, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(0.5) } }).reason).toMatch(/it repeats at most once every 90 seconds$/);
-    // Zero is no interval: nothing is ever rate-limited.
-    const zero = resolveSessionIntelConfig({ ...LINE_85, handoverRearmIntervalMs: 0 });
-    expect(sample(imperativeTokens, { cfg: zero, record: { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(0) } })).toMatchObject({ state: "imperative", suppressedBy: null });
-  });
-
-  it("describeRepeatInterval renders minutes, seconds and milliseconds exactly", () => {
-    expect([600_000, 60_000, 90_000, 1_000, 1_500].map(describeRepeatInterval)).toEqual(["10 minutes", "1 minute", "90 seconds", "1 second", "1500 milliseconds"]);
-  });
-
-  it("compact-needed is never rate-limited", () => {
-    const record: SessionIntelPresence = { ...emptySessionIntel(), lastImperativeEmittedAt: minutesBefore(1) };
-    expect(sample(Math.ceil(0.98 * 417_737) + 10, { record })).toMatchObject({ state: "compact-needed", suppressedBy: null });
-  });
-
-  it("a handover hold is reported first; the rate limit applies only to what the re-arm gates let through", () => {
-    const both = sample(imperativeTokens, { record: { ...stamped("bound"), lastImperativeEmittedAt: minutesBefore(1) } });
-    expect(both).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-  });
-});

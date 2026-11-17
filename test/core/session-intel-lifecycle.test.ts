@@ -5,7 +5,7 @@ import { join } from "node:path";
 import fsDefault from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { ensureCapture, publishCompactPending } from "../../src/core/session-intel/capture.js";
-import { PENDING_SUBDIR, markCompactPending, newestHandoverAfter, readPresenceRecord, stampDerivedHandover, stampHandover } from "../../src/core/session-intel/presence-bridge.js";
+import { PENDING_SUBDIR, markCompactPending, readPresenceRecord, stampHandover } from "../../src/core/session-intel/presence-bridge.js";
 import { readEra, markEraEnded, ERA_STORE_SUBDIR } from "../../src/core/session-intel/era-store.js";
 import { ProcessEraResolver, processEra, type PsRunner } from "../../src/core/session-intel/process-era.js";
 import { readLedger } from "../../src/core/session-intel/boundary-ledger.js";
@@ -13,7 +13,7 @@ import { readCoarseTokenPressureForSession, pctBucketOf } from "../../src/core/s
 import { applyPresenceEnrichment, LIFECYCLE_LOCK_BUDGET_MS } from "../../src/core/presence-enrichment.js";
 import { presenceFileBase } from "../../src/presence/types.js";
 import { emptySessionIntel } from "../../src/presence/session-intel-fields.js";
-import { handleSessionIntelStart, handleStopHookSample, handleSessionIntelPrompt, PROMPT_HOOK_EVENT_NAME, renderStampNotLanded } from "../../src/cli/commands/session-intel.js";
+import { handleSessionIntelStart, handleStopHookSample, handleSessionIntelPrompt, PROMPT_HOOK_EVENT_NAME } from "../../src/cli/commands/session-intel.js";
 import { sampleSession } from "../../src/core/session-intel/query.js";
 import { handleSessionCompactPrepare } from "../../src/cli/commands/session-compact.js";
 import { buildActivePayload } from "../../src/autonomous/status-payload.js";
@@ -416,7 +416,10 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
   const COMPACT_TOKENS = Math.ceil(0.98 * CEILING) + 1_000;
   const seams = (f: Fx) => ({ cwd: f.root, projectsDir: f.projects, userSettingsPath: f.userSettings });
 
-  it("ISS-1197 commit 2: the prompt hook at compact-needed emits the /compact line and no handover imperative", () => {
+  const ctx = (r: { output: string | null }) => (JSON.parse(r.output!) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  const HEAD = /^\[storybloq\] Context: [0-9,]+ tokens in use; auto-compaction is expected near [0-9,]+ \(setting, high confidence\); about [0-9,]+ left \(9[0-9]%\)\. /;
+
+  it("ISS-1428: at compact-needed with no covering stamp the hook gives the uncovered notice once, never /compact", () => {
     withFixture((f) => {
       bindStartup(f);
       const path = writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: COMPACT_TOKENS - 2 })]);
@@ -426,23 +429,28 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
       const parsed = JSON.parse(r.output!) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
       expect(parsed.hookSpecificOutput.hookEventName).toBe(PROMPT_HOOK_EVENT_NAME);
       const line = parsed.hookSpecificOutput.additionalContext;
-      expect(line).toMatch(/^\[storybloq\] Context pressure COMPACT-NEEDED: 9[0-9]% of the expected auto-compact point/);
-      expect(line).toMatch(/\/compact/);
-      expect(line).not.toMatch(/write a handover/i);
+      expect(line).toMatch(HEAD);
+      expect(line).toMatch(/No handover that covers this compaction is recorded for this session\. If you already wrote one, nothing more is needed\./);
+      expect(line).not.toMatch(/\/compact|no further handovers/);
+      expect(intelOf(f.root).compactNeededEmittedAt).toBe(at(5));
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 6 * 60_000, ...seams(f) })).toMatchObject({ status: "silent", output: null });
     });
   });
 
-  it("emits additionalContext only at imperative from a usable sample; ok and advisory stay silent; the sample is persisted as prompt-hook", () => {
+  it("emits only at imperative from a usable sample, once per era; ok and advisory stay silent; the sample is persisted as prompt-hook", () => {
     withFixture((f) => {
       ensureCapture({ root: f.root, sessionId: SID, source: "startup", now: T0 - 30 * 60_000, userSettingsPath: f.userSettings });
       const path = writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: 100_000 })]);
       const ok = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) });
-      expect(ok).toMatchObject({ status: "silent", reason: "state ok", output: null });
+      expect(ok).toMatchObject({ status: "silent", output: null });
+      expect(ok.reason).toMatch(/^state ok/);
       expect(ok.result?.presence).toBe("persisted");
       expect(intelOf(f.root).lastSample?.sampledBy).toBe("prompt-hook");
 
       writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(3), read: ADVISORY_TOKENS - 2 })]);
-      expect(handleSessionIntelPrompt({ sessionId: SID, now: T0 + 6 * 60_000, ...seams(f) })).toMatchObject({ status: "silent", reason: "state advisory", output: null });
+      const adv = handleSessionIntelPrompt({ sessionId: SID, now: T0 + 6 * 60_000, ...seams(f) });
+      expect(adv).toMatchObject({ status: "silent", output: null });
+      expect(adv.reason).toMatch(/^state advisory/);
 
       writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(4), read: IMPERATIVE_TOKENS - 2 })]);
       const imp = handleSessionIntelPrompt({ sessionId: SID, now: T0 + 7 * 60_000, ...seams(f) });
@@ -450,105 +458,84 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
       const parsed = JSON.parse(imp.output!) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
       expect(parsed).toEqual({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: expect.any(String) } });
       expect(PROMPT_HOOK_EVENT_NAME).toBe("UserPromptSubmit");
-      expect(parsed.hookSpecificOutput.additionalContext).toMatch(/^\[storybloq\] Context pressure IMPERATIVE: 9[0-7]% of the expected auto-compact point \([0-9,]+ tokens; source setting, high confidence\)\. Basis: [0-9]+ >= 0\.9 x [0-9]+ \([0-9]+ tokens left\)\. Write a handover now via storybloq_handover_create/);
-      // ISS-1197: the directive says compaction after the handover is expected.
-      expect(parsed.hookSpecificOutput.additionalContext).toMatch(/auto-compaction that follows is expected and safe: the session continues through it/);
+      expect(ctx(imp)).toMatch(HEAD);
+      expect(ctx(imp)).toMatch(/Write a handover now with storybloq_handover_create, then keep working in this same turn\..*One handover covers this compaction and this notice does not repeat before it\. Do not stop and do not ask the user whether to continue: the session continues through auto-compaction\.$/);
       expect(Object.keys(parsed)).toEqual(["hookSpecificOutput"]);
+      expect(intelOf(f.root)).toMatchObject({ lastImperativeEmittedAt: at(7), noticeTokens: IMPERATIVE_TOKENS });
+
+      // Once per band per era: more growth, more prompts and more time never repeat it.
+      for (const [i, read] of [IMPERATIVE_TOKENS + 2_000, IMPERATIVE_TOKENS + 5_000].entries()) {
+        writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(8 + i), read })]);
+        expect(handleSessionIntelPrompt({ sessionId: SID, now: T0 + (30 + 30 * i) * 60_000, ...seams(f) }), String(i)).toMatchObject({ status: "silent", output: null });
+      }
     });
   });
 
-  it("ISS-1197: a cross-session bus message and an idle notice are ordinary prompts that only advance the prompt count", () => {
+  it("ISS-1428: a covering stamp before the band turns the imperative into the covered notice; bus messages and idle notices are ordinary prompts", () => {
     withFixture((f) => {
       const era = bindStartup(f);
-      const lines = [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })];
+      const lines = [assistantRecord({ ts: at(2), read: ADVISORY_TOKENS - 2 })];
       const path = writeTranscript(f.projects, encoded(f.root), SID, lines);
-      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("emitted");
-      const tokens = intelOf(f.root).lastSample!.contextTokens!;
-      expect(stampHandover(f.root, SID, era, tokens, T0 + 6 * 60_000).status).toBe("written");
-      expect(intelOf(f.root).promptsSinceHandover).toBe(0);
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("silent");
+      // Default line on 416,250: max(0.9 x C, C - 50,000) = 374,625; a stamp covers from 324,625.
+      expect(stampHandover(f.root, SID, era, 330_000, T0 + 6 * 60_000).status).toBe("written");
 
-      // Neither arrives as a turn the agent asked for, and neither is read as
-      // text: they are prompts, so they age the latch and nothing else.
+      lines.push(assistantRecord({ ts: at(7), read: IMPERATIVE_TOKENS - 2 }));
+      writeTranscript(f.projects, encoded(f.root), SID, lines);
+      const covered = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 7 * 60_000, ...seams(f) });
+      expect(covered.status).toBe("emitted");
+      expect(ctx(covered)).toMatch(HEAD);
+      expect(ctx(covered)).toMatch(/Your handover covers this compaction: nothing to write\. Keep working\.$/);
+      expect(intelOf(f.root).lastSample).toMatchObject({ state: "advisory", rawState: "imperative", suppressedBy: "handover" });
+
       const texts = [
         "<cross-session-message from=\"cpm-89\">status?</cross-session-message>",
         "[Cross-session idle notice] worker cpm-d1 has been idle for 15 minutes",
-        "<cross-session-message from=\"cpm-8d\">ack</cross-session-message>",
       ];
       for (const [i, text] of texts.entries()) {
-        lines.push(userRecord({ ts: at(7 + i), text }));
+        lines.push(userRecord({ ts: at(8 + i), text }));
         writeTranscript(f.projects, encoded(f.root), SID, lines);
-        const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + (7 + i) * 60_000, ...seams(f) });
-        expect(r, text).toMatchObject({ status: "silent", reason: "state advisory", output: null });
-        expect(intelOf(f.root).promptsSinceHandover, text).toBe(i + 1);
+        expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + (8 + i) * 60_000, ...seams(f) }), text).toMatchObject({ status: "silent", output: null });
       }
-      expect(intelOf(f.root).lastSample).toMatchObject({ state: "advisory", rawState: "imperative", suppressedBy: "handover" });
+      // Covered past the compact line: nothing at all.
+      lines.push(assistantRecord({ ts: at(12), read: COMPACT_TOKENS - 2 }));
+      writeTranscript(f.projects, encoded(f.root), SID, lines);
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 12 * 60_000, ...seams(f) })).toMatchObject({ status: "silent", output: null });
+      expect(intelOf(f.root).compactNeededEmittedAt).toBeNull();
     });
   });
 
-  it("mutant-query-recompute-after-latch: a re-armed imperative is reported, not re-suppressed by its own latch", () => {
+  it("ISS-1428: imperative then compact-needed, each once, with no stamp between", () => {
     withFixture((f) => {
       bindStartup(f);
       const lines = [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })];
       const path = writeTranscript(f.projects, encoded(f.root), SID, lines);
-      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("emitted");
-      const tokens = intelOf(f.root).lastSample!.contextTokens!;
-      expect(stampHandover(f.root, SID, processEra.current()!.id, tokens, T0 + 6 * 60_000).status).toBe("written");
-
-      // Same compaction throughout: no boundary is written, only growth, time
-      // and prompts. Growth and the interval clear at once; the prompt gate
-      // then opens on the third prompt.
-      lines.push(assistantRecord({ ts: at(16), read: tokens + 25_000 }));
+      expect(ctx(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }))).toMatch(/Write a handover now/);
+      lines.push(assistantRecord({ ts: at(6), read: COMPACT_TOKENS - 2 }));
       writeTranscript(f.projects, encoded(f.root), SID, lines);
-      for (const i of [0, 1]) {
-        lines.push(userRecord({ ts: at(17 + i) }));
-        writeTranscript(f.projects, encoded(f.root), SID, lines);
-        const held = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + (17 + i) * 60_000, ...seams(f) });
-        expect(held, `prompt ${i + 1}`).toMatchObject({ status: "silent" });
-        expect(held.result?.pressure, `prompt ${i + 1}`).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-      }
-      lines.push(userRecord({ ts: at(19) }));
+      expect(ctx(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 6 * 60_000, ...seams(f) }))).toMatch(/No handover that covers this compaction/);
+      lines.push(userRecord({ ts: at(7) }));
       writeTranscript(f.projects, encoded(f.root), SID, lines);
-      const rearmed = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 19 * 60_000, ...seams(f) });
-      // The verdict the model is handed must be the one computed against the
-      // record as it stood, never a recompute against the latch this very
-      // sample just wrote.
-      expect(rearmed.result?.pressure).toMatchObject({ state: "imperative", rawState: "imperative", suppressedBy: null });
-      expect(rearmed.status).toBe("emitted");
-      expect(intelOf(f.root)).toMatchObject({ promptsSinceHandover: 0, lastImperativeAt: new Date(T0 + 19 * 60_000).toISOString(), lastBoundaryAt: null });
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 7 * 60_000, ...seams(f) }).status).toBe("silent");
+      expect(intelOf(f.root)).toMatchObject({ lastImperativeEmittedAt: at(5), compactNeededEmittedAt: at(6) });
     });
   });
 
-  it("mutant-stop-hook-latches: a stop-hook sample delivers nothing to the model, so it never spends the re-arm", () => {
+  it("mutant-stop-hook-claims: a stop-hook sample delivers nothing to the model, so it never spends the notice", () => {
     withFixture((f) => {
       bindStartup(f);
-      const lines = [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })];
+      const lines = [assistantRecord({ ts: at(2), read: ADVISORY_TOKENS - 2 })];
       const path = writeTranscript(f.projects, encoded(f.root), SID, lines);
-      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("emitted");
-      const tokens = intelOf(f.root).lastSample!.contextTokens!;
-      expect(stampHandover(f.root, SID, processEra.current()!.id, tokens, T0 + 6 * 60_000).status).toBe("written");
-
-      // Three prompts age the prompt gate; the step gate still holds them all.
-      for (const i of [0, 1, 2]) {
-        lines.push(userRecord({ ts: at(7 + i) }));
-        writeTranscript(f.projects, encoded(f.root), SID, lines);
-        expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + (7 + i) * 60_000, ...seams(f) }).status).toBe("silent");
-      }
-      expect(intelOf(f.root).promptsSinceHandover).toBe(3);
-
-      // Growth and time now clear the other two, and a Stop-hook sample reads
-      // imperative -- but the model never sees a Stop hook's verdict.
-      lines.push(assistantRecord({ ts: at(19), read: tokens + 25_000 }));
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("silent");
+      lines.push(assistantRecord({ ts: at(6), read: IMPERATIVE_TOKENS - 2 }));
       writeTranscript(f.projects, encoded(f.root), SID, lines);
-      const stop = handleStopHookSample({ root: f.root, sessionId: SID, cwd: f.root, now: T0 + 20 * 60_000, projectsDir: f.projects, userSettingsPath: f.userSettings });
+      const stop = handleStopHookSample({ root: f.root, sessionId: SID, cwd: f.root, now: T0 + 7 * 60_000, projectsDir: f.projects, userSettingsPath: f.userSettings });
       expect(stop.result?.pressure).toMatchObject({ state: "imperative", suppressedBy: null });
-      expect(intelOf(f.root)).toMatchObject({ promptsSinceHandover: 3, lastImperativeAt: null });
-
-      // So the next prompt still delivers the imperative instead of swallowing it.
-      lines.push(userRecord({ ts: at(21) }));
+      expect(intelOf(f.root).lastImperativeEmittedAt).toBeNull();
+      lines.push(userRecord({ ts: at(8) }));
       writeTranscript(f.projects, encoded(f.root), SID, lines);
-      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 21 * 60_000, ...seams(f) }).status).toBe("emitted");
-      expect(intelOf(f.root).lastImperativeAt).toBe(new Date(T0 + 21 * 60_000).toISOString());
-      expect(intelOf(f.root).promptsSinceHandover).toBe(0);
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 8 * 60_000, ...seams(f) }).status).toBe("emitted");
+      expect(intelOf(f.root).lastImperativeEmittedAt).toBe(at(8));
     });
   });
 
@@ -579,9 +566,6 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
 
   it("an unbound caller never emits, even from a usable imperative sample: null era, ended record, era mismatch", () => {
     withFixture((f) => {
-      // ISS-1263: this pins binding, not the rate limit, so the interval is
-      // zero and the read-only sample after the first delivery stays imperative.
-      writeFileSync(join(f.root, ".story", "config.json"), JSON.stringify({ sessionIntel: { handoverRearmIntervalMs: 0 } }));
       ensureCapture({ root: f.root, sessionId: SID, source: "startup", now: T0 - 30 * 60_000, userSettingsPath: f.userSettings });
       writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })]);
       expect(handleSessionIntelPrompt({ sessionId: SID, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("emitted");
@@ -638,251 +622,25 @@ describe("handleSessionIntelPrompt (UserPromptSubmit)", () => {
   });
 });
 
-describe("ISS-1316: a handover whose stamp did not land", () => {
+describe("ISS-1428: a handover on disk is never read as a stamp (the derived stamp is retired)", () => {
   const CEILING = 0.925 * 450_000;
   const IMPERATIVE_TOKENS = Math.ceil(0.9 * CEILING) + 1_000;
   const seams = (f: Fx) => ({ cwd: f.root, projectsDir: f.projects, userSettingsPath: f.userSettings });
-  const contextOfLine = (r: { output: string | null }) => (JSON.parse(r.output!) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
 
-  /** A handover file written by a server that could not stamp, at minute `m`. */
-  function handoverAt(f: Fx, name: string, m: number): string {
-    const dir = join(f.root, ".story", "handovers");
-    mkdirSync(dir, { recursive: true });
-    const path = join(dir, name);
-    writeFileSync(path, "# handover\n");
-    utimesSync(path, new Date(T0 + m * 60_000), new Date(T0 + m * 60_000));
-    return path;
-  }
-
-  /** Imperative shown once at minute 5, the ordinary way. */
-  function imperativeShown(f: Fx): string {
-    bindStartup(f);
-    const path = writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })]);
-    const first = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) });
-    expect(first.status).toBe("emitted");
-    expect(contextOfLine(first)).toMatch(/Write a handover now/);
-    expect(intelOf(f.root)).toMatchObject({ lastImperativeEmittedAt: at(5), handoverWrittenAt: null });
-    return path;
-  }
-
-  it("one restart line in place of the imperative, a derived stamp from the file, then silence past the re-arm interval", () => {
-    withFixture((f) => {
-      const path = imperativeShown(f);
-      handoverAt(f, "2026-09-09-01-after.md", 6);
-      // Inside the interval the sample is already rate-limited to advisory.
-      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 7 * 60_000, ...seams(f) })).toMatchObject({ status: "silent", reason: "state advisory (imperative rate-limited)" });
-      // The first prompt past it, where the drip used to fire, gets the restart line instead.
-      const restart = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 16 * 60_000, ...seams(f) });
-      expect(restart).toMatchObject({ status: "emitted", reason: "derived handover stamp" });
-      expect(contextOfLine(restart)).toBe(renderStampNotLanded("2026-09-09-01-after.md"));
-      expect(contextOfLine(restart)).toMatch(/restart the client/);
-      expect(contextOfLine(restart)).not.toMatch(/Write a handover now/);
-      expect(intelOf(f.root)).toMatchObject({
-        handoverWrittenAt: at(6),
-        handoverStampBinding: "derived",
-        handoverBoundaryAt: null,
-        tokensAtHandover: intelOf(f.root).lastSample!.contextTokens,
-        promptsSinceHandover: 0,
-        lastImperativeEmittedAt: at(5),
-      });
-      expect(intelOf(f.root).lastSample).toMatchObject({ state: "advisory", suppressedBy: "handover" });
-      // The drip the issue describes: every prompt after, inside and past the
-      // interval, with no growth, is silent.
-      for (const m of [17, 27, 40]) {
-        const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + m * 60_000, ...seams(f) });
-        expect(r, `minute ${m}`).toMatchObject({ status: "silent", output: null });
-      }
-    });
-  });
-
-  it("a handover older than the last imperative is not an answer to it: the imperative returns after the interval", () => {
-    withFixture((f) => {
-      handoverAt(f, "2026-09-09-01-before.md", 4);
-      const path = imperativeShown(f);
-      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 7 * 60_000, ...seams(f) })).toMatchObject({ status: "silent", reason: "state advisory (imperative rate-limited)" });
-      const again = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 16 * 60_000, ...seams(f) });
-      expect(again.status).toBe("emitted");
-      expect(contextOfLine(again)).toMatch(/Write a handover now/);
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: null, handoverStampBinding: null });
-    });
-  });
-
-  it("a session never shown the imperative gets the imperative, not the restart line, whatever is on disk", () => {
+  it("a handover file written after the notice, with no stamp, writes nothing and brings no second notice", () => {
     withFixture((f) => {
       bindStartup(f);
-      handoverAt(f, "2026-09-09-01-peer.md", 4);
-      const path = writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })]);
-      const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) });
-      expect(r.status).toBe("emitted");
-      expect(contextOfLine(r)).toMatch(/Write a handover now/);
-      expect(intelOf(f.root).handoverStampBinding).toBeNull();
-    });
-  });
-
-  it("a landed stamp is left alone: the record keeps its bound stamp and the hook stays silent", () => {
-    withFixture((f) => {
-      const path = imperativeShown(f);
-      const tokens = intelOf(f.root).lastSample!.contextTokens!;
-      expect(stampHandover(f.root, SID, processEra.current()!.id, tokens, T0 + 6 * 60_000).status).toBe("written");
-      handoverAt(f, "2026-09-09-01-landed.md", 6);
-      const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 16 * 60_000, ...seams(f) });
-      expect(r).toMatchObject({ status: "silent", output: null });
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: at(6), handoverStampBinding: "bound" });
-    });
-  });
-
-  it("stampDerivedHandover writes nothing when the record moved since the hook read it", () => {
-    withFixture((f) => {
-      imperativeShown(f);
-      const intel = intelOf(f.root);
-      const seen = { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt, lastImperativeEmittedAt: intel.lastImperativeEmittedAt! };
-      const now = T0 + 7 * 60_000;
-      const recordFile = join(f.root, ".story", "telemetry", "presence", `${presenceFileBase(SID)}.json`);
-      const before = readFileSync(recordFile);
-      const mismatches = [
-        { ...seen, revision: seen.revision + 1 },
-        { ...seen, lastImperativeEmittedAt: at(4) },
-        { ...seen, handoverWrittenAt: at(1) },
-        { ...seen, lastBoundaryAt: at(1) },
-      ];
-      for (const bad of mismatches) {
-        expect(stampDerivedHandover(f.root, SID, bad, T0 + 6 * 60_000, now), JSON.stringify(bad)).toBe(false);
-        // A refusal writes nothing: the file keeps its exact bytes.
-        expect(readFileSync(recordFile).equals(before), JSON.stringify(bad)).toBe(true);
-      }
-      expect(intelOf(f.root)).toEqual(intel);
-      expect(stampDerivedHandover(f.root, SID, seen, T0 + 6 * 60_000, now)).toBe(true);
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: at(6), handoverStampBinding: "derived" });
-      // Its own write moved the record: a second derived stamp from the same view is refused.
-      expect(stampDerivedHandover(f.root, SID, seen, T0 + 6 * 60_000, now)).toBe(false);
-    });
-  });
-
-  /** Rewrites the record's intel in place, as a legacy or crafted record would hold it. */
-  function craft(f: Fx, fields: Record<string, unknown>): void {
-    applyPresenceEnrichment(f.root, SID, LIFECYCLE_LOCK_BUDGET_MS, "session-intel", (base) => ({ ...base, sessionIntel: { ...base.sessionIntel!, ...fields } }));
-  }
-
-  const seenOf = (f: Fx) => {
-    const intel = intelOf(f.root);
-    return { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt, lastImperativeEmittedAt: intel.lastImperativeEmittedAt! };
-  };
-
-  const recordFileOf = (f: Fx) => join(f.root, ".story", "telemetry", "presence", `${presenceFileBase(SID)}.json`);
-
-  it("stampDerivedHandover refuses while a compaction is pending, and writes nothing", () => {
-    withFixture((f) => {
-      imperativeShown(f);
-      const seen = seenOf(f);
-      expect(markCompactPending(f.root, SID, { eventId: "p", era: intelOf(f.root).era!, at: at(6) })).toBe(true);
-      const before = readFileSync(recordFileOf(f));
-      expect(stampDerivedHandover(f.root, SID, seen, T0 + 6 * 60_000, T0 + 7 * 60_000)).toBe(false);
-      expect(readFileSync(recordFileOf(f)).equals(before)).toBe(true);
-    });
-  });
-
-  it("stampDerivedHandover refuses an ended record, and writes nothing", () => {
-    withFixture((f) => {
-      imperativeShown(f);
-      applyPresenceEnrichment(f.root, SID, LIFECYCLE_LOCK_BUDGET_MS, "session-intel", (base) => ({ ...base, endedAt: at(6) }));
-      const seen = seenOf(f);
-      const before = readFileSync(recordFileOf(f));
-      expect(stampDerivedHandover(f.root, SID, seen, T0 + 6 * 60_000, T0 + 7 * 60_000)).toBe(false);
-      expect(readFileSync(recordFileOf(f)).equals(before)).toBe(true);
-    });
-  });
-
-  it("stampDerivedHandover binds the stamp to the compaction it saw", () => {
-    withFixture((f) => {
-      imperativeShown(f);
-      craft(f, { lastBoundaryAt: at(4) });
-      expect(stampDerivedHandover(f.root, SID, seenOf(f), T0 + 6 * 60_000, T0 + 7 * 60_000)).toBe(true);
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: at(6), handoverBoundaryAt: at(4), handoverStampBinding: "derived" });
-    });
-  });
-
-  it("a handover written before the compaction boundary is not an answer to the imperative that preceded it", () => {
-    withFixture((f) => {
-      const path = imperativeShown(f);
-      handoverAt(f, "2026-09-09-01-before-boundary.md", 6);
-      // A record whose boundary is newer than its last delivery: reachable only
-      // from a crafted or legacy record, since a boundary clears the delivery.
-      craft(f, { lastBoundaryAt: at(7) });
-      writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 }), assistantRecord({ ts: at(8), read: IMPERATIVE_TOKENS - 2 })]);
-      const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 16 * 60_000, ...seams(f) });
-      expect(r.status).toBe("emitted");
-      expect(contextOfLine(r)).toMatch(/Write a handover now/);
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: null, handoverStampBinding: null });
-    });
-  });
-
-  it("a stamp from an earlier compaction does not hide a handover that did not land in this one", () => {
-    withFixture((f) => {
-      const path = imperativeShown(f);
-      // A stamp carried from before the boundary at minute 3, with no boundary
-      // of its own, as a record written before handoverBoundaryAt existed holds it.
-      craft(f, { lastBoundaryAt: at(3), handoverWrittenAt: at(1), handoverBoundaryAt: null, handoverStampBinding: "bound" });
-      writeTranscript(f.projects, encoded(f.root), SID, [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 }), assistantRecord({ ts: at(4), read: IMPERATIVE_TOKENS - 2 })]);
-      handoverAt(f, "2026-09-09-01-this-compaction.md", 6);
-      const r = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 16 * 60_000, ...seams(f) });
-      expect(r).toMatchObject({ status: "emitted", reason: "derived handover stamp" });
-      expect(contextOfLine(r)).toBe(renderStampNotLanded("2026-09-09-01-this-compaction.md"));
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: at(6), handoverBoundaryAt: at(3), handoverStampBinding: "derived" });
-    });
-  });
-
-  it("a derived stamp that does not land is never reported as landed: that prompt is silent, and the next one lands it", () => {
-    withFixture((f) => {
-      const path = imperativeShown(f);
-      handoverAt(f, "2026-09-09-01-raced.md", 6);
-      // The record moves between the hook's read and its stamp, as a
-      // concurrent writer would move it while the hook lists the handovers.
-      const real = fsDefault.readdirSync;
-      let moved = false;
-      fsDefault.readdirSync = ((dir: fsDefault.PathLike, ...rest: unknown[]) => {
-        if (!moved && String(dir).endsWith(join(".story", "handovers"))) {
-          moved = true;
-          craft(f, { revision: intelOf(f.root).revision + 1 });
-        }
-        return (real as (...a: unknown[]) => unknown)(dir, ...rest);
-      }) as typeof real;
-      syncBuiltinESMExports();
-      let raced;
-      try {
-        raced = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 16 * 60_000, ...seams(f) });
-      } finally {
-        fsDefault.readdirSync = real;
-        syncBuiltinESMExports();
-      }
-      expect(moved).toBe(true);
-      expect(raced).toMatchObject({ status: "silent", reason: "derived handover stamp not written", output: null });
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: null, handoverStampBinding: null });
-      const next = handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 17 * 60_000, ...seams(f) });
-      expect(next).toMatchObject({ status: "emitted", reason: "derived handover stamp" });
-      expect(contextOfLine(next)).toBe(renderStampNotLanded("2026-09-09-01-raced.md"));
-      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: at(6), handoverStampBinding: "derived" });
-    });
-  });
-
-  it("newestHandoverAfter: the newest regular .md strictly after the bound and not in the future; nothing else", () => {
-    withFixture((f) => {
-      expect(newestHandoverAfter(f.root, T0, T0 + 60 * 60_000)).toBeNull();
-      handoverAt(f, "a.md", 3);
-      handoverAt(f, "b.md", 8);
-      handoverAt(f, "c.md", 5);
-      handoverAt(f, "future.md", 90);
-      handoverAt(f, "notes.txt", 9);
-      handoverAt(f, ".tmp-1234.md", 9);
-      mkdirSync(join(f.root, ".story", "handovers", "dir.md"));
-      utimesSync(join(f.root, ".story", "handovers", "dir.md"), new Date(T0 + 9 * 60_000), new Date(T0 + 9 * 60_000));
-      const outside = join(f.base, "outside.md");
-      writeFileSync(outside, "x\n");
-      utimesSync(outside, new Date(T0 + 9 * 60_000), new Date(T0 + 9 * 60_000));
-      symlinkSync(outside, join(f.root, ".story", "handovers", "link.md"));
-      const now = T0 + 60 * 60_000;
-      expect(newestHandoverAfter(f.root, T0 + 4 * 60_000, now)).toEqual({ file: "b.md", mtimeMs: T0 + 8 * 60_000 });
-      expect(newestHandoverAfter(f.root, T0 + 8 * 60_000, now)).toBeNull();
-      expect(newestHandoverAfter(f.root, T0 + 2 * 60_000, T0 + 4 * 60_000)).toEqual({ file: "a.md", mtimeMs: T0 + 3 * 60_000 });
+      const lines = [assistantRecord({ ts: at(2), read: IMPERATIVE_TOKENS - 2 })];
+      const path = writeTranscript(f.projects, encoded(f.root), SID, lines);
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 5 * 60_000, ...seams(f) }).status).toBe("emitted");
+      const dir = join(f.root, ".story", "handovers");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "2026-09-09-01-after.md"), "# handover\n");
+      utimesSync(join(dir, "2026-09-09-01-after.md"), new Date(T0 + 6 * 60_000), new Date(T0 + 6 * 60_000));
+      lines.push(userRecord({ ts: at(7) }));
+      writeTranscript(f.projects, encoded(f.root), SID, lines);
+      expect(handleSessionIntelPrompt({ sessionId: SID, transcriptPath: path, now: T0 + 30 * 60_000, ...seams(f) })).toMatchObject({ status: "silent", output: null });
+      expect(intelOf(f.root)).toMatchObject({ handoverWrittenAt: null, handoverStampBinding: null, handoverFile: null, lastImperativeEmittedAt: at(5) });
     });
   });
 });

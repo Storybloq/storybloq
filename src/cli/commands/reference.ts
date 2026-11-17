@@ -507,8 +507,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "duet spawn",
     description: "Start a visible duet worker: mints its task id, creates arrangement and coordination (--arrangement auto needs --bounds), writes role and handshake in .story/spawn/, opens /story. Permission mode auto (bypass under a bypass pen); --model defaults to opus (the hands tier). A --dir without .story uses the pen's board. --name and --pen launch or --print; --recover lists interrupted spawns",
-    usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover] [--format <json|md>]",
-    flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--format"],
+    usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover [--open-line <id>]] [--format <json|md>]",
+    flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--open-line", "--format"],
   },
   {
     name: "arrangement compact",

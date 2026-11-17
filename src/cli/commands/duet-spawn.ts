@@ -2,12 +2,20 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  spawnWorker, prepareSpawnDir, writeSpawnJournal, readSpawnJournal, mintWorkerTaskId, resolveWorkerDir, resolvePermissionMode,
+  prepareWorkerArtifacts, launchWorker, prepareSpawnDir, writeSpawnJournal, readSpawnJournal, mintWorkerTaskId, resolveWorkerDir, resolvePermissionMode,
   permissionModeReason, buildWorkerCommand, defaultWorkerRole, validateWorkerName, detectPenPermissionMode, osLauncher, PERMISSION_MODES, shellQuote,
   handshakeSection, ledgerParagraph, SPAWN_STAGES, resolveWorkerModel, workerModelReason, launchProjectRoot, launchEnvPrefix,
   type Launcher, type PenModeDetector, type SpawnHandshake, type SpawnStage, type SpawnWorkerResult,
 } from "../../core/duet-spawn.js";
 import { ExitCode } from "../../core/output-formatter.js";
+import {
+  decodeOpeningPlan, openWorkerLine, readOpeningRecord, OPENING_RECORD_MAX_BYTES,
+  type OpeningDeps, type OpeningOutcome, type OpeningPlan, type OpeningResult,
+} from "../../core/duet-spawn-line.js";
+import { readBoundedNoFollow } from "../../presence/io.js";
+import { normalizeClientTaskId } from "../../autonomous/client-profile.js";
+import { basename, dirname } from "node:path";
+import { lstatSync } from "node:fs";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { coordinateDuet, readDuetCoordination, type DuetView } from "../../core/duet-coordination.js";
 import { loadProject } from "../../core/project-loader.js";
@@ -43,6 +51,8 @@ export interface DuetSpawnArgs {
   readonly autoLoad?: boolean;
   readonly penTaskId?: string;
   readonly recover?: boolean;
+  /** T-575 section 9: with --recover, replay the opening stage of the spawn whose worker task id this is. */
+  readonly openLine?: string;
 }
 
 export interface DuetSpawnDeps {
@@ -53,6 +63,8 @@ export interface DuetSpawnDeps {
   readonly coordinate?: (root: string, op: DuetOperation) => Promise<DuetView>;
   readonly createArrangement?: typeof handleArrangementCreate;
   readonly journal?: (path: string, entry: Record<string, unknown>) => void;
+  /** T-575: seams of the opening stage (tests). */
+  readonly opening?: OpeningDeps;
 }
 
 interface ArrangementDecision {
@@ -60,8 +72,18 @@ interface ArrangementDecision {
   readonly reason: string | null;
 }
 
+/** T-575 section 7: the verified line, or null when the spawn asked for none. */
+export interface SpawnLineView {
+  readonly outcome: OpeningOutcome;
+  readonly file: string | null;
+  readonly from: string | null;
+  readonly board: string;
+  readonly note: string | null;
+}
+
 export interface SpawnResultView extends SpawnWorkerResult {
   readonly journalPath: string;
+  readonly line: SpawnLineView | null;
   readonly arrangement:
     | { mode: "auto"; id: string; coordinationSessionId: string; bounds: readonly string[] }
     | { mode: "none"; reason: string };
@@ -125,7 +147,8 @@ async function validate(args: DuetSpawnArgs, root: string, penTaskId: string | n
 }
 
 export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat, root: string, deps: DuetSpawnDeps = {}): Promise<CommandResult> {
-  if (args.recover) return recover(root, format);
+  if (args.openLine !== undefined && !args.recover) refuse("--open-line is a replay: pass it with --recover");
+  if (args.recover) return args.openLine !== undefined ? replayOpening(root, format, args.openLine) : recover(root, format);
   const client = deps.client ?? currentStorybloqClient();
   const penTaskId = currentClientTaskId(args.penTaskId ?? null);
   const v = await validate(args, root, penTaskId, client);
@@ -144,7 +167,9 @@ export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat,
   const journalPath = join(spawnDir, `${name}.json`);
   const workerTaskId = mintWorkerTaskId();
   const proposedCoordinationSessionId = randomUUID();
-  const base: Record<string, unknown> = { name, pen, workerTaskId, penTaskId, penClient: client, workerDir: v.workerDir, bounds, arrangementMode: v.decision.mode, proposedCoordinationSessionId: v.decision.mode === "auto" ? proposedCoordinationSessionId : null, arrangementId: null, createdAt: new Date().toISOString() };
+  // T-575 section 4: the plan, written with the first stage and never changed.
+  const opening: OpeningPlan = { mode: v.decision.mode === "none" ? "none" : "new-line", board: realpathSync(v.workerProjectRoot ?? root), continueFile: null };
+  const base: Record<string, unknown> = { name, pen, workerTaskId, penTaskId, penClient: client, workerDir: v.workerDir, bounds, arrangementMode: v.decision.mode, proposedCoordinationSessionId: v.decision.mode === "auto" ? proposedCoordinationSessionId : null, arrangementId: null, createdAt: new Date().toISOString(), opening };
   let last: SpawnStage | null = null;
   const journal = (stage: SpawnStage, extra: Record<string, unknown> = {}) => {
     Object.assign(base, extra, { stage });
@@ -177,13 +202,23 @@ export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat,
       journal("started");
       handshake = { penTaskId: penTaskId!, penClient: "claude", arrangementId, coordinationSessionId: proposedCoordinationSessionId, nonce: view.state.nonce };
     }
-    const result = spawnWorker(root, {
+    const prepared = prepareWorkerArtifacts(root, {
       name, pen, model: args.model, dir: args.dir, role: args.role, terminal: args.terminal, permissionMode: args.permissionMode,
       workerTaskId, autoLoad, ...(handshake ? { handshake } : {}), penProjectRoot: root, workerDir: v.workerDir, workerProjectRoot: v.workerProjectRoot, spawnDir, journal,
-    }, launcher, detect);
+    }, detect);
+    // T-575 section 5: after the role and script, before the launch. A stop throws and nothing launches.
+    let line: SpawnLineView | null = null;
+    if (opening.mode !== "none") {
+      const r = await openWorkerLine({
+        penRoot: root, journalPath, recordPath: openingRecordPath(journalPath, name), plan: opening, name, pen, penTaskId, workerTaskId, arrangementId, bounds, now: () => new Date(),
+      }, deps.opening);
+      line = lineView(r, opening.board);
+    }
+    const result = launchWorker(prepared, launcher);
     const view: SpawnResultView = {
       ...result,
       journalPath,
+      line,
       arrangement: handshake
         ? { mode: "auto", id: handshake.arrangementId, coordinationSessionId: handshake.coordinationSessionId, bounds }
         : { mode: "none", reason: v.decision.reason ?? "" },
@@ -192,7 +227,7 @@ export async function handleDuetSpawn(args: DuetSpawnArgs, format: OutputFormat,
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
     const journalEntry = readSpawnJournal(journalPath) ?? { ...base, stage: last ?? "intent" };
-    const rec = reconcileSpawnJournal(root, journalEntry);
+    const rec = reconcileSpawnJournal(root, journalEntry, journalPath);
     throw new Error(`duet spawn failed (${cause}). ${rec.recommendation} Worker task id ${workerTaskId}; journal ${journalPath}; \`storybloq duet spawn --recover\` lists it.`);
   }
 }
@@ -206,10 +241,29 @@ export interface SpawnReconciliation {
   readonly coordination: "no-arrangement" | "closed" | "unresolved" | "not-started" | "started-no-receipt" | "receipt" | "superseded" | "none-requested";
   readonly arrangementId: string | null;
   readonly cleanup: boolean;
+  /** T-575 section 9: the opening stage's state, from the plan and the record (read only). */
+  readonly opening: "not-requested" | "pending" | "intent" | OpeningOutcome | "unreadable";
   readonly recommendation: string;
 }
 
-export function reconcileSpawnJournal(root: string, journal: Record<string, unknown>): SpawnReconciliation {
+/** T-575 section 4: the record's path, built from the journal's own path. Callers use it only when that path's basename is exactly `<name>.json`. */
+export function openingRecordPath(journalPath: string, name: string): string {
+  return join(dirname(journalPath), `${name}.opening`);
+}
+
+function openingState(journal: Record<string, unknown>, journalPath: string | undefined): SpawnReconciliation["opening"] {
+  if (!("opening" in journal)) return "not-requested";
+  const decoded = decodeOpeningPlan(journal);
+  if (decoded === null) return "unreadable";
+  if (decoded.plan.mode === "none") return "not-requested";
+  if (journalPath === undefined || basename(journalPath) !== `${decoded.name}.json`) return "unreadable";
+  const read = readOpeningRecord(openingRecordPath(journalPath, decoded.name), decoded.workerTaskId);
+  if (read.kind === "unreadable") return "unreadable";
+  if (read.record.outcome !== null) return read.record.outcome;
+  return read.record.intent !== null ? "intent" : "pending";
+}
+
+export function reconcileSpawnJournal(root: string, journal: Record<string, unknown>, journalPath?: string): SpawnReconciliation {
   const name = typeof journal.name === "string" ? journal.name : null;
   const workerTaskId = typeof journal.workerTaskId === "string" ? journal.workerTaskId : null;
   const rawStage = typeof journal.stage === "string" ? journal.stage : null;
@@ -270,8 +324,18 @@ export function reconcileSpawnJournal(root: string, journal: Record<string, unkn
   }
   else if (coordination === "no-arrangement" || coordination === "none-requested") recommendation = `${launchText}; ${coordText}.`;
   else recommendation = `${launchText}; arrangement ${arrangementId} ${coordText}; inspect before acting.`;
-  return { name, workerTaskId, stage, launch, coordination, arrangementId, cleanup, recommendation };
+  const opening = openingState(journal, journalPath);
+  const afterArtifacts = stage !== null && ARTIFACT_STAGES.includes(stage);
+  if (afterArtifacts && (opening === "pending" || opening === "intent" || opening === "unreadable")) {
+    const replay = `the worker's handover line is not established: \`storybloq duet spawn --recover --open-line ${workerTaskId ?? "<workerTaskId>"}\``;
+    const script = typeof journal.scriptPath === "string" ? journal.scriptPath : "the spawn's script";
+    recommendation = launch === "not-launched" ? `${replay}, then run ${script}; or ${recommendation}` : `${replay}; ${recommendation}`;
+  }
+  return { name, workerTaskId, stage, launch, coordination, arrangementId, cleanup, opening, recommendation };
 }
+
+/** Stages at which the role and the script exist. */
+const ARTIFACT_STAGES: readonly string[] = ["artifacts", "launch-attempted", "launched", "launch-manual"];
 
 function classify(root: string, a: Arrangement, proposed: string | null): SpawnReconciliation["coordination"] {
   if (a.lifecycle !== "active" || a.continuedBy) return "closed";
@@ -311,8 +375,8 @@ function listJournals(root: string): Array<{ path: string; entry: Record<string,
 function recover(root: string, format: OutputFormat): CommandResult {
   const journals = listJournals(root);
   const candidates = journals.map(({ path, entry }) => {
-    if (entry === null) return { path, name: null, workerTaskId: null, stage: null, launch: "unknown" as const, coordination: "unresolved" as const, arrangementId: null, cleanup: false, recommendation: "journal unreadable: UNRESOLVED, inspect the directory before acting." };
-    return { path, ...reconcileSpawnJournal(root, entry) };
+    if (entry === null) return { path, name: null, workerTaskId: null, stage: null, launch: "unknown" as const, coordination: "unresolved" as const, arrangementId: null, cleanup: false, opening: "unreadable" as const, recommendation: "journal unreadable: UNRESOLVED, inspect the directory before acting." };
+    return { path, ...reconcileSpawnJournal(root, entry, path) };
   });
   if (format === "json") return { output: JSON.stringify({ version: 1, data: { candidates } }, null, 2), exitCode: ExitCode.OK };
   if (candidates.length === 0) return { output: "No spawn journals under .story/spawn/.", exitCode: ExitCode.OK };
@@ -345,6 +409,7 @@ function render(r: SpawnResultView, format: OutputFormat): string {
     `Script: ${r.scriptPath}`,
     `Journal: ${r.journalPath}`,
   ];
+  if (r.line !== null) lines.push(lineText(r.line));
   if (r.workerProjectRoot === null) lines.push(`Worker ledger: the pen's board at ${realpathOrSelf(r.penProjectRoot)}; ${r.workerDir} carries no ledger`);
   else if (r.workerProjectRoot !== realpathOrSelf(r.penProjectRoot)) lines.push(`Worker ledger: ${r.workerProjectRoot}`);
   if (r.arrangement.mode === "auto" && r.handshake) {
@@ -358,6 +423,103 @@ function render(r: SpawnResultView, format: OutputFormat): string {
     lines.push("", `Once the session is up${r.autoLoad ? "" : ", type /story in it"}, then handshake by name from the pen (${penFromCommand(r)}): project, both identities, coordination session id, nonce.`);
   }
   return lines.join("\n");
+}
+
+function lineView(r: OpeningResult, board: string): SpawnLineView {
+  return { outcome: r.outcome, file: r.file, from: r.from, board, note: r.note };
+}
+
+/** T-575 section 7: one verified line per outcome. */
+export function lineText(l: SpawnLineView): string {
+  switch (l.outcome) {
+    case "opened": return `Worker handover line: opened with ${l.file} (role worker)${l.from !== null ? `, from ${l.from}` : ""}`;
+    case "repaired": return `Worker handover line: ${l.file} (already written; record repaired)`;
+    case "already-on-line": return `Worker handover line: continues at ${l.file}`;
+    case "continued": return l.note === "the default line" ? "Worker handover line: continues the default line" : `Worker handover line: continues ${l.file}`;
+    default: return "Worker handover line: the default line (the opening intent could not be recorded). To move it: `storybloq handover continue <file>` in the worker.";
+  }
+}
+
+/**
+ * T-575 section 9: `duet spawn --recover --open-line <workerTaskId>`. Finds
+ * the one journal for that worker, decodes its plan, re-derives the board and
+ * replays the opening stage. Launches nothing and never writes the journal.
+ */
+async function replayOpening(root: string, format: OutputFormat, id: string): Promise<CommandResult> {
+  if (normalizeClientTaskId(id) !== id) refuse("--open-line takes a worker task id.");
+  const penRoot = realpathSync(root);
+  const found = findJournalsSafely(penRoot).filter((j) => j.entry !== null && j.entry.workerTaskId === id);
+  if (found.length === 0) throw new CliValidationError("not_found", `No spawn journal for worker ${id} under .story/spawn/.`);
+  if (found.length > 1) refuse(`More than one spawn journal names worker ${id}: ${found.map((j) => j.path).join(", ")}.`);
+  const { path, entry } = found[0]!;
+  const bad = (why: string): never => refuse(`The spawn journal ${path} cannot be used to open a line (${why}); nothing was written.`);
+  const decoded = decodeOpeningPlan(entry);
+  if (decoded === null) return bad("its opening plan does not decode");
+  if (basename(path) !== `${decoded.name}.json`) return bad("its name differs from its file name");
+  if (decoded.plan.mode === "none") refuse(`This spawn did not ask for a handover line (journal ${path}); nothing was written.`);
+  const e = entry as Record<string, unknown>;
+  const pen = typeof e.pen === "string" ? e.pen : "";
+  try { validateWorkerName(pen); } catch { bad("its pen name is not valid"); }
+  const penTaskId = e.penTaskId === null || e.penTaskId === undefined ? null : typeof e.penTaskId === "string" && normalizeClientTaskId(e.penTaskId) === e.penTaskId ? e.penTaskId : bad("its pen task id is not valid");
+  const arrangementId = e.arrangementId === null || e.arrangementId === undefined ? null : typeof e.arrangementId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(e.arrangementId) ? e.arrangementId : bad("its arrangement id is not valid");
+  const bounds = Array.isArray(e.bounds) && e.bounds.every((b) => typeof b === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(b)) ? e.bounds as string[] : bad("its bounds are not valid");
+  let board: string;
+  try {
+    const w = resolveWorkerDir(penRoot, decoded.workerDir);
+    board = realpathSync(w.workerProjectRoot ?? penRoot);
+  } catch (error) {
+    return bad(`its worker directory no longer resolves: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (board !== decoded.plan.board) bad(`its board ${decoded.plan.board} is not the board its worker directory resolves to now (${board})`);
+  const stage = typeof e.stage === "string" ? e.stage : null;
+  if (stage === null || !ARTIFACT_STAGES.includes(stage)) {
+    refuse(`This spawn stopped before its role and script were written (stage ${stage ?? "missing"}); start a new spawn.`);
+  }
+  const r = await openWorkerLine({
+    penRoot, journalPath: path, recordPath: openingRecordPath(path, basename(path, ".json")), plan: decoded.plan, name: decoded.name, pen, penTaskId,
+    workerTaskId: decoded.workerTaskId, arrangementId, bounds, now: () => new Date(),
+  });
+  const line = lineView(r, decoded.plan.board);
+  const script = stage === "artifacts" && typeof e.scriptPath === "string" ? e.scriptPath : null;
+  if (format === "json") return { output: JSON.stringify({ version: 1, data: { journalPath: path, workerTaskId: decoded.workerTaskId, stage, line, startWith: script } }, null, 2), exitCode: ExitCode.OK };
+  const lines = [lineText(line)];
+  if (script !== null) lines.push(`Start the worker with: ${script}`);
+  return { output: lines.join("\n"), exitCode: ExitCode.OK };
+}
+
+/**
+ * T-575 section 4: journals found by enumerating `.story/spawn/<dir>/` under
+ * the pen's canonical root, each level a real directory (lstat, no symlink),
+ * each journal read with the bounded no-follow reader. Nothing outside the
+ * spawn directory is opened.
+ */
+function findJournalsSafely(penRoot: string): Array<{ path: string; entry: Record<string, unknown> | null }> {
+  const realDir = (p: string): boolean => {
+    try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; }
+  };
+  const story = join(penRoot, ".story");
+  const spawnRoot = join(story, "spawn");
+  if (!realDir(story) || !realDir(spawnRoot)) return [];
+  const out: Array<{ path: string; entry: Record<string, unknown> | null }> = [];
+  for (const d of readdirSync(spawnRoot).sort()) {
+    if (d.startsWith(".")) continue;
+    const dir = join(spawnRoot, d);
+    if (!realDir(dir)) continue;
+    for (const f of readdirSync(dir).sort()) {
+      if (!f.endsWith(".json")) continue;
+      const path = join(dir, f);
+      const text = readBoundedNoFollow(path, OPENING_RECORD_MAX_BYTES);
+      let entry: Record<string, unknown> | null = null;
+      if (text !== null) {
+        try {
+          const parsed: unknown = JSON.parse(text);
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) entry = parsed as Record<string, unknown>;
+        } catch { /* unreadable */ }
+      }
+      out.push({ path, entry });
+    }
+  }
+  return out;
 }
 
 function penFromCommand(r: SpawnResultView): string {

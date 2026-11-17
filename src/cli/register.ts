@@ -3773,6 +3773,7 @@ export function registerDuetCommand(yargs: Argv): Argv {
               .option("pen-task-id", { type: "string", describe: "The pen's client task id when the environment does not carry it (CLAUDE_CODE_SESSION_ID)" })
               .option("print", { type: "boolean", default: false, describe: "Print the command and the role it would write; creates nothing and writes nothing" })
               .option("recover", { type: "boolean", default: false, describe: "List interrupted spawns under .story/spawn/ with their reconciled state; launches nothing" })
+              .option("open-line", { type: "string", describe: "With --recover: finish the worker's handover line for this worker task id; launches nothing" })
               .check((argv) => {
                 if (argv.recover) return true;
                 if (!argv.name || !argv.pen) throw new CliValidationError("invalid_input", "--name and --pen are required (or pass --recover to list interrupted spawns)");
@@ -3801,6 +3802,7 @@ export function registerDuetCommand(yargs: Argv): Argv {
                 autoLoad: argv["auto-load"] as boolean,
                 penTaskId: argv["pen-task-id"] as string | undefined,
                 recover: argv.recover as boolean,
+                openLine: argv["open-line"] as string | undefined,
               }, format, root);
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;

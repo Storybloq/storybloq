@@ -902,55 +902,67 @@ export interface HandoverStampWhat {
   readonly coveredBy?: string | null;
 }
 
+/**
+ * The stamp's own record mutation, pure over the locked record: what
+ * `stampHandover` writes, and what `session alert --covered-by` writes inside
+ * its one locked write (ISS-1228: one write path). `refused` non-null means
+ * nothing may be written for the stamp.
+ */
+export function stampIntoRecord(root: string, sessionId: string, base: SessionPresence, nowIso: string, now: number, expectedEra: string | null, tokensAtHandover: number | null, observe: HandoverStampObserve | undefined, mode: "bound" | "unbound-era", what: HandoverStampWhat): { readonly next: SessionPresence; readonly refused: string | null } {
+  const intel = base.sessionIntel;
+  if (!intel) return { next: base, refused: mode === "bound" ? "record era differs from the caller's live era" : "no session intel on the record" };
+  if (mode === "bound" && (expectedEra === null || intel.era === null || intel.era !== expectedEra)) return { next: base, refused: "record era differs from the caller's live era" };
+  if (base.endedAt !== null) return { next: base, refused: "caller session has ended" };
+  const last = intel.lastSample;
+  // Applied to the record as it is HERE, so the answer belongs to the sample
+  // actually being stamped. The identity clause is not redundant with the
+  // status: an expired pending event of this era takes the ASSUMED reset,
+  // which reports "complete" while nulling the sample, and reporting the
+  // pre-reset reading would describe a compaction that has already happened.
+  let sampleHolds = false;
+  if (observe && last) {
+    const rec = reconcileIntel(intel, null, peekPending(root, sessionId, now), observe.cfg, now);
+    sampleHolds = rec.status === "complete" && rec.intel.lastSample === last;
+    if (sampleHolds) observe.out.state = last.state;
+  }
+  const stamped: SessionIntelPresence = {
+    ...intel,
+    handoverWrittenAt: nowIso,
+    tokensAtHandover: tokensAtHandover ?? intel.lastSample?.contextTokens ?? null,
+    handoverBoundaryAt: intel.lastBoundaryAt,
+    handoverFile: what.handoverFile ?? null,
+    coveredBy: what.coveredBy ?? null,
+    handoverStampBinding: mode,
+    // ISS-1428: a landed stamp settles the catch-up the previous era owed.
+    owed: null,
+    policyGen: intel.policyGen + 1,
+  };
+  // The stored sample is rewritten to its projected form in the same write,
+  // so every reader drops to advisory at once when the stamp covers.
+  const covers = observe ? eraCovered(stamped, thresholdsForRecord(stamped, observe.cfg)) : false;
+  const lastSample = last && last.rawState === "imperative" && last.state === "imperative" && covers && stamped.rule === null
+    ? { ...last, state: "advisory" as const, suppressedBy: "handover" as const }
+    : last;
+  if (observe) {
+    // The reply describes only a sample the reconcile keeps: one a pending
+    // compaction has already replaced says nothing about this compaction.
+    const th = thresholdsForRecord(stamped, observe.cfg);
+    const tokens = sampleHolds || tokensAtHandover !== null ? stamped.tokensAtHandover : null;
+    observe.out.asked = intel.lastImperativeEmittedAt !== null || intel.compactNeededEmittedAt !== null;
+    observe.out.covers = tokens !== null && covers;
+    observe.out.tokens = tokens;
+    observe.out.point = th.point;
+    observe.out.pastCompact = tokens !== null && th.compactLine !== null && tokens >= th.compactLine;
+  }
+  return { next: { ...base, sessionIntel: { ...stamped, lastSample } }, refused: null };
+}
+
 export function stampHandover(root: string, sessionId: string, expectedEra: string | null, tokensAtHandover: number | null, now: number, observe?: HandoverStampObserve, mode: "bound" | "unbound-era" = "bound", what: HandoverStampWhat = {}): HandoverStampOutcome {
   let refused: string | null = null;
   const outcome = applyPresenceEnrichment(root, sessionId, LIFECYCLE_LOCK_BUDGET_MS, "session-intel", (base, nowIso) => {
-    const intel = base.sessionIntel;
-    if (!intel) { refused = mode === "bound" ? "record era differs from the caller's live era" : "no session intel on the record"; return base; }
-    if (mode === "bound" && (expectedEra === null || intel.era === null || intel.era !== expectedEra)) { refused = "record era differs from the caller's live era"; return base; }
-    if (base.endedAt !== null) { refused = "caller session has ended"; return base; }
-    const last = intel.lastSample;
-    // Applied to the record as it is HERE, so the answer belongs to the sample
-    // actually being stamped. The identity clause is not redundant with the
-    // status: an expired pending event of this era takes the ASSUMED reset,
-    // which reports "complete" while nulling the sample, and reporting the
-    // pre-reset reading would describe a compaction that has already happened.
-    let sampleHolds = false;
-    if (observe && last) {
-      const rec = reconcileIntel(intel, null, peekPending(root, sessionId, now), observe.cfg, now);
-      sampleHolds = rec.status === "complete" && rec.intel.lastSample === last;
-      if (sampleHolds) observe.out.state = last.state;
-    }
-    const stamped: SessionIntelPresence = {
-      ...intel,
-      handoverWrittenAt: nowIso,
-      tokensAtHandover: tokensAtHandover ?? intel.lastSample?.contextTokens ?? null,
-      handoverBoundaryAt: intel.lastBoundaryAt,
-      handoverFile: what.handoverFile ?? null,
-      coveredBy: what.coveredBy ?? null,
-      handoverStampBinding: mode,
-      // ISS-1428: a landed stamp settles the catch-up the previous era owed.
-      owed: null,
-      policyGen: intel.policyGen + 1,
-    };
-    // The stored sample is rewritten to its projected form in the same write,
-    // so every reader drops to advisory at once when the stamp covers.
-    const covers = observe ? eraCovered(stamped, thresholdsForRecord(stamped, observe.cfg)) : false;
-    const lastSample = last && last.rawState === "imperative" && last.state === "imperative" && covers && stamped.rule === null
-      ? { ...last, state: "advisory" as const, suppressedBy: "handover" as const }
-      : last;
-    if (observe) {
-      // The reply describes only a sample the reconcile keeps: one a pending
-      // compaction has already replaced says nothing about this compaction.
-      const th = thresholdsForRecord(stamped, observe.cfg);
-      const tokens = sampleHolds || tokensAtHandover !== null ? stamped.tokensAtHandover : null;
-      observe.out.asked = intel.lastImperativeEmittedAt !== null || intel.compactNeededEmittedAt !== null;
-      observe.out.covers = tokens !== null && covers;
-      observe.out.tokens = tokens;
-      observe.out.point = th.point;
-      observe.out.pastCompact = tokens !== null && th.compactLine !== null && tokens >= th.compactLine;
-    }
-    return { ...base, sessionIntel: { ...stamped, lastSample } };
+    const r = stampIntoRecord(root, sessionId, base, nowIso, now, expectedEra, tokensAtHandover, observe, mode, what);
+    refused = r.refused;
+    return r.next;
   }, () => new Date(now));
   return refused !== null && outcome.status === "written" ? { status: "refused", reason: refused } : outcome;
 }

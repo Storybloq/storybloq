@@ -619,6 +619,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--client"],
   },
   {
+    name: "session alert",
+    description: "Session handover rule, cover or threshold override; no flags shows them",
+    usage: "storybloq session alert [--handovers <elsewhere|here>] [--where <text>] [--covered-by <text>] [--imperative-pct <n>] [--imperative-headroom <n>] [--reset-thresholds] [--client-task-id <id>] [--format json|md]",
+    flags: ["--handovers", "--where", "--covered-by", "--imperative-pct", "--imperative-headroom", "--reset-thresholds", "--client-task-id", "--format"],
+  },
+  {
     name: "session intel",
     description: "Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: <project>/<sessionId>.jsonl in Claude's projects dir, a regular file",
     usage: "storybloq session intel [--session-id <id>] [--transcript <path>] [--caller-model <model>] [--full] [--client-task-id <id>] [--format json|md]",
@@ -794,7 +800,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus send",
-    description: "Create a Bus thread or send a reply. Routing always targets the sole peer; `--to` is deprecated and ignored.",
+    description: "Create a Bus thread or send a reply. `--to` is ignored: routing targets the sole peer.",
     usage: "storybloq bus send [--endpoint <value>] [--client <claude|codex>] [--task-id <value>] [--thread <value>] [--thread-kind <issue_notice|question|coordination|patch_request>] [--predecessor-thread <value>] [--to <implementer|reviewer>] --kind <issue_notice|question|reply|status|patch_request|claim|release> [--severity <critical|high|medium|low|info>] --body <value> --idempotency-key <value> [--in-reply-to <value>] [--issue <value>] [--ticket <value>] [--commit <value>] [--ci-run <value>] [--file <value>] [--format <md|json>]",
     flags: ["--endpoint", "--client", "--task-id", "--thread", "--thread-kind", "--predecessor-thread", "--to", "--kind", "--severity", "--body", "--idempotency-key", "--in-reply-to", "--issue", "--ticket", "--commit", "--ci-run", "--file", "--format"],
   },
@@ -885,8 +891,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "arrangement update",
     description: "Update an arrangement",
-    usage: "storybloq arrangement update <id> [--lifecycle <active|suspended|closed>] [--commit] [--format <json|md>]",
-    flags: ["--lifecycle", "--format", "--commit"],
+    usage: "storybloq arrangement update <id> [--lifecycle <active|suspended|closed>] [--party <anchor>] [--handovers <elsewhere|here>] [--where <text>] [--commit] [--format <json|md>]",
+    flags: ["--lifecycle", "--party", "--handovers", "--where", "--format", "--commit"],
   },
   {
     name: "bus endpoint list",
@@ -1195,17 +1201,17 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_capability_match", description: "Find capabilities a task may already be covered by. Bounded to the inventory: no match never means no implementation exists", params: ["paths?","title?","phaseId?"] },
   { name: "storybloq_capability_list", description: "List the inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)", params: ["status?","skipCheck?","digest?","full?"] },
   { name: "storybloq_capability_get", description: "Get one capability: contract, entry points, surfaces, rulings, items and findings", params: ["id","skipCheck?"] },
-  { name: "storybloq_capability_write", description: "Capabilities, write side: action add|update; the former storybloq_capability_<action> names still work. add: Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read; update: Edit a capability; supplied lists replace stored ones; the checkpoint is never touched", params: ["action","id?","name?","summary?","entryPoints?","contract?","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","commit?","clear?"] },
+  { name: "storybloq_capability_write", description: "Capabilities, write side: action add|update. add: Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read; update: Edit a capability; supplied lists replace stored ones; the checkpoint is never touched", params: ["action","id?","name?","summary?","entryPoints?","contract?","example?","cli?","mcp?","app?","files?","rulings?","items?","terms?","status?","skipCheck?","commit?","clear?"] },
   { name: "storybloq_capability_check", description: "Check every capability against HEAD; stamp re-records the checkpoint, refused for a structural or incomplete finding", params: ["stamp?","stampAll?"] },
   { name: "storybloq_projection_write", description: "Regenerate the decisions projection the Mac app reads, with a full freshness check. The status tool never writes it", params: ["commit?"] },
   { name: "storybloq_context_brief", description: "The context brief for a ticket or issue: binding and suggested rulings with reasons, capabilities, terms, lessons, and what discovery could not see. Suggestions bind nothing", params: ["id","budget?"] },
   { name: "storybloq_term_match", description: "Which glossary terms appear in a piece of text. Whole-word, case-insensitive and advisory: a match suggests a term and changes nothing", params: ["text"] },
   { name: "storybloq_term_list", description: "List the glossary, or its bounded names-only digest (core-first over the cap)", params: ["core?","thin?","digest?"] },
   { name: "storybloq_term_get", description: "Get one term: definition, distinction, and the capabilities and rulings behind it", params: ["id"] },
-  { name: "storybloq_term_write", description: "Glossary terms, write side: action add|update; the former storybloq_term_<action> names still work. add: Add a glossary term; a name another entry already owns is refused; update: Edit a glossary term; supplied lists replace the stored ones", params: ["action","id?","term?","definition?","distinction?","aliases?","capabilities?","rulings?","core?","addedBy?","commit?","clear?"] },
+  { name: "storybloq_term_write", description: "Glossary terms, write side: action add|update. add: Add a glossary term; a name another entry already owns is refused; update: Edit a glossary term; supplied lists replace the stored ones", params: ["action","id?","term?","definition?","distinction?","aliases?","capabilities?","rulings?","core?","addedBy?","commit?","clear?"] },
   { name: "storybloq_ruling_list", description: "List rulings, optionally filtered by scope tag, superseded state or lifecycle status", params: ["scopeTag?","superseded?","status?"] },
   { name: "storybloq_ruling_get", description: "Get a ruling by ID", params: ["id"] },
-  { name: "storybloq_ruling_write", description: "Rulings, write side: action create|supersede|propose|accept|withdraw; the former storybloq_ruling_<action> names still work. create: Record a ruling verbatim; cites adds its id to each named ticket or issue in one transaction; supersede: Supersede a ruling with an existing one (`with`) or a new one; branch knowingly records a second successor; propose: Propose a ruling; binds nothing until accepted, revokes nothing while proposed; accept: Accept a proposed ruling; the revision is a digest of what was reviewed, not proof of who approved; withdraw: Withdraw a proposed ruling; proposed records only", params: ["action","text?","attribution?","date?","scopeTags?","cites?","clientTaskId?","context?","alternatives?","consequences?","reconsiderWhen?","commit?","id?","with?","branch?","proposesToSupersede?","proposedFor?","revision?","reason?"] },
+  { name: "storybloq_ruling_write", description: "Rulings, write side: action create|supersede|propose|accept|withdraw. create: Record a ruling verbatim; cites adds its id to each named ticket or issue in one transaction; supersede: Supersede a ruling with an existing one (`with`) or a new one; branch knowingly records a second successor; propose: Propose a ruling; binds nothing until accepted, revokes nothing while proposed; accept: Accept a proposed ruling; the revision is a digest of what was reviewed, not proof of who approved; withdraw: Withdraw a proposed ruling; proposed records only", params: ["action","text?","attribution?","date?","scopeTags?","cites?","clientTaskId?","context?","alternatives?","consequences?","reconsiderWhen?","commit?","id?","with?","branch?","proposesToSupersede?","proposedFor?","revision?","reason?"] },
   { name: "storybloq_selftest", description: "Integration smoke test: create/update/delete cycle", params: [] },
   { name: "storybloq_health", description: "Tooling check: auto-compact window, CLI version, Codex review bridge, /story skill, cross-session message delivery. Works without .story/, read-only", params: ["format?","only?","refresh?"] },
   { name: "storybloq_setup_apply", description: "Payload, resume or resolutions; no .story/. First line [exit N]", params: ["payload?","resume?","setup?","resolutions?"] },
@@ -1239,10 +1245,10 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_gate_ack_get", description: "Get a duet-mode gate-ack record by ID", params: ["id"] },
   { name: "storybloq_gate_ack_create", description: "Pin acceptance of a declared plan-ack or pre-commit-ack gate; exactly one of planFile/fromStaged; ackRole comes from the gate.", params: ["arrangement","gate","ticket","planFile?","fromStaged?","codexSessionId?","verdict?","rounds?","deltas?","commit?"] },
   { name: "storybloq_gate_ack_contest", description: "Record a contested acknowledgment and its reason; does not reopen the workflow.", params: ["id","reason","commit?"] },
-  { name: "storybloq_checkpoint_write", description: "Owner checkpoints, write side: action attach|change|create|reopen|resolve|retire; the former storybloq_checkpoint_<action> names still work. attach: Make an open, unclaimed ticket a checkpoint; change: Change what a checkpoint asks; voids its answer; create: Create an owner checkpoint ticket. Needs `checkpoint enable` first.; reopen: Withdraw a checkpoint's answer; resolve: Answer a checkpoint. An acceptance needs artifactRef.; retire: Retire a checkpoint, releasing dependents", params: ["action","id?","owner?","kind?","question?","criteria?","evidenceRefs?","actor?","evidenceMode?","commit?","generation?","revision?","digest?","title?","phase?","description?","blockedBy?","parentTicket?","reason?","response?","artifactRef?","rulingAttribution?","rulingScopeTags?","clientTaskId?"] },
+  { name: "storybloq_checkpoint_write", description: "Owner checkpoints, write side: action attach|change|create|reopen|resolve|retire. attach: Make an open, unclaimed ticket a checkpoint; change: Change what a checkpoint asks; voids its answer; create: Create an owner checkpoint ticket. Needs `checkpoint enable` first.; reopen: Withdraw a checkpoint's answer; resolve: Answer a checkpoint. An acceptance needs artifactRef.; retire: Retire a checkpoint, releasing dependents", params: ["action","id?","owner?","kind?","question?","criteria?","evidenceRefs?","actor?","evidenceMode?","commit?","generation?","revision?","digest?","title?","phase?","description?","blockedBy?","parentTicket?","reason?","response?","artifactRef?","rulingAttribution?","rulingScopeTags?","clientTaskId?"] },
   { name: "storybloq_checkpoint_evidence", description: "Add an evidence revision to an immutable checkpoint; voids its answer", params: ["id","generation","revision","digest","actor?","file","commit?"] },
   { name: "storybloq_earmark_get", description: "Get the pick-exclusion earmark (if any) on a ticket or issue", params: ["ref","node?"] },
-  { name: "storybloq_earmark_write", description: "Earmarks, write side: action reserve|assign|release; the former storybloq_earmark_<action> names still work. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active ones cover the item; assign: Place or convert an earmark to a live session matching the arrangement role. Converting a reservation requires the reserver or the arrangement pen; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.", params: ["action","ref?","role?","arrangement?","clientTaskId?","node?","commit?","to?"] },
+  { name: "storybloq_earmark_write", description: "Earmarks, write side: action reserve|assign|release. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active ones cover the item; assign: Place or convert an earmark to a live session matching the arrangement role. Converting a reservation requires the reserver or the arrangement pen; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.", params: ["action","ref?","role?","arrangement?","clientTaskId?","node?","commit?","to?"] },
 ];
 
 export function handleReference(format: OutputFormat): string {

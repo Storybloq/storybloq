@@ -29,7 +29,7 @@
 
 import type { SessionIntelPresence, TokenPressureState } from "../../presence/session-intel-fields.js";
 import type { SessionIntelConfig } from "./config.js";
-import { effectiveThresholds, emptyBandReason, eraCovered } from "./policy.js";
+import { effectiveThresholds, emptyBandReason, eraCovered, ignoredOverrideReason } from "./policy.js";
 import type { CeilingResolution, SampledBy, ScanResult, TokenPressureSample, UsageAdvisory, UsageAdvisoryInput } from "./types.js";
 
 export interface ComputeSampleInput {
@@ -172,7 +172,9 @@ export function computeSample(input: ComputeSampleInput): TokenPressureSample {
             ? `ceiling conflict: ${ceiling.conflict}`
             : `${tokens} >= ${th.advisoryPct} x ${Math.round(c)}`
           : null;
-  const reason = base === null ? null : `${base}${held}${empty ? `; ${empty}` : ""}`;
+  const ignoredOverride = ignoredOverrideReason(th);
+  const tail = `${empty ? `; ${empty}` : ""}${ignoredOverride ? `; ${ignoredOverride}` : ""}`;
+  const reason = base === null ? ignoredOverride : `${base}${held}${tail}`;
 
   return { ...common, pct, headroom, jumpAllowance: jump.value, jumpAllowanceBasis: jump.basis, state, rawState, suppressedBy, imperativeSince, reason };
 }

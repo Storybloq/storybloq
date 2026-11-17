@@ -105,6 +105,7 @@ function full(): SessionIntelPresence {
     coveredBy: "ops/watch.md#2026-09-09",
     owed: { boundaryAt: "2026-09-09T08:00:00.000Z", eraStartAt: "2026-09-09T07:00:00.000Z" },
     rule: { handovers: "elsewhere", where: "watch log", setAt: "2026-09-09T07:30:00.000Z" },
+    override: { imperativePct: 0.85, imperativeHeadroomTokens: 40_000 },
     policyGen: 7,
   };
 }
@@ -264,6 +265,7 @@ describe("session intel fields (T-499)", () => {
       coveredBy: "\\".repeat(MAX_COVERED_BY_BYTES),
       owed: { boundaryAt: ts, eraStartAt: ts },
       rule: { handovers: "elsewhere", where: "\\".repeat(MAX_RULE_WHERE_BYTES), setAt: ts },
+      override: { imperativePct: 0.1234567890123456, imperativeHeadroomTokens: MAX },
       policyGen: MAX,
     };
     expect(sessionIntelBytes(worst)).toBeGreaterThan(MAX_SESSION_INTEL_BYTES);
@@ -271,7 +273,7 @@ describe("session intel fields (T-499)", () => {
     const expected = { ...shedDisplayText(worst), transcriptPath: null };
     expect(read).toEqual(expected);
     expect(read.lastSample).toEqual(worst.lastSample);
-    expect(sessionIntelBytes(read)).toBe(2_381);
+    expect(sessionIntelBytes(read)).toBe(2_473); // 2,381 before the threshold override (ISS-1428 commit 2)
   });
 
   it("ISS-1428: with the path shed and the sample kept, the transcript is still located through the cwd fallback", () => {
@@ -298,10 +300,10 @@ describe("session intel fields (T-499)", () => {
 
 describe("ISS-1428 T18: the notice fields decode", () => {
   it("an older record without them decodes every one as null or 0", () => {
-    const { compactNeededEmittedAt, noticeTokens, handoverFile, coveredBy, owed, rule, policyGen, ...older } = full();
-    void [compactNeededEmittedAt, noticeTokens, handoverFile, coveredBy, owed, rule, policyGen];
+    const { compactNeededEmittedAt, noticeTokens, handoverFile, coveredBy, owed, rule, override, policyGen, ...older } = full();
+    void [compactNeededEmittedAt, noticeTokens, handoverFile, coveredBy, owed, rule, override, policyGen];
     expect(parseSessionIntel(JSON.parse(JSON.stringify(older)))).toMatchObject({
-      compactNeededEmittedAt: null, noticeTokens: null, handoverFile: null, coveredBy: null, owed: null, rule: null, policyGen: 0,
+      compactNeededEmittedAt: null, noticeTokens: null, handoverFile: null, coveredBy: null, owed: null, rule: null, override: null, policyGen: 0,
     });
   });
 
@@ -314,9 +316,10 @@ describe("ISS-1428 T18: the notice fields decode", () => {
       coveredBy: "two\nlines",
       owed: { eraStartAt: "2026-09-09T07:00:00.000Z" },
       rule: { handovers: "here", setAt: "2026-09-09T07:30:00.000Z" },
+      override: { imperativePct: 1.5, imperativeHeadroomTokens: -3 },
       policyGen: 1.5,
     })!;
-    expect(bad).toMatchObject({ compactNeededEmittedAt: null, noticeTokens: null, handoverFile: null, coveredBy: null, owed: null, rule: null, policyGen: 0 });
+    expect(bad).toMatchObject({ compactNeededEmittedAt: null, noticeTokens: null, handoverFile: null, coveredBy: null, owed: null, rule: null, override: null, policyGen: 0 });
     expect(bad.lastSample).toEqual(full().lastSample);
     // Over the cap is refused, never truncated.
     expect(parseSessionIntel({ ...full(), coveredBy: "x".repeat(MAX_COVERED_BY_BYTES + 1) })!.coveredBy).toBeNull();
@@ -424,11 +427,12 @@ describe("presence record carries session intel (T-499)", () => {
     expect(back.sessionIntel).toEqual(shedDisplayText(intel));
     expect(back.sessionIntel!.lastSample).toEqual(intel.lastSample);
     // That one step is enough: the panel state is untouched, and the record
-    // lands 104 bytes under its bound, measured.
+    // lands 37 bytes under its bound, measured (104 before commit 2's
+    // threshold override, which is never shed and so stays after the step).
     expect(back.closedToolIds).toEqual(rec.closedToolIds);
     expect(back.agentIds).toEqual(rec.agentIds);
     expect(back.openTools).toEqual(rec.openTools);
-    expect(MAX_RECORD_BYTES - Buffer.byteLength(text, "utf-8")).toBe(104);
+    expect(MAX_RECORD_BYTES - Buffer.byteLength(text, "utf-8")).toBe(37);
   });
 });
 

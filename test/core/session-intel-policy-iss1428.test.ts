@@ -22,6 +22,12 @@ import { resolveSessionIntelConfig } from "../../src/core/session-intel/config.j
 import { decideFromRecord, effectiveThresholds, emptyBandReason, eraCovered, thresholdsForRecord, finalAllowed, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "../../src/core/session-intel/policy.js";
 import { applyBannerToMcpText, applyStatusPushesToMcpText, deliverBanner, guideDirectiveFor, stampHandoverForCaller, statusPushesFor, tokenPressureBannerFor } from "../../src/core/session-intel/push.js";
 import { handleSessionIntelPrompt } from "../../src/cli/commands/session-intel.js";
+import { handleSessionAlert, type SessionAlertOptions } from "../../src/cli/commands/session-alert.js";
+import { handleArrangementUpdate } from "../../src/cli/commands/arrangement.js";
+import { writeArrangementUnlocked, loadArrangementsSafe } from "../../src/core/arrangement-loader.js";
+import { coordinateDuet } from "../../src/core/duet-coordination.js";
+import { ArrangementPartySchema } from "../../src/models/arrangement.js";
+import type { DuetOperation } from "../../src/models/duet.js";
 import { handleHandoverCreate } from "../../src/cli/commands/handover.js";
 import { registerAllTools, runMcpReadTool, runMcpWriteTool } from "../../src/mcp/tools.js";
 import { runReadCommandWithRoot } from "../../src/cli/run.js";
@@ -939,3 +945,396 @@ describe("pure tables", () => {
 
 // Keeps the MCP banner pipeline import live for the T6 rows' shared helpers.
 void applyBannerToMcpText;
+
+// ---------------------------------------------------------------------------
+// Commit 2: `storybloq session alert` and the arrangement party rule
+// ---------------------------------------------------------------------------
+
+const ARR = "a-0123456789abcdef";
+const PEN_TASK = "pen-task";
+
+const alert = (s: Sess, o: Omit<SessionAlertOptions, "root" | "now"> = {}) => handleSessionAlert({ root: s.f.root, now: s.t, ...o });
+
+/** A schema-valid arrangement with this session as the Claude worker; `rule` lands on that party. */
+async function arrangement(root: string, rule?: { handovers: "elsewhere"; where?: string }): Promise<void> {
+  await writeArrangementUnlocked({
+    id: ARR,
+    lifecycle: "active",
+    bounds: ["ISS-1428"],
+    parties: [
+      { role: "pen", client: "claude", identityAnchor: PEN_TASK },
+      { role: "worker", client: "claude", identityAnchor: SID, ...(rule ? { handoverRule: rule } : {}) },
+    ],
+    gates: [],
+    unreachability: { onIrreversibleWork: "hold" },
+    createdDate: "2026-11-17",
+    updatedAt: "2026-11-17T00:00:00.000Z",
+  } as never, root);
+}
+
+/** The arrangement file written raw, for shapes the schema refuses (the decoder at notice time is lenient). */
+function rawArrangement(root: string, parties: unknown[]): void {
+  mkdirSync(join(root, ".story", "arrangements"), { recursive: true });
+  writeFileSync(join(root, ".story", "arrangements", `${ARR}.json`), JSON.stringify({ id: ARR, lifecycle: "active", parties }));
+}
+
+/** What a status call with this session's task id records on the presence record (T-477). */
+function joinArrangement(root: string, lifecycle: "active" | "suspended" = "active"): void {
+  expect(applyPresenceEnrichment(root, SID, LIFECYCLE_LOCK_BUDGET_MS, "t", (b) => ({
+    ...b,
+    arrangementPresence: [{ arrangementId: ARR, role: "worker", lifecycle, supervising: null }],
+    ownerIdentity: { client: "claude", clientTaskId: SID },
+  })).status).toBe("written");
+}
+
+describe("T3 rule through the commands (commit 2)", () => {
+  it("(a) session alert --handovers elsewhere --where 'watch log': one rule text at 91, nothing at 99 or after the boundary, no owed; here clears it", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    const set = alert(s, { handovers: "elsewhere", where: "watch log" });
+    expect(set).toEqual({ output: "Recorded: handovers for this session live elsewhere (watch log); the context notice reports instead of asking until this session ends.", errorCode: null });
+    for (const p of [72, 91, 93, 99]) at(s, p);
+    boundary(s);
+    at(s, 30);
+    expect(kinds(s)).toEqual(["rule@91"]);
+    expect(s.pushed[0]!.text).toContain("handover suppressed by session rule (watch log)");
+    expect(s.all.join("\n")).not.toMatch(/Write a handover/);
+    expect(intelOf(s.f.root)).toMatchObject({ owed: null, rule: { handovers: "elsewhere", where: "watch log" } });
+    expect(alert(s, { handovers: "here" }).output).toBe("Cleared: this session's handover rule. The context notice asks for handovers again.");
+    expect(intelOf(s.f.root).rule).toBeNull();
+  });
+
+  it("(b) the arrangement party rule, set by arrangement update, through the real claim path: one rule text at 91, nothing at 99, nothing after the boundary", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root);
+    await handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere", where: "ops log" }, "json", s.f.root);
+    at(s, 55);
+    joinArrangement(s.f.root);
+    for (const p of [72, 91, 93, 99]) at(s, p);
+    boundary(s);
+    at(s, 30);
+    expect(kinds(s)).toEqual(["rule@91"]);
+    expect(s.pushed[0]!.text).toContain("handover suppressed by session rule (ops log)");
+    expect(s.all.join("\n")).not.toMatch(/Write a handover/);
+  });
+
+  it("(b) a party rule with no where names the arrangement", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root, { handovers: "elsewhere" });
+    at(s, 55);
+    joinArrangement(s.f.root);
+    at(s, 91);
+    expect(s.pushed[0]!.text).toContain(`handover suppressed by session rule (set on arrangement ${ARR})`);
+  });
+
+  it("(c) the same anchor under claude and codex, the rule on the codex party only: no rule for the Claude session", async () => {
+    const s = start(await fixture());
+    rawArrangement(s.f.root, [
+      { role: "pen", client: "claude", identityAnchor: SID },
+      { role: "worker", client: "codex", identityAnchor: SID, handoverRule: { handovers: "elsewhere" } },
+    ]);
+    at(s, 55);
+    joinArrangement(s.f.root);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("(c) the anchor only on a codex party with the rule: no rule for the Claude session (mutant: the anchor matched without the client)", async () => {
+    const s = start(await fixture());
+    rawArrangement(s.f.root, [
+      { role: "pen", client: "claude", identityAnchor: PEN_TASK },
+      { role: "worker", client: "codex", identityAnchor: SID, handoverRule: { handovers: "elsewhere" } },
+    ]);
+    at(s, 55);
+    joinArrangement(s.f.root);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("no rule from a suspended arrangement entry, or with no owner identity on the record", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root, { handovers: "elsewhere" });
+    at(s, 55);
+    joinArrangement(s.f.root, "suspended");
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("(d) the arrangement rule removed after one rule line: nothing at 93, uncovered at 99", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root, { handovers: "elsewhere", where: "ops log" });
+    at(s, 55);
+    joinArrangement(s.f.root);
+    at(s, 91);
+    await handleArrangementUpdate(ARR, { party: SID, handovers: "here" }, "json", s.f.root);
+    at(s, 93);
+    at(s, 99);
+    expect(kinds(s)).toEqual(["rule@91", "uncovered@99"]);
+  });
+
+  it("(e) an arrangement rule with owed set after a boundary: owed is cleared by settle, nothing is pushed", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    at(s, 91);
+    boundary(s);
+    await arrangement(s.f.root, { handovers: "elsewhere" });
+    joinArrangement(s.f.root);
+    at(s, 30);
+    expect(kinds(s)).toEqual(["ask@91"]);
+    expect(intelOf(s.f.root).owed).toBeNull();
+  });
+
+  it("a covering stamp with an arrangement rule gives covered", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root, { handovers: "elsewhere" });
+    at(s, 75);
+    joinArrangement(s.f.root);
+    handover(s);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["covered@91"]);
+  });
+});
+
+describe("T6b delayed claims through the command (commit 2)", () => {
+  async function decidedAsk(): Promise<{ s: Sess; banner: NonNullable<ReturnType<typeof tokenPressureBannerFor>> }> {
+    const s = start(await fixture());
+    at(s, 60);
+    at(s, 91);
+    patchIntel(s.f.root, (i) => ({ ...i, lastImperativeEmittedAt: null, noticeTokens: null, policyGen: i.policyGen + 1 }));
+    const banner = tokenPressureBannerFor(s.f.root, { now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT });
+    expect(banner).toMatchObject({ notice: "ask" });
+    return { s, banner: banner! };
+  }
+
+  it("(i) a rule set by session alert before the claim: refused, nothing delivered", async () => {
+    const { s, banner } = await decidedAsk();
+    expect(alert(s, { handovers: "elsewhere" }).errorCode).toBeNull();
+    expect(deliverBanner(banner)).toBeNull();
+    expect(intelOf(s.f.root).lastImperativeEmittedAt).toBeNull();
+  });
+
+  it("(iv) an override set before the claim: refused, nothing delivered", async () => {
+    const { s, banner } = await decidedAsk();
+    expect(alert(s, { imperativePct: 0.8 }).errorCode).toBeNull();
+    expect(deliverBanner(banner)).toBeNull();
+    expect(intelOf(s.f.root).lastImperativeEmittedAt).toBeNull();
+  });
+});
+
+describe("T11 external cover (commit 2)", () => {
+  const TEXT = "ops/watch.md#2026-11-16";
+
+  it("given at 80: the covering reply, a covered text naming it at 91, nothing at 99", async () => {
+    const s = start(await fixture());
+    at(s, 80);
+    expect(alert(s, { coveredBy: TEXT })).toEqual({ output: `Recorded: this compaction is covered by ${TEXT}.`, errorCode: null });
+    at(s, 91);
+    at(s, 99);
+    expect(kinds(s)).toEqual(["covered@91"]);
+    expect(s.pushed[0]!.text).toContain(`This compaction is covered by ${TEXT}: nothing to write. Keep working.`);
+    expect(intelOf(s.f.root)).toMatchObject({ coveredBy: TEXT, handoverFile: null });
+  });
+
+  it("given after ask: nothing at 99 and no catch-up after the boundary", async () => {
+    const s = start(await fixture());
+    at(s, 91);
+    expect(alert(s, { coveredBy: TEXT }).output).toBe(`Recorded: this compaction is covered by ${TEXT}.`);
+    at(s, 99);
+    boundary(s);
+    at(s, 30);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("given at 60: the non-covering reply, and ask at 91", async () => {
+    const s = start(await fixture());
+    at(s, 60);
+    const used = tokensAt(s, 60).toLocaleString("en-US");
+    expect(alert(s, { coveredBy: TEXT }).output).toBe(`Recorded ${TEXT}, but it was given well before the compaction point (${used} of about 228,000 tokens in use), so the notice may still ask near it. Give it again nearer the point.`);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("given before any sample: the unknown-tokens reply, and ask at 91", async () => {
+    const s = start(await fixture());
+    expect(alert(s, { coveredBy: TEXT }).output).toBe(`Recorded ${TEXT}, but the context size is not known yet, so the notice may still ask near the compaction point.`);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+});
+
+describe("T12 thresholds through the command (commit 2)", () => {
+  it("--imperative-pct 0.8: ask at 82 for this session (mutant: the override applied to every session, below)", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    expect(alert(s, { imperativePct: 0.8 }).output).toBe("Recorded for this session only: imperativePct 0.8.");
+    at(s, 78);
+    at(s, 82);
+    expect(kinds(s)).toEqual(["ask@82"]);
+    expect(intelOf(s.f.root).override).toEqual({ imperativePct: 0.8, imperativeHeadroomTokens: null });
+  });
+
+  it("the override changes this session only: a second session on the same project is not asked at 82", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    alert(s, { imperativePct: 0.8 });
+    const SID2 = "5e00bbbf-5dcb-4be3-90d3-2b13e0f50b29";
+    process.env.CLAUDE_CODE_SESSION_ID = SID2;
+    processEra.reset(); // a second Claude process on the same project
+    ensureCapture({ root: s.f.root, sessionId: SID2, source: "startup", now: s.t - 60_000, userSettingsPath: s.f.userSettings });
+    const lines: string[] = [];
+    const path = writeTranscript(s.f.projects, encoded(s.f.root), SID2, lines);
+    const pushed: string[] = [];
+    for (const pct of [55, 82]) {
+      s.t += s.step;
+      lines.push(assistantRecord({ ts: iso(s.t - 1_000), read: tokensAt(s, pct) - 2, sessionId: SID2 }));
+      writeTranscript(s.f.projects, encoded(s.f.root), SID2, lines);
+      const r = handleSessionIntelPrompt({ sessionId: SID2, transcriptPath: path, now: s.t, cwd: s.f.root, projectsDir: s.f.projects, userSettingsPath: s.f.userSettings, softBudgetMs: SOFT });
+      if (r.status === "emitted") pushed.push(r.output!);
+    }
+    expect(readPresenceRecord(s.f.root, SID2)!.sessionIntel!.lastSample!.rawState).toBe("advisory");
+    expect(pushed).toEqual([]);
+  });
+
+  it("each refusal of 7.3 writes nothing", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    const gen = intelOf(s.f.root).policyGen;
+    const refusals: Array<[Omit<SessionAlertOptions, "root" | "now">, RegExp]> = [
+      [{ imperativePct: 0.55 }, /--imperative-pct must be a number from 0.6 to 0.99/],
+      [{ imperativePct: 0.995 }, /--imperative-pct must be a number from 0.6 to 0.99/],
+      [{ imperativePct: Number.NaN }, /--imperative-pct must be a number/],
+      [{ imperativePct: 0.65 }, /above this project's advisoryPct \(0.7\) and below its compactNeededPct \(0.98\)/],
+      [{ imperativePct: 0.98 }, /above this project's advisoryPct \(0.7\) and below its compactNeededPct \(0.98\)/],
+      [{ imperativeHeadroom: 9_999 }, /--imperative-headroom must be a whole number of tokens from 10,000 to 500,000/],
+      [{ imperativeHeadroom: 20_000.5 }, /--imperative-headroom must be a whole number/],
+      [{ imperativePct: 0.8, resetThresholds: true }, /--reset-thresholds cannot be combined/],
+      [{ handovers: "here", where: "x" }, /--where goes with --handovers elsewhere only/],
+      [{ where: "x" }, /--where goes with --handovers elsewhere/],
+      [{ handovers: "elsewhere", where: "a".repeat(201) }, /--where must be one line of 1 to 200 bytes/],
+      [{ coveredBy: "two\nlines" }, /--covered-by must be one line of 1 to 300 bytes/],
+      [{ coveredBy: "c".repeat(301) }, /--covered-by must be one line of 1 to 300 bytes/],
+      // A valid group beside an invalid one: nothing from either is written.
+      [{ handovers: "elsewhere", imperativePct: 0.5 }, /--imperative-pct must be a number/],
+    ];
+    for (const [o, msg] of refusals) {
+      const r = alert(s, o);
+      expect(r.errorCode, JSON.stringify(o)).toBe("invalid_input");
+      expect(r.output).toMatch(msg);
+    }
+    expect(intelOf(s.f.root)).toMatchObject({ policyGen: gen, rule: null, override: null, coveredBy: null });
+  });
+
+  it("an override that stops fitting after a config edit is ignored whole and named in reason", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    alert(s, { imperativePct: 0.8, imperativeHeadroom: 60_000 });
+    setIntelConfig(s.f.root, { advisoryPct: 0.85 });
+    const r86 = at(s, 86);
+    expect(r86.result?.pressure?.reason).toContain("this session's threshold override (imperativePct 0.8) is ignored: it is no longer above the project's advisoryPct 0.85");
+    at(s, 89);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("on a 925,000 point a headroom override of 10,000 empties the band: the set warns, nothing at 95 or 97, uncovered at 98, reason says so", async () => {
+    const f = await fixture(1_000_000);
+    const s = start(f, WIDE);
+    at(s, 50);
+    const set = alert(s, { imperativeHeadroom: 10_000 });
+    expect(set.output.split("\n")).toEqual([
+      "Recorded for this session only: imperativeHeadroomTokens 10,000.",
+      expect.stringMatching(/^Warning: on the current expected point the imperative band is empty: its line \(915000, .*\) is at or past the compact line \(906500\)/),
+    ]);
+    const r95 = at(s, 95);
+    at(s, 97);
+    expect(s.pushed).toEqual([]);
+    expect(r95.result?.pressure?.reason).toContain("the imperative band is empty");
+    at(s, 98);
+    expect(kinds(s)).toEqual(["uncovered@98"]);
+  });
+
+  it("--reset-thresholds clears the override and the project values apply again", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    alert(s, { imperativePct: 0.8 });
+    expect(alert(s, { resetThresholds: true }).output).toBe("Cleared: this session's threshold override. The project's thresholds apply.");
+    at(s, 82);
+    at(s, 91);
+    expect(kinds(s)).toEqual(["ask@91"]);
+  });
+
+  it("groups combine in one locked write, and no flags prints the state", async () => {
+    const s = start(await fixture());
+    at(s, 80);
+    const gen = intelOf(s.f.root).policyGen;
+    const r = alert(s, { handovers: "elsewhere", where: "watch log", coveredBy: "ops/x", imperativePct: 0.85 });
+    expect(r.output.split("\n")).toEqual([
+      "Recorded: handovers for this session live elsewhere (watch log); the context notice reports instead of asking until this session ends.",
+      "Recorded for this session only: imperativePct 0.85.",
+      "Recorded: this compaction is covered by ops/x.",
+    ]);
+    expect(intelOf(s.f.root)).toMatchObject({ rule: { where: "watch log" }, override: { imperativePct: 0.85 }, coveredBy: "ops/x", policyGen: gen + 2 });
+    const md = alert(s).output;
+    expect(md).toContain("- Handover rule: elsewhere (watch log), set on this session");
+    expect(md).toContain("- Coverage: covered-by ops/x at");
+    expect(md).toContain("(session override applied)");
+    const json = JSON.parse(alert(s, { format: "json" }).output) as { ok: boolean; state: { rule: { source: string }; thresholds: { overrideStatus: string } } };
+    expect(json).toMatchObject({ ok: true, state: { rule: { source: "session" }, thresholds: { overrideStatus: "applied" } } });
+  });
+
+  it("refuses an unbound caller", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    process.env.CLAUDE_CODE_SESSION_ID = "9f00bbbf-5dcb-4be3-90d3-2b13e0f50b29";
+    const r = alert(s, { handovers: "elsewhere" });
+    expect(r.errorCode).toBe("not_bound");
+    expect(intelOf(s.f.root).rule).toBeNull();
+  });
+});
+
+describe("T18 the arrangement party rule (commit 2)", () => {
+  it("survives arrangement coordinate and arrangement update rewrites, and parses on a decoder without the field", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root);
+    await handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere", where: "ops log" }, "json", s.f.root);
+    const ruleOf = () => loadArrangementsSafe(s.f.root).arrangements.find((a) => a.id === ARR)!.parties.find((p) => p.identityAnchor === SID)!.handoverRule;
+    expect(ruleOf()).toEqual({ handovers: "elsewhere", where: "ops log" });
+    await coordinateDuet(s.f.root, { id: ARR, clientTaskId: PEN_TASK, action: "start", expectedSessionId: null, expectedRevision: 0, newSessionId: "0f5a2b7e-1111-4222-8333-944455556666", mode: "native-return" } as DuetOperation);
+    expect(ruleOf()).toEqual({ handovers: "elsewhere", where: "ops log" });
+    await handleArrangementUpdate(ARR, { lifecycle: "suspended" }, "json", s.f.root);
+    expect(ruleOf()).toEqual({ handovers: "elsewhere", where: "ops log" });
+    // An older decoder: the party schema without the field keeps it (passthrough).
+    const older = ArrangementPartySchema.omit({ handoverRule: true });
+    const raw = JSON.parse(readFileSync(join(s.f.root, ".story", "arrangements", `${ARR}.json`), "utf8")) as { parties: unknown[] };
+    expect(older.parse(raw.parties[1])).toMatchObject({ handoverRule: { handovers: "elsewhere", where: "ops log" } });
+    await handleArrangementUpdate(ARR, { party: SID, handovers: "here" }, "json", s.f.root);
+    expect(ruleOf()).toBeUndefined();
+  });
+
+  it("--party must name exactly one party, and the flags are validated before the lock", async () => {
+    const s = start(await fixture());
+    await arrangement(s.f.root);
+    await expect(handleArrangementUpdate(ARR, { party: "nobody", handovers: "elsewhere" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(handleArrangementUpdate(ARR, { handovers: "elsewhere" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "here", where: "x" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere", where: "two\nlines" }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(handleArrangementUpdate(ARR, { party: SID }, "json", s.f.root)).rejects.toMatchObject({ code: "invalid_input" });
+    rawArrangement(s.f.root, [
+      { role: "pen", client: "claude", identityAnchor: SID },
+      { role: "worker", client: "codex", identityAnchor: SID },
+    ]);
+    // A hand-written file the schema refuses is not found; a schema-valid twin anchor is refused by name count.
+    await expect(handleArrangementUpdate(ARR, { party: SID, handovers: "elsewhere" }, "json", s.f.root)).rejects.toBeTruthy();
+  });
+
+  it("the record keeps rule and override through both resets; SessionEnd clears the subtree", async () => {
+    const s = start(await fixture());
+    at(s, 55);
+    alert(s, { handovers: "elsewhere", imperativePct: 0.85 });
+    const i = intelOf(s.f.root);
+    for (const r of [applyBoundaryReset(i, "2026-11-17T09:00:00.000Z"), applyAssumedReset(i, "2026-11-17T09:00:00.000Z")]) {
+      expect(r.rule).toEqual(i.rule);
+      expect(r.override).toEqual(i.override);
+    }
+  });
+});

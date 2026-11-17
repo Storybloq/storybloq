@@ -3977,6 +3977,19 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                   type: "string",
                   choices: ARRANGEMENT_LIFECYCLE,
                   describe: "New lifecycle",
+                })
+                .option("party", {
+                  type: "string",
+                  describe: "With --handovers: the identity anchor of exactly one party",
+                })
+                .option("handovers", {
+                  type: "string",
+                  choices: ["elsewhere", "here"],
+                  describe: "That party's handovers live elsewhere (the context notice reports, never asks), or here (clears it)",
+                })
+                .option("where", {
+                  type: "string",
+                  describe: "With --handovers elsewhere: where they live, one line of 1 to 200 bytes",
                 }),
             ))(y)),
           async (argv) => {
@@ -3990,7 +4003,12 @@ export function registerArrangementCommand(yargs: Argv): Argv {
             try {
               const result = await runBoardWrite(argv, format, async () => handleArrangementUpdate(
                 argv.id as string,
-                { lifecycle: argv.lifecycle as string | undefined },
+                {
+                  lifecycle: argv.lifecycle as string | undefined,
+                  party: argv.party as string | undefined,
+                  handovers: argv.handovers as string | undefined,
+                  where: argv.where as string | undefined,
+                },
                 format,
                 root,
               ));
@@ -6278,6 +6296,41 @@ export function registerSessionCommand(yargs: Argv): Argv {
                 clientTaskId: argv["client-task-id"] as string | undefined,
               });
               // Project-free template: every byte through writeOutput.
+              writeOutput(result.output, outputFormatOf(argv.format));
+              if (result.errorCode) process.exitCode = 1;
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message, outputFormatOf(argv.format));
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          "alert",
+          "ISS-1428: tell the context alert about this Claude session: its handover rule, an external cover, its thresholds; no flags prints its state",
+          (y2) =>
+            y2
+              .option("format", { type: "string", choices: ["md", "json"] as const, default: "md" as const, describe: "Output format" })
+              .option("handovers", { type: "string", choices: ["elsewhere", "here"] as const, describe: "elsewhere: this session's handovers live outside the ledger, so the notice reports instead of asking (until SessionEnd); here: clears it" })
+              .option("where", { type: "string", describe: "With --handovers elsewhere: where they live, one line of 1 to 200 bytes" })
+              .option("covered-by", { type: "string", describe: "Record that this compaction is covered by an outside record (one line, 1 to 300 bytes); nothing is read from it" })
+              .option("imperative-pct", { type: "number", describe: "This session's imperativePct, above the project's advisoryPct and below its compactNeededPct" })
+              .option("imperative-headroom", { type: "number", describe: "This session's imperativeHeadroomTokens" })
+              .option("reset-thresholds", { type: "boolean", default: false, describe: "Clear this session's threshold override" })
+              .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),
+          async (argv) => {
+            const { handleSessionAlert } = await import("./commands/session-alert.js");
+            try {
+              const result = handleSessionAlert({
+                format: argv.format as "json" | "md",
+                clientTaskId: argv["client-task-id"] as string | undefined,
+                handovers: argv.handovers as string | undefined,
+                where: argv.where as string | undefined,
+                coveredBy: argv["covered-by"] as string | undefined,
+                imperativePct: argv["imperative-pct"] as number | undefined,
+                imperativeHeadroom: argv["imperative-headroom"] as number | undefined,
+                resetThresholds: argv["reset-thresholds"] === true,
+              });
               writeOutput(result.output, outputFormatOf(argv.format));
               if (result.errorCode) process.exitCode = 1;
             } catch (err: unknown) {

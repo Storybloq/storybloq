@@ -64,6 +64,28 @@ export type ArrangementRole = (typeof ARRANGEMENT_ROLES)[number];
  * a looser schema here would silently mint anchors that can never match
  * anything.
  */
+/**
+ * ISS-1428 (handover lines slice C, plan 7.1): a party's standing handover
+ * rule. `elsewhere` means this seat's handovers live outside the ledger (a
+ * watch log, an ops file), so the context notice reports instead of asking.
+ * Set and cleared by `storybloq arrangement update <id> --party <anchor>
+ * --handovers elsewhere|here [--where <text>]` only; the MCP update is
+ * unchanged. `where` is one line of 1 to 200 bytes. Strict inside, optional
+ * on the party, which stays `passthrough`, so an older decoder keeps it.
+ */
+export const MAX_HANDOVER_RULE_WHERE_BYTES = 200;
+export function validHandoverRuleWhere(text: string): boolean {
+  const bytes = Buffer.byteLength(text, "utf-8");
+  // eslint-disable-next-line no-control-regex
+  return bytes >= 1 && bytes <= MAX_HANDOVER_RULE_WHERE_BYTES && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(text);
+}
+export const HandoverRuleSchema = z
+  .object({
+    handovers: z.literal("elsewhere"),
+    where: z.string().refine(validHandoverRuleWhere, "where must be one line of 1 to 200 bytes").optional(),
+  })
+  .strict();
+
 export const ArrangementPartySchema = z
   .object({
     role: z.enum(ARRANGEMENT_ROLES),
@@ -75,6 +97,7 @@ export const ArrangementPartySchema = z
     // of the field (not its content) is what "reserves" it -- no T-473 code
     // path writes to it.
     provenanceLogRef: z.string().max(1024).optional(),
+    handoverRule: HandoverRuleSchema.optional(),
   })
   .passthrough();
 

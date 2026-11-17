@@ -1377,7 +1377,10 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     inputSchema: {
       bounds: z.array(z.string()).min(1).describe("Ticket/issue refs, display-form or canonical"),
       parties: z
-        .array(ArrangementPartySchema)
+        // ISS-1428: the party's handoverRule is set with `arrangement update`
+        // (CLI); it is left out of this tool's schema so tools/list does not
+        // grow. A rule passed anyway is checked by ArrangementSchema at write.
+        .array(ArrangementPartySchema.omit({ handoverRule: true }))
         .min(2)
         .describe("Exactly one pen and one worker party"),
       onIrreversibleWork: z.enum(["hold", "escalate"]),

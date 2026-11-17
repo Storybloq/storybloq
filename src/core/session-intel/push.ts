@@ -22,7 +22,8 @@ import type { SessionIntelPresence, SessionIntelSample, TokenPressureState } fro
 import { LIFECYCLE_LOCK_BUDGET_MS } from "../presence-enrichment.js";
 import { readSessionIntelConfig, type SessionIntelConfig } from "./config.js";
 import { claimNotice, consumeUsageAdvisory, findPresenceRecordAcrossWorktrees, noticeSeenOf, peekPending, readPresenceRecord, reconcileIntel, reconcileUnderLock, resolveCallerBinding, revalidateCandidateIdentity, stampHandover, type CallerBinding, type CandidateIdentity, type HandoverStampObservation, type HandoverStampOutcome } from "./presence-bridge.js";
-import { decideFromRecord, noticeDetailFor, noticeFactsOf, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "./policy.js";
+import { arrangementRuleInForce } from "./arrangement-rule.js";
+import { decideFromRecord, needsArrangementRule, noticeDetailFor, noticeFactsOf, noticeHead, renderNotice, resolveFinal, type FinalAction, type NoticeCandidate, type NoticeKind } from "./policy.js";
 import { sampleSession } from "./query.js";
 import { usageAdvisoryFrom } from "./sampler.js";
 import type { UsageAdvisory } from "./types.js";
@@ -216,7 +217,8 @@ function bannerFor(acquired: CallerSample, cfg: SessionIntelConfig, surface: "mc
       }
     : null;
   const candidate = decideFromRecord(acquired.intel, cfg);
-  const final = resolveFinal(candidate, null);
+  const arrangementRule = needsArrangementRule(candidate) ? arrangementRuleInForce(acquired.root, readPresenceRecord(acquired.root, acquired.sessionId)) : null;
+  const final = resolveFinal(candidate, arrangementRule);
   if (final === null) return dataLine;
   const claim = claimFor(acquired, cfg, candidate, final, now);
   // A settle carries no text, so any surface may take it at once.
@@ -231,7 +233,7 @@ function bannerFor(acquired: CallerSample, cfg: SessionIntelConfig, surface: "mc
     sampledAt: sample.sampledAt,
     suppressedBy: sample.suppressedBy,
     notice: final,
-    text: renderNotice(final, facts, surface, noticeDetailFor(final, acquired.intel, null)),
+    text: renderNotice(final, facts, surface, noticeDetailFor(final, acquired.intel, arrangementRule)),
     claim,
     degraded: dataLine,
   };
@@ -529,12 +531,13 @@ export function guideDirectiveFor(root: string, ownerClaudeSessionId: string | n
     const rec = reconcileIntel(intel, null, peekPending(resolvedRoot, ownerClaudeSessionId, now), cfg, now);
     if (rec.status !== "complete" || rec.intel.lastSample !== sample) return null;
     const candidate = decideFromRecord(intel, cfg);
-    const final = resolveFinal(candidate, null);
+    const arrangementRule = needsArrangementRule(candidate) ? arrangementRuleInForce(resolvedRoot, record) : null;
+    const final = resolveFinal(candidate, arrangementRule);
     if (final === null) return null;
     if (walkedIdentity && !revalidateCandidateIdentity(resolvedRoot, walkedIdentity)) return null;
     if (!claimNotice(resolvedRoot, ownerClaudeSessionId, noticeSeenOf(intel), candidate, final, now, cfg)) return null;
     if (final === "settle") return null;
-    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, null));
+    return renderNotice(final, facts, "guide", noticeDetailFor(final, intel, arrangementRule));
   } catch {
     return null;
   }
@@ -635,7 +638,7 @@ export function describeStampFailure(
  * proven gone) and "record era differs from the live process era" (a live,
  * different era says the record is another process's). Null means skip.
  */
-function stampModeFor(binding: CallerBinding): "bound" | "unbound-era" | null {
+export function stampModeFor(binding: CallerBinding): "bound" | "unbound-era" | null {
   if (binding.bound && binding.era) return "bound";
   if (!binding.sessionId || binding.recordRoot === null) return null;
   return binding.reason === "process era unknown" || binding.reason === "process era unverifiable" ? "unbound-era" : null;

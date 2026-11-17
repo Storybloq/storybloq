@@ -178,6 +178,13 @@ export interface SessionIntelPresence {
   /** ISS-1428: this session's handovers live elsewhere; set by `session alert --handovers elsewhere`. */
   readonly rule: SessionIntelRule | null;
   /**
+   * ISS-1428: this session's own threshold override, set by `session alert
+   * --imperative-pct / --imperative-headroom`; cleared by `--reset-thresholds`
+   * and SessionEnd. Read by `effectiveThresholds`, which ignores it whole when
+   * its pct no longer sits between the project's advisory and compact values.
+   */
+  readonly override: SessionIntelOverride | null;
+  /**
    * ISS-1428: advanced by every write that can change a notice decision (a
    * claim, a stamp, a heal, a reset, a rule write). A notice claim must see the
    * generation it decided on.
@@ -188,6 +195,11 @@ export interface SessionIntelPresence {
 export interface SessionIntelOwed {
   readonly boundaryAt: string;
   readonly eraStartAt: string | null;
+}
+
+export interface SessionIntelOverride {
+  readonly imperativePct: number | null;
+  readonly imperativeHeadroomTokens: number | null;
 }
 
 export interface SessionIntelRule {
@@ -239,6 +251,7 @@ export function emptySessionIntel(): SessionIntelPresence {
     coveredBy: null,
     owed: null,
     rule: null,
+    override: null,
     policyGen: 0,
   };
 }
@@ -283,6 +296,7 @@ export function parseSessionIntel(value: unknown): SessionIntelPresence | null {
     coveredBy: oneLineOrNull(v.coveredBy, MAX_COVERED_BY_BYTES),
     owed: parseOwed(v.owed),
     rule: parseRule(v.rule),
+    override: parseOverride(v.override),
     policyGen: safeInt(v.policyGen, 0),
   };
   return fitSessionIntel(parsed);
@@ -459,6 +473,15 @@ function parseOwed(value: unknown): SessionIntelOwed | null {
   const boundaryAt = isoOrNull(v.boundaryAt);
   if (boundaryAt === null) return null;
   return { boundaryAt, eraStartAt: isoOrNull(v.eraStartAt) };
+}
+
+function parseOverride(value: unknown): SessionIntelOverride | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const pct = typeof v.imperativePct === "number" && Number.isFinite(v.imperativePct) && v.imperativePct > 0 && v.imperativePct < 1 ? v.imperativePct : null;
+  const headroom = positiveIntOrNull(v.imperativeHeadroomTokens);
+  if (pct === null && headroom === null) return null;
+  return { imperativePct: pct, imperativeHeadroomTokens: headroom };
 }
 
 function parseRule(value: unknown): SessionIntelRule | null {

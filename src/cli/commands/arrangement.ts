@@ -24,6 +24,7 @@ import {
   type Arrangement,
   type ArrangementLifecycle,
   type ArrangementParty,
+  validHandoverRuleWhere,
 } from "../../models/arrangement.js";
 import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANONICAL_ID_REGEX, looksLikeClientTaskId, type OutputFormat } from "../../models/types.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../../models/ticket.js";
@@ -307,16 +308,76 @@ async function retractNodeEarmarksOnItem(
   }
 }
 
+/**
+ * ISS-1428 (plan 7.1): the CLI-only party handover rule. `--party` names a
+ * party by its identity anchor, which must match exactly one party;
+ * `--handovers elsewhere` sets `handoverRule` (with `--where`, optional),
+ * `--handovers here` removes it. Validated before any lock is taken; the
+ * party match is checked again under the lock, against the file it writes.
+ */
+export interface ArrangementHandoverRuleUpdate {
+  readonly party: string;
+  readonly handovers: "elsewhere" | "here";
+  readonly where?: string;
+}
+
+function validateHandoverRuleFlags(updates: { party?: string; handovers?: string; where?: string }): ArrangementHandoverRuleUpdate | null {
+  const { party, handovers, where } = updates;
+  if (handovers === undefined) {
+    if (party !== undefined || where !== undefined) {
+      throw new CliValidationError("invalid_input", "--party and --where go with --handovers elsewhere|here");
+    }
+    return null;
+  }
+  if (handovers !== "elsewhere" && handovers !== "here") {
+    throw new CliValidationError("invalid_input", `Unknown --handovers "${handovers}": must be elsewhere or here`);
+  }
+  if (party === undefined || party.length === 0) {
+    throw new CliValidationError("invalid_input", "--handovers needs --party <identityAnchor> naming exactly one party");
+  }
+  if (where !== undefined) {
+    if (handovers === "here") throw new CliValidationError("invalid_input", "--where goes with --handovers elsewhere only");
+    if (!validHandoverRuleWhere(where)) throw new CliValidationError("invalid_input", "--where must be one line of 1 to 200 bytes");
+  }
+  return { party, handovers, ...(where !== undefined ? { where } : {}) };
+}
+
+/** The one party `--party` names, or `invalid_input`. */
+function partyIndexFor(existing: Arrangement, anchor: string): number {
+  const hits = existing.parties.flatMap((p, i) => (p.identityAnchor === anchor ? [i] : []));
+  if (hits.length !== 1) {
+    throw new CliValidationError(
+      "invalid_input",
+      hits.length === 0
+        ? `No party of arrangement ${existing.id} has identity anchor "${anchor}"`
+        : `${hits.length} parties of arrangement ${existing.id} have identity anchor "${anchor}"; --party must name exactly one`,
+    );
+  }
+  return hits[0]!;
+}
+
+function withHandoverRule(existing: Arrangement, rule: ArrangementHandoverRuleUpdate): Arrangement {
+  const at = partyIndexFor(existing, rule.party);
+  const parties = existing.parties.map((p, i) => {
+    if (i !== at) return p;
+    const { handoverRule: _drop, ...rest } = p;
+    void _drop;
+    return rule.handovers === "here" ? rest : { ...rest, handoverRule: { handovers: "elsewhere" as const, ...(rule.where !== undefined ? { where: rule.where } : {}) } };
+  });
+  return { ...existing, parties };
+}
+
 export async function handleArrangementUpdate(
   id: string,
-  updates: { lifecycle?: string },
+  updates: { lifecycle?: string; party?: string; handovers?: string; where?: string },
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
-  if (updates.lifecycle === undefined) {
+  const ruleUpdate = validateHandoverRuleFlags(updates);
+  if (updates.lifecycle === undefined && ruleUpdate === null) {
     throw new CliValidationError("invalid_input", "Specify at least one field to update: lifecycle");
   }
-  if (!ARRANGEMENT_LIFECYCLE.includes(updates.lifecycle as ArrangementLifecycle)) {
+  if (updates.lifecycle !== undefined && !ARRANGEMENT_LIFECYCLE.includes(updates.lifecycle as ArrangementLifecycle)) {
     throw new CliValidationError(
       "invalid_input",
       `Unknown arrangement lifecycle "${updates.lifecycle}": must be one of ${ARRANGEMENT_LIFECYCLE.join(", ")}`,
@@ -428,6 +489,7 @@ export async function handleArrangementUpdate(
           `Arrangement ${id} was continued by ${existing.continuedBy}; its lifecycle is terminal. Update the successor instead`,
         );
       }
+      if (ruleUpdate) partyIndexFor(existing, ruleUpdate.party);
       if (closing) {
         // D1: every node root this close needs to touch must have had its
         // item lock actually acquired above. A bound added concurrently,
@@ -464,7 +526,8 @@ export async function handleArrangementUpdate(
       // arrangement to still cover the item.
       const { arrangements } = loadArrangementsSafe(root);
       const existing = arrangements.find((a) => a.id === id)!;
-      const candidate = { ...existing, lifecycle: updates.lifecycle as ArrangementLifecycle };
+      const withRule = ruleUpdate ? withHandoverRule(existing, ruleUpdate) : existing;
+      const candidate = updates.lifecycle !== undefined ? { ...withRule, lifecycle: updates.lifecycle as ArrangementLifecycle } : withRule;
       const arrangement = validateOrThrow(candidate);
 
       // Binding item 3: the ordinary atomic-replace path, `createOnly` omitted.

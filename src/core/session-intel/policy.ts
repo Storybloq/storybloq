@@ -38,15 +38,32 @@ export interface EffectiveThresholds {
   readonly compactLine: number | null;
   /** The imperative line is at or past the compact line, so the band holds no token count at all. */
   readonly bandEmpty: boolean;
+  /**
+   * This session's `session alert` override: `applied` when its values are in
+   * use, `ignored` when its pct no longer sits between the project's advisory
+   * and compact values (then the project's values are used, whole), null when
+   * there is none.
+   */
+  readonly override: "applied" | "ignored" | null;
+  /** The ignored override's pct, for the reason line; null otherwise. */
+  readonly ignoredOverridePct: number | null;
+}
+
+/** Whether an imperative pct fits the project: above its advisory value and below its compact value. */
+export function imperativePctFits(cfg: SessionIntelConfig, pct: number): boolean {
+  return pct > cfg.advisoryPct && pct < cfg.compactNeededPct;
 }
 
 /**
  * The thresholds one session is held to, for every reader alike (the sampler,
  * coverage, the notice and `session alert`).
  */
-export function effectiveThresholds(cfg: SessionIntelConfig, _intel: SessionIntelPresence | null, point: number | null): EffectiveThresholds {
-  const imperativePct = cfg.imperativePct;
-  const imperativeHeadroomTokens = cfg.imperativeHeadroomTokens;
+export function effectiveThresholds(cfg: SessionIntelConfig, intel: SessionIntelPresence | null, point: number | null): EffectiveThresholds {
+  const ov = intel?.override ?? null;
+  const ignored = ov !== null && ov.imperativePct !== null && !imperativePctFits(cfg, ov.imperativePct);
+  const use = ov !== null && !ignored;
+  const imperativePct = use && ov.imperativePct !== null ? ov.imperativePct : cfg.imperativePct;
+  const imperativeHeadroomTokens = use && ov.imperativeHeadroomTokens !== null ? ov.imperativeHeadroomTokens : cfg.imperativeHeadroomTokens;
   const known = point !== null && Number.isFinite(point) && point > 0;
   const imperativeLine = known ? Math.max(imperativePct * point, point - imperativeHeadroomTokens) : null;
   const compactLine = known ? cfg.compactNeededPct * point : null;
@@ -59,7 +76,15 @@ export function effectiveThresholds(cfg: SessionIntelConfig, _intel: SessionInte
     imperativeLine,
     compactLine,
     bandEmpty: imperativeLine !== null && compactLine !== null && imperativeLine >= compactLine,
+    override: ov === null ? null : ignored ? "ignored" : "applied",
+    ignoredOverridePct: ignored ? ov.imperativePct : null,
   };
+}
+
+/** The reason line's clause for an ignored override, or null. */
+export function ignoredOverrideReason(th: EffectiveThresholds): string | null {
+  if (th.override !== "ignored") return null;
+  return `this session's threshold override (imperativePct ${th.ignoredOverridePct}) is ignored: it is no longer above the project's advisoryPct ${th.advisoryPct} and below its compactNeededPct ${th.compactNeededPct}, so the project's values apply`;
 }
 
 /** The reason line's clause for an empty imperative band, or null. */

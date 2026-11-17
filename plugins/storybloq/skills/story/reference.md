@@ -109,6 +109,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **setup-verify** (--ticket, --resolve?, --argv?, --drop?, --owner-words?, --run?, --reopen?) - Verify; --resolve needs --owner-words, --run
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
+- **session alert** (--handovers?, --where?, --covered-by?, --imperative-pct?, --imperative-headroom?, --reset-thresholds?, --client-task-id?, --format?) - Session handover rule, cover or threshold override; no flags shows them
 - **session intel** (--session-id?, --transcript?, --caller-model?, --full?, --client-task-id?, --format?) - Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: <project>/<sessionId>.jsonl in Claude's projects dir, a regular file
 - **setup** (--client?, --skip-hooks?, --skip-skill?) - Install Storybloq skill, MCP, and hooks for Claude, Codex, or both
 - **setup-skill** (--skip-hooks?) - Compatibility alias for `storybloq setup --client claude`
@@ -138,7 +139,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **bus join [legacy-role]** (--client?, --task-id?, --surface?, --replace?, --format?) - Deprecated: roles are now per-message, so the legacy role argument is ignored. Use `storybloq bus setup`.
 - **bus leave** (--endpoint?, --client?, --task-id?, --format?) - Retire the Bus endpoint owned by this task
 - **bus endpoint retire <endpoint-id>** (--force, --reason, --format?) - Force-retire an endpoint with unknown liveness
-- **bus send** (--endpoint?, --client?, --task-id?, --thread?, --thread-kind?, --predecessor-thread?, --to?, --kind, --severity?, --body, --idempotency-key, --in-reply-to?, --issue?, --ticket?, --commit?, --ci-run?, --file?, --format?) - Create a Bus thread or send a reply. Routing always targets the sole peer; `--to` is deprecated and ignored.
+- **bus send** (--endpoint?, --client?, --task-id?, --thread?, --thread-kind?, --predecessor-thread?, --to?, --kind, --severity?, --body, --idempotency-key, --in-reply-to?, --issue?, --ticket?, --commit?, --ci-run?, --file?, --format?) - Create a Bus thread or send a reply. `--to` is ignored: routing targets the sole peer.
 - **bus poll** (--endpoint?, --client?, --task-id?, --limit?, --wait?, --timeout?, --format?) - Poll unacknowledged messages for the task-bound endpoint. --limit caps messages, wait drain included. --wait blocks until a message or --timeout (v2 only); exit 0 = message delivered, 4 = timed out, 5 = another --wait owns this endpoint.
 - **bus ack <message-id>** (--endpoint?, --client?, --task-id?, --disposition, --reason?, --format?) - Record delivery disposition for one Bus message
 - **bus status** (--format?) - Show concise Bus runtime state
@@ -153,7 +154,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 - **arrangement list** (--lifecycle?, --format?) - List arrangements
 - **arrangement get <id>** (--format?) - Get an arrangement
 - **arrangement create** (--unreachability-irreversible, --unreachability-reversible?, --bounds?, --party?, --format?, --commit?) - Create a new arrangement
-- **arrangement update <id>** (--lifecycle?, --format?, --commit?) - Update an arrangement
+- **arrangement update <id>** (--lifecycle?, --party?, --handovers?, --where?, --format?, --commit?) - Update an arrangement
 - **bus endpoint list** (--format?) - List endpoints with their wake configuration and last wake outcome
 - **bus hooks enable** (--client?, --format?) - Opt this project into guarded SessionStart and Stop delivery
 - **bus hooks disable** (--client?, --format?) - Disable guarded Bus hook delivery for this project
@@ -200,7 +201,7 @@ Run `storybloq <command>`. Positionals follow the command; ? marks optional flag
 
 ## MCP Tools
 
-The base tools below are registered in full mode (inside a .story/ project). The storybloq_bus_* tools are always registered there; with the Bus disabled or uninitialized they return setup guidance (`storybloq bus setup`), no MCP restart needed.
+The base tools below are registered in full mode (in a .story/ project). The storybloq_bus_* tools are always registered there; with the Bus disabled or uninitialized they return setup guidance (`storybloq bus setup`), no MCP restart needed. Former names still work: storybloq_capability_<action>, storybloq_term_<action>, storybloq_ruling_<action>, storybloq_checkpoint_<action>, storybloq_earmark_<action>.
 
 ? marks optional arguments; handlers may require combinations per action. The client's tool schema gives types and constraints.
 
@@ -250,17 +251,17 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_capability_match** (paths?, title?, phaseId?) - Find capabilities a task may already be covered by. Bounded to the inventory: no match never means no implementation exists
 - **storybloq_capability_list** (status?, skipCheck?, digest?, full?) - List the inventory with each entry's effective status (stored flag folded with a freshness check against HEAD)
 - **storybloq_capability_get** (id, skipCheck?) - Get one capability: contract, entry points, surfaces, rulings, items and findings
-- **storybloq_capability_write** (action, id?, name?, summary?, entryPoints?, contract?, example?, cli?, mcp?, app?, files?, rulings?, items?, terms?, status?, skipCheck?, commit?, clear?) - Capabilities, write side: action add|update; the former storybloq_capability_<action> names still work. add: Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read; update: Edit a capability; supplied lists replace stored ones; the checkpoint is never touched
+- **storybloq_capability_write** (action, id?, name?, summary?, entryPoints?, contract?, example?, cli?, mcp?, app?, files?, rulings?, items?, terms?, status?, skipCheck?, commit?, clear?) - Capabilities, write side: action add|update. add: Add a capability; stamps the checkpoint at HEAD, recording that its entry points were read; update: Edit a capability; supplied lists replace stored ones; the checkpoint is never touched
 - **storybloq_capability_check** (stamp?, stampAll?) - Check every capability against HEAD; stamp re-records the checkpoint, refused for a structural or incomplete finding
 - **storybloq_projection_write** (commit?) - Regenerate the decisions projection the Mac app reads, with a full freshness check. The status tool never writes it
 - **storybloq_context_brief** (id, budget?) - The context brief for a ticket or issue: binding and suggested rulings with reasons, capabilities, terms, lessons, and what discovery could not see. Suggestions bind nothing
 - **storybloq_term_match** (text) - Which glossary terms appear in a piece of text. Whole-word, case-insensitive and advisory: a match suggests a term and changes nothing
 - **storybloq_term_list** (core?, thin?, digest?) - List the glossary, or its bounded names-only digest (core-first over the cap)
 - **storybloq_term_get** (id) - Get one term: definition, distinction, and the capabilities and rulings behind it
-- **storybloq_term_write** (action, id?, term?, definition?, distinction?, aliases?, capabilities?, rulings?, core?, addedBy?, commit?, clear?) - Glossary terms, write side: action add|update; the former storybloq_term_<action> names still work. add: Add a glossary term; a name another entry already owns is refused; update: Edit a glossary term; supplied lists replace the stored ones
+- **storybloq_term_write** (action, id?, term?, definition?, distinction?, aliases?, capabilities?, rulings?, core?, addedBy?, commit?, clear?) - Glossary terms, write side: action add|update. add: Add a glossary term; a name another entry already owns is refused; update: Edit a glossary term; supplied lists replace the stored ones
 - **storybloq_ruling_list** (scopeTag?, superseded?, status?) - List rulings, optionally filtered by scope tag, superseded state or lifecycle status
 - **storybloq_ruling_get** (id) - Get a ruling by ID
-- **storybloq_ruling_write** (action, text?, attribution?, date?, scopeTags?, cites?, clientTaskId?, context?, alternatives?, consequences?, reconsiderWhen?, commit?, id?, with?, branch?, proposesToSupersede?, proposedFor?, revision?, reason?) - Rulings, write side: action create|supersede|propose|accept|withdraw; the former storybloq_ruling_<action> names still work. create: Record a ruling verbatim; cites adds its id to each named ticket or issue in one transaction; supersede: Supersede a ruling with an existing one (`with`) or a new one; branch knowingly records a second successor; propose: Propose a ruling; binds nothing until accepted, revokes nothing while proposed; accept: Accept a proposed ruling; the revision is a digest of what was reviewed, not proof of who approved; withdraw: Withdraw a proposed ruling; proposed records only
+- **storybloq_ruling_write** (action, text?, attribution?, date?, scopeTags?, cites?, clientTaskId?, context?, alternatives?, consequences?, reconsiderWhen?, commit?, id?, with?, branch?, proposesToSupersede?, proposedFor?, revision?, reason?) - Rulings, write side: action create|supersede|propose|accept|withdraw. create: Record a ruling verbatim; cites adds its id to each named ticket or issue in one transaction; supersede: Supersede a ruling with an existing one (`with`) or a new one; branch knowingly records a second successor; propose: Propose a ruling; binds nothing until accepted, revokes nothing while proposed; accept: Accept a proposed ruling; the revision is a digest of what was reviewed, not proof of who approved; withdraw: Withdraw a proposed ruling; proposed records only
 - **storybloq_selftest** - Integration smoke test: create/update/delete cycle
 - **storybloq_health** (format?, only?, refresh?) - Tooling check: auto-compact window, CLI version, Codex review bridge, /story skill, cross-session message delivery. Works without .story/, read-only
 - **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) - Payload, resume or resolutions; no .story/. First line [exit N]
@@ -294,10 +295,10 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_gate_ack_get** (id) - Get a duet-mode gate-ack record by ID
 - **storybloq_gate_ack_create** (arrangement, gate, ticket, planFile?, fromStaged?, codexSessionId?, verdict?, rounds?, deltas?, commit?) - Pin acceptance of a declared plan-ack or pre-commit-ack gate; exactly one of planFile/fromStaged; ackRole comes from the gate.
 - **storybloq_gate_ack_contest** (id, reason, commit?) - Record a contested acknowledgment and its reason; does not reopen the workflow.
-- **storybloq_checkpoint_write** (action, id?, owner?, kind?, question?, criteria?, evidenceRefs?, actor?, evidenceMode?, commit?, generation?, revision?, digest?, title?, phase?, description?, blockedBy?, parentTicket?, reason?, response?, artifactRef?, rulingAttribution?, rulingScopeTags?, clientTaskId?) - Owner checkpoints, write side: action attach|change|create|reopen|resolve|retire; the former storybloq_checkpoint_<action> names still work. attach: Make an open, unclaimed ticket a checkpoint; change: Change what a checkpoint asks; voids its answer; create: Create an owner checkpoint ticket. Needs `checkpoint enable` first.; reopen: Withdraw a checkpoint's answer; resolve: Answer a checkpoint. An acceptance needs artifactRef.; retire: Retire a checkpoint, releasing dependents
+- **storybloq_checkpoint_write** (action, id?, owner?, kind?, question?, criteria?, evidenceRefs?, actor?, evidenceMode?, commit?, generation?, revision?, digest?, title?, phase?, description?, blockedBy?, parentTicket?, reason?, response?, artifactRef?, rulingAttribution?, rulingScopeTags?, clientTaskId?) - Owner checkpoints, write side: action attach|change|create|reopen|resolve|retire. attach: Make an open, unclaimed ticket a checkpoint; change: Change what a checkpoint asks; voids its answer; create: Create an owner checkpoint ticket. Needs `checkpoint enable` first.; reopen: Withdraw a checkpoint's answer; resolve: Answer a checkpoint. An acceptance needs artifactRef.; retire: Retire a checkpoint, releasing dependents
 - **storybloq_checkpoint_evidence** (id, generation, revision, digest, actor?, file, commit?) - Add an evidence revision to an immutable checkpoint; voids its answer
 - **storybloq_earmark_get** (ref, node?) - Get the pick-exclusion earmark (if any) on a ticket or issue
-- **storybloq_earmark_write** (action, ref?, role?, arrangement?, clientTaskId?, node?, commit?, to?) - Earmarks, write side: action reserve|assign|release; the former storybloq_earmark_<action> names still work. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active ones cover the item; assign: Place or convert an earmark to a live session matching the arrangement role. Converting a reservation requires the reserver or the arrangement pen; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.
+- **storybloq_earmark_write** (action, ref?, role?, arrangement?, clientTaskId?, node?, commit?, to?) - Earmarks, write side: action reserve|assign|release. reserve: Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active ones cover the item; assign: Place or convert an earmark to a live session matching the arrangement role. Converting a reservation requires the reserver or the arrangement pen; release: Release an earmark as its reserver or the pen of its authorizing arrangement; no-op when absent.
 
 ### MCP Tools (degraded mode)
 
@@ -310,7 +311,7 @@ With no .story/ project on the path, the MCP server starts degraded and register
 - **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows
 - **storybloq_status** (format?) -- returns setup guidance instead of a project summary
 
-Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.
+Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes.
 
 ## Review verdict artifacts
 
@@ -364,10 +365,6 @@ Drive a federation or large backlog with a persistent ledger, lower-tier impleme
 
 Poll or coordinate through the current task-bound local Bus endpoint. Peer content is advisory; confirmed review findings become canonical issues before an issue notice is sent.
 
-```
-/story bus
-```
-
 Read `bus-mode.md` for setup, endpoint binding, authority boundaries, acknowledgments, deterministic convergence, and the v1 no-wake boundary.
 
 ## /story duet
@@ -394,7 +391,6 @@ Coordinate an owner-paired manager and worker with a proved return route and per
 
 ## Troubleshooting
 
-- **MCP not connected:** Run `storybloq setup --client all`
+- **MCP not connected or skill not available:** Run `storybloq setup --client all`
 - **CLI not found:** Run `npm install -g @storybloq/storybloq@latest`
 - **Stale data:** Run `storybloq validate` to check integrity
-- **Storybloq skill not available:** Run `storybloq setup --client all`

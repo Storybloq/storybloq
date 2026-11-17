@@ -13,7 +13,8 @@ import { isPresenceEnabled } from "../../presence/handler.js";
 import { ensureCapture, type CaptureOutcome, type CaptureSource } from "../../core/session-intel/capture.js";
 import { readSessionIntelConfig } from "../../core/session-intel/config.js";
 import { claimNotice, findPresenceRecordAcrossWorktrees, noticeSeenOf, readPresenceRecord, reconcileUnderLock, type ReconcileOutcome } from "../../core/session-intel/presence-bridge.js";
-import { decideFromRecord, noticeDetailFor, noticeFactsOf, renderNotice, resolveFinal } from "../../core/session-intel/policy.js";
+import { decideFromRecord, needsArrangementRule, noticeDetailFor, noticeFactsOf, renderNotice, resolveFinal } from "../../core/session-intel/policy.js";
+import { arrangementRuleInForce } from "../../core/session-intel/arrangement-rule.js";
 import { renderUsageAdvisory } from "../../core/session-intel/push.js";
 import { sampleSession, type SessionIntelResult } from "../../core/session-intel/query.js";
 import { authorizeTranscriptPath, locateTranscript } from "../../core/session-intel/transcript-locate.js";
@@ -375,18 +376,22 @@ export function handleSessionIntelPrompt(options: SessionIntelPromptOptions = {}
     // persisted into, and claimed under the lock against it. The record must
     // still hold THIS sample (a newer sample, reset or stamp since means the
     // decision is not ours to act on); a refusal of any kind is silent.
-    const intel = readPresenceRecord(root, sessionId)?.sessionIntel ?? null;
+    const record = readPresenceRecord(root, sessionId);
+    const intel = record?.sessionIntel ?? null;
     const ours = intel !== null && intel.lastSample !== null && intel.lastSample.sampledAt === pressure.sampledAt;
     if (!ours) return { status: "silent", reason: "the record no longer holds this sample", capture, result, output: null };
     const facts = noticeFactsOf(intel.lastSample!);
     const candidate = decideFromRecord(intel, cfg);
-    const final = resolveFinal(candidate, null);
+    // Plan 6.2: the arrangement is read only for a candidate that would ask,
+    // and before the claim; the claim checks the pair against its table.
+    const arrangementRule = needsArrangementRule(candidate) ? arrangementRuleInForce(root, record) : null;
+    const final = resolveFinal(candidate, arrangementRule);
     if (final === null || facts === null) return { status: "silent", reason: `state ${pressure.state}, no notice due`, capture, result, output: null };
     if (!claimNotice(root, sessionId, noticeSeenOf(intel), candidate, final, now, cfg)) {
       return { status: "silent", reason: "notice not claimed (superseded or already delivered)", capture, result, output: null };
     }
     if (final === "settle") return { status: "silent", reason: "owed catch-up settled by a rule", capture, result, output: null };
-    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderNotice(final, facts, "hook", noticeDetailFor(final, intel, null)) } });
+    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderNotice(final, facts, "hook", noticeDetailFor(final, intel, arrangementRule)) } });
     return { status: "emitted", reason: null, capture, result, output };
   } catch (err) {
     return skipped(err instanceof Error ? err.message : String(err));

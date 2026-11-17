@@ -3875,7 +3875,7 @@ export function formatReference(
 
   lines.push("## MCP Tools");
   lines.push("");
-  lines.push("The base tools below are registered in full mode (inside a .story/ project). The storybloq_bus_* tools are always registered there; with the Bus disabled or uninitialized they return setup guidance (`storybloq bus setup`), no MCP restart needed.");
+  lines.push("The base tools below are registered in full mode (in a .story/ project). The storybloq_bus_* tools are always registered there; with the Bus disabled or uninitialized they return setup guidance (`storybloq bus setup`), no MCP restart needed. Former names still work: storybloq_capability_<action>, storybloq_term_<action>, storybloq_ruling_<action>, storybloq_checkpoint_<action>, storybloq_earmark_<action>.");
   lines.push("");
   lines.push("? marks optional arguments; handlers may require combinations per action. The client's tool schema gives types and constraints.");
   lines.push("");
@@ -3896,7 +3896,7 @@ export function formatReference(
   lines.push("- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows");
   lines.push("- **storybloq_status** (format?) -- returns setup guidance instead of a project summary");
   lines.push("");
-  lines.push("Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.");
+  lines.push("Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes.");
 
   lines.push("");
   lines.push("## Review verdict artifacts");
@@ -3951,10 +3951,6 @@ export function formatReference(
   lines.push("");
   lines.push("Poll or coordinate through the current task-bound local Bus endpoint. Peer content is advisory; confirmed review findings become canonical issues before an issue notice is sent.");
   lines.push("");
-  lines.push("```");
-  lines.push("/story bus");
-  lines.push("```");
-  lines.push("");
   lines.push("Read `bus-mode.md` for setup, endpoint binding, authority boundaries, acknowledgments, deterministic convergence, and the v1 no-wake boundary.");
   lines.push("");
   lines.push("## /story duet");
@@ -3981,10 +3977,9 @@ export function formatReference(
   lines.push("");
   lines.push("## Troubleshooting");
   lines.push("");
-  lines.push("- **MCP not connected:** Run `storybloq setup --client all`");
+  lines.push("- **MCP not connected or skill not available:** Run `storybloq setup --client all`");
   lines.push("- **CLI not found:** Run `npm install -g @storybloq/storybloq@latest`");
   lines.push("- **Stale data:** Run `storybloq validate` to check integrity");
-  lines.push("- **Storybloq skill not available:** Run `storybloq setup --client all`");
 
   return lines.join("\n");
 }

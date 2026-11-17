@@ -168,3 +168,46 @@ describe("C-v4.1 commit 6: the guide's completion asks the completion check", ()
     } finally { CHECK_ON = true; }
   });
 });
+
+describe("C-v4.1 commit 6: cancel after a git refusal", () => {
+  const marker = { type: "ticket_update", target: "T-001", value: "complete", expectedCurrent: "inprogress", transitionId: "txn-c6-cancel" };
+  const held = (sessionId: string) => ({ claimedBySession: sessionId, claim: { user: "me@example.com", branch: "main", since: NOW } });
+
+  it("an auto session with work remaining and a held claim: after the refusal, cancel clears the marker and ends; the ticket is not complete", async () => {
+    const { sessionId, sessDir } = plantPreTerminalSession(root, marker);
+    writeTicket(root, "T-001", held(sessionId));
+    const refused = await handleAutonomousGuide(root, { action: "report", sessionId, report: { completedAction: "tests_written" } });
+    expect(refused.isError).toBe(true);
+    expect(eventsOfType(sessDir, "completion_git_refused")[0]!.data).toMatchObject({ ticketId: "T-001", transitionId: "txn-c6-cancel" });
+    const cancelled = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(cancelled.isError).toBeFalsy();
+    const after = readState(sessDir);
+    expect(after.pendingProjectMutation).toBeNull();
+    expect(after.state).toBe("SESSION_END");
+    expect(readTicket(root, "T-001").status).not.toBe("complete");
+    expect(eventsOfType(sessDir, "checkpoint_blocked_abandoned")).toHaveLength(1);
+  });
+
+  it("no widening: the same session without a git refusal still meets the soft gate", async () => {
+    const { sessionId, sessDir } = plantPreTerminalSession(root, marker);
+    writeTicket(root, "T-001", held(sessionId));
+    const before = readState(sessDir);
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    const text = (result.content[0] as { text: string }).text;
+    expect(result.isError).toBeFalsy();
+    const after = readState(sessDir);
+    expect(after.state).toBe(before.state);
+    expect(after.pendingProjectMutation).toEqual(before.pendingProjectMutation);
+    expect(text).toMatch(/item\(s\) finished/);
+  });
+
+  it("a refusal of an earlier completion does not excuse a later one (matched by transitionId)", async () => {
+    const { sessionId, sessDir } = plantPreTerminalSession(root, { ...marker, transitionId: "txn-later" });
+    writeTicket(root, "T-001", held(sessionId));
+    writeFileSync(join(sessDir, "events.log"), JSON.stringify({ rev: 1, type: "completion_git_refused", timestamp: NOW, data: { ticketId: "T-001", reason: "x", transitionId: "txn-earlier" } }) + "\n", { flag: "a" });
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect((result.content[0] as { text: string }).text).toMatch(/item\(s\) finished/);
+    expect(readState(sessDir).state).toBe("WRITE_TESTS");
+    expect(readState(sessDir).pendingProjectMutation).not.toBeNull();
+  });
+});

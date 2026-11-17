@@ -790,8 +790,31 @@ async function completedTicketCheckpointBlock(root: string, ticketId: string | u
  */
 /** C-v4.1 commit 6: the completion check refused; nothing written, the marker kept. */
 function gitRefusedResult(dir: string, state: FullSessionState, refusal: { readonly ticketId: string; readonly reason: string }): McpToolResult {
-  appendEvent(dir, { rev: state.revision, type: "completion_git_refused", timestamp: new Date().toISOString(), data: { ticketId: refusal.ticketId, reason: refusal.reason } });
+  const marker = state.pendingProjectMutation as Record<string, unknown> | null | undefined;
+  const transitionId = typeof marker?.transitionId === "string" ? { transitionId: marker.transitionId } : {};
+  appendEvent(dir, { rev: state.revision, type: "completion_git_refused", timestamp: new Date().toISOString(), data: { ticketId: refusal.ticketId, reason: refusal.reason, ...transitionId } });
   return guideError(new Error(refusal.reason));
+}
+
+/**
+ * C-v4.1 commit 6: the pending completion this session holds was refused by
+ * the completion check. Durable across a restart: the completion_git_refused
+ * event in events.log, matched to THIS marker by target and transitionId, so
+ * a refusal of an earlier completion never excuses a later one.
+ */
+function pendingCompletionGitRefused(dir: string, state: FullSessionState): boolean {
+  const m = state.pendingProjectMutation as Record<string, unknown> | null | undefined;
+  if (!m || m.type !== "ticket_update" || m.value !== "complete" || typeof m.target !== "string" || typeof m.transitionId !== "string") return false;
+  let raw: string;
+  try { raw = readFileSync(join(dir, "events.log"), "utf-8"); } catch { return false; }
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const e = JSON.parse(line) as { type?: unknown; data?: { ticketId?: unknown; transitionId?: unknown } };
+      if (e.type === "completion_git_refused" && e.data?.ticketId === m.target && e.data?.transitionId === m.transitionId) return true;
+    } catch { /* a malformed line is skipped */ }
+  }
+  return false;
 }
 
 function loadFailedResult(dir: string, state: FullSessionState, failure: { readonly ticketId: string; readonly reason: string }): McpToolResult {
@@ -4810,7 +4833,9 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // progress until the file is fixed, and it must stay cancellable.
   const checkpointParked = !resume && checkpointParkedTicket !== null
     && (await completedTicketCheckpointBlock(root, checkpointParkedTicket)) !== null;
-  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost && !consistentCompletion && !checkpointParked) {
+  // C-v4.1 commit 6: a completion the gate refused cannot advance (retry keeps refusing and parks nothing), so cancel may abandon it.
+  const gitRefusedCompletion = !resume && pendingCompletionGitRefused(info.dir, info.state);
+  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost && !consistentCompletion && !checkpointParked && !gitRefusedCompletion) {
     return {
       content: [{
         type: "text",

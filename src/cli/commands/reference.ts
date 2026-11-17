@@ -506,7 +506,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "duet spawn",
-    description: "Start a visible duet worker: mints its id, creates arrangement and coordination (auto needs --bounds), writes role and handshake, opens /story. Permission mode auto (bypass under a bypass pen); --model defaults to opus (the hands tier). A --dir without .story uses the pen's board. Opens its handover line (--continue <file> joins one); --recover lists interrupted spawns",
+    description: "Start a duet worker: mints its id, creates arrangement and coordination (auto needs --bounds), writes role and handshake, opens /story. Permission mode auto (bypass under a bypass pen); --model defaults to opus (the hands tier). A --dir without .story uses the pen's board. Auto spawns open its handover line, manual ones advise; --continue <file> joins one; --recover lists interrupted spawns",
     usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--continue <file>] [--print] [--recover [--open-line <id>]] [--format <json|md>]",
     flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--continue", "--print", "--recover", "--open-line", "--format"],
   },
@@ -950,7 +950,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "earmark assign",
-    description: "Assign a ticket or issue's earmark directly to a live session (direct placement, or an explicit reserved -> assigned conversion)",
+    description: "Assign a ticket or issue's earmark directly to a live session (direct, or reserved -> assigned)",
     usage: "storybloq earmark assign <ref> --to <value> --role <pen|worker> [--arrangement <value>] [--commit] [--format <json|md>] [--node <value>]",
     flags: ["--to", "--role", "--arrangement", "--format", "--node", "--commit"],
   },

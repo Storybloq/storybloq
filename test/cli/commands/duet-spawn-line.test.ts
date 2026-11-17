@@ -6,9 +6,10 @@
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { handleDuetSpawn, reconcileSpawnJournal, type DuetSpawnDeps } from "../../../src/cli/commands/duet-spawn.js";
 import { handleTicketCreate } from "../../../src/cli/commands/ticket.js";
 import { handleHandoverCreate } from "../../../src/cli/commands/handover.js";
@@ -80,6 +81,20 @@ const crashAfter = (stage: string) => (path: string, entry: Record<string, unkno
 };
 async function replay(dir: string, id: string, format: "md" | "json" = "md") {
   return handleDuetSpawn({ recover: true, openLine: id }, format, dir);
+}
+/**
+ * The replay through the built dist in a child process. A reader that blocks on a FIFO
+ * blocks open(2), which no timer on the same event loop can interrupt, so the deadline is
+ * the child's: SIGKILL, because a process blocked in open(2) cannot run a SIGTERM handler.
+ */
+const CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../../../dist/cli.js");
+function replayChild(dir: string, id: string): { code?: string; message?: string } {
+  expect(existsSync(CLI), "dist/cli.js is built").toBe(true);
+  const r = spawnSync(process.execPath, [CLI, "duet", "spawn", "--recover", "--open-line", id, "--format", "json"], { cwd: dir, env: process.env, encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+  expect(r.error, "the replay child finished inside its deadline").toBeUndefined();
+  expect(r.signal, "the replay child was not killed").toBeNull();
+  expect(r.status).not.toBe(0);
+  return (JSON.parse(r.stdout) as { error?: { code?: string; message?: string } }).error ?? {};
 }
 async function refusal(p: Promise<unknown>): Promise<CliValidationError> {
   const err = await p.then(() => null, (e: unknown) => e);
@@ -253,7 +268,7 @@ describe("T-575 section 9: duet spawn --recover --open-line", () => {
       writeFileSync(j, JSON.stringify(e, null, 2) + "\n");
     };
 
-    it("a journal that is a symlink or a FIFO is never read (not found); the FIFO under an external deadline", async () => {
+    it("a journal that is a symlink or a FIFO is never read (not found); the FIFO in a child under a SIGKILL deadline", async () => {
       const { dir, j, id, bytes } = await crashed();
       const kept = `${j}.kept`;
       renameSync(j, kept);
@@ -262,8 +277,7 @@ describe("T-575 section 9: duet spawn --recover --open-line", () => {
       expect((await refusal(replay(dir, id))).code).toBe("not_found");
       rmSync(j);
       execFileSync("mkfifo", [j]);
-      const deadline = new Promise((_, rej) => setTimeout(() => rej(new Error("blocked on a FIFO")), 5000));
-      expect((await Promise.race([refusal(replay(dir, id)), deadline]) as CliValidationError).code).toBe("not_found");
+      expect(replayChild(dir, id).code).toBe("not_found");
       expect(readFileSync(kept, "utf8")).toBe(bytes);
       expect(mdFiles(dir)).toEqual([]);
     });
@@ -285,9 +299,11 @@ describe("T-575 section 9: duet spawn --recover --open-line", () => {
         if (kind === "fifo") execFileSync("mkfifo", [rec]);
         if (kind === "symlink") { writeFileSync(join(dir, "outside.json"), "{}"); symlinkSync(join(dir, "outside.json"), rec); }
         if (kind === "dotdot") writeFileSync(rec, serializeOpeningRecord({ v: 1, task: id, intent: null, attempt: null, outcome: null, file: null }).replace('"intent": null', '"intent": { "file": "../x.md", "sha256": "' + "a".repeat(64) + '" }'));
-        const deadline = new Promise((_, rej) => setTimeout(() => rej(new Error("blocked on a FIFO")), 5000));
-        const err = await Promise.race([replay(dir, id).then(() => null, (e: Error) => e), deadline]) as Error | null;
-        expect(err?.message, kind).toContain(`the opening record ${rec} cannot be read`);
+        const jBytes = readFileSync(j, "utf8");
+        const message = kind === "fifo" ? replayChild(dir, id).message : (await replay(dir, id).then(() => null, (e: Error) => e))?.message;
+        expect(message, kind).toContain(`the opening record ${rec} cannot be read`);
+        expect(readFileSync(j, "utf8"), kind).toBe(jBytes);
+        if (kind === "symlink") expect(readFileSync(join(dir, "outside.json"), "utf8")).toBe("{}");
         expect(mdFiles(dir), kind).toEqual([]);
       }
     });

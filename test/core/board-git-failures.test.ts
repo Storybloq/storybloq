@@ -124,9 +124,9 @@ describe("board git failures (ISS-1107 round 1)", () => {
       it(label, async () => {
         const { root } = await makeProjectRepo();
         const before = headSha(root);
-        stubs.list = [{ command: "rev-parse --short HEAD", ...stub }];
+        stubs.list = [{ command: "rev-parse --verify HEAD^{commit}", ...stub }];
         const report = await writeAndReport(root, true);
-        expect(stubs.hits).toContain("rev-parse --short HEAD");
+        expect(stubs.hits).toContain("rev-parse --verify HEAD^{commit}");
         // The commit happened: HEAD advanced by one and took exactly the note.
         expect(git(root, "rev-parse", "HEAD~1").trim()).toBe(before);
         expect(git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").trim()).toBe(REL);

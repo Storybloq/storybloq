@@ -51,7 +51,8 @@ function json(run: Run): { data: Record<string, unknown> } {
 }
 
 const ISSUE = ["--title", "Board state", "--severity", "low", "--impact", "none"];
-const short = (cwd: string) => git(cwd, "rev-parse", "--short", "HEAD").trim();
+/** C-v4.1 commit 7: the full sha, in data.gitCommit and in the "Git: committed" line. */
+const full = (cwd: string) => git(cwd, "rev-parse", "HEAD").trim();
 
 describe("board write git state on the CLI (ISS-1107)", () => {
   it("C1: create prints the Git line", async () => {
@@ -102,7 +103,7 @@ describe("board write git state on the CLI (ISS-1107)", () => {
     expect(git(root, "log", "-1", "--format=%s").trim()).toBe("docs(story): ISS-001 created");
     expect(headFiles(root)).toEqual([".story/issues/ISS-001.json"]);
     expect(porcelain(root, "staged.txt")).toEqual(["A  staged.txt"]);
-    expect(gitLines(run.stdout)).toEqual(["Git: .story/issues/ISS-001.json committed", `Git: committed ${short(root)}`]);
+    expect(gitLines(run.stdout)).toEqual(["Git: .story/issues/ISS-001.json committed", `Git: committed ${full(root)}`]);
   });
 
   it("C5: a hard delete commits the removal with the id from HEAD", async () => {
@@ -112,7 +113,7 @@ describe("board write git state on the CLI (ISS-1107)", () => {
     expect(run.status).toBe(0);
     expect(git(root, "log", "-1", "--format=%s").trim()).toBe("docs(story): ISS-001 deleted");
     expect(headFiles(root)).toEqual([".story/issues/ISS-001.json"]);
-    expect(gitLines(run.stdout)).toEqual(["Git: .story/issues/ISS-001.json committed", `Git: committed ${short(root)}`]);
+    expect(gitLines(run.stdout)).toEqual(["Git: .story/issues/ISS-001.json committed", `Git: committed ${full(root)}`]);
   });
 
   describe("C6: data.gitCommit, and the exit status stays 0", () => {
@@ -121,7 +122,7 @@ describe("board write git state on the CLI (ISS-1107)", () => {
       const run = cli(root, "issue", "create", ...ISSUE, "--commit", "--format", "json");
       expect(run.status).toBe(0);
       expect(json(run).data.gitCommit).toEqual([
-        { repo: root, outcome: "committed", sha: short(root), paths: [".story/issues/ISS-001.json"] },
+        { repo: root, outcome: "committed", sha: full(root), paths: [".story/issues/ISS-001.json"] },
       ]);
       expect(json(run).data.git).toEqual([{ path: ".story/issues/ISS-001.json", state: "committed" }]);
     });
@@ -157,7 +158,7 @@ describe("board write git state on the CLI (ISS-1107)", () => {
       const run = cli(root, "issue", "create", ...ISSUE, "--commit", "--format", "json");
       expect(run.status).toBe(0);
       expect(json(run).data.gitCommit).toEqual([{
-        repo: root, outcome: "verification_failed", sha: short(root),
+        repo: root, outcome: "verification_failed", sha: full(root),
         reason: "HEAD changed .story/issues/ISS-001.json, extra.txt", paths: [".story/issues/ISS-001.json"],
       }]);
     });
@@ -179,7 +180,7 @@ describe("board write git state on the CLI (ISS-1107)", () => {
       expect(run.status).toBe(0);
       expect(json(run).data.gitCommit).toEqual([
         { repo: tickets, outcome: "skipped", reason: "commit failed: tickets refuse", paths: ["T-001.json"] },
-        { repo: root, outcome: "committed", sha: short(root), paths: [".story/roadmap.json"] },
+        { repo: root, outcome: "committed", sha: full(root), paths: [".story/roadmap.json"] },
       ]);
       expect(headFiles(root)).toEqual([".story/roadmap.json"]);
     });

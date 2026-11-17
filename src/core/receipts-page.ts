@@ -1,4 +1,4 @@
-import { readReceipts, type ReceiptEntryRead } from "./receipts.js";
+import { duplicateHoldText, duplicateReceiptHolds, readReceipts, type ReceiptEntryRead } from "./receipts.js";
 
 /**
  * C-v4.1 commit 3 (pen ruling Q6): the receipts summary and one page of a
@@ -16,6 +16,8 @@ export interface ReceiptsSummary {
   readonly states: Readonly<Record<string, number>>;
   /** Present only when the field itself is not an array. */
   readonly field?: "malformed";
+  /** ISS-1435: present only when the record holds a duplicate_id contradiction. */
+  readonly duplicates?: readonly string[];
 }
 
 export interface ReceiptsPageEntry {
@@ -37,7 +39,8 @@ export function receiptsSummary(record: Record<string, unknown>): ReceiptsSummar
   if (read.state === "malformed") return { total: 0, states: {}, field: "malformed" };
   const states: Record<string, number> = {};
   for (const e of read.entries) states[e.state] = (states[e.state] ?? 0) + 1;
-  return { total: read.entries.length, states };
+  const duplicates = duplicateReceiptHolds(record);
+  return { total: read.entries.length, states, ...(duplicates.length > 0 ? { duplicates } : {}) };
 }
 
 export function receiptsPage(
@@ -80,6 +83,7 @@ export function receiptsGetView(
   const counts = Object.entries(summary.states).map(([k, n]) => `${k} ${n}`).join(", ");
   if (summary.field === "malformed") lines.push("Receipts: the receipts field is not an array");
   else if (summary.total > 0) lines.push(`Receipts: ${summary.total} (${counts})`);
+  for (const id of summary.duplicates ?? []) lines.push(`Receipts held: ${duplicateHoldText(id)}`);
   if (page === undefined) return { ok: true, json: { summary }, lines };
   const view = receiptsPage(record, page);
   if (!view.ok) return view;

@@ -122,6 +122,21 @@ async function readDefaultName(root: string, configured: string | undefined): Pr
   return null;
 }
 
+/**
+ * C-v4.1 commit 7: the default ref for the ledger-state line, by the snapshot's own
+ * name resolution (configured, then origin/HEAD, then init.defaultBranch). Only the
+ * remote-tracking branch counts: with no origin/<name> the relation is unknown,
+ * never judged against a local branch.
+ */
+export async function resolveDefaultRef(root: string, configured: string | undefined): Promise<{ readonly ref: string } | { readonly reason: string }> {
+  const name = await readDefaultName(root, configured);
+  if (name === null) return { reason: "missing default" };
+  const ref = `refs/remotes/origin/${name}`;
+  const r = await git(root, ["rev-parse", "-q", "--verify", `${ref}^{commit}`]);
+  if (r.kind !== "ok" || r.stdout.toString("utf8").trim().length === 0) return { reason: `no origin/${name}` };
+  return { ref };
+}
+
 async function readSurface(root: string, defaultName: string, maxRefs: number): Promise<Surface | Unknown> {
   const head = await git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"]);
   const headId = head.kind === "ok" ? head.stdout.toString("utf8").trim() || null : null;

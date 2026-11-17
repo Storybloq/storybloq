@@ -1,3 +1,4 @@
+import { ledgerStateLine } from "../../core/ledger-state.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { readyView, type ReadyView } from "../../core/landing-ready.js";
 import { receiptsGetView } from "../../core/receipts-page.js";
@@ -244,10 +245,10 @@ export function handleTicketGet(
   const render = (actionability?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => {
     // Pen ruling on plan line 423: a legacy record with no receipts field, read without receiptsPage, keeps main's JSON.
     const withReceipts = receiptsPage !== undefined || Object.prototype.hasOwnProperty.call(item, "receipts");
-    const gitJson = { ...(git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged } : {}), ...(proof !== undefined ? { proof: proof.json } : {}), ...(ready !== undefined ? { landingReady: ready.json } : {}) };
+    const gitJson = { ...(git !== undefined ? { gitState: git.gitState, lastChanged: git.lastChanged, ledgerState: git.ledgerState } : {}), ...(proof !== undefined ? { proof: proof.json } : {}), ...(ready !== undefined ? { landingReady: ready.json } : {}) };
     const extraJsonFields = withReceipts ? { ...actionability, ...gitJson, receipts: receipts.json } : { ...actionability, ...gitJson };
     const text = formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields);
-    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git)] : []), ...receipts.lines, ...(proof !== undefined ? proof.lines : []), ...(ready !== undefined ? ready.lines : [])];
+    const mdExtra = [...(git !== undefined ? [gitMarkdownLine(git), ledgerStateLine(git.ledgerState)] : []), ...receipts.lines, ...(proof !== undefined ? proof.lines : []), ...(ready !== undefined ? ready.lines : [])];
     return { output: ctx.format === "json" || mdExtra.length === 0 ? text : `${text}\n\n${mdExtra.join("\n")}` };
   };
   return withActionability ? computeTargetedActionability(ctx, "ticket", item).then(render) : render();

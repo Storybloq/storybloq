@@ -397,8 +397,9 @@ describe("receipts paging (Q6)", () => {
     const expected = formatTicket(state.ticketByID("T-001")!, state, "md");
     const r = await captureTools(root).call("storybloq_ticket_get", { id: "T-001" });
     // C-v4.1 commit 4 (pen ruling Q4): get adds one git state line; the rest is unchanged.
-    expect(r.text).toMatch(/\n\nGit state: [^\n]*$/);
-    expect(r.text.replace(/\n\nGit state: [^\n]*$/, "")).toBe(expected);
+    // C-v4.1 commit 7: the ledger-state line follows the git state line.
+    expect(r.text).toMatch(/\n\nGit state: [^\n]*\nLedger: [^\n]*$/);
+    expect(r.text.replace(/\n\nGit state: [^\n]*\nLedger: [^\n]*$/, "")).toBe(expected);
     expect(r.text).not.toMatch(/Receipts/);
   });
 
@@ -634,6 +635,7 @@ describe("legacy records keep main's get JSON (fixups 2 and 3)", () => {
     expect(parsed.data).toHaveProperty("lastChanged");
     delete parsed.data.gitState;
     delete parsed.data.lastChanged;
+    delete parsed.data.ledgerState; // C-v4.1 commit 7
     expect(JSON.stringify(parsed, null, 2)).toBe(expected);
     expect((JSON.parse(r.text) as { data: Json }).data).not.toHaveProperty("receipts");
   });
@@ -654,6 +656,7 @@ describe("legacy records keep main's get JSON (fixups 2 and 3)", () => {
     expect(parsed.data).toHaveProperty("lastChanged");
     delete parsed.data.gitState;
     delete parsed.data.lastChanged;
+    delete parsed.data.ledgerState; // C-v4.1 commit 7
     expect(JSON.stringify(parsed, null, 2)).toBe(expected);
     expect((JSON.parse(r.text) as { data: Json }).data).not.toHaveProperty("receipts");
   });
@@ -731,3 +734,72 @@ function registerCopyStandalone(root: string): void {
   const p = join(root, ".story", "config.json");
   writeFileSync(p, JSON.stringify({ ...readJson(p), nodes: { copy: { path: copy, health: "grey", dependsOn: [], stack: "", role: "", summary: "" } } }, null, 2) + "\n");
 }
+
+// Several real tool calls per row: a 60s budget, as the other commit 7 files use.
+describe.each(CLIENTS)("C-v4.1 commit 7, ISS-1435 acceptance rows through the %s client", { timeout: 60_000 }, (client) => {
+  const add = (root: string, input: Input) => clients[client]!(root, input);
+
+  it("three receipts added are all shown by get, in order, each with its own minted id", async () => {
+    const { root, sha } = await landed();
+    const ids = ["rc-0000000000000001", "rc-0000000000000002", "rc-0000000000000003"];
+    for (const id of ids) {
+      const r = await withId(id, () => add(root, base(sha)));
+      expect(r.ok, r.text).toBe(true);
+    }
+    const page = JSON.parse((await captureTools(root).call("storybloq_ticket_get", { id: "T-001", format: "json", receiptsPage: 1 })).text) as { data: { receipts: { page: Json[] } } };
+    expect(page.data.receipts.page.map((e) => (e.element as Json).id)).toEqual(ids);
+  });
+
+  // The CLI has no flag for id or recordedAt: its receipt command is strict and copies only whitelisted flags (register.ts).
+  it("a caller-supplied id is refused by name (MCP); a minted id already on the record is never written twice", async () => {
+    const { root, sha } = await landed();
+    if (client === "mcp") {
+      const refused = await add(root, { ...base(sha), id: "rc-0000000000000009" });
+      expect(refused.ok).toBe(false);
+      expect(refused.text).toMatch(/tool_field: id is written by the tool/);
+    }
+    expect(await withId("rc-0000000000000001", () => add(root, base(sha)))).toMatchObject({ ok: true });
+    const before = raw(root);
+    const again = await withId("rc-0000000000000001", () => add(root, base(sha)));
+    expect(again.ok).toBe(false);
+    expect(again.text).toMatch(/id_collision/);
+    expect(raw(root)).toBe(before);
+  });
+
+  it("a log pointer under an absolute home path is refused, and nothing is written", async () => {
+    const { root, sha } = await landed();
+    const before = raw(root);
+    const r = await add(root, { ...base(sha), evidence: "/Users/someone/logs/test.log" });
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/invalid_evidence: evidence .*\/Users\/someone\/logs\/test\.log.* is not a repo-relative path or a sha256/);
+    expect(raw(root)).toBe(before);
+  });
+
+  it("recordedAt is written by the tool; a caller value is refused by name", async () => {
+    const { root, sha } = await landed();
+    if (client === "mcp") {
+      const r = await add(root, { ...base(sha), recordedAt: "1999-01-01T00:00:00.000Z" });
+      expect(r.ok).toBe(false);
+      expect(r.text).toMatch(/tool_field: recordedAt is written by the tool/);
+      expect(ticket(root)).not.toHaveProperty("receipts");
+    }
+    expect((await add(root, base(sha))).ok).toBe(true);
+    expect((ticket(root).receipts as Json[])[0]!.recordedAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+describe("C-v4.1 commit 7, ISS-1435: additive schema", () => {
+  it("a record with no receipts field reads without the key and an unrelated update writes it back without one", async () => {
+    const { root } = await makeProjectRepo();
+    writeTicket(root, TICKET);
+    const tools = captureTools(root);
+    const read = JSON.parse((await tools.call("storybloq_ticket_get", { id: "T-001", format: "json" })).text) as { data: Json };
+    expect(read.data).not.toHaveProperty("receipts");
+    const r = await tools.call("storybloq_ticket_update", { id: "T-001", title: "renamed" });
+    expect(r.isError, r.text).toBe(false);
+    const after = ticket(root);
+    expect(after.title).toBe("renamed");
+    expect(after).not.toHaveProperty("receipts");
+    expect(JSON.parse((await tools.call("storybloq_ticket_get", { id: "T-001", format: "json" })).text).data).not.toHaveProperty("receipts");
+  });
+});

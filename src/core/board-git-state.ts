@@ -254,7 +254,7 @@ export function parseStatusZ(stdout: string, truncated: boolean): { entries: Sta
     }
     const xy = field.slice(0, 2);
     const path = field.slice(3);
-    if (xy[0] === "R" || xy[0] === "C") {
+    if (xy[0] === "R" || xy[0] === "C" || xy[1] === "R" || xy[1] === "C") {
       if (i + 1 >= fields.length) {
         incomplete = true;
         break;
@@ -471,7 +471,8 @@ async function commitGroup(group: RepoGroup, tool: string, states: Map<string, s
   const verify = unborn
     ? await runGitRaw(top, ["diff-tree", "--root", "--no-commit-id", "--name-only", "-z", "--no-renames", "-r", "HEAD"])
     : await runGitRaw(top, ["diff", "--name-only", "-z", "--no-renames", parent!, "HEAD"]);
-  const shortRef = await runGitRaw(top, ["rev-parse", "--short", "HEAD"]);
+  // C-v4.1 commit 7: the full sha, in the outcome and in the "Git: committed" line (CLI and MCP).
+  const shortRef = await runGitRaw(top, ["rev-parse", "--verify", "HEAD^{commit}"]);
   const sha = shortRef.stdout.trim();
   // The commit exists by now, so a failed lookup is never "skipped"; without a
   // sha there is no committed outcome either.

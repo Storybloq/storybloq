@@ -30,7 +30,7 @@ import { issueFilePath, loadProject, ticketFilePath } from "./project-loader.js"
 import type { ProjectState } from "./project-state.js";
 import { findItem, type StateWithRefs } from "./receipt-add.js";
 import { RECEIPT_CONFLICT_KINDS } from "./receipt-resolve.js";
-import { currentAttempts, readReceipts, type AttemptOutcome, type Receipt } from "./receipts.js";
+import { currentAttempts, duplicateHoldText, duplicateReceiptHolds, readReceipts, type AttemptOutcome, type Receipt } from "./receipts.js";
 import { BOOKKEEPING, COMPLETION, recordRevision } from "./record-revision.js";
 import { worktreeState, type WorktreeState } from "./worktree-state.js";
 
@@ -73,6 +73,9 @@ export function eligibilityOf(record: Readonly<Record<string, unknown>>, kind: "
   if (record.deletedAt !== undefined && record.deletedAt !== null) return { eligible: false, reason: "deleted" };
   const rk = record.resolutionKind;
   if (rk === "withdrawn" || rk === "dropped") return { eligible: false, reason: `withdrawn (${rk})` };
+  // ISS-1435: a raw duplicate receipt id distrusts every copy and holds the record until a receipt supersedes the id.
+  const duplicates = duplicateReceiptHolds(record as Record<string, unknown>);
+  if (duplicates.length > 0) return { eligible: false, reason: duplicates.map(duplicateHoldText).join("; ") };
   const bookkeeping = new Set<string>([...BOOKKEEPING, ...COMPLETION[kind]]);
   if (Array.isArray(record._conflicts)) {
     for (const c of record._conflicts) {

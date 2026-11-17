@@ -186,6 +186,49 @@ export function readReceipts(record: Record<string, unknown>): ReceiptsRead {
   return { state: "ok", entries };
 }
 
+/** The receipt ids `storybloq resolve --keep both` recorded: their bodies share one id by the owner's choice. */
+function keptBothIds(record: Record<string, unknown>): Set<string> {
+  const out = new Set<string>();
+  const history = record.receiptResolutions;
+  if (!Array.isArray(history)) return out;
+  for (const e of history) {
+    if (isObject(e) && e.kind === "receipt" && e.keep === "both" && typeof e.conflictId === "string") out.add(e.conflictId);
+  }
+  return out;
+}
+
+/**
+ * C-v4.1 commit 7, ISS-1435 (pen ruling): the duplicate_id contradictions on a
+ * record. A receipt id carried by two or more elements, with no open merge
+ * conflict naming it (the merge driver already marks those through
+ * _conflicts) and no keep-both resolution recorded for it, came from a union
+ * made without the driver or by hand. Every copy already reads
+ * `conflicted-kept` (never `ok`), so none counts; this is the hold. A later
+ * `ok` receipt whose supersedes names the id supersedes every copy and lifts
+ * it, the repair the hold text names. Sorted.
+ */
+export function duplicateReceiptHolds(record: Record<string, unknown>): string[] {
+  const raw = record.receipts;
+  if (!Array.isArray(raw)) return [];
+  const counts = new Map<string, number>();
+  for (const element of raw) {
+    const id = receiptElementId(element);
+    if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const conflicted = conflictedReceiptIds(record);
+  const kept = keptBothIds(record);
+  const superseded = new Set<string>();
+  const read = readReceipts(record);
+  if (read.state === "ok") for (const e of read.entries) if (e.state === "ok") for (const s of e.receipt.supersedes ?? []) superseded.add(s);
+  return [...counts]
+    .filter(([id, n]) => n > 1 && !conflicted.has(id) && !kept.has(id) && !superseded.has(id))
+    .map(([id]) => id)
+    .sort();
+}
+
+/** The hold text for one duplicate_id contradiction: it names the repair. */
+export const duplicateHoldText = (id: string): string => `duplicate receipt id ${id}: add a new receipt that supersedes ${id}`;
+
 // --- 3.7 current attempts: the one place attempt order is decided ---
 
 export type AttemptOutcome = "none" | "concurrent" | "failing" | "pass";

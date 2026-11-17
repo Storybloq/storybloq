@@ -186,12 +186,14 @@ describe("board git state module (ISS-1107)", () => {
     expect(git(root, "rev-list", "--count", `${parent}..HEAD`).trim()).toBe("1");
     expect(headFiles(root)).toEqual([".story/notes/N-002.json"]);
     expect(git(root, "log", "-1", "--format=%s").trim()).toBe("docs(story): N-002 updated");
-    const sha = git(root, "rev-parse", "--short", "HEAD").trim();
+    const sha = git(root, "rev-parse", "HEAD").trim();
     expect(report.lines).toEqual([
       "Git: .story/notes/N-001.json committed",
       "Git: .story/notes/N-002.json committed",
       `Git: committed ${sha}`,
     ]);
+    // C-v4.1 commit 7: the full sha in the line and the outcome.
+    expect(sha).toMatch(/^[0-9a-f]{40}([0-9a-f]{24})?$/);
     expect(report.gitCommit).toEqual([{ repo: root, outcome: "committed", sha, paths: [".story/notes/N-002.json"] }]);
   });
 });

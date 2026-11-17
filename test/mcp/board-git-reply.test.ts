@@ -68,12 +68,16 @@ describe("board write git state (ISS-1107)", () => {
 
       const committed = await tools.call("storybloq_handover_create", { content: "# Handover\n\nSecond.\n", slug: "second", commit: true });
       expect(committed.isError).toBe(false);
+      // C-v4.1 commit 7 (field report): handover_create with commit true returns the FULL sha, equal to HEAD.
+      const fullSha = /^Git: committed (\S+)$/m.exec(committed.text)?.[1];
+      expect(fullSha).toMatch(/^[0-9a-f]{40}([0-9a-f]{24})?$/);
+      expect(fullSha).toBe(git(root, "rev-parse", "HEAD").trim());
       const second = headFiles(root);
       expect(second).toHaveLength(1);
       expect(second[0]).toMatch(/^\.story\/handovers\/.*second.*\.md$/);
       expect(gitLines(committed.text)).toEqual([
         `Git: ${second[0]} committed`,
-        `Git: committed ${git(root, "rev-parse", "--short", "HEAD").trim()}`,
+        `Git: committed ${git(root, "rev-parse", "HEAD").trim()}`,
       ]);
       // The first handover is still untracked: the commit took only its own file.
       expect(porcelain(root, path)).toEqual([`?? ${path}`]);
@@ -124,7 +128,7 @@ describe("board write git state (ISS-1107)", () => {
     expect(porcelain(root, "staged.txt", "tracked.txt", "loose.txt")).toEqual(["A  staged.txt", " M tracked.txt", "?? loose.txt"]);
     expect(gitLines(reply.text)).toEqual([
       "Git: .story/issues/ISS-001.json committed",
-      `Git: committed ${git(root, "rev-parse", "--short", "HEAD").trim()}`,
+      `Git: committed ${git(root, "rev-parse", "HEAD").trim()}`,
     ]);
   });
 
@@ -191,7 +195,7 @@ describe("board write git state (ISS-1107)", () => {
     expect(git(node, "log", "-1", "--format=%s").trim()).toBe("docs(story): ISS-001 created");
     expect(gitLines(reply.text)).toEqual([
       "Git: .story/issues/ISS-001.json committed",
-      `Git: committed ${git(node, "rev-parse", "--short", "HEAD").trim()}`,
+      `Git: committed ${git(node, "rev-parse", "HEAD").trim()}`,
     ]);
   });
 
@@ -301,7 +305,7 @@ describe("board write git state (ISS-1107)", () => {
     expect(porcelain(root, "unrelated.txt")).toEqual(["A  unrelated.txt"]);
     expect(gitLines(reply.text)).toEqual([
       "Git: .story/issues/ISS-001.json committed",
-      `Git: committed ${git(root, "rev-parse", "--short", "HEAD").trim()}`,
+      `Git: committed ${git(root, "rev-parse", "HEAD").trim()}`,
     ]);
     expect(reply.text).not.toContain("verification failed");
     rmSync(join(root, "unrelated.txt"));

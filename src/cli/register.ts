@@ -137,6 +137,7 @@ import { handleDuetCoordinate, parseDuetOperation } from "./commands/duet.js";
 import {
   handleRulingList,
   handleRulingGet,
+  handleRulingGetWithLedger,
   handleRulingCreate,
   handleRulingSupersede,
   handleRulingPropose,
@@ -1034,7 +1035,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             // is untouched: it never had a count cap and must stay that way.
             if (brief || priming) count = Math.min(10, count);
             await runReadCommand(format, (ctx) =>
-              handleHandoverLatest(ctx, count, { brief, priming }),
+              handleHandoverLatest(ctx, count, { brief, priming, ledger: true }),
             );
           },
         )
@@ -1053,7 +1054,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const filename = argv.filename as string;
             await runReadCommand(format, (ctx) =>
-              handleHandoverGet(filename, ctx),
+              handleHandoverGet(filename, ctx, { ledger: true }),
             );
           },
         )
@@ -4130,7 +4131,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runReadCommand(format, (ctx) => handleRulingGet(argv.id as string, ctx));
+            await runReadCommand(format, (ctx) => handleRulingGetWithLedger(argv.id as string, ctx));
           },
         )
         .command(

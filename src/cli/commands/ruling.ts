@@ -1,3 +1,4 @@
+import { ledgerOptions, ledgerState, withLedgerState } from "../../core/ledger-state.js";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -224,6 +225,17 @@ export function handleRulingGet(id: string, ctx: CommandContext): CommandResult 
     proposalsAgainst: proposalsAgainst(rulings, id).map((p) => p.id),
   };
   return { output: formatRuling(ruling, ctx.format, resolution, extras), ...(warnings.length > 0 && { warnings }) };
+}
+
+/**
+ * C-v4.1 commit 7: ruling get with the ledger-state line (Markdown) or
+ * `data.ledgerState` (JSON). Both clients call this; a refusal passes through.
+ */
+export async function handleRulingGetWithLedger(id: string, ctx: CommandContext): Promise<CommandResult> {
+  const result = handleRulingGet(id, ctx);
+  if (result.exitCode !== undefined || result.errorCode !== undefined) return result;
+  const s = await ledgerState(ctx.root, join(ctx.root, ".story", "rulings", `${id}.json`), ledgerOptions(ctx.state.config));
+  return { ...result, output: withLedgerState(result.output, ctx.format, s) };
 }
 
 // --- Write handlers ---

@@ -1,3 +1,4 @@
+import { ledgerOptions, ledgerState, ledgerStates, withLedgerState } from "../../core/ledger-state.js";
 import { extractHandoverDate, listHandovers, readHandover } from "../../core/handover-parser.js";
 import { buildHandoverBrief, isFilenameAdmitted } from "../../core/handover-brief.js";
 import {
@@ -85,6 +86,8 @@ export async function handleHandoverLines(ctx: CommandContext, opts: { readonly 
 export interface HandoverLatestOptions {
   readonly brief?: boolean;
   readonly priming?: boolean;
+  /** C-v4.1 commit 7: the ledger-state line per handover, full mode only. Set by the CLI and MCP gets, not the guide. */
+  readonly ledger?: boolean;
 }
 
 export async function handleHandoverLatest(
@@ -146,12 +149,14 @@ export async function handleHandoverLatest(
   }
 
   const parts: string[] = [];
+  const ledger = opts.ledger ? await ledgerStates(ctx.root, filenames.map((f) => join(ctx.handoversDir, f)), ledgerOptions(ctx.state.config)) : undefined;
 
   for (const filename of filenames) {
     await parseHandoverFilename(filename, ctx.handoversDir);
     try {
       const content = await readHandover(ctx.handoversDir, filename);
-      parts.push(formatHandoverContent(filename, content, ctx.format));
+      const rendered = formatHandoverContent(filename, content, ctx.format);
+      parts.push(ledger ? withLedgerState(rendered, ctx.format, ledger.get(join(ctx.handoversDir, filename)) ?? null) : rendered);
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         // Skip missing files silently when loading multiple
@@ -185,12 +190,16 @@ export async function handleHandoverLatest(
 export async function handleHandoverGet(
   filename: string,
   ctx: CommandContext,
+  opts: { readonly ledger?: boolean } = {},
 ): Promise<CommandResult> {
   await parseHandoverFilename(filename, ctx.handoversDir);
 
   try {
     const content = await readHandover(ctx.handoversDir, filename);
-    return { output: formatHandoverContent(filename, content, ctx.format) };
+    const rendered = formatHandoverContent(filename, content, ctx.format);
+    if (!opts.ledger) return { output: rendered };
+    const s = await ledgerState(ctx.root, join(ctx.handoversDir, filename), ledgerOptions(ctx.state.config));
+    return { output: withLedgerState(rendered, ctx.format, s) };
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return {

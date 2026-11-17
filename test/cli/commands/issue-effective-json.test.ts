@@ -160,15 +160,17 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     const all = await surfaces(root, "ISS-001");
     expect(Object.keys(all)).toContain("phaseExportRow");
     for (const [surface, body] of Object.entries(all)) {
-      const { effective, citedRulings, gitState, lastChanged, ...stored } = body;
+      const { effective, citedRulings, gitState, lastChanged, ledgerState, ...stored } = body;
       void citedRulings;
       // C-v4.1 commit 4 (pen ruling Q4): both get clients always carry the git facts; lists and export do not.
       if (surface === "get" || surface === "mcpGet") {
         expect(gitState, surface).toEqual({ state: "unknown", reason: "not a git repository" });
         expect(lastChanged, surface).toBeNull();
+        expect(ledgerState, surface).toBeNull(); // C-v4.1 commit 7: not a repository
       } else {
         expect(gitState, surface).toBeUndefined();
         expect(lastChanged, surface).toBeUndefined();
+        expect(ledgerState, surface).toBeUndefined();
       }
       const expected = EXPORT_SURFACES.has(surface)
         ? Object.fromEntries(Object.entries(loaded(issue)).filter(([k]) => EXPORT_LEAN_KEYS.has(k)))

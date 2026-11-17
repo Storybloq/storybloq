@@ -164,6 +164,7 @@ import { handleDuetCoordinate } from "../cli/commands/duet.js";
 // resolution is meant to be discoverable without shelling out to the CLI.
 import {
   handleRulingGet,
+  handleRulingGetWithLedger,
   handleRulingList,
   handleRulingCreate,
   handleRulingSupersede,
@@ -734,7 +735,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       format: z.enum(["md", "json"]).optional().describe("default: md"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
-    handleHandoverLatest(ctx, args.count ?? 1, { brief: args.brief, priming: args.priming }),
+    handleHandoverLatest(ctx, args.count ?? 1, { brief: args.brief, priming: args.priming, ledger: true }),
     undefined, args.format ?? "md",
   ));
 
@@ -939,7 +940,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       // sniffing an "Error [...]" prefix in Markdown text.
       format: z.enum(["md", "json"]).optional().describe("default: md"),
     },
-  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleHandoverGet(args.filename, ctx), undefined, args.format ?? "md"));
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleHandoverGet(args.filename, ctx, { ledger: true }), undefined, args.format ?? "md"));
 
   // --- T-084: Recap + Snapshot + Export ---
 
@@ -1423,7 +1424,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     inputSchema: {
       id: RulingIdSchema.describe("e.g. r-[canonical]"),
     },
-  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleRulingGet(args.id, ctx)));
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleRulingGetWithLedger(args.id, ctx)));
 
   server.registerTool("storybloq_ruling_list", {
     description:

@@ -8,6 +8,7 @@ import { statSync } from "node:fs";
 import { relative } from "node:path";
 import type { ProjectState } from "../project-state.js";
 import { runGitFacts } from "./runner.js";
+import { lastCommitOf, ledgerState, type LedgerState } from "../ledger-state.js";
 import { PatternTimeoutError } from "./pattern-sandbox.js";
 import { compileBoundedPattern, takeGitSnapshot, type GitSnapshot, type UnknownReason } from "./snapshot.js";
 import { attributedCommits, itemFacts, itemGitState, type ItemGitFacts, type ItemGitState } from "./attribution.js";
@@ -117,22 +118,26 @@ export async function lastChanged(root: string, recordPath: string): Promise<Las
       return null;
     }
   }
-  const log = await runGitFacts({ cwd: root, args: ["log", "-1", "--format=%H%x00%cI", "--", rel] });
-  if (log.kind !== "ok") return null;
-  const [sha = "", at = ""] = log.stdout.toString("utf8").trim().split("\0");
-  if (sha.length === 0) return null;
-  return { sha, committedAt: at };
+  return lastCommitOf(root, rel);
 }
+
 
 /** C-v4.1 commit 4, Q4 ruling: the two fields every get carries, on both clients. */
 export interface GitGetFields {
   readonly gitState: ItemGitState;
   readonly lastChanged: LastChanged;
+  /** C-v4.1 commit 7: where the record stands in git; null when git is unavailable. */
+  readonly ledgerState: LedgerState | null;
 }
 
 export async function gitGetFields(root: string, state: ProjectState, id: string, recordPath: string): Promise<GitGetFields> {
   const view = await readGitFacts(root, state);
-  return { gitState: view.stateOf(id), lastChanged: await lastChanged(root, recordPath) };
+  const defaultBranch = settingsOf(state).defaultBranch;
+  return {
+    gitState: view.stateOf(id),
+    lastChanged: await lastChanged(root, recordPath),
+    ledgerState: await ledgerState(root, recordPath, defaultBranch !== undefined ? { defaultBranch } : {}),
+  };
 }
 
 /** The one Markdown git line on get. */

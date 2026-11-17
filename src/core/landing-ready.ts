@@ -18,7 +18,7 @@ import type { ProjectState } from "./project-state.js";
 import { displayIdOf } from "./resolver.js";
 import { loadProject } from "./project-loader.js";
 import { findItem, type StateWithRefs } from "./receipt-add.js";
-import { conflictedReceiptIds, currentAttempts, readReceipts, type AttemptOutcome, type Receipt, type ReceiptKind } from "./receipts.js";
+import { conflictedReceiptIds, currentAttempts, duplicateHoldText, duplicateReceiptHolds, readReceipts, type AttemptOutcome, type Receipt, type ReceiptKind } from "./receipts.js";
 
 export type PolicyLevel = "required" | "optional";
 
@@ -60,6 +60,8 @@ export interface LandingReadiness {
   readonly concurrent: readonly string[];
   /** Receipt ids an open receipt merge conflict names: neither side counts until it is resolved. */
   readonly contradictions: readonly string[];
+  /** ISS-1435: duplicate_id contradictions (a raw duplicate receipt id); held until a receipt supersedes the id. */
+  readonly duplicates: readonly string[];
   readonly candidate: { readonly head: string; readonly base: string | null };
   readonly kinds: readonly KindReadiness[];
 }
@@ -91,6 +93,7 @@ export function computeLandingReadiness(record: Record<string, unknown>, candida
   const read = readReceipts(record);
   const ok: Receipt[] = read.state === "ok" ? read.entries.flatMap((e) => (e.state === "ok" ? [e.receipt] : [])) : [];
   const contradictions = [...conflictedReceiptIds(record)].sort();
+  const duplicates = duplicateReceiptHolds(record);
   const missing: string[] = [];
   const failing: string[] = [];
   const concurrent: string[] = [];
@@ -116,11 +119,12 @@ export function computeLandingReadiness(record: Record<string, unknown>, candida
     else if (ca.outcome === "concurrent") concurrent.push(kind);
   }
   return {
-    ready: missing.length === 0 && failing.length === 0 && concurrent.length === 0 && contradictions.length === 0,
+    ready: missing.length === 0 && failing.length === 0 && concurrent.length === 0 && contradictions.length === 0 && duplicates.length === 0,
     missing,
     failing,
     concurrent,
     contradictions,
+    duplicates,
     candidate: { head: candidate.head, base: candidate.base ?? null },
     kinds,
   };
@@ -186,6 +190,7 @@ export function formatLandingReady(r: LandingReadyResult): string {
   if (r.failing.length) why.push(`failing ${r.failing.join(", ")}`);
   if (r.concurrent.length) why.push(`concurrent ${r.concurrent.join(", ")}`);
   if (r.contradictions.length) why.push(`conflicted receipts ${r.contradictions.join(", ")}`);
+  for (const id of r.duplicates) why.push(duplicateHoldText(id));
   return [`${r.item} at ${cand}: ${r.ready ? "ready" : `not ready (${why.join("; ")})`}`, ...r.notes].join("\n");
 }
 
@@ -239,6 +244,7 @@ export async function landReadiness(boardRoot: string | null, priorTip: string |
       ...(r.failing.length ? [`failing ${r.failing.join(", ")}`] : []),
       ...(r.concurrent.length ? [`concurrent ${r.concurrent.join(", ")}`] : []),
       ...(r.contradictions.length ? ["conflicted receipts"] : []),
+      ...(r.duplicates.length ? ["duplicate receipt ids"] : []),
     ].join("; ");
   };
   const named = notReady.slice(0, NAMED_MAX).map((r) => `${display(r)} not ready (${why(r)})`);

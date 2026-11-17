@@ -118,7 +118,9 @@ export async function lastChanged(root: string, recordPath: string): Promise<Las
       return null;
     }
   }
-  return lastCommitOf(root, rel);
+  const last = await lastCommitOf(root, rel);
+  // Unchanged contract: no commit and a failed query both read null (unknown), never a guess.
+  return last.kind === "sha" ? { sha: last.sha, committedAt: last.committedAt } : null;
 }
 
 

@@ -15,13 +15,23 @@ import { parseStatusZ, type StatusEntry } from "./board-git-state.js";
 import { runGitFacts } from "./git-facts/runner.js";
 import { resolveDefaultRef } from "./git-facts/snapshot.js";
 
-/** The last commit that touched a path (repo- or root-relative), or null. Shared by lastChanged and the ledger-state line. */
-export async function lastCommitOf(cwd: string, rel: string): Promise<{ readonly sha: string; readonly committedAt: string } | null> {
+/**
+ * The last commit that touched a path (repo- or root-relative). `none` is an
+ * empty history, proven by a log that succeeded; `failed` is a log that did not
+ * run to completion, which proves nothing (Codex gate: never claim absence
+ * without proof). Shared by lastChanged and the ledger-state line.
+ */
+export type LastCommit =
+  | { readonly kind: "sha"; readonly sha: string; readonly committedAt: string }
+  | { readonly kind: "none" }
+  | { readonly kind: "failed" };
+
+export async function lastCommitOf(cwd: string, rel: string): Promise<LastCommit> {
   const log = await runGitFacts({ cwd, args: ["log", "-1", "--format=%H%x00%cI", "--", `:(literal)${rel}`] });
-  if (log.kind !== "ok") return null;
+  if (log.kind !== "ok") return { kind: "failed" };
   const [sha = "", at = ""] = log.stdout.toString("utf8").trim().split("\0");
-  if (sha.length === 0) return null;
-  return { sha, committedAt: at };
+  if (sha.length === 0) return { kind: "none" };
+  return { kind: "sha", sha, committedAt: at };
 }
 
 export type LedgerLocalState = "untracked" | "added" | "modified" | "deleted" | "renamed" | "copied" | "conflicted" | "committed";
@@ -48,6 +58,8 @@ export interface LedgerState {
   readonly neverCommitted?: boolean;
   /** Present only when there is a sha. */
   readonly remote?: LedgerRemote;
+  /** The last-commit query failed: the sha is unknown, never "never committed". */
+  readonly lastCommitUnknown?: boolean;
 }
 
 const UNMERGED = new Set(["UU", "AA", "DD", "AU", "UA", "DU", "UD"]);
@@ -141,16 +153,20 @@ export async function ledgerStates(root: string, recordPaths: readonly string[],
   const rels = recordPaths.map((p) => repoRel(top, isAbsolute(p) ? p : join(root, p)));
   const noEntry = rels.filter((r) => !byPath.has(r) && !bySource.has(r));
   const indexed = new Set<string>();
+  // A failed membership query proves nothing: a path whose classification needs it reads null, never untracked.
+  let indexKnown = true;
   if (noEntry.length > 0) {
     const ls = out(await runGitFacts({ cwd: top, args: ["ls-files", "-z", "--", ...noEntry.map((r) => `:(literal)${r}`)] }));
-    if (ls !== null) for (const name of ls.split("\0")) if (name.length > 0) indexed.add(name);
+    if (ls === null) indexKnown = false;
+    else for (const name of ls.split("\0")) if (name.length > 0) indexed.add(name);
   }
+  const needsIndex = new Set(noEntry);
 
   // The default ref, resolved once per request the way the git facts snapshot resolves it.
-  const pending = rels.map((r) => classify(r, byPath.get(r), bySource.get(r), indexed.has(r)));
+  const pending = rels.map((r) => (!indexKnown && needsIndex.has(r) ? null : classify(r, byPath.get(r), bySource.get(r), indexed.has(r))));
   let refName: string | null = null;
   let refReason: string | null = null;
-  if (pending.some((p) => p.shaFrom !== null)) {
+  if (pending.some((p) => p !== null && p.shaFrom !== null)) {
     if (shallow) refReason = "shallow repository";
     else {
       const ref = await resolveDefaultRef(top, opts.defaultBranch);
@@ -179,8 +195,9 @@ export async function ledgerStates(root: string, recordPaths: readonly string[],
   };
 
   for (let i = 0; i < recordPaths.length; i += 1) {
-    const p = pending[i]!;
-    const last = p.shaFrom === null ? null : await lastCommitOf(top, p.shaFrom);
+    const p = pending[i];
+    if (p === null || p === undefined) { result.set(recordPaths[i]!, null); continue; }
+    const last: LastCommit = p.shaFrom === null ? { kind: "none" } : await lastCommitOf(top, p.shaFrom);
     const base: LedgerState = {
       state: p.state,
       ...(p.from !== undefined ? { from: p.from } : {}),
@@ -188,7 +205,12 @@ export async function ledgerStates(root: string, recordPaths: readonly string[],
       ...(p.modified ? { modified: true } : {}),
       ...(p.neverCommitted ? { neverCommitted: true } : {}),
     };
-    result.set(recordPaths[i]!, last === null ? base : { ...base, sha: last.sha, committedAt: last.committedAt, remote: await remoteFor(last.sha) });
+    result.set(
+      recordPaths[i]!,
+      last.kind === "sha"
+        ? { ...base, sha: last.sha, committedAt: last.committedAt, remote: await remoteFor(last.sha) }
+        : last.kind === "failed" ? { ...base, lastCommitUnknown: true } : base,
+    );
   }
   return result;
 }
@@ -213,14 +235,16 @@ export function ledgerStateLine(s: LedgerState | null): string {
   const at = s.sha !== undefined ? `, last at ${s.sha}` : "";
   const remote = s.remote !== undefined ? `, ${remoteText(s.remote)}` : "";
   const unknownSha = ", last commit unknown";
+  // No sha: "never committed" only when an empty history was proven; a failed query says unknown.
+  const noSha = s.lastCommitUnknown ? unknownSha : ", never committed";
   switch (s.state) {
     case "untracked": return "Ledger: untracked";
     case "added": return "Ledger: added, not committed";
-    case "conflicted": return s.sha !== undefined ? `Ledger: conflicted${at}${remote}` : "Ledger: conflicted, never committed";
+    case "conflicted": return s.sha !== undefined ? `Ledger: conflicted${at}${remote}` : `Ledger: conflicted${noSha}`;
     case "renamed":
     case "copied": {
       const mod = s.modified ? ", modified" : "";
-      return s.sha !== undefined ? `Ledger: ${s.state} from ${s.from}${mod}${at}${remote}` : `Ledger: ${s.state} from ${s.from}${mod}, never committed`;
+      return s.sha !== undefined ? `Ledger: ${s.state} from ${s.from}${mod}${at}${remote}` : `Ledger: ${s.state} from ${s.from}${mod}${noSha}`;
     }
     case "deleted": {
       if (s.neverCommitted) return "Ledger: added, then deleted, never committed";

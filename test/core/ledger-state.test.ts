@@ -9,10 +9,18 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { git, headSha, isolateGit, makeProjectRepo, cleanupTempDirs, tempDir } from "../mcp/board-git-fixtures.js";
 
-const seam = vi.hoisted(() => ({ calls: [] as string[][] }));
+const seam = vi.hoisted(() => ({ calls: [] as string[][], fail: null as null | ((args: readonly string[]) => boolean) }));
 vi.mock("../../src/core/git-facts/runner.js", async (orig) => {
   const m = await orig<typeof import("../../src/core/git-facts/runner.js")>();
-  return { ...m, runGitFacts: (req: Parameters<typeof m.runGitFacts>[0]) => { seam.calls.push([...req.args]); return m.runGitFacts(req); } };
+  return {
+    ...m,
+    runGitFacts: (req: Parameters<typeof m.runGitFacts>[0]) => {
+      seam.calls.push([...req.args]);
+      // Codex gate rows: one git verb fails (a timeout, a spawn error) while the rest run for real.
+      if (seam.fail?.(req.args)) return Promise.resolve({ kind: "failed" as const, reason: "timeout" as const, detail: "injected" });
+      return m.runGitFacts(req);
+    },
+  };
 });
 
 import { ledgerState, ledgerStateLine, ledgerStates, type LedgerState } from "../../src/core/ledger-state.js";
@@ -23,7 +31,7 @@ vi.setConfig({ testTimeout: 60_000 });
 let restoreGit: () => void;
 beforeAll(() => { restoreGit = isolateGit(); });
 afterAll(() => restoreGit());
-beforeEach(() => { seam.calls.length = 0; });
+beforeEach(() => { seam.calls.length = 0; seam.fail = null; });
 afterEach(() => cleanupTempDirs());
 
 const write = (root: string, rel: string, body = `${rel}\n`): string => {
@@ -230,6 +238,58 @@ describe("remote relation, judged from the file's sha", () => {
     const abs = write(dir, ".story/notes/f.json");
     expect(await ledgerState(dir, abs)).toBeNull();
     expect(ledgerStateLine(null)).toBe("Ledger: unknown (git unavailable)");
+  });
+});
+
+describe("a failed query proves no absence (Codex gate)", () => {
+  it("ls-files fails: a clean tracked file reads null, never untracked; paths status classified keep their state", async () => {
+    const { root } = await makeProjectRepo();
+    write(root, ".story/notes/clean.json");
+    write(root, ".story/notes/mod.json");
+    const sha = commitAll(root, "base");
+    setOrigin(root, sha);
+    write(root, ".story/notes/mod.json", "changed\n");
+    write(root, ".story/notes/new.json");
+    const [clean, mod, fresh] = [".story/notes/clean.json", ".story/notes/mod.json", ".story/notes/new.json"].map((r) => join(root, r));
+    seam.fail = (args) => args[0] === "ls-files";
+    const got = await ledgerStates(root, [clean!, mod!, fresh!]);
+    expect(seam.calls.some((a) => a[0] === "ls-files")).toBe(true);
+    expect(got.get(clean!)).toBeNull();
+    expect(ledgerStateLine(got.get(clean!)!)).not.toContain("untracked");
+    expect(got.get(mod!)).toMatchObject({ state: "modified", sha });
+    expect(got.get(fresh!)).toEqual({ state: "untracked" });
+  });
+
+  it("a failed log for a conflicted file with real history never prints never committed", async () => {
+    const { root } = await makeProjectRepo();
+    write(root, ".story/notes/c.json", "base\n");
+    setOrigin(root, commitAll(root, "base"));
+    git(root, "checkout", "-q", "-b", "side");
+    write(root, ".story/notes/c.json", "side\n"); commitAll(root, "side");
+    git(root, "checkout", "-q", "main");
+    write(root, ".story/notes/c.json", "main\n"); commitAll(root, "main");
+    try { git(root, "merge", "-q", "side"); } catch { /* the conflict is the point */ }
+    seam.fail = (args) => args[0] === "log";
+    const s = await state(root, ".story/notes/c.json");
+    expect(s).toEqual({ state: "conflicted", lastCommitUnknown: true });
+    expect(ledgerStateLine(s)).toBe("Ledger: conflicted, last commit unknown");
+  });
+
+  it("a failed log for a renamed file with real history never prints never committed", async () => {
+    const { root } = await makeProjectRepo();
+    write(root, ".story/notes/old.json", "x\n".repeat(20));
+    setOrigin(root, commitAll(root, "base"));
+    git(root, "mv", ".story/notes/old.json", ".story/notes/new.json");
+    write(root, ".story/notes/new.json", "x\n".repeat(20) + "y\n");
+    seam.fail = (args) => args[0] === "log";
+    const dst = join(root, ".story/notes/new.json");
+    const src = join(root, ".story/notes/old.json");
+    const both = await ledgerStates(root, [dst, src]);
+    expect(both.get(dst)).toMatchObject({ state: "renamed", from: ".story/notes/old.json", lastCommitUnknown: true });
+    expect(both.get(dst)).not.toHaveProperty("sha");
+    expect(ledgerStateLine(both.get(dst)!)).toBe("Ledger: renamed from .story/notes/old.json, modified, last commit unknown");
+    expect(ledgerStateLine(both.get(src)!)).toBe("Ledger: deleted (renamed to .story/notes/new.json), last commit unknown");
+    for (const v of both.values()) expect(ledgerStateLine(v)).not.toContain("never committed");
   });
 });
 

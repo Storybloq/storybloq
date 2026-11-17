@@ -13,6 +13,10 @@ import type { BrokenReason, ScannedFile } from "./handover-lineage.js";
 import type { MemoResolution } from "./handover-line-memo.js";
 import type { StructuredEntry } from "./handover-brief.js";
 import { handoverFilenameDate } from "./handover-filename.js";
+import { resolveLineMemo } from "./handover-line-memo.js";
+import { splitLineage } from "./handover-lineage.js";
+import { extractHandoverHeading, handoverNameDate, handoverNamesNewestFirst } from "../federation/handover-utils.js";
+import { readdir } from "node:fs/promises";
 
 /**
  * Set to true by exactly three events: the `TailReader` returns a `linked`
@@ -444,4 +448,60 @@ export function selectionNotices(memo: MemoResolution, sel: HandoverSelection, l
   if (empty && sel.source === "default") out.push(emptyDefaultNotice(sel, listingLength));
   else if (limited) out.push(LIMIT_NOTICE);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Compact pointer (plan section 9)
+// ---------------------------------------------------------------------------
+
+/** The pointer's read limit for the default selection. */
+export const POINTER_MAX_READS = 20;
+
+export interface LineHandoverInfo {
+  /** Null when no handover of the newest names read is on the default line. */
+  readonly filename: string | null;
+  readonly date: string | null;
+  readonly heading: string | null;
+  readonly notices: readonly string[];
+}
+
+/** The pointer's notice when none of the names it read is on the default line. */
+export function noneSelectableNotice(walked: number): string {
+  return `None of the newest ${walked} handovers is on the default line: \`storybloq handover lines\`.`;
+}
+
+/**
+ * The handover the compact pointer names for `taskId`: the memo's tip when
+ * active (the memo walk at count 1); otherwise the default selection at count 1 over the listing,
+ * reading at most 20 tails. With no lineage observed it is main's choice,
+ * the newest name, after one tail read. Never scans for other lines. A
+ * listing error is thrown as `findLatestHandover` throws it; nothing else
+ * throws (a body that cannot be read gives a null heading).
+ */
+export async function findLineHandover(root: string, taskId: string | null): Promise<LineHandoverInfo | null> {
+  const handoversDir = join(root, ".story", "handovers");
+  const listing = handoverNamesNewestFirst(await readdir(handoversDir));
+  if (listing.length === 0) return null;
+  const tails = new TailReader(handoversDir, listing);
+  const memo = resolveLineMemo(root, taskId, tails);
+  const notices: string[] = [];
+  // An active memo walks its line from the tip: at count 1 that is the tip.
+  const sel = selectHandovers({ listing, tails, memo, count: 1, maxReads: POINTER_MAX_READS });
+  let name: string | null;
+  if (!tails.observation.seen) {
+    name = listing[0]!;
+  } else {
+    if (memo.kind === "stale") notices.push(staleMemoNotice(memo.tip, memo.reason));
+    name = sel.files[0] ?? null;
+    if (name === null) notices.push(noneSelectableNotice(sel.walked));
+  }
+  if (name === null) return { filename: null, date: null, heading: null, notices };
+  let heading: string | null = null;
+  try {
+    const content = readHandoverBody(handoversDir, name);
+    heading = extractHandoverHeading(tails.isCached(name) && tails.state(name).state === "linked" ? splitLineage(content).body : content);
+  } catch {
+    heading = null;
+  }
+  return { filename: name, date: handoverNameDate(name), heading, notices };
 }

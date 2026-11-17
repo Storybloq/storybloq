@@ -20,16 +20,28 @@ export function extractHandoverHeading(content: string): string | null {
   return heading.length > 120 ? heading.slice(0, 117) + "..." : heading;
 }
 
+/**
+ * The listing step: every `.md` name, newest first by plain string order.
+ * Shared by `findLatestHandover` and the compact pointer (ISS-1499 slice B)
+ * so both use the identical order.
+ */
+export function handoverNamesNewestFirst(files: readonly string[]): string[] {
+  return files.filter((f) => f.endsWith(".md")).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+}
+
+/** The date the pointer shows for a handover name, or null. */
+export function handoverNameDate(name: string): string | null {
+  const dateMatch = name.match(/^(\d{4}-\d{2}-\d{2})/);
+  return dateMatch ? dateMatch[1]! : null;
+}
+
 /** `signal` (T-486 U2-3b): checked before each read, so a node scan's deadline stops it. */
 export async function findLatestHandover(handoversDir: string, signal?: AbortSignal): Promise<LatestHandoverInfo | null> {
   signal?.throwIfAborted();
   const files = await readdir(handoversDir);
-  const mdFiles = files.filter((f) => f.endsWith(".md"));
-  if (mdFiles.length === 0) return null;
-
-  const latest = mdFiles.reduce((a, b) => (a > b ? a : b));
-  const dateMatch = latest.match(/^(\d{4}-\d{2}-\d{2})/);
-  const date = dateMatch ? dateMatch[1]! : null;
+  const latest = handoverNamesNewestFirst(files)[0];
+  if (latest === undefined) return null;
+  const date = handoverNameDate(latest);
 
   let heading: string | null = null;
   signal?.throwIfAborted();

@@ -42,8 +42,8 @@ import { resolveSessionOwnership, callerMayAct } from "../../autonomous/session-
 import { writeShutdownMarker } from "../../autonomous/liveness.js";
 import { loadProject } from "../../core/project-loader.js";
 import { writeResumeMarker, removeResumeMarker } from "../../autonomous/resume-marker.js";
-import { findLatestHandover } from "../../federation/handover-utils.js";
-import { join } from "node:path";
+import { findLineHandover } from "../../core/handover-selection.js";
+import { join, resolve } from "node:path";
 import {
   busRuntimeLostAdvisory,
   consumeCompactionSuccession,
@@ -297,21 +297,23 @@ function sanitizeForContext(s: string, max = 200): string {
  * case). Points the resumed session at the latest handover + `storybloq recap`
  * so project context is not lost. Informational, not imperative. Never throws.
  */
-async function buildCompactionBreadcrumb(root: string): Promise<string | null> {
+async function buildCompactionBreadcrumb(root: string, clientTaskId: string | null): Promise<string | null> {
   try {
-    let latest: Awaited<ReturnType<typeof findLatestHandover>> = null;
+    let latest: Awaited<ReturnType<typeof findLineHandover>> = null;
     try {
-      latest = await findLatestHandover(join(root, ".story", "handovers"));
+      // ISS-1499 slice B: the caller's own line when its memo is active.
+      latest = await findLineHandover(resolve(root), clientTaskId);
     } catch {
       latest = null; // handovers dir missing or unreadable
     }
     const lines = ["Storybloq project context was compacted."];
-    if (latest) {
+    if (latest && latest.filename !== null) {
       const file = sanitizeForContext(latest.filename);
       const date = latest.date ? ` (${sanitizeForContext(latest.date, 20)})` : "";
       const heading = latest.heading ? ` -- ${sanitizeForContext(latest.heading)}` : "";
       lines.push(`Latest handover file: ${file}${date}${heading}`);
     }
+    for (const notice of latest?.notices ?? []) lines.push(sanitizeForContext(notice, 400));
     lines.push("To reload full project state, run: storybloq recap");
     return lines.join("\n") + "\n";
   } catch {
@@ -644,7 +646,7 @@ export async function handleSessionResumePrompt(
         options.source === "compact" ||
         (options.source === undefined && !options.codexHookJson);
       if (shouldEmitBreadcrumb) {
-        const breadcrumb = await buildCompactionBreadcrumb(root);
+        const breadcrumb = await buildCompactionBreadcrumb(root, normalizeClientTaskId(clientTaskId));
         if (breadcrumb) writeResumeMessage(breadcrumb);
       } else if ((options.codexHookJson && clientTaskId) || busMarker) {
         writeResumeMessage("");
